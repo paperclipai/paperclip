@@ -588,4 +588,15 @@ describe("native status authority", () => {
       }),
     );
   });
+  it("routes each explicit request to its own reviewer", () => {
+    const decision = arbitrate({ assessment: assessment({ attentionRequests: [
+      { kind: "approval", summary: "Approve release", ownerClass: "human", targetAgentId: null, sourceIndex: 0, sourceKind: "approval", legacy: false },
+      { kind: "review", summary: "Review code", ownerClass: "agent", targetAgentId: "review-agent", sourceIndex: 1, sourceKind: "review", legacy: false },
+    ] }), reviewOwnerUserId: "release-owner" });
+    expect(decision.effects).toEqual([
+      expect.objectContaining({ kind: "bind_reviewer", requestKey: "attention-0", prompt: "Approve release", ownerUserId: "release-owner", ownerAgentId: null }),
+      expect.objectContaining({ kind: "bind_reviewer", requestKey: "attention-1", prompt: "Review code", ownerUserId: null, ownerAgentId: "review-agent" }),
+    ]);
+  });
+
 });

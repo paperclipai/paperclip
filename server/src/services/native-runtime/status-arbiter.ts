@@ -20,6 +20,7 @@ export type NativeStatusEffect =
   | { kind: "create_interaction"; gate?: NativeGovernanceGate; prompt?: string }
   | {
       kind: "bind_reviewer";
+      requestKey?: string;
       prompt: string;
       detailsMarkdown?: string | null;
       ownerUserId?: string | null;
@@ -286,20 +287,20 @@ export function arbitrateNativeStatus(input: {
   // A completion claim is not a request for human approval. Only a concrete,
   // explicitly reported attention request may create a review interaction.
   if (input.assessment.attentionRequests.length > 0) {
-    const request = input.assessment.attentionRequests[0]!;
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "in_review",
       toStatus: "in_review",
       reasonCode: "actionable_attention_pending",
       unblockDescriptor: null,
-      effects: [{
+      effects: input.assessment.attentionRequests.map((request, index) => ({
         kind: "bind_reviewer",
-        prompt: input.assessment.attentionRequests.map((entry) => entry.summary).join("\n").slice(0, 1_000),
+        requestKey: `attention-${index}`,
+        prompt: request.summary.slice(0, 1_000),
         detailsMarkdown: input.assessment.summary,
         ownerUserId: request.ownerClass === "agent" ? null : (input.reviewOwnerUserId ?? null),
         ownerAgentId: request.ownerClass === "agent" ? request.targetAgentId : null,
-      }],
+      })),
     };
   }
   if (

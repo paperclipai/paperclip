@@ -2203,7 +2203,15 @@ export function issueThreadInteractionService(
         acceptedPlanTarget.key === "plan" &&
         issueContext.workMode === "planning";
       if (isNativeCompletionReview(lockedCurrent)) {
-        const completedIssue = await issueService(db).update(
+        const otherPending = await tx.select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions).where(and(
+            eq(issueThreadInteractions.companyId, issueContext.companyId),
+            eq(issueThreadInteractions.issueId, issueContext.id),
+            eq(issueThreadInteractions.status, "pending"),
+          )).limit(1);
+        // Each explicit reviewer must be able to answer independently. Completing
+        // on the first answer would cancel the other pending decisions.
+        const completedIssue = otherPending.length > 0 ? null : await issueService(db).update(
           args.issue.id,
           {
             status: "done",

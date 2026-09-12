@@ -1037,7 +1037,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       backendKind: "mock",
       sourceInstanceId: runnerInstanceId,
     });
-    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }] };
+    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }, { kind: "review" as const, summary: "Review release notes", ownerClass: "human" as const }] };
     await port.completeRun({
       result,
       terminal: { ...CONTROL_PLANE_CONFORMANCE_TERMINAL, reportedWorkDisposition: "needs_review" },
@@ -1065,6 +1065,16 @@ describe("PaperclipControlPlanePort conformance", () => {
       reviewInteraction!.id,
       {},
       { userId: "reviewer-24" },
+    );
+    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
+      expect.objectContaining({ status: "in_review" }),
+    ]);
+    const remaining = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+    expect(remaining).toHaveLength(2);
+    const secondReview = remaining.find((entry) => entry.status === "pending")!;
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+      secondReview.id, {}, { userId: "reviewer-24" },
     );
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
       expect.objectContaining({ status: "done" }),

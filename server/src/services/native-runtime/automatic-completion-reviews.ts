@@ -22,12 +22,9 @@ const withdrawalReason = "automatic_completion_review_removed";
 const automaticPrompt =
   "Review the persisted native-run evidence and confirm whether this issue may be completed.";
 
-/** Narrow, replay-safe retirement. Explicit requests and answered cards are immutable here. */
-export async function dismissAutomaticCompletionReviews(
-  db: Db,
-  issueId?: string,
-) {
-  const candidates = await db
+/** Identify only proven system fallback cards; this lookup never changes state. */
+export async function findAutomaticCompletionReviews(db: Db, issueId?: string) {
+  return db
     .select({ interaction: issueThreadInteractions, decision: statusDecisions })
     .from(issueThreadInteractions)
     .innerJoin(
@@ -96,6 +93,14 @@ export async function dismissAutomaticCompletionReviews(
       );
       return [];
     });
+}
+
+/** Narrow, replay-safe retirement. Explicit requests and answered cards are immutable here. */
+export async function dismissAutomaticCompletionReviews(
+  db: Db,
+  issueId?: string,
+) {
+  const candidates = await findAutomaticCompletionReviews(db, issueId);
   for (const { interaction, decision } of candidates) {
     const publications: ActivityPublication[] = [];
     try {
