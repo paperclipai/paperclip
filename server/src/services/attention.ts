@@ -4,6 +4,7 @@ import {
   agents,
   approvals,
   assets,
+  authUsers,
   companies,
   decisionBundles,
   decisionQueueItems,
@@ -17,6 +18,7 @@ import {
   invites,
   issueApprovals,
   issueAttachments,
+  issueComments,
   issueDocuments,
   issueRecoveryActions,
   issueRelations,
@@ -27,7 +29,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { deriveProjectUrlKey, extractUserMentionIds, ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -66,20 +68,6 @@ import {
   DEFAULT_DECISION_SHELF_DAYS,
 } from "./decision-retention.js";
 
-const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
-  "approval",
-  "decision",
-  "issue_thread_interaction",
-  "join_request",
-  "recovery_action",
-  "productivity_review",
-  "blocker_attention",
-  "review",
-  "failed_run",
-  "budget_alert",
-  "agent_error_alert",
-];
-
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
   critical: 0,
   high: 1,
@@ -99,6 +87,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   review: 8,
   productivity_review: 9,
   join_request: 10,
+  mention: 11,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -418,8 +407,102 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
   };
 }
 
-function compareAttentionItems(left: AttentionItem, right: AttentionItem) {
-  const timeDiff = timestamp(right.activityAt) - timestamp(left.activityAt);
+export const MENTION_ATTENTION_LOOKBACK_DAYS = 30 as const;
+export const MENTION_ATTENTION_ROW_LIMIT = 200 as const;
+
+function escapeMentionLikeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+/** Display labels (name, else email) for board users, keyed by user id. */
+async function resolveUserDisplayLabels(db: Db, userIds: ReadonlyArray<string>): Promise<Map<string, string>> {
+  const rows = await db
+    .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+    .from(authUsers)
+    .where(inArray(authUsers.id, [...userIds]));
+  const labels = new Map<string, string>();
+  for (const row of rows) {
+    const label = row.name?.trim() || row.email?.trim() || null;
+    if (label) labels.set(row.id, label);
+  }
+  return labels;
+}
+
+export interface MentionAttentionComment {
+  id: string;
+  issueId: string;
+  body: string;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  authorAgentName: string | null;
+  authorUserLabel: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  issueStatus: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Build mention attention items for comments that @-mention a board user
+ * (Plane-style mention notifications). Pure over caller-supplied rows so
+ * the matching stays unit-testable without a database. Self-mentions are
+ * skipped by the caller passing already-filtered rows, or inline here.
+ */
+export function buildMentionAttentionItems(input: {
+  companyId: string;
+  prefix: string;
+  userId: string;
+  comments: ReadonlyArray<MentionAttentionComment>;
+}): CreateAttentionItemInput[] {
+  const items: CreateAttentionItemInput[] = [];
+  for (const comment of input.comments) {
+    if (comment.authorUserId === input.userId) continue;
+    let mentioned = false;
+    try {
+      mentioned = extractUserMentionIds(comment.body).includes(input.userId);
+    } catch {
+      continue;
+    }
+    if (!mentioned) continue;
+    const authorLabel = comment.authorAgentName ?? comment.authorUserLabel ?? null;
+    items.push({
+      companyId: input.companyId,
+      sourceKind: "mention",
+      subject: {
+        kind: "issue",
+        id: comment.issueId,
+        companyId: input.companyId,
+        title: comment.issueTitle,
+        identifier: comment.issueIdentifier,
+        status: comment.issueStatus,
+        href: `/${input.prefix}/issues/${comment.issueIdentifier ?? comment.issueId}`,
+        metadata: { commentId: comment.id },
+      },
+      whyNow: authorLabel ? `${authorLabel} mentioned you in a comment.` : "You were mentioned in a comment.",
+      decisionVerbs: [],
+      inlineResolvable: false,
+      entryRule: "An issue comment mentioned you within the last 30 days.",
+      exitRule: "Dismiss the row, or wait 30 days for the mention to leave the feed.",
+      dedupKey: `mention:${comment.id}`,
+      severity: "low",
+      activityAt: toIso(comment.createdAt),
+      createdAt: toIso(comment.createdAt),
+      updatedAt: toIso(comment.updatedAt),
+      relatedIssue: null,
+      detail: {
+        kind: "mention",
+        commentId: comment.id,
+        commentExcerpt: excerpt(comment.body),
+        authorLabel,
+        images: [],
+      },
+    });
+  }
+  return items;
+}
+
+function compareAttentionItems(left: AttentionItem, right: AttentionItem) {  const timeDiff = timestamp(right.activityAt) - timestamp(left.activityAt);
   if (timeDiff !== 0) return timeDiff;
   const severityDiff = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
   if (severityDiff !== 0) return severityDiff;
@@ -1894,6 +1977,63 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             images: [],
           },
         }));
+      }
+
+      // User @-mentions in issue comments (Plane-style mention
+      // notifications). Bounded recent window, parsed in JS; self-mentions
+      // and deleted comments never surface. Dismissals reuse the standard
+      // attention key flow via dedupKey below.
+      if (options.userId) {
+        const mentionCutoff = new Date(now - MENTION_ATTENTION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+        // Prefilter in SQL so the row cap applies to candidate mentions,
+        // not to all recent company comments. ILIKE keeps the rare
+        // uppercase-scheme variant; the exact user-id check stays in JS.
+        const mentionPattern = `%user://${escapeMentionLikeLiteral(options.userId)}%`;
+        const mentionRows = await db
+          .select({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            authorAgentId: issueComments.authorAgentId,
+            authorUserId: issueComments.authorUserId,
+            createdAt: issueComments.createdAt,
+            updatedAt: issueComments.updatedAt,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+            issueStatus: issues.status,
+            authorAgentName: agents.name,
+          })
+          .from(issueComments)
+          .innerJoin(
+            issues,
+            and(eq(issues.id, issueComments.issueId), eq(issues.companyId, companyId)),
+          )
+          .leftJoin(agents, eq(agents.id, issueComments.authorAgentId))
+          .where(and(
+            eq(issueComments.companyId, companyId),
+            isNull(issueComments.deletedAt),
+            gt(issueComments.createdAt, mentionCutoff),
+            sql<boolean>`${issueComments.body} ILIKE ${mentionPattern} ESCAPE '\\'`,
+          ))
+          .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+          .limit(MENTION_ATTENTION_ROW_LIMIT);
+        const mentionAuthorIds = [...new Set(
+          mentionRows.map((row) => row.authorUserId).filter((id): id is string => typeof id === "string" && id.length > 0),
+        )];
+        const mentionAuthorLabels = mentionAuthorIds.length > 0
+          ? await resolveUserDisplayLabels(db, mentionAuthorIds)
+          : new Map<string, string>();
+        for (const input of buildMentionAttentionItems({
+          companyId,
+          prefix,
+          userId: options.userId,
+          comments: mentionRows.map((row) => ({
+            ...row,
+            authorUserLabel: row.authorUserId ? mentionAuthorLabels.get(row.authorUserId) ?? null : null,
+          })),
+        })) {
+          add(createItem(input));
+        }
       }
 
       const deduped = new Map<string, AttentionItem>();
