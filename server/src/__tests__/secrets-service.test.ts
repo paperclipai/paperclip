@@ -1558,6 +1558,16 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved.manifest).toEqual([]);
     expect(JSON.stringify(resolved)).not.toContain("aral-bp-invoices");
 
+    const [denialEvent] = await svc.listAccessEvents(companyId, secret.id);
+    expect(denialEvent).toMatchObject({
+      consumerType: "project",
+      consumerId: "project-1",
+      configPath: "env.ARAL_BP_RECHNUNGEN",
+      outcome: "failure",
+      errorCode: "binding_not_allowed",
+    });
+    expect(JSON.stringify(denialEvent)).not.toContain("aral-bp-invoices");
+
     // Without the opt-in the same call still hard-fails — omission is
     // per-call, not a change to the default enforcement.
     await expect(
@@ -1666,7 +1676,7 @@ describeEmbeddedPostgres("secretService", () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");
     const svc = secretService(db);
-    await svc.createUserSecretDefinition(companyId, {
+    const definition = await svc.createUserSecretDefinition(companyId, {
       key: "github_token",
       name: "GitHub token",
       provider: "local_encrypted",
@@ -1698,6 +1708,28 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved.env).toEqual({ ROUTINE_PLAIN: "still-here" });
     expect(resolved.secretKeys.has("GITHUB_TOKEN")).toBe(false);
     expect(JSON.stringify(resolved)).not.toContain("user-one-secret");
+
+    const [denialEvent] = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(and(
+        eq(secretAccessEvents.companyId, companyId),
+        eq(secretAccessEvents.userSecretDefinitionId, definition.id),
+      ));
+    expect(denialEvent).toMatchObject({
+      secretId: null,
+      secretScope: "user",
+      responsibleUserId: "user-1",
+      credentialOwnerUserId: "user-1",
+      credentialSubjectType: "user",
+      credentialSubjectId: "user-1",
+      consumerType: "routine",
+      consumerId: "routine-1",
+      configPath: "env.GITHUB_TOKEN",
+      outcome: "failure",
+      errorCode: "binding_not_allowed",
+    });
+    expect(JSON.stringify(denialEvent)).not.toContain("user-one-secret");
   });
 
   it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {

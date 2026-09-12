@@ -712,6 +712,7 @@ type RuntimeSecretResolution = {
 };
 
 type SecretResolutionErrorCode =
+  | "binding_not_allowed"
   | "binding_missing"
   | "secret_deleted"
   | "secret_inactive"
@@ -822,6 +823,7 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
   if (error instanceof HttpError) {
     const details = asRecord(error.details);
     switch (details?.code) {
+      case "binding_not_allowed":
       case "binding_missing":
       case "secret_deleted":
       case "secret_inactive":
@@ -1155,7 +1157,7 @@ export function secretService(db: Db | DbTransaction) {
 
   async function recordAccessEvent(input: {
     companyId: string;
-    secretId: string;
+    secretId: string | null;
     userSecretDefinitionId?: string | null;
     secretScope?: string | null;
     version: number | null;
@@ -4166,6 +4168,20 @@ export function secretService(db: Db | DbTransaction) {
         Array.isArray(context?.allowedBindingIds) &&
         (!declaration || !context.allowedBindingIds.includes(declaration.id))
       ) {
+        await recordAccessEvent({
+          companyId,
+          secretId: null,
+          userSecretDefinitionId: definition.id,
+          secretScope: "user",
+          version: null,
+          provider: definition.provider as SecretProvider,
+          context: context ? { ...context, responsibleUserId } : undefined,
+          credentialOwnerUserId: responsibleUserId,
+          credentialSubjectType: "user",
+          credentialSubjectId: responsibleUserId,
+          outcome: "failure",
+          errorCode: "binding_not_allowed",
+        }).catch(() => undefined);
         throw unprocessable(
           "User secret declaration is outside the active low-trust boundary",
           { code: "binding_not_allowed" },
