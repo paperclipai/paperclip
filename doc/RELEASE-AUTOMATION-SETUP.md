@@ -338,19 +338,27 @@ Check:
 
 ## Runner verification dependency cache
 
-`release-verify.yml` caches Cargo dependencies for its `Verify Paperclip Runner`
-job using a pinned Rust Cache action. It selects the compiler from the Runner
-package's `rust-toolchain.toml` before computing the cache key. Compiler and Cargo
-metadata changes select a new cache; the `release-runner-v1` shared key lets
-callers of this reusable verification workflow reuse the same dependency cache.
+`release-verify.yml` runs `Verify Paperclip Runner` on two independent runners.
+The protocol lane runs `check:eval-kernel` and `check:protocol`. The Rust lane
+runs `check:runner` and `check:api-authority`. Together they retain every check
+in `check:all`; both lanes must pass before Cloud source verification or
+readiness can succeed. A failed lane does not cancel the other lane.
 
-Workspace crates and installed Cargo binaries are excluded. Every run still
-builds the Runner workspace and runs `check:all`, including the Rust and
-TypeScript tests. Only an own-repository master-push run verifying that push's exact
-SHA can restore the cache, and only a successful run saves it. PR, tag, and
-manual candidate verification compile without this cache. A miss or eviction costs compilation time but does not change the checks.
-To discard old dependency caches, increment the shared-key version and let the
-next successful master verification warm it again.
+Both lanes restore Cargo dependencies with the pinned Rust Cache action. The
+compiler comes from the Runner package's `rust-toolchain.toml` before the action
+computes its key. Compiler and Cargo metadata changes select a new cache. The
+existing `release-runner-v1` shared key avoids separate copies for these lanes.
+Only the Rust lane saves this cache. After verification it also runs `build:rust`
+to warm the debug dependencies used by the protocol lane; its own tests already
+warm release dependencies. The cache writer is shorter than the protocol lane.
+
+Workspace crates and installed Cargo binaries are excluded. Every run rebuilds
+workspace code and runs all assigned checks, including on a cache hit. Only an
+own-repository master-push run verifying that push's exact SHA can restore the
+cache, and only a successful Rust lane saves it. PR, tag, and manual candidate
+verification compile without this cache. A miss or eviction costs compilation
+time but does not change the checks. To discard old dependency caches, increment
+the shared-key version and let the next successful master verification warm it.
 
 The trust boundary is the protected master branch, not the cache-key text.
 GitHub does not let master restore caches created by a child branch, sibling
