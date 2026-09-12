@@ -139,7 +139,7 @@ export async function buildExecutionContinuation(input: {
       )[0]
     : null;
   if (sourceRunId && !sourceRun)
-    throw new Error("continuation_source_context_missing");
+    throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
   const originCommentIds = [
     ...new Set([
       ...continuationOriginCommentIds(input.context),

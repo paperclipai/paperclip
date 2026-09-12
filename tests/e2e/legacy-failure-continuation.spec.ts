@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test, expect, type APIResponse } from "@playwright/test";
 import { and, eq } from "../../server/node_modules/drizzle-orm/index.js";
-import { createDb, closeRegisteredClients, heartbeatRuns, issueRecoveryActions, issues, issueComments, agentWakeupRequests } from "../../packages/db/src/index.ts";
+import { createDb, closeRegisteredClients, heartbeatRuns, issueRecoveryActions, issues, issueComments, agentWakeupRequests, authUsers, companyMemberships } from "../../packages/db/src/index.ts";
 
 async function json(response: APIResponse) {
   expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
@@ -49,6 +49,12 @@ for (const action of ["task_retry", "inbox_retry", "message", "queued_interrupt"
         evidence: { runId: sourceRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
       });
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
+      if (action === "queued_interrupt") {
+        await db.insert(authUsers).values({ id: "original-board", name: "Original author", email: "original-author@example.test",
+          createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+        await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user",
+          principalId: "original-board", membershipRole: "operator", status: "active" });
+      }
       if (action === "queued_interrupt" || action === "automatic_message") {
         const commentId = randomUUID();
         // Reproduce a real user comment saved while the failed run was active,
