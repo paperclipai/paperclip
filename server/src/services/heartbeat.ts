@@ -3499,6 +3499,8 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 interface WakeupOptions {
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
+  /** Internal delivery of an existing undelivered user comment. */
+  queuedCommentRequestId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
   failedRunId?: string | null;
   durableChatRequest?: DurableChatWakeupRequest;
@@ -10088,16 +10090,32 @@ export function heartbeatService(
   }
 
   async function resumeQueuedCommentInterrupt(companyId: string, queueId: string) {
+    return resumeSavedLegacyComments(companyId, queueId, true);
+  }
+
+  async function resumeSavedLegacyComments(companyId: string, queueId: string, interrupted = false) {
     const [wake] = await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.id, queueId), eq(agentWakeupRequests.companyId, companyId),
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
     ));
     if (!wake) return;
     const payload = parseObject(wake.payload);
-    const actorId = readNonEmptyString(parseObject(payload.queuedCommentInterrupt).actorId);
+    let actorId = readNonEmptyString(parseObject(payload.queuedCommentInterrupt).actorId);
     const commentIds = queuedCommentIdsFromWakePayload(payload);
     const issueId = readNonEmptyString(payload.issueId);
-    if (!actorId || !issueId || !commentIds.length) return;
+    if (!issueId || !commentIds.length || wake.idempotencyKey?.startsWith("chat-inbound:")) return;
+    if (!interrupted) {
+      // The queue itself may have begun as a system wake. The saved human
+      // comment, not that wake's origin or mutable caller payload, is authority.
+      const [comment] = await db.select().from(issueComments).where(and(
+        eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+        eq(issueComments.id, commentIds[commentIds.length - 1]!), eq(issueComments.authorType, "user"),
+        isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+      )).orderBy(desc(issueComments.createdAt)).limit(1);
+      if (!comment?.body.trim() || !comment.authorUserId) return;
+      actorId = comment.authorUserId;
+    }
+    if (!actorId) return;
     const agent = await getAgent(wake.agentId);
     if (!agent || agent.companyId !== companyId || agent.adapterType === "paperclip_runner") return;
     const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
@@ -10114,9 +10132,9 @@ export function heartbeatService(
         ...parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]), issueId,
       }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
-      queuedCommentInterruptId: queueId,
+      ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
       issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
-      idempotencyKey: `queued-comment-interrupt:${queueId}`,
+      idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
   }
 
@@ -18745,6 +18763,13 @@ export function heartbeatService(
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
       ));
       if (!latest || latest.runtimeMode !== "legacy" || !isHeartbeatRunTerminalStatus(latest.status)) continue;
+      const cancelledAdmission = latest.status === "cancelled" && !latest.startedAt &&
+        latest.errorCode === "execution_reconciliation_required";
+      if ((latest.status !== "cancelled" || cancelledAdmission) && await getExecutionBlocker(db, wake.companyId, String(wake.payload?.issueId))) {
+        await resumeSavedLegacyComments(wake.companyId, wake.id).catch(err => {
+          logger.warn({ err, queueId: wake.id }, "failed to deliver saved legacy comment after recovery stopped");
+        });
+      }
       await releaseIssueExecutionAndPromote(latest, { suppressImmediateRecovery: true }).catch(err => {
         logger.warn({ err, queueId: wake.id }, "failed to promote stranded legacy comments");
       });
@@ -25779,12 +25804,13 @@ export function heartbeatService(
               eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
               eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
               // A user message can join a queue originally created by a
-              // system wake. The recorded board click supplies fresh authority.
-              opts.queuedCommentInterruptId === executionWaitRequestId
+              // system wake. Admission validates the saved user comment or board click.
+              (opts.queuedCommentInterruptId ?? opts.queuedCommentRequestId) === executionWaitRequestId
                 ? undefined : eq(agentWakeupRequests.requestedByActorType, "user"),
               opts.queuedCommentInterruptId === executionWaitRequestId
                 ? sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt'->>'actorId' = ${opts.requestedByActorId ?? ""}`
-                : eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId ?? ""),
+                : opts.queuedCommentRequestId === executionWaitRequestId ? undefined
+                  : eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId ?? ""),
               sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
             ));
             // The issue lock serializes cleanup callbacks and periodic workers.
@@ -25792,7 +25818,7 @@ export function heartbeatService(
             if (!pending || !wakeCommentId || !queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) {
               return { kind: "deferred" as const };
             }
-            if (opts.queuedCommentInterruptId) {
+            if (opts.queuedCommentInterruptId || opts.queuedCommentRequestId) {
               // Edits/discards between the click and dispatch remain authoritative.
               Object.assign(enrichedContextSnapshot, withQueuedCommentIdsInRunContext(
                 enrichedContextSnapshot, queuedCommentIdsFromWakePayload(pending.payload),
@@ -26176,6 +26202,7 @@ export function heartbeatService(
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
+            queuedCommentRequestId: opts.queuedCommentRequestId,
             dryRun: true,
             onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
@@ -26939,6 +26966,7 @@ export function heartbeatService(
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
+            queuedCommentRequestId: opts.queuedCommentRequestId,
           });
           if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
           if (explicitContinuation) {
@@ -26982,7 +27010,7 @@ export function heartbeatService(
                   .orderBy(asc(agentWakeupRequests.requestedAt))
               : [];
           const adoptedComments = pendingComments.filter((wake) => {
-            if (wake.id === opts.queuedCommentInterruptId) return true;
+            if (wake.id === opts.queuedCommentInterruptId || wake.id === opts.queuedCommentRequestId) return true;
             const deferredPayload = parseObject(wake.payload);
             const deferredContext = parseObject(
               deferredPayload[DEFERRED_WAKE_CONTEXT_KEY],

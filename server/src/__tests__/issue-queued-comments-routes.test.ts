@@ -293,6 +293,47 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
   });
 
+  it.each(["user", "system", "rejected_admission"])("delivers saved user messages on a %s queue after automatic recovery stopped, without another click", async (actorType) => {
+    const seeded = await seedQueue();
+    await db.update(agentWakeupRequests).set({ requestedByActorType: actorType === "rejected_admission" ? "system" : actorType })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "failed",
+      processPid: process.pid, errorCode: "process_lost", finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.insert(issueRecoveryActions).values({ companyId: seeded.companyId, sourceIssueId: seeded.issueId,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: seeded.runId,
+      status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+      evidence: { runId: seeded.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    });
+    // Leave the agent's only slot occupied on another task so dispatch stays queued.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    await heartbeatService(db).resumeQueuedRuns();
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+    await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, seeded.runId));
+    if (actorType === "rejected_admission") {
+      await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+        status: "cancelled", runtimeMode: "legacy", errorCode: "execution_reconciliation_required",
+        contextSnapshot: { issueId: seeded.issueId }, finishedAt: new Date(),
+      });
+    }
+    await Promise.all([heartbeatService(db).resumeQueuedRuns(), heartbeatService(db).resumeQueuedRuns()]);
+    const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(delivered.status).toBe("coalesced");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
+    expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: seeded.commentIds,
+      previousRunId: seeded.runId, forceFreshSession: true });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(actorType === "rejected_admission" ? 4 : 3);
+    const [recovery] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
+    expect(recovery.evidence.automaticRecovery).toMatchObject({ actionOutcome: "unknown" });
+  });
+
   it("recovers a message deferred after legacy finalization released the task lock", async () => {
     const seeded = await seedQueue();
     await db.update(agents).set({ adapterType: "claude_local",

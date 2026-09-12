@@ -72,6 +72,34 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, queueId));
     expect(await attempt()).toBeNull();
   });
+  it.each(["valid", "wrong_actor", "consumed", "discarded", "operator_stop", "already_delivered", "foreign_queue"])("validates automatic saved-message delivery: %s", async kind => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null,
+      status: kind === "operator_stop" ? "cancelled" : "failed",
+      contextSnapshot: { issueId: f.issueId, ...(kind === "already_delivered" ? { wakeCommentIds: [f.commentId] } : {}) },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(issueComments).set({ createdAt: new Date("2026-09-11T09:00:00Z"),
+      ...(kind === "discarded" ? { deletedAt: new Date() } : {}),
+    }).where(eq(issueComments.id, f.commentId));
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_commented", status: kind === "consumed" ? "coalesced" : "deferred_issue_execution",
+      requestedByActorType: "system", payload: { issueId: kind === "foreign_queue" ? randomUUID() : f.issueId,
+        _paperclipWakeContext: { wakeCommentIds: [f.commentId] } },
+    });
+    const result = await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, actorId: kind === "wrong_actor" ? "someone-else" : f.actorId,
+        db: tx as unknown as typeof db, queuedCommentRequestId: queueId, dryRun: true });
+    });
+    if (kind === "valid") expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    else expect(result).toBeNull();
+  });
+
   const admit = (f: Fixture, dryRun = false) => db.transaction(async tx => {
     await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
     const result = await admitExplicitNativeContinuation({ ...f, dryRun, db: tx as unknown as typeof db });

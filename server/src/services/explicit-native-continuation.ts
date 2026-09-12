@@ -36,6 +36,8 @@ export async function admitExplicitNativeContinuation(input: {
   failedRunId?: string | null;
   /** Server-recorded board intent to send an existing legacy message queue. */
   queuedCommentInterruptId?: string;
+  /** Internal delivery of an unconsumed, user-authored legacy queue entry. */
+  queuedCommentRequestId?: string;
   dryRun?: boolean;
   onBlocked?: (reason: string, message: string) => void;
 }): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string } | null> {
@@ -60,6 +62,16 @@ export async function admitExplicitNativeContinuation(input: {
   const queuedInterrupt = Boolean(interruptQueue && commentId &&
     queuedCommentIdsFromWakePayload(interruptQueue.payload).includes(commentId));
   if (input.queuedCommentInterruptId && !queuedInterrupt) return null;
+  const [savedQueue] = input.queuedCommentRequestId ? await db.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.id, input.queuedCommentRequestId),
+    eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId),
+    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+  )) : [];
+  const queuedRequest = Boolean(savedQueue && commentId &&
+    !savedQueue.idempotencyKey?.startsWith("chat-inbound:") &&
+    queuedCommentIdsFromWakePayload(savedQueue.payload).includes(commentId));
+  if (input.queuedCommentRequestId && !queuedRequest) return null;
   const [comment] = retry ? [] : await db.select().from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
     eq(issueComments.id, commentId!), eq(issueComments.authorType, "user"),
@@ -100,7 +112,7 @@ export async function admitExplicitNativeContinuation(input: {
     if (!run || run.agentId !== agentId || !terminal.includes(run.status) ||
         (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
         !run.finishedAt) return blocked("source_unavailable", "The previous execution has not finished or its owner changed. Your message is saved.");
-    if (!queuedInterrupt && authorizedAt <= run.finishedAt) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
+    if (!queuedInterrupt && !queuedRequest && authorizedAt <= run.finishedAt) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
     if (adapterExecutionControls.has(run.id)) return blocked("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
@@ -108,7 +120,12 @@ export async function admitExplicitNativeContinuation(input: {
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       isConversationAdapter(agent.adapterType);
-    if (queuedInterrupt && !legacyUserTurn) return null;
+    if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission) return null;
+    // Saved input is a request for a new turn, never permission to undo an
+    // operator Stop or redeliver a message already consumed by this run.
+    if (queuedRequest && !queuedInterrupt && ((run.status === "cancelled" && !unusedAdmission) ||
+        run.contextSnapshot?.wakeCommentId === commentId ||
+        (Array.isArray(run.contextSnapshot?.wakeCommentIds) && run.contextSnapshot.wakeCommentIds.includes(commentId)))) return null;
     if (legacyUserTurn) {
       const historicalAdapter = await historicalAdapterType(db, run);
       // A settings change never converts a known process/webhook execution into
@@ -177,7 +194,8 @@ export async function admitExplicitNativeContinuation(input: {
     summary: null, exposeLowTrustRaw: false });
   if (input.dryRun) return { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}) };
   const authorization = { actorId, commentId, ...(retry ? { failedRunId: input.failedRunId } : {}),
-    ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}), runId: input.successorRunId,
+    ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}),
+    ...(queuedRequest ? { queuedCommentRequestId: input.queuedCommentRequestId } : {}), runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };
   for (const runId of cancelledStartupIds) {
     await db.update(nativeRunFinalizations).set({
