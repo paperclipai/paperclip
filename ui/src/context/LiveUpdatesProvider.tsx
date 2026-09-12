@@ -1072,6 +1072,9 @@ function buildRunStatusToast(
 
   const error = readString(payload.error);
   const errorCode = readString(payload.errorCode);
+  // Interrupt is an intentional conversation control. Its caller gives
+  // feedback; the terminal event must not announce a cancelled/failed run.
+  if (errorCode === "operator_interrupted") return null;
   const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? "Agent";
