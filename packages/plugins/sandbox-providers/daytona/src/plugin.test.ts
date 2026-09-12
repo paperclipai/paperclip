@@ -2662,7 +2662,11 @@ describe("Daytona sandbox provider plugin", () => {
       mockGet.mockResolvedValue(sandbox);
 
       const executePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Poll for the actual executeCommand call instead of guessing a tick
+      // count, so resolveExecute is guaranteed to be assigned before it's used.
+      await vi.waitFor(() => {
+        expect(sandbox.process.executeCommand).toHaveBeenCalled();
+      });
 
       const releasePromise = plugin.definition.onEnvironmentReleaseLease?.({
         driverKey: "daytona",
@@ -2801,7 +2805,11 @@ describe("Daytona sandbox provider plugin", () => {
       mockGet.mockResolvedValue(sandbox);
 
       const executePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Poll for the actual executeCommand call instead of guessing a tick
+      // count, so resolveExecute is guaranteed to be assigned before it's used.
+      await vi.waitFor(() => {
+        expect(sandbox.process.executeCommand).toHaveBeenCalled();
+      });
 
       const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
         driverKey: "daytona",
@@ -2901,7 +2909,11 @@ describe("Daytona sandbox provider plugin", () => {
       mockGet.mockResolvedValue(sandbox);
 
       const firstExecutePromise = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Poll for the actual executeCommand call instead of guessing a tick
+      // count, so resolveFirstExecute is guaranteed to be assigned before it's used.
+      await vi.waitFor(() => {
+        expect(sandbox.process.executeCommand).toHaveBeenCalled();
+      });
 
       const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
         driverKey: "daytona",
@@ -2954,7 +2966,11 @@ describe("Daytona sandbox provider plugin", () => {
         config: { timeoutMs: 300000, reuseLease: false },
         templateLabel: "snapshot-check",
       });
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Poll for the actual snapshot call instead of guessing a tick count, so
+      // resolveSnapshot is guaranteed to be assigned before it's used.
+      await vi.waitFor(() => {
+        expect(sandbox._experimental_createSnapshot).toHaveBeenCalled();
+      });
 
       const destroyPromise = plugin.definition.onEnvironmentDestroyLease?.({
         driverKey: "daytona",
@@ -4872,15 +4888,31 @@ describe("daytona native file-sync hooks", () => {
 
     const sandbox = createMockSandbox({ id: "sandbox-123" });
     // Hold the inbound upload and the outbound download open at the same time, so
-    // the shared lease has two active sync calls when teardown starts.
+    // the shared lease has two active sync calls when teardown starts. Each mock
+    // resolves a deferred as its first statement, so the test can wait for both
+    // transfers to actually be parked instead of guessing a tick count — the
+    // outbound path takes materially longer to reach its mock (a sandbox round
+    // trip plus a per-target mkdir before the download call ever fires), so a
+    // fixed setTimeout(0) barrier can assert before the outbound transfer parks
+    // and leave releaseDownload unassigned.
     let releaseUpload!: () => void;
+    let uploadEnteredResolve!: () => void;
+    const uploadEntered = new Promise<void>((resolve) => {
+      uploadEnteredResolve = resolve;
+    });
     sandbox.fs.uploadFiles.mockImplementation(async () => {
+      uploadEnteredResolve();
       await new Promise<void>((resolve) => {
         releaseUpload = resolve;
       });
     });
     let releaseDownload!: () => void;
+    let downloadEnteredResolve!: () => void;
+    const downloadEntered = new Promise<void>((resolve) => {
+      downloadEnteredResolve = resolve;
+    });
     sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination: string }>) => {
+      downloadEnteredResolve();
       await new Promise<void>((resolve) => {
         releaseDownload = resolve;
       });
@@ -4899,9 +4931,9 @@ describe("daytona native file-sync hooks", () => {
     const outboundCall = plugin.definition.onEnvironmentSyncOut?.(
       syncOutParams({ operationId: "out-active", sourcePath: `${REMOTE_DIR}/out.txt`, targetPath: outboundTarget }),
     );
-    // Let both sync calls register on the activity gate and reach their hung
-    // transfer, so teardown sees a refCount of two.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Wait for both transfers to actually reach their hung mock before relying
+    // on refCount being two, instead of guessing a tick count.
+    await Promise.all([uploadEntered, downloadEntered]);
 
     const destroyCall = plugin.definition.onEnvironmentDestroyLease?.({
       driverKey: "daytona",
