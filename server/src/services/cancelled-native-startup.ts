@@ -38,7 +38,9 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     or(isNotNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED])),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
+        "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
+        "provider.event", "provider.rpc_result", "tool.execution.started"])),
   )).limit(1);
   return !execution;
 }

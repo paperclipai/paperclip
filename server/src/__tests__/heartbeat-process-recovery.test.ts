@@ -2568,6 +2568,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("does not dispatch when cancellation wins after native selection", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(agents).set({ adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
+      }).where(eq(agents.id, agentId));
+      await db.update(heartbeatRuns).set({ invocationSource: "automation" }).where(eq(heartbeatRuns.id, runId));
+      const factory = vi.fn(() => { throw new Error("provider must not start"); });
+      let reachedDispatch = false;
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: factory,
+        beforeChatControlRecoveryCheck: async ({ stage, runId: id }) => {
+          if (stage !== "dispatch") return;
+          reachedDispatch = true;
+          expect((await heartbeat.getRun(id))?.runtimeMode).toBe("native");
+          await heartbeat.cancelRun(id);
+        },
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(reachedDispatch).toBe(true);
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "native",
+        resultJson: { startupPreparationSettledAt: expect.any(String) },
+      });
+      expect(factory).not.toHaveBeenCalled();
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(coordinator).toMatchObject({ attempt: 0, leaseOwner: null });
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(task.executionRunId).toBeNull();
+    });
+  });
+
   it("dispatches local native external chat inside the server-selected task root", async () => {
     await withTempPaperclipHome(async () => {
       const { companyId, agentId, issueId, runId } =
