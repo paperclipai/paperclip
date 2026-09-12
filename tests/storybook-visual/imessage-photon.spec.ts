@@ -3,7 +3,16 @@ import { resolve } from "node:path";
 import { test, expect } from "@playwright/test";
 
 const index = JSON.parse(readFileSync(resolve(import.meta.dirname, "../../ui/storybook-static/index.json"), "utf8"));
-const stories = Object.values(index.entries).filter((entry: any) => entry.id.startsWith("connections-imessage-photon--")) as { id: string; name: string }[];
+type StoryEntry = { id: string; name: string; type: string };
+const stories = (Object.values(index.entries) as StoryEntry[]).filter((entry) => entry.type === "story" && entry.id.startsWith("connections-imessage-photon--"));
+const requiredStories = [
+  "catalog", "choose-agent", "credentials", "inspecting", "connecting",
+  "multiple-dedicated-numbers", "no-eligible-line", "provider-outage-recovery",
+  "reconnect", "access", "incoming-follow-ups", "shared-dm-walkthrough", "narrow-mobile",
+];
+const discovered = new Set(stories.map((story) => story.id));
+const missing = requiredStories.filter((name) => !discovered.has(`connections-imessage-photon--${name}`));
+if (missing.length) throw new Error(`Missing required iMessage Photon stories: ${missing.join(", ")}. Rebuild Storybook and check story discovery.`);
 for (const story of stories) for (const theme of ["light", "dark"]) {
   test(`${story.name} / ${theme}`, async ({ page }, info) => {
     const errors: string[] = [];
