@@ -5161,7 +5161,10 @@ describe("native warm session supervision", () => {
     } as NativeExecutionInputV1;
     state.execute.mockReset().mockImplementationOnce(async (options) => {
       await options.onSession?.({ close });
-      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toMatchObject({ busy: 1 });
+      await expect(closeWarmNativeSessionsForEnvironment({
+        environmentId: "environment-warm-delete",
+        reason: "environment deleted",
+      })).resolves.toMatchObject({ busy: 1 });
       expect(close).not.toHaveBeenCalled();
       return {
         result: { summary: "completed" },
@@ -5205,6 +5208,57 @@ describe("native warm session supervision", () => {
     expect(close).toHaveBeenCalledExactlyOnceWith({
       reason: shutdownKind === "controller restart" ? "controller restart" : "environment deleted",
     });
+  });
+
+  it("checkpoints a busy warm session on release after the restart sweep", async () => {
+    let finishCheckpoint!: () => void;
+    const checkpoint = new Promise<void>((resolve) => { finishCheckpoint = resolve; });
+    const close = vi.fn(async () => checkpoint);
+    const warmExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-warm-restart-release",
+        executionWorkspaceId: "workspace-warm-restart-release",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-warm-restart-release",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
+      },
+    } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession?.({ close });
+      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toMatchObject({ busy: 1 });
+      expect(close).not.toHaveBeenCalled();
+      // The active turn can finish after the shutdown sweep has passed it.
+      return {
+        result: { summary: "completed during shutdown" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn-warm-restart-release",
+        normalizedSessionId: warmExecution.session.normalizedSessionId,
+        providerSessionId: "provider-warm-restart-release",
+        driverKind: "test",
+        driverVersion: "1",
+        nativeEventCount: 1,
+        highestContiguousSourceSeq: 1,
+        usage: null,
+      };
+    });
+    let settled = false;
+    const running = executePaperclipNativeSession({
+      db: leaseDb(warmExecution),
+      execution: warmExecution,
+      runnerInstanceId: "runner-warm-restart-release",
+    }).then((result) => { settled = true; return result; });
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "controller restart" }));
+      expect(settled).toBe(false);
+    } finally {
+      finishCheckpoint();
+      await running;
+    }
+    await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
   });
 
   it("preserves the active turn when a warm checkpoint resumes the same run", async () => {

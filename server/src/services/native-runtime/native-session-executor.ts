@@ -342,6 +342,7 @@ type WarmNativeSession = {
   companyId: string;
   environmentId: string | null;
   busy: boolean;
+  closeOnReleaseReason?: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastActivityAt: string;
 };
@@ -367,12 +368,16 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
 export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   closed: number; busy: number; failed: number;
 }> {
-  return closeIdleWarmNativeSessions({ reason: "controller restart" });
+  return closeIdleWarmNativeSessions({
+    reason: "controller restart",
+    closeBusyOnRelease: true,
+  });
 }
 
 async function closeIdleWarmNativeSessions(input: {
   environmentId?: string;
   reason: string;
+  closeBusyOnRelease?: boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
   let closed = 0;
   let busy = 0;
@@ -382,6 +387,10 @@ async function closeIdleWarmNativeSessions(input: {
       continue;
     }
     if (entry.busy) {
+      // A busy turn can complete while another idle session is checkpointing.
+      // Fence that entry now so its eventual release cannot leave a new idle
+      // owner behind after the shutdown sweep has already passed it.
+      if (input.closeBusyOnRelease) entry.closeOnReleaseReason = input.reason;
       busy += 1;
       continue;
     }
@@ -5620,10 +5629,10 @@ async function releaseWarmNativeSession(
   entry.busy = false;
   entry.lastActivityAt = new Date().toISOString();
   if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
-  if (failed) {
+  if (failed || entry.closeOnReleaseReason !== undefined) {
     warmNativeSessions.delete(sessionId);
     await entry.session
-      .close({ reason: "warm native session failed" })
+      .close({ reason: entry.closeOnReleaseReason ?? "warm native session failed" })
       .catch(() => undefined);
     return;
   }

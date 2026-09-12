@@ -1128,7 +1128,9 @@ user cancellation.
 Before either shutdown path exits, idle warm sessions close through their
 normal suspend-and-checkpoint path. Remote sessions therefore leave verified
 backup authority for the next controller even though their last run is already
-complete. Busy sessions use active-run adoption instead. If checkpointing fails,
+complete. Busy sessions use active-run adoption while they remain active; if a
+turn finishes during shutdown, its release checkpoints the session before
+returning instead of leaving a new idle owner behind. If checkpointing fails,
 the retained state continues to block unverified reuse.
 
 ### Warm sandbox continuity
