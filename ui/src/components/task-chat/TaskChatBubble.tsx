@@ -1,4 +1,5 @@
 import { useCallback, useContext, useState, type ReactNode } from "react";
+import { useEmailComment } from "@/components/EmailMessageCard";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
@@ -140,7 +141,11 @@ function uniqueAttachmentRefs(refs: AttachmentRef[]): AttachmentRef[] {
   );
 }
 
-export function TaskChatBubble({
+export function TaskChatBubble(props: TaskChatBubbleProps) {
+  const email = useEmailComment(props.item.id);
+  return email ?? <TaskChatBubbleContent {...props} />;
+}
+function TaskChatBubbleContent({
   item,
   animateEntry = true,
   queuedAction,

@@ -15,6 +15,7 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
 import { TaskMessageScroller } from "./TaskMessageScroller";
@@ -192,6 +193,7 @@ function renderItem(
     case "usage":
       return <TaskChatUsageReadout item={item} />;
     case "activity_phase":
+      if (activityAppearance === "runner") return <TaskChatRunnerActivityGroup item={item} />;
       return (
         <TaskChatActivityPhase
           item={item}

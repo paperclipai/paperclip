@@ -41,7 +41,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
-| Recovery | Liveness/watchdog recovery preserves explicit ownership: continue interrupted local conversations with bounded fresh turns and preserved history, never replay tool calls automatically; retain native ownership and real execution gates; otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
+| Recovery | Liveness/watchdog recovery preserves explicit ownership: continue interrupted local conversations with bounded fresh turns and preserved history, never replay tool calls automatically; retain native ownership and real execution gates; preserve verified stop evidence and reconsider saved post-stop user messages after cleanup; otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
@@ -1261,6 +1261,11 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
+Legacy execution records a renewable controller lease when claiming a queued run,
+before provisioning. A live lease protects the run during overlapping service
+deployments. An expired controller loses dispatch authority; a recovery worker
+must establish that the previous execution stopped before starting a successor.
+
 ## 11.7 Durable agent session goals
 
 Runner Protocol v2 negotiates a required `sessionGoals` capability and typed
@@ -1568,11 +1573,24 @@ Export/import behavior in V1:
 - import preview reports skill-policy and legacy-grant mappings before apply and rejects unknown policy schema versions
 - GitHub imports warn on unpinned refs instead of blocking
 
-### User messages after native execution recovery stops
+### User continuation after execution recovery stops
 
-An authenticated user message can start a fresh native conversation turn once
-the prior execution is confirmed stopped. Retain the source history and uncertain
+An authenticated user message or an exact failed-run Retry can start a fresh
+native or legacy conversation turn once the prior execution is confirmed stopped. Retain the source history and uncertain
 action outcomes; do not replay tool calls or reset the failed incident's automatic
 retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
 requirements.
+
+### Experimental task-bound email
+
+AgentMail channel connections extend the experimental conversation/task pipeline
+with explicit email publication. Each owned inbox/provider thread binds one task;
+external email senders do not gain board authority. Incoming correspondence uses
+the assigned agent's normal execution controls. Internal task activity never
+implicitly sends email. New outgoing conversations create child tasks and durable
+send intents before provider contact. The board directs email work through the
+normal task conversation; rich email cards show the correspondence and delivery
+outcomes without a separate email composer. See
+[AgentMail connections](connections/AGENTMAIL.md) for setup, transports, recovery,
+authorization, and the API/CLI contract.

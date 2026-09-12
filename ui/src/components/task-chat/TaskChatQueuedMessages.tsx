@@ -147,7 +147,7 @@ function SortableQueuedMessage({
           type="button"
           onClick={onInterrupt}
           disabled={busy || !queue.targetRunId || !onInterrupt}
-          title="Interrupt the active turn; this message stays queued"
+          title="Interrupt the active turn and send queued messages"
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
         >
@@ -334,7 +334,7 @@ export function TaskChatQueuedMessages({
         action === "steer"
           ? "Message steered into the active turn."
           : action === "interrupt"
-            ? "Active turn interrupted. Message remains queued."
+            ? "Interruption requested. Queued messages will continue after the active turn stops."
             : "Queued message discarded.",
       );
     } catch (error) {
@@ -365,6 +365,11 @@ export function TaskChatQueuedMessages({
       data-testid="task-chat-queued-messages"
       aria-label="Queued messages"
     >
+      {queue.executionWait && (
+        <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
+          {queue.executionWait.message}
+        </div>
+      )}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}

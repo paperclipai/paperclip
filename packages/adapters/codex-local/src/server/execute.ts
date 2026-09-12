@@ -631,10 +631,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
-  const configuredCodexHome =
+  let configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
+  const connectorSourceHome = configuredCodexHome;
+  const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
+    && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
+  if (connectorSkillDigest) {
+    // Never mount assignment-specific skills into the shared company/user home.
+    // A different skill revision gets a new home, so revoked/changed resources
+    // cannot survive as stale symlinks or bleed into another agent's session.
+    configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
+      "connector-runtimes", agent.id, connectorSkillDigest);
+  }
   const codexSkillEntries = (await readPaperclipRuntimeSkillEntries(config, __moduleDir))
     // A missing-source entry would become a dangling skill symlink; skip it.
     .filter((entry) => !isPaperclipSkillSourceMissing(entry));
@@ -680,12 +690,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       void error;
     });
   }
-  if (configuredCodexHome == null) {
+  if (configuredCodexHome == null || (connectorSkillDigest && connectorSourceHome == null)) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
     });
-  } else if (configuredHomeIsManaged) {
-    await seedManagedCodexHome(configuredCodexHome, process.env, onLog, {
+  }
+  if (configuredHomeIsManaged && configuredCodexHome) {
+    const seedEnv = connectorSkillDigest ? {
+      ...process.env, CODEX_HOME: connectorSourceHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
+    } : process.env;
+    await seedManagedCodexHome(configuredCodexHome, seedEnv, onLog, {
       apiKey: configuredOpenAiApiKey,
     });
   }
@@ -1532,6 +1546,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (
         sessionId &&
         !initial.proc.timedOut &&
+        !initial.proc.signal &&
+        // A started session can emit stale-rollout warnings for other threads.
+        // After Ctrl-C those warnings must not restart the cancelled turn.
+        !initial.parsed.sessionId &&
         (initial.proc.exitCode ?? 0) !== 0 &&
         isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {

@@ -1,3 +1,4 @@
+import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -907,6 +908,10 @@ export async function claimNativeRestartRecoveries(input: {
           runId: row.run.id,
           reason: "concurrent_recovery_claim",
         } as const;
+      }
+
+      if (claimKind !== "reattach_existing_runner") {
+        await recordNativeLocalProcessStop(tx as unknown as Db, row.run);
       }
 
       await tx

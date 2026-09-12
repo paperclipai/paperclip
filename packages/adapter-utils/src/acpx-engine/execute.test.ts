@@ -1548,6 +1548,30 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
   });
 
+  it.each(["OPENAI_API_KEY", "CODEX_API_KEY"] as const)(
+    "selects Codex ACP API-key authentication when %s is configured",
+    async (apiKeyName) => {
+      const root = await makeTempRoot();
+      const codexHome = path.join(root, "codex-home");
+      await fs.mkdir(codexHome, { recursive: true });
+
+      const { sessionInputs } = await runExecutor({
+        agent: "codex",
+        stateDir: path.join(root, "state"),
+        env: {
+          CODEX_HOME: codexHome,
+          [apiKeyName]: "sk-acp-test-key",
+        },
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      });
+
+      const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+      expect(env[apiKeyName]).toBe("sk-acp-test-key");
+      expect(env.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: "api-key" }));
+    },
+  );
+
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -2068,6 +2092,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(runtimeOptions[0]!.cwd).toBe(remoteCwd);
     expect(sessionInputs[0]!.cwd).toBe(remoteCwd);
     expect(runtimeOptions[0]!.spawnCwd).toBe(localCwd);
+    const proxyCommand = (runtimeOptions[0]!.agentRegistry as { resolve(name: string): string }).resolve("custom");
+    expect(proxyCommand.startsWith(`${JSON.stringify(process.execPath.replaceAll("\\", "/"))} `)).toBe(true);
+    expect(proxyCommand).toContain("paperclip-process-session-proxy.mjs");
     expect(runtimeOptions[0]!.spawnCwd).not.toBe(sessionInputs[0]!.cwd);
     const payloadEnv = ((sessionPayload as Record<string, unknown> | null)?.env ?? {}) as Record<string, unknown>;
     expect(payloadEnv).toMatchObject({
@@ -4854,13 +4881,13 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     const { traceContext, spans } = createRecordingStartupTrace();
 
     // A codex bring-up runs the codex-home.seed step, which nests skills.reconcile.
-    const { events } = await runExecutor(
+    const { events, sessionInputs } = await runExecutor(
       {
         agent: "codex",
         agentCommand: "node ./fake-acp.js",
         stateDir,
         cwd: localCwd,
-        env: { CODEX_HOME: codexHome },
+        env: { CODEX_HOME: codexHome, OPENAI_API_KEY: "sk-acp-test-key" },
       },
       { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
     );
@@ -5426,13 +5453,13 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       runner: createLocalSandboxRunner(),
     };
 
-    const { events } = await runExecutor(
+    const { events, sessionInputs } = await runExecutor(
       {
         agent: "codex",
         agentCommand: "node ./fake-acp.js",
         stateDir,
         cwd: localCwd,
-        env: { CODEX_HOME: codexHome },
+        env: { CODEX_HOME: codexHome, OPENAI_API_KEY: "sk-acp-test-key" },
       },
       { authToken: "real-run-jwt", executionTarget },
     );
@@ -5454,6 +5481,9 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       expect(typeof event!.payload?.durationMs).toBe("number");
       expect(event!.payload?.durationMs as number).toBeGreaterThanOrEqual(0);
     }
+    const sessionEnv = (sessionInputs[0]?.sessionOptions as { env: Record<string, string> }).env;
+    expect(sessionEnv.OPENAI_API_KEY).toBe("sk-acp-test-key");
+    expect(sessionEnv.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: "api-key" }));
   });
 
   it("emits the 5 non-codex boundaries for a custom-agent sandbox bring-up (no codex steps)", async () => {

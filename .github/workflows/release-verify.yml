@@ -8,6 +8,9 @@ on:
         required: true
         type: string
 
+# Caller-provided refs may name unmerged PR code. AWS is eligible only when
+# the caller runs on canonical master and verifies that event's exact SHA.
+# The organization group also restricts these workflow files to master.
 jobs:
   runner_chaos_evals:
     name: Pre-release Runner chaos evals
@@ -17,7 +20,7 @@ jobs:
 
   typecheck:
     name: Typecheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -39,6 +42,30 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -euo pipefail
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      - name: Cache typecheck Rust dependencies
+        # Restore and save only within trusted master-push verification. GitHub
+        # isolates branch/PR caches from master; other callers compile afresh.
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: release-typecheck-v1
+          # Rebuild workspace code and rerun every check. Cache only compiled
+          # dependencies; never restore installed executables from cargo/bin.
+          cache-workspace-crates: false
+          cache-bin: false
+          # The step guard also restricts restores. Save only after a successful
+          # master-push verification of that push's exact commit.
+          save-if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
@@ -50,7 +77,7 @@ jobs:
 
   general_tests:
     name: General tests (${{ matrix.group_label }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -157,7 +184,7 @@ jobs:
 
   serialized_tests:
     name: Serialized tests (${{ matrix.shard_label }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -206,7 +233,7 @@ jobs:
 
   runner_workflow_evals:
     name: Runner workflow eval scorer contract
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -229,14 +256,14 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Run deterministic Runner workflow scorer tests
         run: pnpm test:runner-workflow-evals
 
   verify_paperclip_runner:
     name: Verify Paperclip Runner
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -290,7 +317,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read

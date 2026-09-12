@@ -1967,6 +1967,17 @@ async function buildRuntime(input: {
     // are absent from tempKeysApplied and keep their compatibility protection.
     if (!scratchKeys.has(key) || value !== scratch.dir) resolvedAdapterEnv[key] = value;
   }
+  // codex-acp supports both key names, but ACP clients must select its
+  // api-key authentication method during session creation. Without this
+  // request, the server advertises authentication and rejects session/new even
+  // though the credential is present in the launched process environment.
+  if (
+    acpxAgent === "codex" &&
+    (env.OPENAI_API_KEY || env.CODEX_API_KEY) &&
+    !env.DEFAULT_AUTH_REQUEST
+  ) {
+    env.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: "api-key" });
+  }
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
@@ -2473,7 +2484,12 @@ async function buildRuntime(input: {
     await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "failed");
     throw err;
   }
-  const overrideCommand = processSessionBridge?.agentCommand ?? agentCommand;
+  // The relay runs on the host with the sanitized remote launch environment.
+  // Its /usr/bin/env node shebang cannot rely on that environment's PATH.
+  const overrideCommand = processSessionBridge?.agentCommand
+    ? [process.execPath, processSessionBridge.agentCommand]
+      .map((part) => JSON.stringify(part.replaceAll("\\", "/"))).join(" ")
+    : agentCommand;
   const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const loggedEnv = buildInvocationEnvForLogs(env, {

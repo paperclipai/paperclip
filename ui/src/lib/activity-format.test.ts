@@ -8,6 +8,11 @@ describe("activity formatting", () => {
     ["agent-approver", { id: "agent-approver", name: "Approver Bot" } as Agent],
   ]);
 
+  it("uses readable verbs for task read-state changes", () => {
+    expect(formatActivityVerb("issue.read_marked")).toBe("read");
+    expect(formatActivityVerb("issue.read_unmarked")).toBe("marked unread");
+  });
+
   it("formats blocker activity using linked issue identifiers", () => {
     const details = {
       addedBlockedByIssues: [

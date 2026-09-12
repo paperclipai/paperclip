@@ -988,7 +988,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       );
     const revealUsage = () => {
       const summary = container.querySelector<HTMLButtonElement>(
-        '[data-testid="task-chat-phase-summary"]',
+        '[data-testid="task-chat-activity-phase-toggle"]',
       );
       expect(summary).not.toBeNull();
       if (summary?.getAttribute("aria-expanded") !== "true") {

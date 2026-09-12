@@ -10,7 +10,7 @@ async function json(response: APIResponse) {
 }
 
 for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false }, { unfinishedWrite: true, pause: false }, { unfinishedWrite: false, pause: true }]) {
-  test(`embedded ACP Stop: ${unfinishedWrite ? "unknown action continues without replaying the write" : pause ? "composer pause requires Resume before continuation" : "go continues the same session with queued input"}`, async ({ page, request }) => {
+  test(`embedded ACP Stop: ${unfinishedWrite ? "Interrupt continues without replaying the write" : pause ? "composer pause requires Resume before continuation" : "Interrupt delivers queued input in the same session"}`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stop-browser-"));
     const company = await json(await request.post("/api/companies", { data: { name: `ACP Stop ${Date.now()}` } }));
@@ -38,7 +38,7 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
       await expect.poll(async () => JSON.stringify(await json(await request.get(`/api/issues/${issue.id}/queued-comments`))))
         .toContain("List my recent Drive files.");
 
-      // Run-level Stop leaves the task unpaused; composer Stop additionally pauses the task.
+      // Interrupt sends the queue immediately; composer Stop pauses the task.
       let stopped;
       if (pause) {
         await page.getByRole("button", { name: "Stop", exact: true }).click();
@@ -65,19 +65,15 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
         const dialog = page.getByRole("dialog");
         await dialog.getByRole("checkbox").check();
         await dialog.getByRole("button", { name: "Resume work", exact: true }).click();
-      } else {
-        await editor.fill("go");
-        await page.getByRole("button", { name: "Send", exact: true }).click();
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 30_000 });
       await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}/live-runs`))).length).toBe(0);
       const prompts = (await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
       expect(prompts).toHaveLength(2);
       expect(new Set(prompts.map(prompt => prompt.sessionId)).size).toBe(1);
-      // Resume delivers the queued follow-up in the same provider session.
+      // Interrupt or Resume delivers the queued follow-up without another message.
       const continuationPrompts = pause ? prompts.slice(1) : [prompts.at(-1)];
       expect(JSON.stringify(continuationPrompts)).toContain("List my recent Drive files.");
-      if (!pause) expect(JSON.stringify(continuationPrompts)).toContain("go");
       expect(await readFile(path.join(root, "completed"), "utf8")).toBe("follow-up\n");
       const completedIssue = await json(await request.get(`/api/issues/${issue.id}`));
       expect(completedIssue.executionBlocker).toBeNull();

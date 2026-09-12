@@ -154,6 +154,11 @@ New comments received during an execution hold retain their individual deferred 
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
 
+The legacy remote ACP process-session relay runs on the control-plane host. Its
+launch command uses the host's absolute Node executable even when the adapter's
+launch environment is sanitized for a remote sandbox; the sandbox PATH remains
+owned by the sandbox image.
+
 ### Pre-dispatch configuration validation
 
 Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.
@@ -352,6 +357,8 @@ A board comment can be an interrupt, an ownership change, both, or neither. Pape
 
 An interrupt stops the current live execution path for the issue. It does not, by itself, select the next owner. If an active run is interrupted by the board, the run may still terminate with the underlying `cancelled` status, but the issue activity and wake context should make the operator intent visible as an interruption rather than an unexplained runtime failure.
 
+For legacy runners, **Interrupt** on a queued message stops the active run and explicitly continues the pending queue after execution cleanup. It validates the queue revision and target run, then dispatches the requested queue’s current message bodies in their saved order. Other actors’ queues cannot consume that interrupt. The persisted interrupt intent is retried by the scheduler after a promotion error or server restart until that queue is dispatched or discarded. Edits and discards remain authoritative until dispatch; deleting the final message must not create an empty continuation. Pending messages remain visible after a run stops. Cancelling only the run preserves the queue for a later explicit wake; pausing the task retains its separate queue-cancellation behavior. Native same-turn steering keeps its separate acknowledgement protocol. Legacy Codex uses Ctrl-C to stop its tool sessions and cannot retry a missing-session fallback after the provider has confirmed that the session started.
+
 An ownership change selects who owns the issue after the comment is committed:
 
 - setting `assigneeAgentId` makes the named agent the owner
@@ -499,6 +506,12 @@ Monitor policy lives under `executionPolicy.monitor` and includes:
 
 Monitors are not recurring intervals. When a monitor fires, Paperclip clears the scheduled monitor and queues an `issue_monitor_due` wake for the assignee. If the external service is still pending, the assignee must explicitly re-arm the monitor with a new `nextCheckAt`. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
 
+The task's waiting banner and composer countdown also display automatic retries
+while their run is `scheduled_retry`. Once a retry is `queued` or `running`, its
+retained `scheduledRetryAt` is historical and must not produce a waiting or overdue
+warning. A separately scheduled monitor remains visible. Completed and cancelled
+tasks hide both waiting surfaces even if a stale schedule remains in the response.
+
 Because `serviceName` and `notes` remain visible in issue activity and wake context, operators should keep them short and non-secret. Put enough context for the assignee to know what to inspect, but do not include signed URLs, bearer tokens, customer secrets, tenant-private identifiers, or provider links with embedded credentials.
 
 Monitor bounds are enforced. Paperclip rejects attempts to re-arm a monitor whose `timeoutAt` or `maxAttempts` is already exhausted. When a scheduled monitor reaches an exhausted bound at trigger time, Paperclip clears it and follows `recoveryPolicy`: `wake_owner` queues a bounded recovery wake for the assignee, `create_recovery_issue` opens visible issue-backed recovery work, and `escalate_to_board` records a board-visible escalation comment/activity.
@@ -595,15 +608,16 @@ Automatic retries that can continue source work use the agent's configured model
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
-On startup and on the periodic recovery loop, Paperclip now does five things in sequence:
+On startup and on the periodic recovery loop, Paperclip performs the following recovery passes:
 
 1. reap orphaned `running` runs
 2. resume persisted `queued` runs
 3. reconcile stranded assigned work
 4. scan silent active runs only for source-aware terminal folding and legacy cleanup; API reads classify ordinary output silence for the board UI
-5. reconcile productivity reviews
 
-The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
+The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
+
+Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 
 ### Issue-thread interaction resolution
 
@@ -777,7 +791,7 @@ Do not fold a run only because it is quiet. Keep the informational signal visibl
 
 In the normal non-terminal case, critical silence remains a UI signal and does not block the source issue. In the source-resolved case, a completed source issue does not acquire a new review or blocker merely because an old run handle stayed active. Only real unresolved work should block work.
 
-This is distinct from productivity review. Productivity review asks whether an assigned source issue has unusual progression patterns, such as no-comment terminal-run streaks, long active duration, or high churn. Source-resolved watchdog folding asks whether a stale active-run signal outlived a source issue that already reached a valid terminal disposition. One does not substitute for the other.
+Source-resolved watchdog folding concerns stale active-run bookkeeping after a valid terminal disposition. It does not infer productivity from run counts, comment frequency, or elapsed task time.
 
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
@@ -825,15 +839,29 @@ Every continuation carries the triggering request, ordered user direction, inter
 
 ### Interrupted conversation continuation
 
+Before provider dispatch, chat-control admission retries transient database lock
+contention with up to 50 waits of 100 ms. Each attempt starts a new transaction
+and rechecks the current run and committed conversation-close evidence. No lock
+is held between attempts, and no provider call is retried. Queue claims remain
+nonblocking. Persistent contention retains the bounded admission failure, with
+an explicit database-lock error; missing or invalid source evidence still stops
+the run without retrying the admission check.
+
 An interrupted conversation does not permanently block its task. For local conversational adapters, Paperclip starts a new bounded turn with the existing session when compatible, or the full task conversation when the session is unavailable. The prompt says: “Your previous run was interrupted. Continue from where you left off.” The agent decides what remains from the history and latest user request. Paperclip never automatically replays recorded tool calls. Unknown past action outcomes are not a task-wide execution gate, and no action-reconciliation questionnaire is required.
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
 Real gates still apply: company and task ownership, active provider ownership, budget limits, agent availability, dependencies, pending approval/review paths, and explicit pause holds. Native runner reattachment and finalization retain their existing ownership protocol. Process, HTTP, and gateway adapters retain their recovery rules because invoking those adapters can itself repeat an external action rather than start a conversation turn.
 
-An operator Stop still waits for local provider termination. Stop alone never promotes deferred comments or starts an automatic continuation. Once stopped, the next explicit wake adopts pending comment IDs in order through the existing queue. A compatible saved ACP session can resume, and an unavailable or incompatible session can start fresh with the full task context. Run credentials and scratch paths remain scoped to the new run. A subtree pause requires Resume; a message does not bypass it.
+An operator Stop waits for provider termination. Remote sandbox providers may return a stopped/deleted receipt after their control-plane operation completes. Paperclip binds that receipt to the company, run, and exact lease; successful file cleanup, a terminal run row, or an in-sandbox shutdown event is not sufficient. Legacy conversational runs receive their cancellation acknowledgement after all remote leases have confirmed termination. Stop alone never creates a continuation. A user message queued during remote cleanup is reconsidered when the provider confirms termination; it still passes normal admission and adopts pending comment IDs in order. Once stopped, the next explicit wake uses the same queue. A compatible saved ACP session can resume, and an unavailable or incompatible session can start fresh with the full task context. Run credentials and scratch paths remain scoped to the new run. A subtree pause requires Resume; a message does not bypass it.
 
-Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Classification uses the run’s saved adapter invocation or continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the hold. A terminal row with a live predecessor process or unreleased environment lease still blocks actual admission and Resume. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
+For native conversations, an authenticated user message sent after the previous run finishes can retire its execution recovery holds and start a fresh turn. Hold retirement and the new run are atomic. The previous transcript, tool outcomes, and recovery history remain intact. This starts a new conversation; it does not replay tool calls with unknown outcomes.
+
+Local recovery records a server-authored stop receipt before it clears a verified absent process identity. A new execution request invalidates that receipt before any process can spawn; recording a new process identity also invalidates it. Missing process IDs without a receipt still block admission. Remote execution continues to require termination receipts for every lease.
+
+If cleanup or another execution gate is still pending, the message stays in its existing queue receipt. Startup and periodic scheduling reconsider up to 50 due receipts per pass, at most once per 30 seconds per receipt, without calling a model or resetting recovery attempts. Cleanup callbacks use the same admission path. The issue lock prevents concurrent workers from delivering an adopted or discarded receipt again. The queued-message area shows the current wait reason. Pauses, approvals, budgets, ownership, and external chat authorization remain enforced. A message sent before the run finished does not grant new post-stop authority.
+
+Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Automatic classification uses the server-owned adapter identity saved atomically at run claim, the saved adapter invocation, or the continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the automatic hold; an explicit user continuation can retire it after proving the predecessor stopped. A terminal row with a live predecessor process, an unreleased environment lease, or failed/pending cleanup still blocks actual admission and Resume; a release timestamp alone does not prove cleanup succeeded. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
 
 The server projection remains available for diagnostics. Normal working, finishing, and interaction waits add no badges or cards to task lists or feeds. Active transcript headers keep saying Working during automatic retry and execution confirmation; attempts, causes, and recovery decisions belong in the run log. Recovery uses the existing transcript and run log rather than adding a reconciliation form. A cancelled run that never started says “Couldn't start” instead of implying that the agent answered.
 
@@ -857,16 +885,23 @@ new run. Preserve the baseline across recovery of the same run and start a new
 delta when attaching a new run. Other stale-event and authority checks remain.
 
 
-### Explicit user continuation after a native failure
+### Explicit user continuation after execution failure
 
 An execution recovery hold blocks automatic replay. A new authenticated user
-comment can authorize a fresh native conversation turn after the predecessor's
+comment or exact failed-run Retry can authorize a fresh native or legacy
+conversation turn after the predecessor's
 execution is confirmed stopped. This is a new request, not another automatic
 attempt in the failed incident. The old attempt count and unknown action outcomes
-remain unchanged.
+remain unchanged. Known non-conversation adapter evidence still requires its
+original reconciliation flow even if the agent's current settings change.
+Pre-upgrade runs with no adapter evidence may receive a new explicit user turn
+only after termination is proven; their old adapter and action outcomes remain
+unknown, and they do not gain automatic replay eligibility.
 
 Admission validates the persisted comment's author, task, and time against every
-held predecessor. An agent-authored comment, an old queued request, or a generic
+held predecessor. Retry validates the selected failed run's company, task, and
+agent and preserves that run's identity through admission and history loading.
+Duplicate Retry requests adopt the same successor. An agent-authored comment, an old queued request, or a generic
 system wake cannot release a hold. The source task keeps its assignee. Process
 ownership, active controllers, cleanup leases, pause, approval, budget, and normal
 execution gates still apply. Dependency-blocked interaction mode remains limited
@@ -878,10 +913,23 @@ request, task history, completed work, and the interruption notice. It receives
 no instruction to repeat old tool calls. Later messages cannot reset the old
 incident's retry budget or create another automatic replacement for it.
 
-The initial native admission path verifies local process identities. Missing
-process identity or remote ownership without a target-aware stop proof remains a
-hold; a terminal database status or a PID check on the wrong host is insufficient.
+Explicit continuation verifies local process identities for local runs. Remote runs
+instead require a provider termination receipt for every lease, with successful
+cleanup and no active ownership. This applies to both per-turn and warm native
+runners. A stop receipt retires only the settled cleanup owner for that exact company, run, provider, and sandbox resource, without changing its checkpoint or recorded action outcomes. Independent remote sandboxes have separate cleanup gates, including when one run owns multiple sandboxes. Successful pending-cleanup retries persist the same receipt and reconsider deferred user messages; a delivery failure never reverts successful provider cleanup. A failed checkpoint does not prevent destruction of a terminal run's isolated sandbox; busy ownership still prevents it.
+Missing receipts and failed cleanup retain the hold. Older providers that return
+no receipt remain supported but cannot authorize remote continuation. A terminal
+database status or a PID check on the wrong host is insufficient.
 No historical task is automatically awakened by this change.
+
+Startup waits for provider plugin initialization before remote recovery and
+lease cleanup. The task's blocked notice offers Retry, and a refused retry
+shows the actual recovery hold. Each explicit user Retry can make one scoped
+cleanup attempt for its failed run even after automatic cleanup is exhausted.
+If that attempt fails, a later user Retry may try again after the provider
+recovers. The failed cleanup keeps the execution hold in place. Retry does not reset
+the automatic limit or clean up another task's leases. Provider shutdown must
+still be confirmed before a new conversation is admitted.
 
 ### Explicit Recovery Action
 

@@ -386,3 +386,14 @@ pnpm secrets:migrate-inline-env --apply
 ```
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
+
+## Legacy controller ownership
+
+Legacy run claims atomically record `controller_boot_id`, a database-clock
+`controller_lease_expires_at`, and `execution_stage` before workspace provisioning.
+The lease renews independently of output. A different container must not infer
+controller death from its own process map or numeric PIDs. Expiration grants
+cleanup authority; it does not prove that remote inference has stopped. Recovery
+revokes the previous boot identity with a conditional update. Its own claim also
+expires so another sweep can finish cleanup after a restart. Historical rows keep
+null ownership fields and follow the previous recovery path.

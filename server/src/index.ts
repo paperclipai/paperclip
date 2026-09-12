@@ -1428,6 +1428,9 @@ async function startServerWithDatabaseTeardown(
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        // Legacy remote recovery releases sandbox leases. Wait for provider
+        // workers before cleanup or retry admission, including unmanaged installs.
+        await app.locals.bundledPluginsStartup;
         try {
           const nativeRecovery =
             await heartbeat.recoverNativeRunsAfterRestart();
@@ -1547,11 +1550,6 @@ async function startServerWithDatabaseTeardown(
         const swept = await heartbeat.sweepStaleIssueLocks();
         if (swept.cleared > 0) {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
-        }
-
-        const reviewed = await heartbeat.reconcileProductivityReviews();
-        if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-          logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -1790,12 +1788,6 @@ async function startServerWithDatabaseTeardown(
               const swept = await heartbeat.sweepStaleIssueLocks();
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
-              }
-            })
-            .then(async () => {
-              const reviewed = await heartbeat.reconcileProductivityReviews();
-              if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-                logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
               }
             })
             .catch((err) => {
