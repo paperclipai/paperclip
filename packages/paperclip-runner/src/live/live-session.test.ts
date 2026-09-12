@@ -1475,6 +1475,7 @@ describe("Capability live runnerd and Codex session", () => {
       sessionId: binding.sessionId,
       attemptId: "attempt-resumed",
       resumeOf: "attempt-killed",
+      turnTimeoutMs: 5_000,
     });
     expect(resumed.snapshot().providerThreadId).toBe(state.threadId);
     expect(resumed.snapshot().attempts).toMatchObject([
