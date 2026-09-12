@@ -34,7 +34,7 @@ export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
 export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
-export { adapterAuthSessions } from "./adapter_auth_sessions.js";
+export { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES } from "./adapter_auth_sessions.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
@@ -205,4 +205,5 @@ export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
 export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
 export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";
 
+export { aiConnectionDefaults } from "./ai_connection_defaults.js";
 export * from "./email.js";

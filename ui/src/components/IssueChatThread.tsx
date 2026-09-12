@@ -2019,6 +2019,8 @@ function IssueChatUserMessage({
     ? custom.sourceTrust
     : null;
   const followUpRequested = custom.followUpRequested === true;
+  const sentFromIMessage = isIssueCommentMetadata(custom.commentMetadata) &&
+    custom.commentMetadata.sourceChannel === "imessage-photon";
   const queueReason =
     typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel =
@@ -2114,7 +2116,7 @@ function IssueChatUserMessage({
             >
               {queueBadgeLabel}
             </Badge>
-            {queueTargetRunId && onInterruptQueued ? (
+            {onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -2151,6 +2153,11 @@ function IssueChatUserMessage({
         )}
       </div>
 
+      {sentFromIMessage && !deleted ? (
+        <div className="mt-1 px-1 text-xs text-muted-foreground">
+          Sent from iMessage
+        </div>
+      ) : null}
       {pending ? (
         <div
           className={cn(

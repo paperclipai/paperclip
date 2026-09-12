@@ -44,6 +44,18 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
     client.clear();
   });
+  it.each(["ai_connection.default_changed", "ai_connection.reconnected", "connection_grant.revoked"])(
+    "refreshes company AI account previews after %s", (action) => {
+      const invalidateQueries = vi.fn();
+      __liveUpdatesTestUtils.invalidateActivityQueries(
+        { invalidateQueries, getQueryData: () => undefined } as never,
+        "company-1", { entityType: "connection_grant", entityId: "grant-1", action },
+        { userId: "owner", agentId: null },
+      );
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["ai-connections", "company-1"] });
+      expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["ai-connections"] });
+    },
+  );
 
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];

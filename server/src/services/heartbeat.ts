@@ -5,6 +5,9 @@ import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/papercli
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
+import { connectionIntentService } from "./connection-intents.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -24,7 +27,7 @@ import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
-import { initializeRunIdentity } from "./run-identity.js";
+import { initializeRunIdentity, explicitOperatorRunIdentity } from "./run-identity.js";
 import {
   assertDurableChatWakeupReceipt,
   assertDurableChatWakeupRequest,
@@ -1481,6 +1484,7 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 }
 
 export async function resolveExecutionRunAdapterConfig(input: {
+  managedAiCredentials?: boolean;
   companyId: string;
   agentId?: string | null;
   adapterType?: string | null;
@@ -1830,7 +1834,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // host-side login never exists at all. The adapter's execute-time gate
   // remains the authority there; it probes the sandbox before failing.
   if (
-    (input.adapterType ?? null) === "codex_local" &&
+    !input.managedAiCredentials && (input.adapterType ?? null) === "codex_local" &&
     (input.environmentDriver ?? null) !== "sandbox"
   ) {
     const resolvedEnv = parseObject(resolvedConfig.env);
@@ -3498,6 +3502,8 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 }
 
 interface WakeupOptions {
+  /** Set only by authenticated board wake routes; never copied from caller payloads. */
+  manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
@@ -5655,6 +5661,7 @@ type EffectiveRunWorkspaceConfigCategory =
   (typeof EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES)[number];
 
 type EffectiveRunSessionConfigMetadata = {
+  aiCredentialIdentity?: string;
   version: typeof EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION;
   fingerprint: string;
   categories: EffectiveRunSessionConfigCategory[];
@@ -6624,6 +6631,7 @@ function attachPaperclipSessionMetadataToSessionParams(
   const next = { ...(sessionParams ?? {}) };
   if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
   if (configMetadata) {
+    if (configMetadata.aiCredentialIdentity) next.paperclipAiCredentialIdentity = configMetadata.aiCredentialIdentity;
     next[SESSION_CONFIG_FINGERPRINT_KEY] = configMetadata.fingerprint;
     next[SESSION_CONFIG_FINGERPRINT_VERSION_KEY] = configMetadata.version;
     next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
@@ -10196,7 +10204,7 @@ export function heartbeatService(
     await enqueueWakeup(wake.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: deliveryPayload, contextSnapshot: withQueuedCommentIdsInRunContext({
-        ...parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]), issueId,
+        issueId, triggeredBy: "board", actorId, responsibleUserId: actorId,
       }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
@@ -10725,7 +10733,8 @@ export function heartbeatService(
       ReturnType<typeof getRoutineEnvForExecutionIssue>
     >;
   }) {
-    const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
+    const operatorIdentity = await explicitOperatorRunIdentity(db, input.run);
+    const responsibleUserId = operatorIdentity?.actorId ?? await resolveResponsibleUserIdForRunSeed({
       companyId: input.run.companyId,
       contextSnapshot: input.contextSnapshot,
       issueContext: input.issueContext,
@@ -19565,6 +19574,7 @@ export function heartbeatService(
             "keep_running" | "stop_and_reuse" | "destroy_after_turn";
         }
       | undefined;
+    let managedAiRuntime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
     let providerTraceCapture: Awaited<
       ReturnType<typeof traceStore.prepare>
     > | null = null;
@@ -20625,8 +20635,10 @@ export function heartbeatService(
         ["local", "ssh"].includes(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
+      const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
+          managedAiCredentials: Boolean(aiBinding),
           managedGitHubCredentials: !useHostGitHub,
           companyId: agent.companyId,
           agentId: agent.id,
@@ -20634,17 +20646,40 @@ export function heartbeatService(
           issueId,
           heartbeatRunId: run.id,
           environmentId: selectedEnvironmentForConfig?.id ?? null,
-          environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
+          environmentEnv: aiBinding ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
           environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
           projectId: projectContext?.id ?? null,
           routineId: routineEnvContext.routineId,
           responsibleUserId,
-          executionRunConfig,
-          projectEnv: projectContext?.env ?? null,
-          routineEnv: routineEnvContext.env,
+          executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
+          projectEnv: aiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
+          routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
           secretsSvc,
           trustPreset,
         });
+      if (aiBinding) {
+        try {
+          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
+        } catch (error) {
+          if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
+            await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
+              logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
+            });
+          }
+          throw new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Configure this agent’s AI connection", {
+            configurationIncomplete: { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId,
+              provider: aiBinding.provider, method: aiBinding.method, actionUrl: `/agents/${agent.id}/runtime`,
+              fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
+          });
+        }
+        if (persistedNativeExecutionInput && parseObject(run.contextSnapshot?.aiConnection).identity !== managedAiRuntime.identity) {
+          throw new ConfigurationIncompleteFailure("The AI account changed while this native run was suspended. Start a new execution.", { configurationIncomplete: { reason: "ai_connection_changed", actionUrl: `/agents/${agent.id}/runtime` } });
+        }
+        Object.assign(resolvedConfig, managedAiRuntime.config);
+        for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
+        context.aiConnection = { ...managedAiRuntime.attribution, identity: managedAiRuntime.identity };
+        await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+      }
       if (secretManifest.length > 0) {
         context.paperclipSecrets = {
           manifest: secretManifest,
@@ -21549,6 +21584,10 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      if (managedAiRuntime && aiBinding) {
+        try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
+        catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
+      }
       const remoteExecution = realizationResult.remoteExecution;
       if (
         nativeChatWorkspaceScope &&
@@ -21909,6 +21948,15 @@ export function heartbeatService(
         delete context.paperclipPreviousSessionId;
       }
 
+      if (managedAiRuntime) {
+        sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
+        if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
+          runtimeSessionIdForAdapter = null;
+          runtimeSessionParamsForAdapter = null;
+          previousSessionDisplayId = null;
+          delete executionContinuation?.resumeDelta;
+        }
+      }
       const runtimeForAdapter = {
         sessionId: runtimeSessionIdForAdapter,
         sessionParams: runtimeSessionParamsForAdapter,
@@ -22412,7 +22460,7 @@ export function heartbeatService(
                     return requests.length > 0 ? requests : undefined;
                   })(),
                 });
-          const taskNativeSessionId = readNonEmptyString(
+          const taskNativeSessionId = managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
           // Compatibility for native retry rows created before same-run restart
@@ -22468,7 +22516,7 @@ export function heartbeatService(
                   .then((rows) => rows.length > 0)
               : false;
           const compatibleLegacyRetrySource =
-            !isConversation(issueContext) && context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
+            !managedAiRuntime && !isConversation(issueContext) && context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
               replacement: run,
               source: legacyRetrySource,
               hasProviderEvents: nativeBootstrapHasProviderEvidence,
@@ -22532,8 +22580,7 @@ export function heartbeatService(
             executionTarget.transport === "sandbox"
               ? (executionTarget.runnerLifecyclePolicy ?? null)
               : null;
-          const effectiveLifecyclePolicy =
-            environmentLifecyclePolicy ?? agentLifecyclePolicy;
+          const effectiveLifecyclePolicy = managedAiRuntime ? { mode: "per_turn" as const, idleTimeoutMs: null } : environmentLifecyclePolicy ?? agentLifecyclePolicy;
           if (
             effectiveLifecyclePolicy.mode === "warm" &&
             executionTarget?.kind === "remote" &&
@@ -23435,6 +23482,7 @@ export function heartbeatService(
                       // Bootstrap with executable/home discovery while keeping
                       // configured provider values and the server-selected
                       // workspace boundary authoritative.
+                      managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
                       runnerEnvironment: {
                         ...buildNativeProviderEnvironment(
                           adapterEnv,
@@ -25102,6 +25150,7 @@ export function heartbeatService(
         }
       }
     } finally {
+      if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
       try {
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
@@ -25338,10 +25387,19 @@ export function heartbeatService(
       ...(opts.contextSnapshot ?? {}),
     };
     const reason = opts.reason ?? null;
-    const payload = opts.payload ? { ...opts.payload } : null;
+    let payload = opts.payload ? { ...opts.payload } : null;
     // Only the board queue route can record interruption authority on an
     // existing receipt. Never accept this internal marker from a wake caller.
-    if (payload) delete payload.queuedCommentInterrupt;
+    if (payload) {
+      delete payload.queuedCommentInterrupt;
+      delete payload.manualUserWake;
+    }
+    if (opts.manualUserWake) {
+      if (opts.requestedByActorType !== "user" || !opts.requestedByActorId || opts.failedRunId) {
+        throw new HttpError(403, "Manual wake requires an authenticated user");
+      }
+      payload = { ...payload, manualUserWake: true };
+    }
     const executionReconciliationWake =
       contextSnapshot.source === "execution.reconciled" ||
       opts.idempotencyKey?.startsWith("execution-reconciliation:") === true;
@@ -25366,6 +25424,9 @@ export function heartbeatService(
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {
+        if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
+          throw new HttpError(403, "Only the conversation owner can start a chat run");
+        }
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
@@ -25687,8 +25748,10 @@ export function heartbeatService(
     const isolatedWorkspacesEnabled = issueId
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
       : false;
+    let operatorResponsibleUserId: string | null = opts.manualUserWake ? opts.requestedByActorId! : null;
     let queuedResponsibleUserIdPromise: Promise<string> | null = null;
     const resolveQueuedResponsibleUserId = () => {
+      if (operatorResponsibleUserId) return Promise.resolve(operatorResponsibleUserId);
       queuedResponsibleUserIdPromise ??= (async () => {
         const queuedIssueContext = issueId
           ? await getIssueExecutionContext(agent.companyId, issueId)
@@ -25891,6 +25954,17 @@ export function heartbeatService(
               await tx.update(agentWakeupRequests).set({ payload: pending.payload }).where(and(
                 eq(agentWakeupRequests.id, pending.id), eq(agentWakeupRequests.companyId, agent.companyId),
               ));
+            }
+            if (!opts.queuedCommentInterruptId && !opts.queuedCommentRequestId && pending.payload?.manualUserWake === true) {
+              // A persisted manual wake keeps its actor when an execution wait
+              // resumes. The locked receipt above has revalidated that actor.
+              payload = { ...payload, manualUserWake: true };
+              operatorResponsibleUserId = opts.requestedByActorId!;
+            }
+            if (opts.queuedCommentInterruptId) {
+              // The locked board receipt supplies execution authority even when
+              // another user authored the messages. Dispatch revalidates the receipt.
+              operatorResponsibleUserId = opts.requestedByActorId!;
             }
             if (opts.queuedCommentInterruptId || opts.queuedCommentRequestId) {
               // Edits/discards between the click and dispatch remain authoritative.
@@ -27263,8 +27337,9 @@ export function heartbeatService(
         contextSnapshot: enrichedContextSnapshot,
         wakeCommentId,
       });
+    // Unscoped manual wakes need their own receipt and execution identity too.
     const rawCoalescedTarget =
-      opts.allowRunCoalescing === false
+      opts.allowRunCoalescing === false || opts.manualUserWake
         ? null
         : (sameScopeQueuedRun ??
           sameScopeScheduledRetryRun ??

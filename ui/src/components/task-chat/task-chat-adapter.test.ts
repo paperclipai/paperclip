@@ -6,6 +6,18 @@ import {
 } from "./task-chat-adapter";
 
 describe("commentsToTaskChatItems", () => {
+  it("carries inbound channel attribution into the human bubble", () => {
+    expect(commentsToTaskChatItems([{
+      id: "photon-comment",
+      body: "From my phone",
+      authorType: "user",
+      authorUserId: "local-board",
+      metadata: { version: 1, sourceChannel: "imessage-photon", sections: [] },
+      createdAt: "2026-09-12T12:00:00Z",
+    } as unknown as IssueChatComment])).toMatchObject([{
+      author: "human", sourceChannel: "imessage-photon", text: "From my phone",
+    }]);
+  });
   it("classifies a recovered local-board comment as an agent bubble", () => {
     const items = commentsToTaskChatItems([{
       id: "c-recovered",

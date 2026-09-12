@@ -848,6 +848,17 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
   });
 
+  it("gives manual input its own run boundary even when the active receipt has the same requester", async () => {
+    const writer = createFakeAdmissionWriter();
+    const admit = createAdmitWakeBehindIssueExecution({
+      reader: createFakeAdmissionReader(), writer, helpers: createFakeAdmissionHelpers(),
+    });
+    expect(await admit(SCOPE, admissionInput({ payload: { issueId: "issue-1", manualUserWake: true } })))
+      .toEqual({ kind: "deferred" });
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps ordinary non-durable coalescing independent of durable actor lookup", async () => {
     const writer = createFakeAdmissionWriter();
     const reader = createFakeAdmissionReader({

@@ -15228,6 +15228,8 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
+      const decision = await decideIssueAccess(req, issue, "issue:comment");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
         if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (req.actor.userId !== issue.conversationUserId) {

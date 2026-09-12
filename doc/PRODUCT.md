@@ -161,6 +161,24 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 9. **Thin core, rich edges**
    Put optional chat, knowledge, and special surfaces into plugins/extensions rather than bloating the control plane.
 
+### Experimental iMessage Photon channel
+
+A Photon Cloud project can represent one agent through the existing
+experimental channel subsystem. DMs and explicitly enabled groups create or
+continue task-bound conversations. Linked sender identity is the default;
+telephone numbers, email addresses, names, and group membership do not grant
+Paperclip authority. Photos/files and ordinary questions/confirmations use the
+existing attachment, interaction, continuation, and publication contracts.
+Pause and Disconnect govern runtime behavior independently of the UI gate.
+Local Mac access, unsolicited conversations, and SMS/RCS
+fallback are excluded. Live qualification is required before release readiness.
+Pro shared allocation supports DMs only, with sender enrollment in Photon and
+separate identity linking in Paperclip. Shared channels reserve one project, not
+a pool phone number; group admission and publication are disabled. Dedicated
+allocation retains one selected number and individually enabled groups.
+
+See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
+contract, setup, recovery, boundaries, and qualification status.
 ### Experimental persistent agent conversations
 
 Agent Chat is an opt-in core task presentation (`enableAgentChat`, off by default). Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.

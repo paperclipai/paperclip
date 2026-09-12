@@ -4,6 +4,7 @@ import { planArtifacts } from "./preview-artifacts.mjs";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { execFileSync, spawnSync } from "node:child_process";
 import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage } from "./preview-artifacts.mjs";
@@ -217,8 +218,13 @@ test("cloud builds bake the managed runtime identity and verify it before public
 
 test("cloud cache imports are bounded, follow master ancestry, and retain the legacy fallback", () => {
   const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
-  const step = workflow.split("      - name: Select cloud cache ancestry")[1].split("      - name: Setup pnpm")[0];
-  const script = step.split("        run: |\n")[1].split("\n").map((line) => line.replace(/^ {10}/, "")).join("\n");
+  const selector = workflow.indexOf("      - name: Select cloud cache ancestry");
+  assert.ok(selector > workflow.indexOf("      - name: Login to GitHub Container Registry"));
+  assert.ok(selector > workflow.indexOf("      - name: Set up Docker Buildx"));
+  assert.ok(selector < workflow.indexOf("      - name: Build and push (cloud)"));
+  assert.match(workflow, /run: node scripts\/select-cloud-cache.mjs/);
+  assert.match(workflow, /cache-from: \$\{\{ steps.cloud-cache.outputs.source \}\}/);
+  const script = fileURLToPath(new URL("./select-cloud-cache.mjs", import.meta.url));
   const dir = mkdtempSync(path.join(tmpdir(), "cloud-cache-test-"));
   const output = path.join(dir, "output");
   const env = { ...process.env, GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.test", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.test" };
@@ -235,14 +241,25 @@ test("cloud cache imports are bounded, follow master ancestry, and retain the le
     git("checkout", "master");
     git("merge", "--no-ff", "topic", "-m", "merge topic");
     commits.unshift(git("rev-parse", "HEAD"));
-    const result = spawnSync("bash", ["-c", script], { cwd: dir, encoding: "utf8", env: { ...env, CACHE_IMAGE: "ghcr.io/paperclipai/paperclip", GITHUB_OUTPUT: output } });
+    const available = `ghcr.io/paperclipai/paperclip:buildcache-cloud-${commits[2]}`;
+    const inspections = path.join(dir, "inspections");
+    writeFileSync(path.join(dir, "docker"), `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(process.env.CACHE_INSPECTIONS, process.argv.at(-1) + "\\n");
+if (process.argv.at(-1) !== process.env.AVAILABLE_CACHE) {
+  process.stderr.write("manifest unknown");
+  process.exit(1);
+}
+`, { mode: 0o755 });
+    const result = spawnSync(process.execPath, [script], {
+      cwd: dir, encoding: "utf8", env: {
+        ...env, PATH: `${dir}${path.delimiter}${env.PATH}`, CACHE_IMAGE: "ghcr.io/paperclipai/paperclip",
+        GITHUB_OUTPUT: output, AVAILABLE_CACHE: available, CACHE_INSPECTIONS: inspections,
+      },
+    });
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(readFileSync(output, "utf8").trim().split("\n"), [
-      "sources<<CACHE_SOURCES",
-      ...commits.slice(0, 10).map((commit) => `type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-cloud-${commit}`),
-      "type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-cloud",
-      "CACHE_SOURCES",
-    ]);
+    assert.equal(readFileSync(output, "utf8"), `source=type=registry,ref=${available}\n`);
+    assert.deepEqual(readFileSync(inspections, "utf8").trim().split("\n"), commits.slice(0, 3).map((commit) => `ghcr.io/paperclipai/paperclip:buildcache-cloud-${commit}`));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

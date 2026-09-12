@@ -1038,8 +1038,8 @@ validates the saved comment and its author, even if the queue began as a system
 wake. It can then start a fresh legacy conversation after proving the old
 process stopped. It preserves unknown action outcomes and does not replay
 comments already delivered to the failed run. A plain operator Stop still
-requires a new user action. The successor guard is scoped to the same agent so another agent's review
-participation keeps its independent recovery path.
+requires a new user action. The successor guard is scoped to the same agent so
+another agent's review participation keeps its independent recovery path.
 
 An explicit queued-message Interrupt also grants one scoped cleanup retry for
 the stopped run. Old ephemeral leases whose cleanup predates provider stop
@@ -1053,3 +1053,32 @@ The legacy task recovery notice shows “Automatic recovery of this task stopped
 a bordered container with Retry for a failed or timed-out run. A failed Retry
 shows its error in the same container. New user messages and saved undelivered
 messages pass normal admission independently of automatic recovery exhaustion.
+
+### Operator identity and permission for manual dispatch
+
+A legacy queued-message Interrupt is a new instruction from the user who clicks
+it. The new run uses that user's execution identity, including when someone else
+wrote the queued messages. Message bodies and historical authors stay unchanged.
+The task page and pipeline conversations both permit Interrupt after the target
+run stops and submit the queue's current revision.
+Startup validates the consumed queue receipt against the new run, company,
+agent, task, clicking user, and delivered message IDs. Automatic retries inherit
+the resulting execution identity through the ordinary run identity history.
+
+Starting an existing agent requires `agent:wake`, which active non-viewer board
+members have within their company. Both wake endpoints use this action instead
+of `agents:create`. An exact task retry also checks `issue:comment` on the task
+from the stored failed run and verifies that its assigned agent has not changed.
+External chat retries retain their additional conversation authorization.
+Ordinary board wake requests also persist the clicking user's identity, so
+adopting another author's queued message cannot change their execution authority.
+If that wake merges into an older deferred request, the same transaction updates
+the request's execution requester to the clicking user.
+Manual wake requests wait for their own run and execution identity. They do not
+merge into an agent's active run, with or without a task.
+Private agent conversations retain their owner-only wake and retry checks.
+
+These actions do not grant permission to hire agents or change their settings.
+Each action during execution still checks the agent's authority and the
+responsible user's authority. A denied retry returns before dispatch; it does
+not create a new failed run or change the task's state.

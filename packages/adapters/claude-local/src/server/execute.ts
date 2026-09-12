@@ -565,7 +565,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     servers: runtimeMcpServers,
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
-  const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
+  const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -603,9 +603,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
-    !hasExplicitClaudeConfigDir;
+    (!hasExplicitClaudeConfigDir || Boolean(config.managedAiConnection));
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
-    ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
+    ? config.managedAiConnection ? sharedClaudeConfigDir : await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
@@ -882,6 +882,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
+    if (config.managedAiConnection) args.push("--setting-sources", "user");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,

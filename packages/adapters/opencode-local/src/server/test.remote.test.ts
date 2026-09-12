@@ -74,6 +74,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 import { testEnvironment } from "./test.js";
 
 describe("opencode remote environment diagnostics", () => {
+  const configHomes: string[] = [];
   let configHome: string;
 
   beforeEach(async () => {
@@ -85,9 +86,12 @@ describe("opencode remote environment diagnostics", () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     await rm(configHome, { recursive: true, force: true });
+    await Promise.all(configHomes.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
   });
 
-  it("stages remote runtime config assets for sandbox hello probes", async () => {
+  it.each([false, true])("stages remote runtime config assets for sandbox hello probes (managed=%s)", async (managed) => {
+    const configHome = await mkdtemp(path.join(os.tmpdir(), "opencode-remote-test-config-"));
+    configHomes.push(configHome);
     const remoteTarget: AdapterExecutionTarget = {
       kind: "remote",
       transport: "sandbox",
@@ -112,6 +116,13 @@ describe("opencode remote environment diagnostics", () => {
       config: {
         command: "opencode",
         model: "anthropic/claude-sonnet-4-5",
+        ...(managed ? {
+          managedAiConnection: { provider: "openrouter", method: "api_key" },
+        } : {}),
+        env: {
+          XDG_CONFIG_HOME: configHome,
+          ...(managed ? { OPENAI_API_KEY: "", OPENROUTER_API_KEY: "fixture", HOME: "/var/folders/qa-managed", XDG_DATA_HOME: "/var/folders/qa-managed/data" } : {}),
+        },
       },
       executionTarget: remoteTarget,
       environmentName: "QA Cloudflare",
@@ -134,6 +145,11 @@ describe("opencode remote environment diagnostics", () => {
       | [string, AdapterExecutionTarget, string, string[], { cwd: string; env: Record<string, string> }]
       | undefined;
     expect(probeCall?.[4].cwd).toBe("/remote/workspace/.paperclip-runtime/runs/test/workspace");
+    if (managed) {
+      expect(probeCall?.[4].env.HOME).toContain("/remote/workspace/.paperclip-runtime/runs/test/workspace/.paperclip-runtime/opencode/managed-auth/");
+      expect(probeCall?.[4].env.XDG_DATA_HOME).toBe(`${probeCall?.[4].env.HOME}/data`);
+      expect(probeCall?.[4].env.XDG_CACHE_HOME).toBe(`${probeCall?.[4].env.HOME}/cache`);
+    }
     expect(probeCall?.[4].env.XDG_CONFIG_HOME).toBe(
       "/remote/workspace/.paperclip-runtime/runs/test/workspace/.paperclip-runtime/opencode/xdgConfig",
     );

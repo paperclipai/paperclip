@@ -4,6 +4,7 @@ import type { AppDefinition, ConnectionMethodDef, FieldDef } from "./types/app-d
 import type { ToolConnectionOwnership } from "./types/tool-access.js";
 
 export const CONNECTABLE_APP_SLUGS = new Set([
+  "anthropic", "openai", "openrouter", "xai",
   "agentmail",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
@@ -27,6 +28,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "discord",
   "microsoft-teams",
   "telegram",
+  "imessage-photon",
 ]);
 
 export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
@@ -170,6 +172,7 @@ export function connectionMethodAcceptsCustomerOAuthClient(method: ConnectionMet
 
 export function connectionMethodSupportsCatalogSetup(method: ConnectionMethodDef | null | undefined): boolean {
   if (!method) return false;
+  if (method.transport === "runtime_auth") return Boolean(method.ai);
   if (method.auth === "none" || method.auth === "api_key") return true;
   return connectionMethodSupportsAutomaticOAuth(method)
     || connectionMethodAcceptsCustomerOAuthClient(method);
