@@ -1284,7 +1284,15 @@ export function builtInAgentService(db: Db) {
 
   async function createOrResetRoutine(agent: Agent, definition: BuiltInAgentDefinition, existing: Routine | null, mode: "reconcile" | "reset") {
     const routine = definition.bundle!.routine;
-    const actor = { agentId: null, userId: "built-in-bundles" };
+    // Bundle installs have no human actor. Passing a synthetic label here would
+    // land in routines.responsible_user_id (see resolveRoutineResponsibleUserId,
+    // which returns actorUserId verbatim), and every issue the routine spawns
+    // inherits it -- the authorization layer then denies the assignee's own reads
+    // and writes with RESPONSIBLE_USER_UNAVAILABLE because no such user exists.
+    // Leave it null so the company default responsible user is resolved instead;
+    // bundle provenance is already recorded via origin_kind/origin_id and the
+    // activity log below.
+    const actor = { agentId: null, userId: null };
     const nextRoutine = existing
       ? await routineSvc.update(existing.id, {
         title: routine.title,

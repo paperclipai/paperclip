@@ -648,6 +648,14 @@ describeEmbeddedPostgres("built-in agents", () => {
       status: "paused",
       assigneeAgentId: state.agentId,
     });
+    // Regression: the bundle installer used to pass a synthetic
+    // { userId: "built-in-bundles" } actor, which resolveRoutineResponsibleUserId
+    // returns verbatim. Every issue the routine spawned inherited that value and
+    // the assignee was then denied its own reads/writes with
+    // RESPONSIBLE_USER_UNAVAILABLE, because no such user exists. Bundle-managed
+    // routines must resolve a real responsible user like any other routine.
+    expect(routine!.responsibleUserId).not.toBe("built-in-bundles");
+    expect(routine!.responsibleUserId).toBe("responsible-user");
     const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
     expect(trigger).toMatchObject({
       kind: "schedule",
