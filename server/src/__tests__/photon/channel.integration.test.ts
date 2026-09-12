@@ -357,21 +357,25 @@ describe.sequential("iMessage Photon channel control plane", () => {
       },
     };
   }
-  it("returns actionable setup validation failures without replacing credentials", async () => {
+  it("distinguishes setup validation from provider outages without replacing credentials", async () => {
     const t = await setup();
     const allocation = vi.spyOn(PhotonCloudClient.prototype, "allocation");
-    allocation.mockRejectedValueOnce(new PhotonError("credentials", "Photon rejected this project ID or secret"));
-    await expect(t.service.inspectPhoton(t.endpoint.id, {
-      projectId: "project", projectSecret: "invalid",
-    })).rejects.toMatchObject({ status: 422, details: { code: "photon_credentials" } });
-    allocation.mockRejectedValueOnce(new PhotonError("quota", "Photon Cloud request limit reached; retry later"));
-    await expect(t.service.inspectPhoton(t.endpoint.id, {
-      projectId: "project", projectSecret: "secret",
-    })).rejects.toMatchObject({ status: 429, details: { code: "photon_quota" } });
-    allocation.mockRejectedValueOnce(new PhotonError("credentials", "Photon rejected this project ID or secret"));
-    await expect(t.service.configure(t.endpoint.id, {
-      action: "reconnect", credentials: { projectSecret: "invalid" },
-    }, t.userId)).rejects.toMatchObject({ status: 422 });
+    for (const [code, status] of [
+      ["credentials", 422],
+      ["line_unavailable", 422],
+      ["quota", 429],
+      ["network", 503],
+      ["invalid_response", 502],
+    ] as const) {
+      allocation.mockRejectedValueOnce(new PhotonError(code, `Safe Photon ${code} message`));
+      await expect(t.service.inspectPhoton(t.endpoint.id, {
+        projectId: "project", projectSecret: "replacement",
+      })).rejects.toMatchObject({ status, details: { code: `photon_${code}` } });
+      allocation.mockRejectedValueOnce(new PhotonError(code, `Safe Photon ${code} message`));
+      await expect(t.service.configure(t.endpoint.id, {
+        action: "reconnect", credentials: { projectSecret: "replacement" },
+      }, t.userId)).rejects.toMatchObject({ status, details: { code: `photon_${code}` } });
+    }
     await t.start();
     await t.qualify();
   });

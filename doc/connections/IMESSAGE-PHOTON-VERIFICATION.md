@@ -58,7 +58,11 @@ Both the recorded answer digest and reconstructed proof now use the existing
 canonical hash. This is a native authorization composition test, not evidence of
 a live model turn through Photon.
 
-The Photon/OpenAPI follow-up also verifies safe setup credential and quota errors, the complete board-only inspection contract, group participant response fields, and the unchanged credential binding after rejected replacement.
+The Photon/OpenAPI follow-up also verifies safe setup credential, quota, network,
+and invalid-response errors, the complete board-only inspection contract, group
+participant response fields, and the unchanged credential binding after rejected
+replacement. All 39 Photon/OpenAPI tests and the server build passed after the
+review fix separating provider outages from invalid setup input.
 
 The Photon browser cases in `tests/e2e/chat-adapters-ui.spec.ts` cover catalog
 discovery, multiple-line selection, password input, keyboard selection, vaulted
@@ -73,7 +77,7 @@ Slack, Discord, GitHub, Teams, and Telegram surfaces.
 | Workspace typecheck | Full `pnpm -r typecheck` passed before and after rebase. |
 | Full chat-adapters browser suite | 38 passed, including Photon light/dark/mobile coverage and existing providers. |
 | OpenAPI contract | 8 passed, including mounted-route completeness, board-only inspection, and token-free response schemas. |
-| Post-rebase channel/native checks | 87 passed across Photon, explicit native continuation, and chat-control admission retry. |
+| Post-rebase channel/native checks | 96 passed across Photon, OpenAPI, explicit native continuation, and chat-control admission retry. |
 | Native session resume | 37 passed after building the required local fake-provider binary. |
 | UI Vitest project | 6,008 passed across 582 files after rebase. |
 | Shared catalog project | 727 passed, including exact catalog and branding coverage. |

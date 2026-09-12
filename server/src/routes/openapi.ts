@@ -2126,6 +2126,8 @@ registry.registerPath({
     409: r.conflict,
     422: r.unprocessable,
     429: { description: "Provider request limit reached; retry later" },
+    502: { description: "Provider returned an invalid response; inspect provider health" },
+    503: { description: "Provider temporarily unavailable; retry later" },
   },
 });
 
@@ -2177,6 +2179,8 @@ registry.registerPath({
     404: r.notFound,
     422: r.unprocessable,
     429: { description: "Photon request limit reached; retry later" },
+    502: { description: "Photon returned an invalid response; inspect provider health" },
+    503: { description: "Photon temporarily unavailable; retry later" },
   },
 });
 

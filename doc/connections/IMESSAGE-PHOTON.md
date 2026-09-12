@@ -39,6 +39,11 @@ and checks that the project, line, and number have not changed. Every operation
 uses that selected line. Replacing credentials must preserve the same identity;
 connect a different identity with a new endpoint.
 
+Setup and inspection distinguish credential/allocation errors (HTTP 422), quota
+limits (429), temporary provider outages (503), and invalid upstream responses
+(502). An outage does not mean valid credentials need replacement. A failed
+reconnect leaves the existing credential binding intact.
+
 ## Conversation and access rules
 
 DMs are enabled by default. Each group starts disabled. Unlinked people cannot

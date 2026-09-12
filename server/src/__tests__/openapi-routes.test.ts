@@ -511,6 +511,8 @@ describe("openapi routes", () => {
     );
     expect(setup.responses["409"]).toBeDefined();
     expect(setup.responses["422"]).toBeDefined();
+    expect(setup.responses["502"]).toBeDefined();
+    expect(setup.responses["503"]).toBeDefined();
 
     const photon = spec.paths["/api/chat-endpoints/{endpointId}/photon/inspect"].post;
     expect(photon.requestBody.content["application/json"].schema.required).toEqual([
@@ -522,6 +524,8 @@ describe("openapi routes", () => {
     expect(JSON.stringify(photonResponse)).not.toMatch(/projectSecret|token/);
     expect(photon.responses["422"]).toBeDefined();
     expect(photon.responses["429"]).toBeDefined();
+    expect(photon.responses["502"]).toBeDefined();
+    expect(photon.responses["503"]).toBeDefined();
 
     const setupSecret =
       spec.paths["/api/chat-endpoints/{endpointId}/setup-secret"].post;

@@ -8131,9 +8131,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       return await new PhotonCloudClient(fetchImpl).inspect(projectId, projectSecret);
     } catch (error) {
       if (!(error instanceof PhotonError)) throw error;
-      // These are safe provider-facing validation messages, never raw response
-      // bodies. Preserve them for the setup UI without changing runtime errors.
-      throw new HttpError(error.code === "quota" ? 429 : 422, error.message, {
+      // Only credentials/allocation failures mean the setup input needs repair.
+      // Preserve safe provider messages while distinguishing outages and bad
+      // upstream responses from validation errors. Never return response bodies.
+      const status = error.code === "credentials" || error.code === "line_unavailable"
+        ? 422
+        : error.code === "quota"
+          ? 429
+          : error.code === "network"
+            ? 503
+            : 502;
+      throw new HttpError(status, error.message, {
         code: `photon_${error.code}`,
       });
     }
