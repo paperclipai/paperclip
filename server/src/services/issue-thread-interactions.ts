@@ -464,6 +464,7 @@ type IssueResolutionContext = {
   reviewPolicy: IssueReviewPolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  executionState?: unknown;
 };
 
 async function assertRequestConfirmationResolutionAllowedUnderLock(
@@ -794,22 +795,35 @@ function interactionTerminalError(row: { status: string; result?: unknown }) {
   );
 }
 
-function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
+function executionReturnAssigneeAgentId(issue: IssueResolutionContext): string | null {
+  const state = issue.executionState;
+  if (!state || typeof state !== "object" || Array.isArray(state)) return null;
+  const returnAssignee = (state as { returnAssignee?: { agentId?: unknown } }).returnAssignee;
+  return typeof returnAssignee?.agentId === "string" ? returnAssignee.agentId : null;
+}
+
+export function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   issue: IssueResolutionContext;
   current: IssueThreadInteractionRow;
   actor: InteractionActor;
 }) {
   if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
   if (!args.current.createdByAgentId) return false;
-  if (!args.actor.userId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
+  const returnAssigneeAgentId = executionReturnAssigneeAgentId(args.issue);
+  const creatorIsReturnAssignee =
+    returnAssigneeAgentId === args.current.createdByAgentId;
   if (args.issue.assigneeAgentId) {
-    return (
-      args.issue.status === "in_review" &&
-      args.issue.assigneeAgentId === args.current.createdByAgentId
-    );
+    if (args.issue.status !== "in_review") return false;
+    if (args.issue.assigneeAgentId === args.current.createdByAgentId) {
+      return Boolean(args.actor.userId);
+    }
+    // Execution review reassigned the issue away from the confirmation
+    // creator. Accepting the card must wake that original executor, not
+    // the current execution reviewer.
+    return creatorIsReturnAssignee;
   }
-  return Boolean(args.issue.assigneeUserId);
+  return Boolean(args.issue.assigneeUserId) && Boolean(args.actor.userId);
 }
 
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
@@ -2109,6 +2123,7 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
@@ -2381,6 +2396,7 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
