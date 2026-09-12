@@ -8,6 +8,7 @@ import {
   LaunchdServiceManager,
   renderLaunchdPlist,
   renderSystemdUnit,
+  serviceEnvPath,
   SystemdServiceManager,
   type CommandRunner,
   type ServiceManager,
@@ -62,6 +63,15 @@ describe("service definition generation", () => {
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
     expect(plist).toContain("service.err.log");
+  });
+
+  it("pins PATH so adapters can spawn node from the service", () => {
+    const pathEnv = serviceEnvPath("/opt/homebrew/bin/node");
+    expect(pathEnv.split(":")[0]).toBe("/opt/homebrew/bin");
+    const plist = renderLaunchdPlist({ instanceId: "team-a", shimPath: "/Users/alice/.local/bin/paperclipai", homeDir: "/Users/alice/.paperclip", stdoutPath: "/tmp/o.log", stderrPath: "/tmp/e.log", pathEnv });
+    expect(plist).toContain(`<key>PATH</key><string>${pathEnv}</string>`);
+    const unit = renderSystemdUnit({ instanceId: "team-a", shimPath: "/home/alice/.local/bin/paperclipai", homeDir: "/home/alice/.paperclip", pathEnv });
+    expect(unit).toContain(`Environment="PATH=${pathEnv}"`);
   });
 });
 

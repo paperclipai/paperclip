@@ -120,11 +120,24 @@ export function systemdServiceName(instanceId: string): string {
   return instanceId === "default" ? "paperclipai.service" : `paperclipai-${instanceId}.service`;
 }
 
+// Both supervisors start the service with a minimal PATH that omits every
+// usual Node install (Homebrew, nvm, fnm). Adapters spawn their agents through
+// `env node`, which then fails with exit 127, so the directory of the Node that
+// installed the service travels with the definition.
+export function serviceEnvPath(
+  nodeExecutablePath = process.execPath,
+  basePath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+): string {
+  const nodeDirectory = path.dirname(nodeExecutablePath);
+  const entries = basePath.split(":").filter((entry) => entry.length > 0 && entry !== nodeDirectory);
+  return [nodeDirectory, ...entries].join(":");
+}
+
 export function launchdServiceName(instanceId: string): string {
   return instanceId === "default" ? "ing.paperclip.paperclipai" : `ing.paperclip.paperclipai.${instanceId}`;
 }
 
-export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
+export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string; pathEnv?: string }): string {
   return `[Unit]
 Description=Paperclip AI (${escapeSystemd(input.instanceId)})
 After=network.target
@@ -138,6 +151,7 @@ ExecStart="${escapeSystemd(input.shimPath)}" run --instance "${escapeSystemd(inp
 Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
+Environment="PATH=${escapeSystemd(input.pathEnv ?? serviceEnvPath())}"
 WorkingDirectory=%h
 Restart=always
 RestartSec=5
@@ -148,7 +162,7 @@ WantedBy=default.target
 `;
 }
 
-export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string }): string {
+export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string; pathEnv?: string }): string {
   const label = launchdServiceName(input.instanceId);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -164,6 +178,7 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
     <key>PAPERCLIP_SERVICE_MANAGED</key><string>1</string>
     <key>PAPERCLIP_INSTANCE_ID</key><string>${escapeXml(input.instanceId)}</string>
     <key>PAPERCLIP_HOME</key><string>${escapeXml(input.homeDir)}</string>
+    <key>PATH</key><string>${escapeXml(input.pathEnv ?? serviceEnvPath())}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
