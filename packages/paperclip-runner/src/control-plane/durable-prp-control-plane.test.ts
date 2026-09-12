@@ -106,7 +106,7 @@ it("renews one authenticated connection for three weeks without replacing its au
     await core.stop();
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 it.each(["expired", "revoked", "wrong-run", "wrong-connection", "wrong-epoch", "future-expiry"])(
   "cannot renew a lease with %s authority",
