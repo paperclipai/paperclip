@@ -87,7 +87,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
-    "agentmail": "^0.5.14",
+    "agentmail": "^0.5.23",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
