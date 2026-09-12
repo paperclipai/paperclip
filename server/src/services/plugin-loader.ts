@@ -793,11 +793,11 @@ function buildStandaloneBundledPluginInstallArgs(
   packageRoot: string,
 ): string[] {
   const packageLockfilePath = path.join(packageRoot, "pnpm-lock.yaml");
-  // A standalone plugin may define its own install policy (for example, which
-  // optional dependency scripts are deliberately skipped). --ignore-workspace
-  // also ignores that local pnpm-workspace.yaml on newer pnpm versions.
-  const workspaceArgs = existsSync(path.join(packageRoot, "pnpm-workspace.yaml")) ? [] : ["--ignore-workspace"];
-  return ["install", ...workspaceArgs, existsSync(packageLockfilePath) ? "--frozen-lockfile" : "--no-lockfile"];
+  // Never let plugin-supplied workspace settings broaden dependency resolution
+  // or script execution. When a plugin declares a local install policy, disable
+  // dependency lifecycle scripts instead of loading that workspace configuration.
+  const scriptArgs = existsSync(path.join(packageRoot, "pnpm-workspace.yaml")) ? ["--ignore-scripts"] : [];
+  return ["install", "--ignore-workspace", ...scriptArgs, existsSync(packageLockfilePath) ? "--frozen-lockfile" : "--no-lockfile"];
 }
 
 function buildStandaloneBundledPluginInstallCommand(

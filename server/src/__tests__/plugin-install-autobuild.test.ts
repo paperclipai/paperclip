@@ -213,12 +213,16 @@ describe("ensureLocalPluginBuilt", () => {
     expect(execStub).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("bootstraps standalone bundled plugins respecting local install policy: %s", async (localPolicy) => {
+  it.each([
+    undefined,
+    "allowBuilds:\n  protobufjs: false\n",
+    "packages:\n  - ../untrusted\ndangerouslyAllowAllBuilds: true\n",
+  ])("bootstraps standalone plugins without trusting workspace policy: %s", async (localPolicy) => {
     const fixture = await createBundledPluginFixture("standalone", { rootDir: standaloneRepoPluginRoot });
     cleanupPaths.add(fixture.packageRoot);
 
-    if (localPolicy) await writeFile(path.join(fixture.packageRoot, "pnpm-workspace.yaml"), "allowBuilds:\n  protobufjs: false\n");
-    const installArgs = ["install", ...(localPolicy ? [] : ["--ignore-workspace"]), "--no-lockfile"];
+    if (localPolicy) await writeFile(path.join(fixture.packageRoot, "pnpm-workspace.yaml"), localPolicy);
+    const installArgs = ["install", "--ignore-workspace", ...(localPolicy ? ["--ignore-scripts"] : []), "--no-lockfile"];
     const execStub = vi.fn(async (_file: string, args: readonly string[]) => {
       if (args.join(" ") === installArgs.join(" ")) {
         await mkdir(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"), { recursive: true });
