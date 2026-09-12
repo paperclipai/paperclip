@@ -6889,8 +6889,11 @@ export function issueRoutes(
           ?? (await getNativeSessionSteeringState(steering.steeringRunId)
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
+    const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
     return buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
+      executionWait: typeof wait.reason === "string" && typeof wait.message === "string"
+        ? { reason: wait.reason, message: wait.message } : null,
       queueId: wake?.id ?? null,
       state: queueState?.state ?? null,
       activeRunId: input.activeRun?.id ?? null,
@@ -15194,6 +15197,47 @@ export function issueRoutes(
         }),
       );
       publishActivity(activityPublication as ActivityPublication);
+      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+    },
+  );
+
+  router.post(
+    "/issues/:id/queued-comments/interrupt",
+    validate(queuedCommentSteeringTargetSchema),
+    async (req, res) => {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue) return;
+      const actor = getActorInfo(req);
+      await db.transaction(async (tx) => {
+        const locked = await lockQueuedCommentState({
+          tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId,
+        });
+        assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
+        if (locked.queue.protocol !== "legacy" || locked.activeRun?.agentId !== issue.assigneeAgentId) {
+          throw conflict("This queue does not support legacy interruption");
+        }
+      });
+      // Never hold the issue lock while joining the adapter. Queue edits and
+      // discards stay authoritative until the dispatcher claims the successor.
+      const options = operatorInterruptCancelOptions({ issueId: issue.id, actor });
+      await heartbeat.cancelRun(req.body.targetRunId, "Interrupted to send queued messages", {
+        ...options,
+        suppressImmediateRecovery: true,
+        resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.queued_comments_interrupted", entityType: "issue", entityId: issue.id,
+        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId },
+      });
+      const currentIssue = await svc.getById(issue.id);
+      const queue = await buildQueuedCommentQueue({
+        executor: db, issue: currentIssue ?? issue,
+        activeRun: await resolveActiveIssueRun(currentIssue ?? issue), actor,
+      });
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );

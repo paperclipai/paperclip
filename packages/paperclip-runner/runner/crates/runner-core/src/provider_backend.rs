@@ -143,8 +143,16 @@ impl ProviderStartupAttempt {
             !value.is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
         };
         let command_valid = self.command.as_ref().is_none_or(|command| {
+            // This is a summary of an already-validated command, not a new
+            // wire request. Goal commands require v2; reconstructing every
+            // summary as v1 rejects a legitimate provider restart on goal/get.
+            let schema = if command.command_type.starts_with("session.goal.") {
+                "paperclip.prp.command.v2"
+            } else {
+                "paperclip.prp.command.v1"
+            };
             Command {
-                schema: "paperclip.prp.command.v1".to_owned(),
+                schema: schema.to_owned(),
                 command_id: command.command_id.clone(),
                 controller_seq: command.controller_seq,
                 command_type: command.command_type.clone(),
@@ -4551,6 +4559,38 @@ mod tests {
         assert_eq!(intent["startupAttempt"]["phase"], "intent");
         assert_eq!(intent["startupAttempt"]["processId"], Value::Null);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn goal_command_can_persist_provider_restart_ownership() {
+        for command_type in ["session.goal.get", "session.goal.set", "session.goal.clear"] {
+            let directory = std::env::temp_dir()
+                .join(format!("paperclip-goal-startup-{}", uuid::Uuid::new_v4()));
+            let mut executor = CodexCommandExecutor::new(&directory);
+            executor.state = Some(opencode_result_state());
+            executor.startup_command = Some(ProviderStartupCommand {
+                command_id: "command-goal-recovery".to_owned(),
+                controller_seq: 12,
+                command_type: command_type.to_owned(),
+            });
+            executor
+                .begin_startup(ProviderStartupTrigger::Ensure, 4)
+                .unwrap();
+            executor
+                .observe_startup(ProviderStartupObservation::Spawned {
+                    process_id: 123,
+                    process_group_id: 123,
+                })
+                .unwrap();
+            let saved: CodexProviderState =
+                serde_json::from_slice(&fs::read(executor.state_path()).unwrap()).unwrap();
+            saved.validate().unwrap();
+            assert_eq!(
+                saved.startup_attempt.unwrap().command.unwrap().command_type,
+                command_type
+            );
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

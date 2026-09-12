@@ -1,5 +1,5 @@
 {
-  "id": "c5d148cc-b35a-4a6a-bd39-0122573bb049",
+  "id": "d01dd077-2ab3-494b-962c-02b219026b64",
   "prevId": "cad9198b-f814-4ed9-b364-e8677eab5c23",
   "version": "7",
   "dialect": "postgresql",
@@ -1723,37 +1723,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "attempt_reason": {
-          "name": "attempt_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "retry_count": {
-          "name": "retry_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "claim_deadline_at": {
-          "name": "claim_deadline_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1966,34 +1935,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_company_agent_deferred_attempt_idx": {
-          "name": "agent_wakeup_requests_company_agent_deferred_attempt_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "requested_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"agent_wakeup_requests\".\"status\" = 'deferred_issue_execution'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -22032,6 +21973,24 @@
         },
         "external_run_id": {
           "name": "external_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_boot_id": {
+          "name": "controller_boot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_lease_expires_at": {
+          "name": "controller_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_stage": {
+          "name": "execution_stage",
           "type": "text",
           "primaryKey": false,
           "notNull": false

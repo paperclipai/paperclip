@@ -49,6 +49,13 @@ job still runs one test worker. The partition covers every suite exactly once;
 normal PR and local test groups keep their existing shape. More jobs increase
 concurrent runner demand, so compare queue time as well as test duration.
 
+All release verification installs, including the Runner scorer and chaos evals,
+allow pnpm to refresh an outdated lockfile. Contributor PRs leave lockfile updates
+to the separate refresh bot, so a dependency-changing master commit can arrive
+before that bot's PR merges. Verification must install and test that commit
+without waiting for another merge. The generated lockfile stays in the job's
+workspace; these checks do not commit it back to the repository.
+
 The artifact wait runs for up to 30 minutes and reports what is missing. Only
 an HTTP 404 means publication is pending; authorization errors, upstream outages,
 and identity mismatches fail the job. A failed, cancelled, or skipped prerequisite

@@ -989,6 +989,8 @@ export interface IssueQueuedCommentQueue {
   protocol: IssueQueuedCommentProtocol;
   steeringDisposition: IssueQueuedCommentSteeringDisposition;
   entries: IssueQueuedCommentEntry[];
+  /** Current admission condition for a saved user continuation. */
+  executionWait?: { reason: string; message: string } | null;
 }
 
 interface IssueCommentMetadataRowBase {

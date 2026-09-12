@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { completedActivitySummary } from "./completed-activity-summary";
 import {
   Brain,
   ChevronDown,
@@ -99,16 +100,6 @@ function presentation(item: Activity, active: boolean) {
     mono: false,
     running: false,
   };
-}
-
-function isFailure(item: Activity) {
-  return (
-    (item.kind === "tool" && item.status === "failed") ||
-    (item.kind === "protocol" &&
-      item.surface === "provider_activity" &&
-      item.status === "failed") ||
-    (item.kind === "marker" && item.tone === "error")
-  );
 }
 
 function ActivityContent({
@@ -330,7 +321,8 @@ export function TaskChatRunnerActivityGroup({
     (activity) => presentation(activity, false) !== null,
   );
   const latest = activities.at(-1);
-  const failures = activities.filter(isFailure).length;
+  const summary = completedActivitySummary(activities);
+  const SummaryIcon = summary.icon;
   const countLabel = `${activities.length} ${activities.length === 1 ? "activity" : "activities"}`;
   return (
     <section
@@ -358,9 +350,21 @@ export function TaskChatRunnerActivityGroup({
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
             aria-controls={expanded ? historyId : undefined}
-            aria-label={`${expanded ? "Collapse" : "Expand"} ${countLabel}`}
+            aria-label={`${expanded ? "Collapse" : "Expand"} ${item.active ? countLabel : `${summary.fullLabel.toLowerCase()} (${countLabel})`}`}
           >
-            {expanded ? (
+            {!item.active ? (
+              <span
+                className="flex h-8 min-w-0 flex-1 items-center gap-2 text-xs"
+                data-completed-summary
+              >
+                <span className="flex size-5 shrink-0 items-center justify-center">
+                  <SummaryIcon className="size-3.5" aria-hidden="true" />
+                </span>
+                <span className="truncate" title={summary.fullLabel}>
+                  {summary.label}
+                </span>
+              </span>
+            ) : expanded ? (
               <span className="flex min-h-8 flex-1 items-center gap-2 text-xs">
                 <span className="flex size-5 shrink-0 items-center justify-center">
                   <ChevronDown className="size-3.5" aria-hidden="true" />
@@ -370,16 +374,12 @@ export function TaskChatRunnerActivityGroup({
             ) : (
               <RollingActivity item={latest} active={item.active} />
             )}
-            {failures > 0 ? (
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {failures} failed
-              </span>
-            ) : null}
             <span className="flex shrink-0 items-center gap-1 text-xs">
-              {expanded ? "Collapse" : activities.length}
-              {!expanded ? (
-                <ChevronRight className="size-3.5" aria-hidden="true" />
-              ) : null}
+              {expanded ? countLabel : item.active ? activities.length : null}
+              <ChevronRight
+                className={cn("size-3.5", expanded && "rotate-90")}
+                aria-hidden="true"
+              />
             </span>
           </button>
           {expanded ? (

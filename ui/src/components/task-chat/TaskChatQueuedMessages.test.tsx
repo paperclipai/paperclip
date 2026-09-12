@@ -78,6 +78,15 @@ describe("TaskChatQueuedMessages", () => {
     return props;
   }
 
+  it("shows the saved message's wait reason and removes it when admission succeeds", () => {
+    const message = "Waiting for the previous environment to stop. Your message will start automatically.";
+    render({ queue: { ...queue, executionWait: { reason: "remote_cleanup", message } } });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(container.textContent).toContain("First queued message");
+    render();
+    expect(container.textContent).not.toContain(message);
+  });
+
   it("renders each queued message once as a compact one-line row", () => {
     render();
     const pane = container.querySelector(
@@ -315,7 +324,7 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).not.toBeNull();
     expect(container.textContent).toContain(
-      "Active turn interrupted. Message remains queued.",
+      "Interruption requested. Queued messages will continue after the active turn stops.",
     );
   });
 });
