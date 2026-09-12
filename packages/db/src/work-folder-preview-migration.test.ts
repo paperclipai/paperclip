@@ -99,10 +99,15 @@ const migration = readFileSync(new URL("./migrations/0275_sandbox_work_folders.s
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  it("upgrades the exact f3c67d50 published history without losing files or provider sessions", async () => {
+  it("upgrades the exact f3c67d50 published history without losing files or provider sessions", async ({ onTestFinished }) => {
     const database = await startEmbeddedPostgresTestDatabase("work-folder-historical-");
+    // Register each cleanup before acquiring the next resource or parsing the
+    // fixture. Vitest runs these in reverse order even when setup fails.
+    onTestFinished(() => database.cleanup());
     const admin = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    onTestFinished(() => admin.end());
     const migrationsFolder = mkdtempSync(path.join(os.tmpdir(), "work-folder-f3-history-"));
+    onTestFinished(() => rmSync(migrationsFolder, { recursive: true, force: true }));
     const historyRoot = new URL("./__fixtures__/work-folders-f3c67d50/", import.meta.url);
     const history = JSON.parse(readFileSync(new URL("history.json", historyRoot), "utf8")) as {
       sourceCommit: string;
@@ -258,9 +263,6 @@ const migration = readFileSync(new URL("./migrations/0275_sandbox_work_folders.s
         VALUES (${company}, ${taskFolders[0]}, 'original-retry-safe-write', 'new-fingerprint')`).rejects.toMatchObject({ code: "23505" });
     } finally {
       await sql.end();
-      await admin.end();
-      await database.cleanup();
-      rmSync(migrationsFolder, { recursive: true, force: true });
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
