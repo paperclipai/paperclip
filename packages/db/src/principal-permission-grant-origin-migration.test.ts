@@ -27,7 +27,7 @@ async function migrationStatements() {
 }
 
 describeEmbeddedPostgres("principal permission grant origin migration", () => {
-  it("marks historical role defaults without consuming explicit grants", async () => {
+  it("preserves ambiguous historical grants as explicit", async () => {
     const database = await startEmbeddedPostgresTestDatabase("paperclip-grant-origin-");
     cleanups.push(database.cleanup);
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
@@ -102,9 +102,9 @@ describeEmbeddedPostgres("principal permission grant origin migration", () => {
         ORDER BY id
       `);
       expect(rows).toEqual([
-        { id: "00000000-0000-4000-8000-000000000010", grant_origin: "role_default" },
-        { id: "00000000-0000-4000-8000-000000000011", grant_origin: "role_default" },
-        { id: "00000000-0000-4000-8000-000000000012", grant_origin: "role_default" },
+        { id: "00000000-0000-4000-8000-000000000010", grant_origin: "explicit" },
+        { id: "00000000-0000-4000-8000-000000000011", grant_origin: "explicit" },
+        { id: "00000000-0000-4000-8000-000000000012", grant_origin: "explicit" },
         { id: "00000000-0000-4000-8000-000000000013", grant_origin: "explicit" },
         { id: "00000000-0000-4000-8000-000000000014", grant_origin: "explicit" },
         { id: "00000000-0000-4000-8000-000000000015", grant_origin: "explicit" },

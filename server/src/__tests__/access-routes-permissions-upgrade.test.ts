@@ -231,6 +231,36 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     )).resolves.toBe(false);
   });
 
+  it("rejects grant-backed board-key authority after membership suspension", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: owner.principalId,
+      permissionKey: "tools:admin",
+      grantOrigin: "explicit",
+    });
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      owner.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(true);
+
+    await db
+      .update(companyMemberships)
+      .set({ status: "suspended" })
+      .where(eq(companyMemberships.id, owner.id));
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      owner.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(false);
+  });
+
   it("sweeps personal connection access when the member route suspends a user", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await db.insert(companyMemberships).values({

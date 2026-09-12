@@ -68,7 +68,11 @@ function hashToken(token: string) {
 const boardKeyAuthFailureRateLimiter = createBoardKeyAuthFailureRateLimiter();
 
 function boardKeyAuthFailureSource(req: Request) {
-  return req.socket.remoteAddress || req.ip || "unknown";
+  // Express derives req.ip from the socket unless the immediate peer matches
+  // the operator's TRUST_PROXY policy. In the latter case it is the validated
+  // forwarded client address, so clients behind one proxy do not share a
+  // failure bucket merely because they share the proxy socket.
+  return req.ip || req.socket.remoteAddress || "unknown";
 }
 
 export function resetBoardKeyAuthFailureRateLimitForTests() {

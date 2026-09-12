@@ -122,9 +122,10 @@ function createDbState() {
 function createApp(
   db: any,
   resolveSession = vi.fn(async () => null),
-  options: { sourceFromHeader?: boolean } = {},
+  options: { sourceFromHeader?: boolean; trustProxy?: boolean } = {},
 ) {
   const app = express();
+  if (options.trustProxy) app.set("trust proxy", true);
   if (options.sourceFromHeader) {
     app.use((req, _res, next) => {
       Object.defineProperty(req.socket, "remoteAddress", {
@@ -220,6 +221,27 @@ describe("board-key authentication middleware", () => {
 
     expect(limited.status).toBe(429);
     expect(db.select.mock.calls.length).toBe(lookupsBeforeThrottle);
+  });
+
+  it("isolates failure buckets for clients behind a trusted shared proxy", async () => {
+    const { db, state } = createDbState();
+    state.keyExists = false;
+    const { app } = createApp(db, undefined, { trustProxy: true });
+    const sourceLimit = BOARD_KEY_AUTH_FAILURE_RATE_LIMIT_DEFAULTS.sourceLimit;
+
+    for (let index = 0; index < sourceLimit; index += 1) {
+      const response = await request(app)
+        .get("/actor")
+        .set("x-forwarded-for", "198.51.100.10")
+        .set("Authorization", `Bearer pcp_board_proxy_a_${index}`);
+      expect(response.status).toBe(401);
+    }
+
+    const unrelatedClient = await request(app)
+      .get("/actor")
+      .set("x-forwarded-for", "198.51.100.11")
+      .set("Authorization", "Bearer pcp_board_proxy_b");
+    expect(unrelatedClient.status).toBe(401);
   });
 
   it("strictly bounds credential and source failure storage during identity floods", () => {

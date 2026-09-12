@@ -137,6 +137,12 @@ export async function ownerHasRequiredGrant(
       permissionKey: principalPermissionGrants.permissionKey,
     })
     .from(principalPermissionGrants)
+    .innerJoin(companyMemberships, and(
+      eq(companyMemberships.companyId, principalPermissionGrants.companyId),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, ownerUserId),
+      eq(companyMemberships.status, "active"),
+    ))
     .where(and(
       inArray(principalPermissionGrants.companyId, [...companyIds]),
       eq(principalPermissionGrants.principalType, "user"),
