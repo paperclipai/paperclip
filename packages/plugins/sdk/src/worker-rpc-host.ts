@@ -241,6 +241,14 @@ function canonicalize(value: unknown): string {
   return `{${entries.join(",")}}`;
 }
 
+/**
+ * Null-body statuses the `Response` constructor can represent (the Fetch
+ * spec also defines 101, but the constructor rejects it by status range).
+ * The constructor throws "Invalid response status code" when one of these
+ * carries a body, so the http.fetch shim rebuilds them with `null` instead.
+ */
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
+
 export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
   const thisFile = realpathOrResolvedPath(fileURLToPath(moduleUrl));
   const entryPath = realpathOrResolvedPath(entry);
@@ -609,8 +617,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             init: Object.keys(serializedInit).length > 0 ? serializedInit : undefined,
           });
 
-          // Reconstruct a Response-like object from the serialized result
-          return new Response(result.body, {
+          // Reconstruct a Response-like object from the serialized result.
+          // The Fetch spec forbids a body on null-body statuses, so
+          // `new Response("")` would throw for a successful 204 No Content
+          // and the plugin would report a landed write as failed. Pass
+          // `null` for those statuses, matching global fetch.
+          return new Response(NULL_BODY_STATUSES.has(result.status) ? null : result.body ?? null, {
             status: result.status,
             statusText: result.statusText,
             headers: result.headers,
