@@ -32,6 +32,7 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  StorageTransactionLockError,
   authUsers,
   companies,
   companyMemberships,
@@ -855,6 +856,13 @@ async function startServerWithDatabaseTeardown(
       );
       return response;
     } catch (err) {
+      if (trigger === "scheduled" && err instanceof StorageTransactionLockError && err.code === "busy") {
+        logger.warn(
+          { backupDir: config.databaseBackupDir, trigger, reason: err.code },
+          "Skipping scheduled database backup because the storage transaction lock is busy",
+        );
+        return null;
+      }
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
       throw err;
     } finally {
