@@ -26424,9 +26424,11 @@ export function heartbeatService(
             return { kind: "deferred" as const };
           };
           const explicitContinuationRunId = randomUUID();
+          const executionBlockerOptions = {
+            conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null,
+          };
           const executionBlocker = await getExecutionBlocker(
-            tx as unknown as Db, issue.companyId, issue.id,
-            { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null },
+            tx as unknown as Db, issue.companyId, issue.id, executionBlockerOptions,
           );
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
@@ -27206,7 +27208,7 @@ export function heartbeatService(
           // Recovery can change while earlier admission gates await I/O. Use
           // the current blocker, not the snapshot from the start of admission.
           const remainingExecutionBlocker = await getExecutionBlocker(
-            tx as unknown as Db, issue.companyId, issue.id,
+            tx as unknown as Db, issue.companyId, issue.id, executionBlockerOptions,
           );
           // A decision can reject a saved message after cleanup has removed
           // every recovery blocker; null can also mean no applicable hold to retire.
