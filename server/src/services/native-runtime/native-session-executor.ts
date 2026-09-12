@@ -8386,12 +8386,14 @@ async function executePaperclipNativeSessionWithinScope(
             failureTask.executionRunId === input.execution.binding.runId) &&
           (!failureTask.checkoutRunId ||
             failureTask.checkoutRunId === input.execution.binding.runId);
+        let failureBlockStatusVersion: number | undefined;
         if (stillOwnsTask && recoveryProjection.issueStatus) {
-          await issueService(tx as unknown as Db).update(
+          const projected = await issueService(tx as unknown as Db).update(
             input.execution.binding.issueId,
             { status: recoveryProjection.issueStatus },
             tx,
           );
+          if (projected?.status === "blocked") failureBlockStatusVersion = projected.statusVersion;
         }
         if (
           !ownershipUnverified &&
@@ -8419,6 +8421,10 @@ async function executePaperclipNativeSessionWithinScope(
             .digest("hex"),
           evidence: {
             runId: input.execution.binding.runId,
+            ...(failureBlockStatusVersion !== undefined ? { nativeFailureBlock: {
+              runId: input.execution.binding.runId,
+              statusVersion: failureBlockStatusVersion,
+            } } : {}),
             coordinatorAttempt: attempt,
             sourceFailureCode,
             recoveryDisposition: failureCode,

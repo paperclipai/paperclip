@@ -1148,3 +1148,11 @@ and project. Follow-ups can therefore reuse the same sandbox and provider
 session. A staged provider package is reused only after the complete expected
 manifest and artifact hashes verify. A missing, changed, or incompatible package
 must be replaced and verified before launch.
+
+Safe native replacement may clear a Blocked status only with a durable receipt
+that the same failed run projected that exact status version. Explicitly
+reasserting Blocked or changing its blockers advances the status version, even
+when the displayed status is unchanged. Adding a queued comment does not change
+that authority. A later block also suppresses replacement at scheduled, queued,
+and final dispatch gates. Old blocked rows without a receipt remain held; no
+historical status backfill is performed.

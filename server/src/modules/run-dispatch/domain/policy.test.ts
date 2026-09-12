@@ -456,6 +456,13 @@ describe("decideQueuedRunStaleness", () => {
 });
 
 describe("native replacement execution authority", () => {
+  it("rejects a task blocked after safe replacement was scheduled", () => {
+    expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "native_safe_replacement", issueStatus: "blocked" }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_blocked" });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", issueStatus: "blocked" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_blocked" });
+  });
+
   it.each([
     { issueExecutionRunId: "newer-run", issueCheckoutRunId: null },
     { issueExecutionRunId: null, issueCheckoutRunId: "newer-run" },

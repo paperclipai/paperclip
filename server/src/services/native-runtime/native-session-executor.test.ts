@@ -6218,7 +6218,7 @@ describe("native session bounded recovery", () => {
     const failure = new NativeSessionCleanupQuarantinedError();
     state.execute.mockReset().mockRejectedValueOnce(failure);
     state.upsertRecoveryAction.mockReset().mockResolvedValue({});
-    const updateIssue = vi.fn(async () => null);
+    const updateIssue = vi.fn(async () => ({ status: "blocked", statusVersion: 7 }));
     const service = vi
       .spyOn(issueServiceModule, "issueService")
       .mockReturnValue({ update: updateIssue } as unknown as ReturnType<
@@ -6250,6 +6250,7 @@ describe("native session bounded recovery", () => {
       expect(state.upsertRecoveryAction).toHaveBeenCalledWith(
         expect.objectContaining({
           cause: "native_session_cleanup_quarantined",
+          evidence: expect.objectContaining({ nativeFailureBlock: { runId: execution.binding.runId, statusVersion: 7 } }),
           ownerType: "board",
           wakePolicy: null,
           nextAction: expect.stringContaining(

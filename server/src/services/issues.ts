@@ -10819,6 +10819,15 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+        // Reasserting Blocked or changing its blockers is a fresh decision even
+        // when the status string stays the same. Invalidate recovery's prior
+        // status receipt without treating comment recency as blocking intent.
+        if (receiptExisting.status === "blocked" &&
+            (issueData.status === "blocked" ||
+              (issueData.status === undefined &&
+                (blockedByIssueIds !== undefined || issueData.unblockDescriptor !== undefined)))) {
+          patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
+        }
         const updated = await tx
           .update(issues)
           .set(patch)

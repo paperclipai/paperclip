@@ -57,6 +57,7 @@ export type ScheduledRetryGateErrorCode =
   | "issue_terminal_status"
   | "issue_not_in_progress"
   | "issue_execution_lock_changed"
+  | "issue_blocked"
   | "issue_review_participant_changed"
   | "issue_paused"
   | "issue_dependencies_blocked"
@@ -112,6 +113,7 @@ export type QueuedRunStalenessErrorCode =
   | "issue_terminal_status"
   | "issue_not_in_progress"
   | "issue_execution_lock_changed"
+  | "issue_blocked"
   | "issue_review_participant_changed"
   | "issue_continuation_waiting_on_review";
 
@@ -353,6 +355,12 @@ export function decideScheduledRetryGate(
     };
   }
 
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+    return { allowed: false, issueId: facts.issueId, errorCode: "issue_blocked",
+      reason: "Scheduled replacement suppressed because the task was blocked after recovery",
+      details: { issueId: facts.issueId } };
+  }
+
   if (facts.retryReasonKind === "native_safe_replacement" &&
       [facts.issueExecutionRunId, facts.issueCheckoutRunId].some(id => id != null && id !== facts.runId)) {
     return { allowed: false, issueId: facts.issueId, errorCode: "issue_execution_lock_changed",
@@ -567,6 +575,12 @@ export function decideQueuedRunStaleness(
         currentAssigneeAgentId: facts.issueAssigneeAgentId,
       },
     };
+  }
+
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+    return { stale: true, errorCode: "issue_blocked",
+      reason: "Cancelled because the task was blocked before replacement dispatch",
+      details: { issueId: facts.issueId } };
   }
 
   if (facts.retryReasonKind === "native_safe_replacement" &&

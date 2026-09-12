@@ -218,6 +218,27 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, competingId)))[0]?.status).toBe("running");
   });
 
+  it("does not dispatch a replacement when the task becomes blocked after scheduling", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const contextSnapshot = { issueId, wakeReason: "native_safe_replacement", retryReason: "native_safe_replacement", forceFreshSession: true };
+    const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+      .toMatchObject({ allowed: false, errorCode: "issue_blocked" });
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
+    expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))
+      .toMatchObject({ outcome: "cancelled", errorCode: "issue_blocked" });
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, replacementId));
+    const dispatch = vi.fn(async () => undefined);
+    expect(await adapter.dispatchResolvedInteractionIfCurrent({ companyId, runId: replacementId, expectedStatus: "running", now: new Date(), dispatch }))
+      .toMatchObject({ dispatched: false, cancellation: { outcome: "cancelled" } });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("blocked");
+  });
+
   it("commits the handoff without awaiting a recovered provider that fails before spawning", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

@@ -473,8 +473,9 @@ export async function settleUnrecoverableExecutions(
         const note = current
           ? "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
-        if (current)
-          await tx
+        let nativeFailureBlock = action.evidence.nativeFailureBlock;
+        if (current) {
+          const [projected] = await tx
             .update(issues)
             .set({
               status: "blocked",
@@ -482,7 +483,13 @@ export async function settleUnrecoverableExecutions(
               checkoutRunId: null,
               updatedAt: now,
             })
-            .where(eq(issues.id, task.id));
+            .where(eq(issues.id, task.id)).returning();
+          // Only a transition owned by this failure grants a recovery receipt.
+          // An already-blocked task may have a separate human/dependency hold.
+          if (task.status !== "blocked" && run.runtimeMode === "native") {
+            nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
+          }
+        }
         await tx
           .update(issueRecoveryActions)
           .set({
@@ -496,6 +503,7 @@ export async function settleUnrecoverableExecutions(
             monitorPolicy: null,
             evidence: {
               ...action.evidence,
+              ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,

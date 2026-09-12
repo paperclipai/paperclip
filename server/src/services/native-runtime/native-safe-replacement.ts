@@ -14,6 +14,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { decideNativeReplacement } from "./native-replacement-evidence.js";
+import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
@@ -329,13 +330,35 @@ export async function reconcileSafeNativeReplacements(
           current.attempt >= 3
         )
           return false;
+        if (task.status === "blocked") {
+          const failureHolds = await tx.select().from(issueRecoveryActions).where(and(
+            eq(issueRecoveryActions.companyId, run.companyId),
+            eq(issueRecoveryActions.sourceIssueId, task.id),
+            eq(issueRecoveryActions.kind, "active_run_watchdog"),
+            eq(issueRecoveryActions.cause, current.failureCode!),
+            sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          )).for("update");
+          const ownsBlock = failureHolds.some(hold => {
+            const receipt = record(hold.evidence.nativeFailureBlock);
+            return receipt.runId === run.id && receipt.statusVersion === task.statusVersion;
+          });
+          if (!ownsBlock) return false;
+        }
         if (stoppedSession) {
           const [currentRun] = await tx.select().from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
           )).for("update");
           if (!currentRun || currentRun.status !== "failed" || currentRun.runnerInstanceId !== run.runnerInstanceId ||
-              currentRun.nativeSessionId !== run.nativeSessionId || currentRun.processPid || currentRun.processGroupId ||
-              !stoppedSession.retire()) return false;
+              currentRun.nativeSessionId !== run.nativeSessionId || currentRun.processPid || currentRun.processGroupId) return false;
+        }
+        if (task.status === "blocked") {
+          // Restore only this failure's unchanged projection. The normal issue
+          // service still enforces dependency readiness and assignee eligibility.
+          await issueService(tx as unknown as Db).update(task.id, { status: "in_progress" }, tx);
+        }
+        if (stoppedSession) {
+          // If the last ownership proof changes, roll back the status restoration.
+          if (!stoppedSession.retire()) throw new Error("native_replacement_stopped_session_changed");
           await appendHeartbeatRunEvent(tx as unknown as Db, {
             companyId: run.companyId, runId: run.id, agentId: run.agentId,
             eventType: "native.stopped_text_turn_verified", stream: "system", level: "info",
