@@ -18,6 +18,7 @@ export default defineConfig({
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "packages/plugins/sdk",
+      "packages/plugins/plugin-slack-control",
       "packages/plugins/create-paperclip-plugin",
       "packages/plugins/sandbox-providers/daytona",
       "server",
