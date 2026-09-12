@@ -381,6 +381,7 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
     "get-session",
     "sidebar-preferences",
     "llms",
+    "mcp",
     "cloud",
     "stacks",
     "smoke-lab",

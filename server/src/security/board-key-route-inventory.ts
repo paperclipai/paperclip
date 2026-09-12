@@ -258,6 +258,7 @@ export const BOARD_KEY_ROUTE_INVENTORY: readonly string[] = [
   "board_key_denied | deny | /api/invites/{*path}",
   "board_key_denied | deny | /api/join-requests/{*path}",
   "board_key_denied | deny | /api/llms/{*path}",
+  "board_key_denied | deny | /api/mcp/{*path}",
   "board_key_denied | deny | /api/openapi.json/{*path}",
   "board_key_denied | deny | /api/pipelines/{*path}",
   "board_key_denied | deny | /api/plugins/{*path}",
