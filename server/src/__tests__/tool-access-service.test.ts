@@ -2614,6 +2614,80 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(health.connection.healthStatus).toBe("ok");
   });
 
+  it.each(
+    [
+      { sourceTemplateKey: "anthropic", connectionMethodKey: "api-key" },
+      {
+        sourceTemplateKey: "unsupported-rest-fixture",
+        templateId: "paperclip.echo-calculator-time",
+      },
+    ].flatMap((config) =>
+      (["checkHealth", "refreshCatalog"] as const).map((operation) => ({ config, operation })),
+    ),
+  )("rejects unsupported REST tool connections without stdio validation: %j", async ({ config, operation }) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const application = await service.createApplication(company.id, {
+      name: "REST regression fixture",
+      type: "rest_api",
+    });
+    const connection = await service.createConnection(company.id, {
+      applicationId: application.id,
+      name: "REST regression fixture",
+      transport: "rest_api",
+      config,
+      enabled: true,
+      status: "active",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const message = "This connection has no supported tool integration. Add a supported account or MCP connection from Connectors.";
+
+    await expect(service[operation](connection.id)).rejects.toMatchObject({
+      status: 422,
+      message,
+      details: { code: "tool_connection_transport_unsupported" },
+    });
+    const [saved] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, connection.id));
+    expect(saved).toMatchObject({ healthStatus: "error", healthMessage: message });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await service.listRuntimeSlots(company.id)).toEqual([]);
+    expect(await db.select().from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, connection.id))).toEqual([]);
+    const audit = await db.select().from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.connectionId, connection.id));
+    expect(audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: operation === "checkHealth" ? "tool_connection.health_check" : "tool_connection.catalog_refresh",
+        outcome: "failure",
+        reasonCode: "tool_connection_transport_unsupported",
+      }),
+    ]));
+    // Removing a method from the catalog must not strand its saved connections.
+    expect(await service.archiveConnection(connection.id)).toMatchObject({
+      connection: { status: "archived" },
+    });
+  });
+
+  it("rejects the obsolete Anthropic REST setup before storing credentials", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "anthropic",
+      connectionMethodKey: "api-key",
+      credentialValues: { "credentials.apiKey": "rest-regression-secret" },
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 422,
+      message: "This app does not have an available connection method",
+    });
+
+    expect(await db.select().from(toolConnections)
+      .where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(companySecrets)
+      .where(eq(companySecrets.companyId, company.id))).toEqual([]);
+  });
+
   it("registers an approved local stdio template and exposes its runtime slot", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

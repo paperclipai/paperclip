@@ -238,6 +238,13 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
   writeTools: readonly string[];
 }>;
 describe("AppDefinition catalog", () => {
+  it("offers Anthropic runtime authentication without the unsupported REST tool method", () => {
+    const anthropic = APP_DEFINITIONS.find((app) => app.slug === "anthropic")!;
+    expect(anthropic.methods.map((method) => method.key)).toEqual(["ai-subscription", "ai-api_key"]);
+    expect(anthropic.methods.every((method) => method.purpose === "ai" && method.transport === "runtime_auth")).toBe(true);
+    expect(getAvailableConnectionMethod(anthropic, "api-key")).toBeNull();
+  });
+
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
   it("contains every established provider plus the reviewed self-serve catalog", () => {
