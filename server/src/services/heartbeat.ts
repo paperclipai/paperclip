@@ -18522,10 +18522,18 @@ export function heartbeatService(
         errorCode: "process_lost",
         finishedAt: now,
         resultJson: (() => {
+          // Only runs whose historical invocation actually used a conversation
+          // adapter can carry the continuation policy on a process-loss stop.
+          // The agent's CURRENT adapter type must not relabel a lost process
+          // run when an admin switches it mid-flight (see test "does not
+          // relabel a lost process run when its agent changes to a
+          // conversation adapter"); runUsedConversationAdapter checks the
+          // persisted invocation event, not agents.adapterType.
           const result = mergeRunStopMetadataForAgent(
             { adapterType, adapterConfig },
             "failed",
             {
+              conversationContinuationEligible: await runUsedConversationAdapter(db, run),
               resultJson: parseObject(run.resultJson),
               errorCode: "process_lost",
               errorMessage: shouldRetry
