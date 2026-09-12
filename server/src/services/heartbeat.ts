@@ -13896,13 +13896,11 @@ export function heartbeatService(
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
-    // Native sessions have their own fenced same-run controller. The legacy
-    // process-loss path runs only after the reaper has already classified the
-    // run as process_lost with a CAS write, so the reconciliation gate that
-    // protects ambiguous bootstrap failures does not apply here. We still
-    // honor the de-facto retry budget by incrementing processLossRetryCount
-    // on the successor.
-    if (run.runtimeMode === "native") return null;
+    // Native sessions have their own fenced same-run controller. Legacy
+    // bootstrap recovery shares the durable delay and incident counter with
+    // transient retries; process loss must not open a second retry budget.
+    if (run.runtimeMode === "native" || legacyExecutionNeedsReconciliation(run))
+      return null;
     const successorLossRetryCount = (run.processLossRetryCount ?? 0) + 1;
     const scheduled = await scheduleBoundedRetryForRun(run, agent, {
       now,
@@ -18570,25 +18568,13 @@ export function heartbeatService(
           const withAllocationDiagnostic = allocationDiagnostic
             ? { ...result, environmentAllocationDiagnostic: allocationDiagnostic }
             : result;
-          // The process-loss dispatch lost the process before any provider
-          // work could start. Mark the failed run as a safe bootstrap so the
-          // legacy retry path (process_lost_retry / interaction_continuation_infra_retry)
-          // is not blocked by legacyExecutionNeedsReconciliation. The
-          // null-env ladder does not consume this field.
-          const withBootstrapEvidence = {
-            ...withAllocationDiagnostic,
-            executionRecovery: {
-              kind: "bootstrap" as const,
-              providerWorkStarted: false,
-            },
-          };
           return unmanagedBackgroundTaskEvidence
             ? {
-              ...withBootstrapEvidence,
+              ...withAllocationDiagnostic,
               stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
               unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
             }
-            : withBootstrapEvidence;
+            : withAllocationDiagnostic;
         })(),
         ...(allocationDiagnosticLine
           ? { stderrExcerpt: appendWithByteCap(run.stderrExcerpt ?? "", allocationDiagnosticLine, MAX_EXCERPT_BYTES) }

@@ -2592,9 +2592,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("does not route a monitor-dispatch loss through the null-environment ladder", async () => {
     // The fingerprint (no pid, no pgid, no lease) matches monitor-dispatch
-    // losses too, but those are owned by the legacy `process_lost_retry` path
-    // and must NOT enter the bounded null-env ladder.
-    const { agentId, runId } = await seedRunFixture({
+    // losses too. Monitor-dispatch losses are owned by the monitor scheduler
+    // (a future wake is already scheduled), so the reaper must NOT enter the
+    // bounded null-env ladder. Instead the issue is escalated to the board
+    // via a legacy_execution_requires_reconciliation recovery action.
+    const { agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
       processPid: null,
@@ -2623,11 +2625,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     });
     expect(failed?.stderrExcerpt ?? "").not.toContain("[environment-allocation]");
-    // The retry must use the legacy wake/reason, not the null-env ladder.
-    expect(retry?.scheduledRetryReason).not.toBe("retry_transient_environment_failure");
-    expect(retry?.contextSnapshot).toMatchObject({
-      wakeReason: "process_lost_retry",
-    });
+    // No retry at all — monitor-dispatch with a future wake is handled by the
+    // monitor scheduler, not by the null-env or legacy retry ladder.
+    expect(retry).toBeUndefined();
+    // The issue is escalated to the board via the reconciliation recovery path.
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toEqual([
+      expect.objectContaining({
+        ownerType: "board",
+        cause: "legacy_execution_requires_reconciliation",
+      }),
+    ]);
   });
 
   it("does not route a plan-approval continuation loss through the null-environment ladder", async () => {
