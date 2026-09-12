@@ -1154,5 +1154,7 @@ that the same failed run projected that exact status version. Explicitly
 reasserting Blocked or changing its blockers advances the status version, even
 when the displayed status is unchanged. Adding a queued comment does not change
 that authority. A later block also suppresses replacement at scheduled, queued,
-and final dispatch gates. Old blocked rows without a receipt remain held; no
+and final dispatch gates. Queued and final native replacement dispatch also
+re-read dependency readiness, since new dependencies need not change the
+displayed task status. Old blocked rows without a receipt remain held; no
 historical status backfill is performed.

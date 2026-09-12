@@ -545,11 +545,21 @@ export function createPostgresRunDispatchAdapter(
             .then((rows) => Boolean(rows[0]))
         : false;
 
+    const retryReasonKind = classifyRetryReasonKind(retryReason);
+    // Dependency edges can change after scheduled promotion without changing
+    // the displayed status. Read them again under the queued/final issue lock.
+    const readiness = issue && retryReasonKind === "native_safe_replacement"
+      ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
+      : null;
     return {
       runId: input.runId,
       runAgentId: input.agentId,
       issueId,
-      retryReasonKind: classifyRetryReasonKind(retryReason),
+      retryReasonKind,
+      dependenciesBlocked: readiness && !readiness.isDependencyReady ? {
+        unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+        unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+      } : null,
       issueFound: issue !== null,
       issueStatus: issue?.status ?? null,
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,

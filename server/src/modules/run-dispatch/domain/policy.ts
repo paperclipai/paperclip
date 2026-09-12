@@ -108,6 +108,7 @@ export type ScheduledRetryFacts = {
 
 export type QueuedRunStalenessErrorCode =
   | "execution_reconciliation_required"
+  | "issue_dependencies_blocked"
   | "issue_not_found"
   | "issue_assignee_changed"
   | "issue_terminal_status"
@@ -127,6 +128,8 @@ export type StalenessDecision =
     };
 
 export type QueuedRunFacts = {
+  /** Rechecked for automatic native replacements immediately before dispatch. */
+  dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
   runAgentId: string;
   issueId: string;
@@ -575,6 +578,14 @@ export function decideQueuedRunStaleness(
         currentAssigneeAgentId: facts.issueAssigneeAgentId,
       },
     };
+  }
+
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked) {
+    return { stale: true, errorCode: "issue_dependencies_blocked",
+      reason: "Cancelled because issue dependencies became blocked before replacement dispatch",
+      details: { issueId: facts.issueId,
+        unresolvedBlockerIssueIds: facts.dependenciesBlocked.unresolvedBlockerIssueIds,
+        unresolvedBlockerCount: facts.dependenciesBlocked.unresolvedBlockerCount } };
   }
 
   if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
