@@ -1044,3 +1044,23 @@ resources and sandboxes owned by another lease are not rechecked this way.
 Delivery still requires the provider's verified stop receipt. Periodic queue
 retries do not gain extra cleanup attempts, and the queue displays the server's
 waiting reason while cleanup remains unresolved.
+
+### Operator identity and permission for manual dispatch
+
+A legacy queued-message Interrupt is a new instruction from the user who clicks
+it. The new run uses that user's execution identity, including when someone else
+wrote the queued messages. Message bodies and historical authors stay unchanged.
+Startup validates the consumed queue receipt against the new run, company,
+agent, task, clicking user, and delivered message IDs. Automatic retries inherit
+the resulting execution identity through the ordinary run identity history.
+
+Starting an existing agent requires `agent:wake`, which active non-viewer board
+members have within their company. Both wake endpoints use this action instead
+of `agents:create`. An exact task retry also checks `issue:comment` on the task
+from the stored failed run and verifies that its assigned agent has not changed.
+External chat retries retain their additional conversation authorization.
+
+These actions do not grant permission to hire agents or change their settings.
+Each action during execution still checks the agent's authority and the
+responsible user's authority. A denied retry returns before dispatch; it does
+not create a new failed run or change the task's state.

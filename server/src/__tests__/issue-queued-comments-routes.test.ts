@@ -21,7 +21,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { reconcileSteeredIdentity } from "../services/run-identity.js";
+import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -217,6 +217,20 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(runs.every(run => !run.contextSnapshot?.explicitUserContinuation)).toBe(true);
   });
 
+  it("denies a viewer's interrupt before persisting intent or cancelling a run", async () => {
+    const seeded = await seedQueue();
+    await db.update(companyMemberships).set({ membershipRole: "viewer" })
+      .where(eq(companyMemberships.principalId, "other-operator"));
+    const client = app(seeded.companyId, "other-operator");
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: seeded.runId,
+    }).expect(403);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.payload?.queuedCommentInterrupt).toBeUndefined();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("running");
+  });
+
   it.each([null, "stopped-target", "system-receipt"])("sends a stopped legacy queue once with target %s", async (target) => {
     const seeded = await seedQueue();
     if (target === "system-receipt") await db.update(agentWakeupRequests).set({
@@ -244,6 +258,13 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(wake.status).toBe("coalesced");
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
     expect(successor.status).toBe("queued");
+    expect(successor.responsibleUserId).toBe("other-operator");
+    const identity = await initializeRunIdentity(db, {
+      companyId: seeded.companyId, issueId: seeded.issueId,
+      runId: successor.id, messageIds: seeded.commentIds, responsibleUserId: "queue-owner", cause: "dispatch",
+    });
+    expect(identity.responsibleUserId).toBe("other-operator");
+    expect(identity.cause).toBe("queued_comment_interrupt");
     expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
     await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);

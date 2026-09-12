@@ -1707,6 +1707,16 @@ export function agentRoutes(
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
+  async function assertBoardCanWakeAgent(req: Request, agent: { id: string; companyId: string }) {
+    assertBoard(req);
+    assertCompanyAccess(req, agent.companyId);
+    const decision = await access.decide({
+      actor: req.actor, action: "agent:wake",
+      resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
+    });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   // The single owner-authorization helper for the three adapter login routes. It
   // requires a board actor, company access, and the same configuration
   // permission as the adapter Test route (`agents:create`). It returns the
@@ -5446,7 +5456,7 @@ export function agentRoutes(
         return;
       }
     } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+      await assertBoardCanWakeAgent(req, agent);
     }
     if (req.body.debug?.providerTrace === "raw") {
       assertInstanceAdmin(req);
@@ -5488,6 +5498,20 @@ export function agentRoutes(
         typeof failedContext.issueId === "string"
           ? failedContext.issueId
           : null;
+      if (issueId) {
+        const issue = await issueService(db).getById(issueId);
+        if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
+        const decision = await access.decide({
+          actor: req.actor, action: "issue:comment",
+          resource: {
+            type: "issue", companyId: issue.companyId, issueId: issue.id,
+            projectId: issue.projectId, parentIssueId: issue.parentId,
+            assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
+          },
+        });
+        if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+        if (issue.assigneeAgentId !== agent.id) throw conflict("The task is no longer assigned to this agent.");
+      }
       const chatBinding = issueId
         ? await db
             .select({ id: chatConversations.id })
@@ -5648,7 +5672,7 @@ export function agentRoutes(
         return;
       }
     } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+      await assertBoardCanWakeAgent(req, agent);
     }
     const providerTraceRequested = req.body?.debug?.providerTrace === "raw";
     if (providerTraceRequested) {

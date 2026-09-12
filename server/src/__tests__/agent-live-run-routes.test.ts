@@ -876,6 +876,18 @@ describe("agent live run routes", () => {
     });
   });
 
+  it.each(["wakeup", "heartbeat/invoke"])("lets an operator start an existing agent via %s without creating agents", async (endpoint) => {
+    mockAccessService.decide.mockImplementation(async ({ action }) => ({
+      allowed: action === "agent:wake", explanation: "Missing permission: agents:create",
+    }));
+    const res = await requestApp(await createApp(undefined, {
+      type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
+    }), url => request(url).post(`/api/agents/${routeAgentId}/${endpoint}`).send({}));
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "agent:wake" }));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
+  });
+
   describe("exact failed chat run retry", () => {
     const retryBody = {
       failedRunId: failedChatRunId,
@@ -901,6 +913,10 @@ describe("agent live run routes", () => {
         companyId: "company-1",
       });
       mockHeartbeatService.getRun.mockResolvedValue(selectedRun);
+      mockIssueService.getById.mockResolvedValue({
+        id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
+        assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+      });
       mockChatRunRetries.prepareFailedChatRunRetry.mockResolvedValue({
         actionId: retryActionId,
         issueId: failedChatIssueId,
@@ -912,6 +928,49 @@ describe("agent live run routes", () => {
         status: "deferred",
       });
     });
+
+    it("retries a task for an operator without agent-creation permission", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: {
+        issueId: failedChatIssueId,
+      } });
+      mockAccessService.decide.mockImplementation(async ({ action }) => ({
+        allowed: action === "issue:comment" || action === "agent:wake", explanation: "Missing permission: agents:create",
+      }));
+      const res = await requestApp(await createApp(fixture.db, {
+        type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
+      }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "issue:comment", resource: expect.objectContaining({
+          type: "issue", companyId: "company-1", issueId: failedChatIssueId,
+        }),
+      }));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+        requestedByActorType: "user", requestedByActorId: "operator", failedRunId: failedChatRunId,
+        payload: { issueId: failedChatIssueId },
+      }));
+    });
+
+    it.each(["viewer", "missing", "other-company", "reassigned"])(
+      "rejects a %s task retry without dispatching or requiring agent creation", async (fault) => {
+        const fixture = createFailedChatRetryDb(false);
+        mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: { issueId: failedChatIssueId } });
+        if (fault === "viewer") mockAccessService.decide.mockResolvedValue({
+          allowed: false, explanation: "Viewer membership does not grant issue:comment.",
+        });
+        else mockIssueService.getById.mockResolvedValue(fault === "missing" ? null : {
+          id: failedChatIssueId, companyId: fault === "other-company" ? "elsewhere" : "company-1",
+          assigneeAgentId: "other-agent", assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+        });
+        const res = await requestApp(await createApp(fixture.db), url =>
+          request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+        expect(res.status).toBe(fault === "viewer" ? 403 : fault === "reassigned" ? 409 : 404);
+        expect(mockAccessService.decide.mock.calls.every(([input]) => input.action !== "agents:create")).toBe(true);
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
+      },
+    );
 
     it.each([
       ["failed", "deferred", null],
@@ -1073,7 +1132,7 @@ describe("agent live run routes", () => {
     );
 
     it.each(["agent", "company", "permission"])(
-      "denies %s authority before retry selection",
+      "denies %s authority before retry admission",
       async (denial) => {
         const fixture = createFailedChatRetryDb();
         const actor =

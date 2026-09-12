@@ -24,7 +24,7 @@ import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
-import { initializeRunIdentity } from "./run-identity.js";
+import { initializeRunIdentity, queuedCommentInterruptActor } from "./run-identity.js";
 import {
   assertDurableChatWakeupReceipt,
   assertDurableChatWakeupRequest,
@@ -10173,7 +10173,7 @@ export function heartbeatService(
     await enqueueWakeup(wake.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: deliveryPayload, contextSnapshot: withQueuedCommentIdsInRunContext({
-        ...parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]), issueId,
+        issueId, triggeredBy: "board", actorId, responsibleUserId: actorId,
       }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       queuedCommentInterruptId: queueId,
@@ -10702,7 +10702,8 @@ export function heartbeatService(
       ReturnType<typeof getRoutineEnvForExecutionIssue>
     >;
   }) {
-    const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
+    const interruptActor = await queuedCommentInterruptActor(db, input.run);
+    const responsibleUserId = interruptActor ?? await resolveResponsibleUserIdForRunSeed({
       companyId: input.run.companyId,
       contextSnapshot: input.contextSnapshot,
       issueContext: input.issueContext,
@@ -25657,8 +25658,10 @@ export function heartbeatService(
     const isolatedWorkspacesEnabled = issueId
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
       : false;
+    let interruptResponsibleUserId: string | null = null;
     let queuedResponsibleUserIdPromise: Promise<string> | null = null;
     const resolveQueuedResponsibleUserId = () => {
+      if (interruptResponsibleUserId) return Promise.resolve(interruptResponsibleUserId);
       queuedResponsibleUserIdPromise ??= (async () => {
         const queuedIssueContext = issueId
           ? await getIssueExecutionContext(agent.companyId, issueId)
@@ -25853,6 +25856,9 @@ export function heartbeatService(
               return { kind: "deferred" as const };
             }
             if (opts.queuedCommentInterruptId) {
+              // The locked board receipt supplies execution authority even when
+              // another user authored the messages. Dispatch revalidates the receipt.
+              interruptResponsibleUserId = opts.requestedByActorId!;
               // Edits/discards between the click and dispatch remain authoritative.
               Object.assign(enrichedContextSnapshot, withQueuedCommentIdsInRunContext(
                 enrichedContextSnapshot, queuedCommentIdsFromWakePayload(pending.payload),
