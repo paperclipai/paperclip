@@ -894,6 +894,10 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         .set({
           payload: input.mergedPayload,
           coalescedCount: input.nextCoalescedCount,
+          ...(input.manualUserWakeActorId ? {
+            requestedByActorType: "user",
+            requestedByActorId: input.manualUserWakeActorId,
+          } : {}),
           updatedAt: new Date(),
         })
         .where(

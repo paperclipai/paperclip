@@ -201,6 +201,43 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect((await db.select().from(heartbeatRuns)).every(row => row.responsibleUserId === operatorId)).toBe(true);
   });
 
+  it("keeps the clicking user when a manual wake merges into an older deferred receipt", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
+      membershipRole: "operator", status: "active" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Deferred manual wake", status: "todo",
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    const execute = mockAdapterExecute.getMockImplementation()!;
+    mockAdapterExecute.mockImplementationOnce(async () => { await blocked; return execute(); });
+    const first = await heartbeat.wakeup(agentId, { payload: { issueId },
+      requestedByActorType: "user", requestedByActorId: ownerUserId });
+    try {
+      await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalled(), { timeout: 5_000 });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Pending work" });
+      await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: ownerUserId,
+        payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] } },
+      });
+      expect(await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+        payload: { issueId }, requestedByActorType: "user", requestedByActorId: operatorId,
+        contextSnapshot: { responsibleUserId: operatorId, forceFreshSession: true } })).toBeNull();
+      const [pending] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+      expect(pending).toMatchObject({ requestedByActorType: "user", requestedByActorId: operatorId,
+        payload: { manualUserWake: true } });
+    } finally {
+      finish();
+    }
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const successors = (await db.select().from(heartbeatRuns)).filter(run => run.id !== first!.id);
+    expect(successors.length).toBeGreaterThan(0);
+    expect(successors.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
+  });
+
   it("denies a manual wake of another user's private conversation", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const issueId = randomUUID();

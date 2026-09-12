@@ -717,6 +717,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     scope: TransactionScope,
     input: AdmitWakeBehindIssueExecutionInput,
   ): Promise<AdmitWakeBehindIssueExecutionResult> {
+    const manualUserWakeActorId = input.payload?.manualUserWake === true
+      ? readNonEmptyString(input.requestedByActorId) : null;
+    if (input.payload?.manualUserWake === true &&
+        (input.requestedByActorType !== "user" || !manualUserWakeActorId)) {
+      throw new Error("wake-queue: manual wake requires an authenticated user");
+    }
     const isSameExecutionAgent = await deps.reader.isSameExecutionAgent(scope, {
       companyId: input.companyId,
       activeExecutionRunAgentId: input.activeExecutionRun.agentId,
@@ -831,6 +837,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         existingDeferredWakeId: existingDeferred.id,
         mergedPayload,
         nextCoalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+        ...(manualUserWakeActorId ? { manualUserWakeActorId } : {}),
         ...(input.durableReceipt
           ? {
               coalescedReceipt: {
