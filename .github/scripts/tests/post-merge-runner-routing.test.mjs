@@ -10,7 +10,7 @@ const base = {
   ref: "refs/heads/master", event_name: "push", sha,
 };
 const expectedJobs = {
-  "cloud-readiness.yml": ["artifacts", "source_verified", "ready"],
+  "cloud-readiness.yml": [],
   "cloud-artifacts.yml": ["dispatch_migrator"],
   "release-verify.yml": ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"],
   "runner-chaos-evals.yml": ["chaos_and_recovery"],
@@ -81,3 +81,18 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
     });
   }
 }
+
+
+test("Cloud readiness bookkeeping never competes with AWS build and test jobs", () => {
+  const workflow = readFileSync(new URL("../../workflows/cloud-readiness.yml", import.meta.url), "utf8");
+  for (const name of ["artifacts", "source_verified", "ready"]) {
+    const body = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z_]+:|(?![\\s\\S]))`, "m"))?.[1];
+    assert.ok(body, `missing ${name} job`);
+    assert.match(body, /^    runs-on: ubuntu-latest$/m);
+    assert.doesNotMatch(body, /^ +continue-on-error:|^ +if:.*always\(\)/m);
+  }
+  assert.match(workflow, /needs: \[verify\]/);
+  assert.match(workflow, /needs: \[verify, image, artifacts\]/);
+  assert.match(workflow, /run: node scripts\/cloud-readiness.mjs/);
+  assert.match(workflow, /node --test scripts\/cloud-source-verification.test.mjs/);
+});

@@ -399,3 +399,17 @@ fixture setup; it does not make a single test faster.
 The file-duration manifest also records the native Codex Runner integration
 suite's measured import and execution cost, so the existing file balancer
 accounts for it in both ordinary PR and release verification.
+
+
+## Cloud readiness runner placement
+
+Cloud image builds and source verification use the approved post-merge AWS
+fleet. The artifact wait and the `Cloud source verified v1` and `Cloud deployable
+v1` marker jobs run on GitHub-hosted runners. These small jobs must not hold or
+wait for the same AWS capacity used by image builds and tests. During a merge
+burst, even a completed build must wait for its marker before consumers can
+recognize readiness.
+
+Runner placement does not change readiness requirements: exact-source artifacts,
+all source checks, and the image verification must still pass. The versioned
+markers and their dependency gates are unchanged.
