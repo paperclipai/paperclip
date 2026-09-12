@@ -325,6 +325,33 @@ describe("routine routes", () => {
     expect(mockRoutineService.list).toHaveBeenCalledWith(companyId, { projectId });
   });
 
+  it("forwards the Sentry signature header to public webhook verification", async () => {
+    mockRoutineService.firePublicTrigger.mockResolvedValue({
+      id: "run-1",
+      source: "webhook",
+      status: "issue_created",
+    });
+    const app = await createApp({ type: "public" });
+    const payload = {
+      action: "created",
+      data: { issue: { id: "7625432288", project: { slug: "api" } } },
+    };
+
+    const res = await request(app)
+      .post("/api/routine-triggers/public/sentry-trigger/fire")
+      .set("Sentry-Hook-Signature", "signed-digest")
+      .send(payload);
+
+    expect(res.status).toBe(202);
+    expect(mockRoutineService.firePublicTrigger).toHaveBeenCalledWith(
+      "sentry-trigger",
+      expect.objectContaining({
+        sentrySignatureHeader: "signed-digest",
+        payload,
+      }),
+    );
+  });
+
   it("lists routine revisions for a board member in newest-first service order", async () => {
     const app = await createApp({
       type: "board",
