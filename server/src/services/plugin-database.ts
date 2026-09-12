@@ -273,7 +273,85 @@ export function validatePluginRuntimeQuery(
   }
 }
 
-export function validatePluginRuntimeExecute(query: string, namespace: string): void {
+type RuntimeSqlToken = { value: string; kind: "word" | "identifier" | "literal" | "symbol" };
+
+function runtimeSqlTokens(statement: string): RuntimeSqlToken[] {
+  const tokens: RuntimeSqlToken[] = [];
+  // Token boundaries matter: comment markers inside quoted identifiers are data.
+  const pattern = /\s+|--[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:[^"]|"")*"|'(?:[^']|'')*'|\$\d+|[A-Za-z_][A-Za-z0-9_$]*|[^\s]/gy;
+  for (const match of statement.matchAll(pattern)) {
+    const value = match[0];
+    if (/^\s|^--/.test(value)) continue;
+    if (value.startsWith("/*")) {
+      if (value.slice(2, -2).includes("/*")) throw new Error("ctx.db.execute does not support nested SQL comments");
+      continue;
+    }
+    if ((value === "/" && statement[match.index! + 1] === "*") || value === '"' || value === "'") {
+      throw new Error("ctx.db.execute contains an unterminated SQL quote or comment");
+    }
+    if ((value.startsWith("$") && !/^\$\d+$/.test(value)) || value === "`") {
+      throw new Error("ctx.db.execute does not support dollar-quoted strings or alternate identifier quoting");
+    }
+    if (value.startsWith('"')) tokens.push({ kind: "identifier", value: value.slice(1, -1).replaceAll('""', '"') });
+    else if (value.startsWith("'")) tokens.push({ kind: "literal", value: "" });
+    else tokens.push({ kind: /^[A-Za-z_]/.test(value) ? "word" : "symbol", value });
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.kind !== "word") continue;
+    if ((token.value.toLowerCase() === "e" && tokens[index + 1]?.kind === "literal") ||
+        (token.value.toLowerCase() === "u" && tokens[index + 1]?.value === "&")) {
+      throw new Error("ctx.db.execute does not support escape or Unicode SQL quoting");
+    }
+  }
+  return tokens;
+}
+
+function runtimeExecuteRefs(tokens: RuntimeSqlToken[]): SqlRef[] {
+  const refs: SqlRef[] = [];
+  const word = (index: number, value: string) => tokens[index]?.kind === "word" && tokens[index]!.value.toLowerCase() === value;
+  const relation = (index: number, keyword: string): void => {
+    if (word(index, "only")) index += 1;
+    const schema = tokens[index];
+    const table = tokens[index + 2];
+    if (!schema || !table || !["word", "identifier"].includes(schema.kind) || !["word", "identifier"].includes(table.kind) ||
+        !IDENTIFIER_RE.test(schema.value) || !IDENTIFIER_RE.test(table.value) || tokens[index + 1]?.value !== "." || tokens[index + 3]?.value === ".") {
+      throw new Error("ctx.db.execute requires fully qualified relations inside the plugin namespace or core read allowlist");
+    }
+    if (["from", "join", "using"].includes(keyword) && tokens[index + 3]?.value === "(") {
+      throw new Error("ctx.db.execute does not support table functions");
+    }
+    refs.push({ keyword, schema: schema.value, table: table.value });
+  };
+  let depth = 0;
+  const sourceDepths = new Set<number>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.kind === "symbol" && token.value === "(") { depth += 1; continue; }
+    if (token.kind === "symbol" && token.value === ")") { sourceDepths.delete(depth); depth -= 1; continue; }
+    if (token.kind === "symbol" && token.value === "," && sourceDepths.has(depth)) { relation(index + 1, "from"); continue; }
+    if (token.kind !== "word") continue;
+    const keyword = token.value.toLowerCase();
+    // EXTRACT(field FROM value) has no relation at its FROM separator.
+    if (keyword === "from" && tokens[index - 2]?.value === "(" && word(index - 3, "extract")) continue;
+    if (["where", "group", "order", "having", "limit", "offset", "returning", "union", "except", "intersect", "window"].includes(keyword)) sourceDepths.delete(depth);
+    if (keyword === "table") throw new Error("ctx.db.execute does not support TABLE expressions");
+    if (keyword === "from" || keyword === "using") sourceDepths.add(depth);
+    if (["from", "join", "references", "using", "into", "update"].includes(keyword)) {
+      if (keyword === "update" && word(index - 1, "do") && word(index + 1, "set")) continue;
+      relation(index + 1, keyword === "from" && word(index - 1, "delete") ? "delete from" : keyword);
+    }
+  }
+  return refs;
+}
+
+export function validatePluginRuntimeExecute(
+  query: string,
+  namespace: string,
+  coreReadTables: readonly PluginDatabaseCoreReadTable[] = [],
+): void {
+  // Reject unsupported escape syntax before the statement splitter sees it.
+  const tokens = runtimeSqlTokens(query);
   const statements = splitSqlStatements(query);
   if (statements.length !== 1) {
     throw new Error("Plugin runtime SQL must contain exactly one statement");
@@ -288,15 +366,19 @@ export function validatePluginRuntimeExecute(query: string, namespace: string): 
     throw new Error("ctx.db.execute cannot contain DDL keywords");
   }
 
-  const refs = extractQualifiedRefs(statement);
-  const target = refs.find((ref) => ["into", "update", "from"].includes(ref.keyword));
+  const refs = runtimeExecuteRefs(tokens);
+  const target = refs[0];
   if (!target || target.schema !== namespace) {
     throw new Error(`ctx.db.execute target must be inside plugin namespace "${namespace}"`);
   }
+  const allowedCoreReadTables = new Set(coreReadTables);
   for (const ref of refs) {
-    if (ref.schema !== namespace) {
-      throw new Error("ctx.db.execute cannot reference public or other non-plugin schemas");
+    if (ref.schema === namespace) continue;
+    if (ref.schema === "public") {
+      assertAllowedPublicRead(ref, allowedCoreReadTables);
+      continue;
     }
+    throw new Error(`ctx.db.execute cannot reference schema "${ref.schema}"`);
   }
 }
 
@@ -563,8 +645,9 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
     },
 
     async execute(pluginId: string, statement: string, params?: unknown[]): Promise<{ rowCount: number }> {
+      const plugin = await getPluginRecord(pluginId);
       const namespace = await getRuntimeNamespace(pluginId);
-      validatePluginRuntimeExecute(statement, namespace);
+      validatePluginRuntimeExecute(statement, namespace, plugin.manifestJson.database?.coreReadTables ?? []);
       const result = await db.execute(bindSql(statement, params));
       return { rowCount: Number((result as { count?: number | string }).count ?? 0) };
     },
