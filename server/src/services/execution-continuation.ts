@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
 import {
   agentWakeupRequests,
   heartbeatRuns,
@@ -11,6 +12,7 @@ import {
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
+import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -268,18 +270,39 @@ export async function buildExecutionContinuation(input: {
       eq(agentWakeupRequests.reason, "retry_failed_run"), eq(agentWakeupRequests.requestedByActorType, "user"),
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     )) : [];
-    const authorization = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
-      .find(value => value.previousRunId === explicitUserSource &&
+    // Admission records the board operator's authority separately from the
+    // message author. At dispatch, prove that exact queue was adopted by this
+    // run; caller-supplied continuation context cannot grant this authority.
+    const continuationAuthorizations = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
+      .filter(value => value.previousRunId === explicitUserSource &&
         (!input.runId || value.runId === input.runId) &&
         value.commentId === explicitContinuation.commentId &&
-        priorRuns.some(run => run.id === value.runId) &&
-        (failedRunId
+        priorRuns.some(run => run.id === value.runId));
+    const interruptQueueIds = [...new Set(continuationAuthorizations.flatMap(value => {
+      const parsed = z.string().guid().safeParse(value.queuedCommentInterruptId);
+      return parsed.success ? [parsed.data] : [];
+    }))];
+    const interruptQueues = interruptQueueIds.length
+      ? await db.select().from(agentWakeupRequests).where(and(
+        inArray(agentWakeupRequests.id, interruptQueueIds),
+        eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.status, "coalesced"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
+      )) : [];
+    const authorization = continuationAuthorizations.find(value => failedRunId
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
           : rows.some(comment => comment.id === value.commentId &&
-              comment.authorType === "user" && comment.authorUserId === value.actorId &&
-              !comment.createdByRunId && !comment.deletedAt)));
+              comment.authorType === "user" &&
+              (value.queuedCommentInterruptId
+                ? interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId &&
+                    queue.runId === value.runId &&
+                    object(object(queue.payload).queuedCommentInterrupt).actorId === value.actorId &&
+                    queuedCommentIdsFromWakePayload(queue.payload).includes(comment.id))
+                : comment.authorUserId === value.actorId) &&
+              !comment.createdByRunId && !comment.deletedAt));
     if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }

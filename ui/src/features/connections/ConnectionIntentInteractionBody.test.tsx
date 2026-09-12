@@ -16,6 +16,7 @@ import {
 } from "@/fixtures/issueThreadInteractionFixtures";
 import { ConnectionIntentInteractionBody } from "./ConnectionIntentInteractionBody";
 
+const credentialRender = vi.hoisted(() => vi.fn());
 const setupOptionsMock = vi.hoisted(() => vi.fn());
 const completeMock = vi.hoisted(() => vi.fn());
 const declineMock = vi.hoisted(() => vi.fn());
@@ -28,6 +29,14 @@ vi.mock("@/api/connection-intents", () => ({
     decline: (...args: unknown[]) => declineMock(...args),
     setPhase: (...args: unknown[]) => setPhaseMock(...args),
   },
+}));
+
+vi.mock("@/components/ai-connections/AiConnectionCredentialStep", () => ({
+  AiConnectionCredentialStep: (props: { connectionId?: string; name: string; fixedMethod?: boolean; onComplete: (result: {connectionId: string; grantId: string; method: "api_key"}) => void; onCancel: () => void }) => { credentialRender(props); return <div data-testid="shared-ai-credentials">
+    <span>{props.name}</span><span>{String(props.fixedMethod)}</span>
+    <button onClick={() => props.onComplete({ connectionId: props.connectionId!, grantId: "grant", method: "api_key" })}>Reconnect selected account</button>
+    <button onClick={props.onCancel}>Cancel repair</button>
+  </div>; },
 }));
 
 vi.mock("./ConnectionSetupFlow", () => ({
@@ -400,5 +409,56 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
       pendingConnectionIntentInteraction.id,
       "needs_retry",
     );
+  });
+});
+
+
+describe("AI repair inside the card", () => {
+  const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
+  const connection = { id: "selected-account", name: "My Codex account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Dotta", status: "revoked" };
+  it("reuses authentication inline, preserves the selected account, cancels with focus, and completes", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection, canReconnect: true } });
+    completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
+    renderBody(interaction);
+    await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[data-testid="ai-connection-inline-repair"]')?.textContent).toContain("My Codex account");
+    await act(() => button("Cancel repair")!.click());
+    await waitForAssertion(() => expect(document.activeElement?.getAttribute("data-testid")).toBe("connection-intent-focus-target"));
+    expect(completeMock).not.toHaveBeenCalled();
+    await act(() => button("Fix connection")!.click());
+    await act(() => button("Reconnect selected account")!.click());
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, "selected-account");
+  });
+  it("keeps a late credential save after cancellation from accepting the request", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection, canReconnect: true } });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    const abandoned = credentialRender.mock.lastCall![0];
+    await act(() => button("Cancel repair")!.click());
+    await act(() => button("Fix connection")!.click());
+    await act(() => abandoned.onComplete({ connectionId: connection.id, grantId: "grant", method: "api_key" }));
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+  it("offers continuation for the restored account without another login", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [connection], aiRepair: { connection, canReconnect: true } });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+    await act(() => button("Continue task")!.click());
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, connection.id);
+  });
+  it("does not let another user reconnect the owner's account", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection, canReconnect: false } });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.body.textContent).toContain("Dotta must reconnect My Codex account");
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+  });
+  it("does not promise to run without credentials when declined", () => {
+    renderBody({ ...interaction, status: "rejected" });
+    expect(document.body.textContent).toContain("The task still needs a working AI connection");
+    expect(document.body.textContent).not.toContain("can continue without it");
   });
 });

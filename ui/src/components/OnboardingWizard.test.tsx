@@ -12,6 +12,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // the refetch has to answer too — otherwise the identity errors and the list
 // never runs.
 const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
+const localHealth = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/api/health", () => ({ healthApi: localHealth }));
+const managedApi = vi.hoisted(() => ({
+  list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
+  startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", command: "CODEX_HOME='/fixture/login' codex login", expiresAt: "2026-09-11T20:00:00Z" })),
+  checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as const })),
+  cancelLocalLogin: vi.fn(async () => ({})),
+  connectLocal: vi.fn(async () => ({ connectionId: "local-connection", grantId: "local-grant" })),
+  create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+}));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("../api/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/auth")>();
   return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
@@ -312,6 +323,7 @@ function isArcPrimary(text: string): boolean {
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
+    localHealth.get.mockResolvedValue({ deploymentMode: "authenticated" });
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-b", userId: SESSION_USER_ID },
       user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
@@ -915,26 +927,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         return handles;
       }
 
-      it("is stored as the user's own secret and referenced, never carried in the hire", async () => {
+      it("is stored as a personal connection and referenced, never carried in the hire", async () => {
         const { root } = await connectWithApiKey();
 
-        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
-        const [, createBody] = mockSecretsApi.createMyUserSecret.mock.calls.at(-1) as [
-          string,
-          { definitionKey: string; value: string },
-        ];
-        expect(createBody.definitionKey).toMatch(/^ANTHROPIC_API_KEY\.setup\./);
-        expect(createBody.value).toBe(KEY);
-
-        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
-          adapterConfig: { env?: Record<string, unknown> };
-        };
-        // The same binding kind the subscription half of this step produces.
-        expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
-          type: "user_secret_ref",
-          key: createBody.definitionKey,
-          version: "latest",
-        });
+        expect(managedApi.create).toHaveBeenCalledTimes(1);
+        expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({ provider: "anthropic", method: "api_key", ownership: "personal", apiKey: KEY }));
+        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown }; adapterConfig: { env?: Record<string, unknown> } };
+        expect(hireBody.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", method: "api_key", mode: "responsible_user" });
+        expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toBeUndefined();
         // The whole payload, not just that one field: the point is that the key
         // is nowhere in what gets persisted, however it might be nested.
         expect(JSON.stringify(hireBody)).not.toContain(KEY);
@@ -942,23 +942,21 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => root.unmount());
       });
 
-      it("creates a distinct definition instead of rotating an existing key", async () => {
+      it("creates a managed connection without rotating an existing saved key", async () => {
         mockSecretsApi.listMyUserSecrets.mockResolvedValue([
           { definition: { id: "old-def", key: "ANTHROPIC_API_KEY" }, secret: { id: "secret-existing" } },
         ]);
         const { root } = await connectWithApiKey();
-        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledWith(
-          expect.any(String), expect.objectContaining({ key: expect.stringMatching(/^ANTHROPIC_API_KEY\.setup\./) }),
-        );
+        expect(managedApi.create).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ apiKey: KEY }));
         expect(mockSecretsApi.rotateMyUserSecret).not.toHaveBeenCalled();
-        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
+        expect(managedApi.create).toHaveBeenCalledTimes(1);
         await act(async () => root.unmount());
       });
 
       // The one outcome that must never happen is a hire that falls back to
       // embedding the key because storing it failed.
       it("blocks the hire when the key cannot be stored", async () => {
-        mockSecretsApi.createMyUserSecret.mockRejectedValue(new Error("vault unreachable"));
+        managedApi.create.mockRejectedValueOnce(new Error("vault unreachable"));
         const { root } = await connectWithApiKey();
 
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
@@ -967,13 +965,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => root.unmount());
       });
 
-      it("stores one secret when Connect is pressed twice with the same key", async () => {
+      it("stores one connection when Connect is pressed twice with the same key", async () => {
         mockAgentsApi.hire.mockRejectedValueOnce(new Error("network went away"));
         const { root, clickByText } = await connectWithApiKey();
 
         await clickByText((t) => isArcPrimary(t));
 
-        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
+        expect(managedApi.create).toHaveBeenCalledTimes(1);
 
         await act(async () => root.unmount());
       });
@@ -3042,6 +3040,27 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         "env-sandbox-1",
       );
 
+      await act(async () => root.unmount());
+    });
+
+    it("shows local Claude instructions and saves its connection before hiring", async () => {
+      localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
+      mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      expect(document.body.textContent).toContain("claude auth login");
+      expect(document.body.textContent).toContain("machine running Paperclip");
+      expect(document.body.textContent).not.toContain("No managed sandbox");
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      const connect = [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim().startsWith("Connect"));
+      expect(connect).toBeTruthy();
+      await act(async () => connect!.click());
+      for (let i = 0; i < 6; i++) await flushReact();
+      expect(managedApi.connectLocal).toHaveBeenCalledWith("company-new", expect.objectContaining({ provider: "anthropic", method: "subscription", ownership: "personal" }));
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      const hire = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown } };
+      expect(hire.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", method: "subscription", mode: "responsible_user" });
       await act(async () => root.unmount());
     });
 

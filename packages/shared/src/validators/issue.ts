@@ -1000,6 +1000,7 @@ export const issueCommentMetadataSectionSchema = z
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
+    sourceChannel: z.literal("imessage-photon").optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
       .string()
@@ -1073,6 +1074,7 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    purpose: z.literal("ai").optional(),
     version: z.literal(1),
     serviceSlug: z.string().trim().min(1).max(120),
     serviceName: z.string().trim().min(1).max(160),

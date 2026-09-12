@@ -2070,7 +2070,7 @@ async function buildRuntime(input: {
     // device login wrote. This never touches `prepareCodexSkillRuntime` above
     // — that function stays Codex-only — and every other custom ACPX agent
     // (for example `kimi`) falls through this branch unaffected.
-    if (acpxAgent === "grok") {
+    if (acpxAgent === "grok" && !config.managedAiConnection) {
       env.GROK_HOME = resolveManagedGrokHomeDir(agent.companyId);
     }
     const desired = resolveLegacyPaperclipDesiredSkillNames(

@@ -422,6 +422,7 @@ export async function authorizeChatConversationForBoundRun(
     "discord",
     "microsoft-teams",
     "telegram",
+    "imessage-photon",
   ].find(
     (candidate) =>
       source === `chat:${candidate}` || source === `chat:${candidate}:recovery`,
@@ -552,6 +553,7 @@ function externalChatWaitCandidate(
     "discord",
     "microsoft-teams",
     "telegram",
+    "imessage-photon",
   ].find(
     (candidate) =>
       source === `chat:${candidate}` || source === `chat:${candidate}:recovery`,
