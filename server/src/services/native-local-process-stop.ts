@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
@@ -46,7 +46,7 @@ export async function recordNativeLocalProcessStop(db: Db, run: typeof heartbeat
 
 /** Only server-authored evidence counts. A later launch invalidates the receipt. */
 export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
-  const [event] = await db.select({ eventType: heartbeatRunEvents.eventType })
+  const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
     .from(heartbeatRunEvents)
     .where(and(
       eq(heartbeatRunEvents.companyId, companyId),
@@ -56,5 +56,43 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
     ))
     .orderBy(desc(heartbeatRunEvents.seq))
     .limit(1);
-  return event?.eventType === LOCAL_PROCESS_STOPPED;
+  return event?.eventType === LOCAL_PROCESS_STOPPED && event.payload?.source !== "retained_local_session_v1";
+}
+
+/** Upgrade old cleared identities only from an exact, closed retained session.
+ * New-format launches must use their normal stop receipt, never this fallback.
+ */
+export async function reconcileLegacyNativeLocalStop(
+  db: Db, run: typeof heartbeatRuns.$inferSelect,
+  coordinator: typeof nativeRunFinalizations.$inferSelect | undefined,
+  dryRun: boolean,
+): Promise<boolean> {
+  if (!coordinator) return false;
+  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  const previousProof = latest?.eventType === LOCAL_PROCESS_STOPPED &&
+    latest.payload?.source === "retained_local_session_v1" ? latest.payload : null;
+  if (latest && !previousProof) return false;
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  ));
+  if (!leases.length || leases.some(lease => lease.provider !== "local" || !lease.releasedAt || lease.cleanupStatus === "failed")) return false;
+  const { verifyRetainedLocalProcessStop } = await import("./native-runtime/native-session-executor.js");
+  const proof = verifyRetainedLocalProcessStop(run, coordinator);
+  if (!proof) return false;
+  // A retained-state receipt is an audit observation, not permanent authority.
+  // Every later use must still prove the same files and absent process inventory.
+  if (previousProof) return previousProof.fingerprint === proof.fingerprint &&
+    previousProof.controllerPid === proof.controllerPid &&
+    JSON.stringify(previousProof.providerProcessIds) === JSON.stringify(proof.providerProcessIds);
+  if (!dryRun) await appendHeartbeatRunEvent(db, {
+    companyId: run.companyId, runId: run.id, agentId: run.agentId,
+    eventType: LOCAL_PROCESS_STOPPED, stream: "system", level: "info",
+    message: "Verified the stopped local provider from its retained session before continuing the user message.",
+    payload: { ...proof, source: "retained_local_session_v1" },
+  });
+  return true;
 }

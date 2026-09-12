@@ -1,3 +1,4 @@
+import { retainedLocalProviderProcesses } from "./retained-local-stop.js";
 import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
@@ -1633,6 +1634,55 @@ function cleanupStateSnapshot(root: string) {
       .update(JSON.stringify(fileSha256))
       .digest("hex"),
   };
+}
+
+/** Read-only compatibility proof for failed local Codex runs whose old recovery
+ * cleared process metadata. Caller holds the issue/coordinator locks and checks
+ * local leases and the absence of newer server launch records. No old command
+ * is executed, no session is resumed, and no unknown action outcome is changed.
+ */
+export function verifyRetainedLocalProcessStop(
+  run: typeof heartbeatRuns.$inferSelect,
+  coordinator: typeof nativeRunFinalizations.$inferSelect,
+): { fingerprint: string; providerProcessIds: number[]; controllerPid: number } | null {
+  try {
+    if (run.runtimeMode !== "native" || run.status !== "failed" || !run.finishedAt ||
+        run.errorCode !== "native_runner_process_exited" || run.processPid || run.processGroupId ||
+        !run.nativeIssueId || !run.nativeSessionId || !run.runnerInstanceId ||
+        coordinator.companyId !== run.companyId || coordinator.runId !== run.id ||
+        coordinator.issueId !== run.nativeIssueId || coordinator.phase !== "terminal_failure" ||
+        coordinator.leaseOwner || coordinator.resultId || coordinator.nextAttemptAt ||
+        !Number.isSafeInteger(coordinator.controllerPid) || Number(coordinator.controllerPid) <= 0) return null;
+    // A stopped control-plane process cannot mint another reconnect ticket.
+    try { process.kill(coordinator.controllerPid!, 0); return null; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return null; }
+    const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+    if (execution.binding.companyId !== run.companyId || execution.binding.agentId !== run.agentId ||
+        execution.binding.issueId !== run.nativeIssueId || execution.binding.runId !== run.id ||
+        nativeSessionKey(execution) !== run.nativeSessionId || execution.provider.kind !== "codex" ||
+        execution.session.driverKind !== "codex_app_server") return null;
+    const scope = nativeSessionScopeKey(execution);
+    if (activeNativeSessions.has(run.id) || executingRunnerdSessionScopes.has(scope) ||
+        initializingSessionToolAuthorities.has(scope) || warmNativeSessions.has(scope)) return null;
+    // Never migrate, search other scopes, or activate a retained directory here.
+    const root = scopedRunnerdStateRoot(execution);
+    const snapshot = cleanupStateSnapshot(root);
+    const identity = record(snapshot.control.identity);
+    if (identity.runnerInstanceId !== run.runnerInstanceId ||
+        identity.environmentLeaseId !== execution.binding.executionWorkspaceId ||
+        identity.runId !== run.id || identity.normalizedSessionId !== run.nativeSessionId ||
+        typeof identity.turnId !== "string" || typeof identity.itemId !== "string") return null;
+    const processes = retainedLocalProviderProcesses({ snapshot, now: new Date(), identity: {
+      runnerInstanceId: run.runnerInstanceId, environmentLeaseId: execution.binding.executionWorkspaceId,
+      runId: run.id, normalizedSessionId: run.nativeSessionId,
+      turnId: identity.turnId, itemId: identity.itemId,
+    } });
+    if (!processes || !processes.every(cleanupProcessAbsent)) return null;
+    if (cleanupStateSnapshot(root).fingerprint !== snapshot.fingerprint) return null;
+    return { fingerprint: snapshot.fingerprint, providerProcessIds: processes, controllerPid: coordinator.controllerPid! };
+  } catch {
+    return null;
+  }
 }
 
 function cleanupProcessAbsent(pid: unknown): pid is number {

@@ -22,6 +22,29 @@ function comment(id: string, body: string) {
 }
 
 describe("normalizeIssueQueuedCommentQueue", () => {
+  it("keeps the recovery explanation through normalization and optimistic merging", () => {
+    const wait = { reason: "process_identity_missing", message: "The previous run has no verified stop record." };
+    const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+      state: "deferred", executionWait: wait,
+      entries: [{ comment: comment("saved", "continue"), position: 0 }],
+    }, "issue-1");
+    const queue = mergePendingIssueQueuedComments({ issueId: "issue-1", authoritativeQueue,
+      pendingComments: [{ comment: comment("new", "continue"), targetRunId: null }],
+      fallbackProtocol: "paperclip_runner_v1" });
+    expect(queue?.executionWait).toEqual(wait);
+    expect(queue?.entries).toHaveLength(2);
+    const running = normalizeIssueQueuedCommentQueue({ ...authoritativeQueue, state: "queued" }, "issue-1");
+    expect(running.executionWait).toBeNull();
+    expect(mergePendingIssueQueuedComments({ issueId: "issue-1", authoritativeQueue: running,
+      pendingComments: [], fallbackProtocol: "paperclip_runner_v1" })?.executionWait).toBeNull();
+  });
+
+  it.each([null, "wait", {}, { reason: 1, message: "Wait" }, { reason: "wait", message: " " }])(
+    "drops malformed execution wait data: %j", executionWait => {
+      expect(normalizeIssueQueuedCommentQueue({ state: "deferred", executionWait }, "issue-1").executionWait).toBeNull();
+    },
+  );
+
   it("sorts, deduplicates, and drops malformed queue entries", () => {
     const queue = normalizeIssueQueuedCommentQueue(
       {

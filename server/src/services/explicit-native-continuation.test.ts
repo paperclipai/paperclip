@@ -3,7 +3,7 @@ import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
   approvals, issueApprovals, issueThreadInteractions,
   agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
@@ -49,6 +49,47 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+  it("reconciles legacy stop evidence transactionally and never uses it for a newer launch", async () => {
+    const runtime = await import("./native-runtime/native-session-executor.js");
+    const verify = vi.spyOn(runtime, "verifyRetainedLocalProcessStop").mockReturnValue({
+      fingerprint: "verified-retained-snapshot", providerProcessIds: [999999998], controllerPid: 999999999,
+    });
+    try {
+      const f = await seed();
+      await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      const [environment] = await db.insert(environments).values({ name: "Local legacy", driver: "process" }).returning();
+      await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.sourceRunId,
+        environmentId: environment.id, provider: "local", status: "failed", leasePolicy: "ephemeral", releasedAt: new Date() });
+      expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
+      expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(false);
+      expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
+      expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(false);
+      expect(await admit(f)).toBeNull();
+
+      const held = await seed();
+      await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, held.sourceRunId));
+      await db.insert(environmentLeases).values({ companyId: held.companyId, heartbeatRunId: held.sourceRunId,
+        environmentId: environment.id, provider: "local", status: "failed", leasePolicy: "ephemeral", releasedAt: new Date() });
+      const [active] = await db.insert(heartbeatRuns).values({ companyId: held.companyId, agentId: held.agentId,
+        nativeIssueId: held.issueId, status: "queued" }).returning();
+      expect(await admit(held)).toBeNull(); // Records the observation but keeps the active-run gate.
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, active.id));
+      verify.mockReturnValueOnce({ fingerprint: "changed", providerProcessIds: [999999998], controllerPid: 999999999 });
+      expect(await admit(held)).toBeNull(); // An old receipt cannot authorize changed state.
+      verify.mockReturnValueOnce(null);
+      expect(await admit(held)).toBeNull(); // Nor can it authorize a now-live provider.
+      expect(await admit(held)).toMatchObject({ previousRunId: held.sourceRunId });
+
+      const next = await seed();
+      await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, next.sourceRunId));
+      await appendHeartbeatRunEvent(db, { companyId: next.companyId, runId: next.sourceRunId,
+        agentId: next.agentId, eventType: PROCESS_START_REQUESTED });
+      verify.mockClear();
+      expect(await admit(next)).toBeNull();
+      expect(verify).not.toHaveBeenCalled();
+    } finally { verify.mockRestore(); }
+  });
+
   it("preserves local stop proof after process metadata is cleared and invalidates it on another launch", async () => {
     const f = await seed();
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
