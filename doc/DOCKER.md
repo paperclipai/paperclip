@@ -342,11 +342,20 @@ Notes:
 ## Native Runner build cache
 
 The image compiles the native Runner in `runner-build`, before copying the
-application source. That stage includes the pinned Rust compiler, the complete
-Cargo workspace and lockfile, and the protocol schemas and fixtures embedded
-by Rust. Changes to those inputs rebuild the native binary. Ordinary server or
-UI changes can reuse it through the existing registry cache (`mode=max`). Each
-platform gets its own native build; no cross-architecture binary is reused.
+application source. A pinned `cargo-chef` generates a dependency recipe in
+`runner-plan`. The separate `runner-deps` stage compiles that recipe with the
+package-owned Rust compiler. Both the dependency build and the real binary use
+the release profile and locked Cargo dependencies. The recipe stage never
+modifies source in the checkout.
+
+Changes to Rust source or embedded protocol inputs rebuild the real binary but
+can reuse compiled dependencies when the recipe is unchanged. Dependency
+manifests, the Cargo lockfile, target metadata, or compiler changes invalidate
+the relevant cache. Ordinary server or UI changes can reuse the entire native
+build through the existing registry cache (`mode=max`). Each platform gets its
+own native build; no cross-architecture binary is reused. No additional GitHub
+Actions cache is created. A cold build also installs the recipe generator and
+compiles dependencies, so the savings apply after those layers are available.
 
 The application build inherits that stage and still runs the normal server
 build, including Cargo, binary staging, and generated-contract checks. Rust
@@ -357,6 +366,13 @@ directory as before. Cache misses only cost compilation time.
 
 Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
 inputs also build the isolated `runner-build` target in `Docker Runner check`.
-This compiles against the actual reduced context and catches missing embedded
-inputs before the post-merge image build. It uses a GitHub-hosted runner with
-read-only repository access and does not publish images or cache artifacts.
+The check runs `bash scripts/check-docker-runner-cache.sh` against a disposable
+copy of tracked source and the actual Docker ignore rules. It compiles a baseline,
+changes a Rust metadata constant, and rebuilds. It requires a cached dependency
+build, an unchanged dependency recipe, and changed metadata from the real binary.
+It also verifies that a dependency declaration change alters the recipe. The
+probe exports only small metadata files, avoiding a large image import into the
+Docker daemon. It catches missing embedded inputs before the post-merge build.
+It uses a GitHub-hosted runner with read-only repository access and does not
+publish images or cache artifacts. Allow up to 20 minutes for its cold build and
+source rebuild.
