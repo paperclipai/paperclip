@@ -131,6 +131,7 @@ import {
   AvatarGroupCount,
 } from "@/components/ui/avatar";
 import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
+import { AgentRunCard } from "@/components/ActiveAgentsPanel";
 import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { EnforcementBanner } from "@/components/EnforcementBanner";
@@ -1203,6 +1204,23 @@ export function DesignGuide() {
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
       <Section title="Cards">
+        <SubSection title="Dashboard agent runs">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"].map((status) => (
+              <AgentRunCard
+                key={status}
+                companyId="design-guide"
+                run={{
+                  id: `design-guide-${status}`, agentId: "design-guide-agent", agentName: "CodexCoder",
+                  status, adapterType: "codex_local", invocationSource: "on_demand", triggerDetail: "manual",
+                  startedAt: null, finishedAt: null, createdAt: "2026-09-11T12:00:00Z", issueId: "design-guide-task",
+                }}
+                issue={{ identifier: "PAP-559", title: "Recreate this wireframe on pages Paperclip", status: status === "succeeded" ? "done" : "in_progress" }}
+              />
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
+        </SubSection>
         <SubSection title="Standard Card">
           <Card>
             <CardHeader>

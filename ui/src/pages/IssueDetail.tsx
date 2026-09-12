@@ -3645,7 +3645,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
-          size="lg"
+          className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
         />
       ) : undefined,
