@@ -658,6 +658,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processGroupId?: number | null;
     processLossRetryCount?: number;
     runtimeMode?: "legacy" | "native";
+    scheduledRetryAttempt?: number | null;
+    scheduledRetryReason?: string | null;
+    scheduledRetryAt?: Date | null;
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
@@ -720,6 +723,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
+      scheduledRetryAttempt: input?.scheduledRetryAttempt ?? 0,
+      scheduledRetryReason: input?.scheduledRetryReason ?? null,
+      scheduledRetryAt: input?.scheduledRetryAt ?? null,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       nextEventSeq: 2,
@@ -2441,8 +2447,364 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
-  it("requires reconciliation for a lost monitor whose provider outcomes are unknown", async () => {
+  it("schedules a null-environment process loss with diagnostics instead of stranding it", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    const failed = runs.find((row) => row.id === runId);
+    const retry = runs.find((row) => row.retryOfRunId === runId);
+
+    expect(failed?.resultJson).toMatchObject({
+      environmentAllocationDiagnostic: {
+        phase: "environment_selection",
+        outcome: "failed",
+        reasonCode: "no_environment_or_lease_recorded",
+      },
+    });
+    expect(failed?.stderrExcerpt).toContain("[environment-allocation]");
+    expect(retry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    expect(retry?.scheduledRetryAt?.getTime()).toBe((failed?.finishedAt?.getTime() ?? 0) + 60_000);
+    expect(retry?.contextSnapshot).toMatchObject({
+      wakeReason: "process_lost_environment_retry",
+      retryReason: "retry_transient_environment_failure",
+      retryOfRunId: runId,
+      issueId: failed?.contextSnapshot?.issueId,
+    });
+  });
+
+  it("schedules attempt 2 of the null-environment ladder at 180s and attempt 3 at 540s", async () => {
+    const attempt2 = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [attempt2.runId] });
+
+    const attempt2Rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, attempt2.agentId));
+    const attempt2Failed = attempt2Rows.find((row) => row.id === attempt2.runId);
+    const attempt2Retry = attempt2Rows.find((row) => row.retryOfRunId === attempt2.runId);
+    expect(attempt2Retry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    expect(attempt2Retry?.scheduledRetryAt?.getTime()).toBe(
+      (attempt2Failed?.finishedAt?.getTime() ?? 0) + 180_000,
+    );
+
+    const attempt3 = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "retry_transient_environment_failure",
+      contextSnapshot: {
+        wakeReason: "process_lost_environment_retry",
+        retryReason: "retry_transient_environment_failure",
+        retryOfRunId: attempt2.runId,
+      },
+    });
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [attempt3.runId] });
+
+    const attempt3Rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, attempt3.agentId));
+    const attempt3Failed = attempt3Rows.find((row) => row.id === attempt3.runId);
+    const attempt3Retry = attempt3Rows.find((row) => row.retryOfRunId === attempt3.runId);
+    expect(attempt3Retry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    expect(attempt3Retry?.scheduledRetryAt?.getTime()).toBe(
+      (attempt3Failed?.finishedAt?.getTime() ?? 0) + 540_000,
+    );
+  });
+
+  it("does not queue another null-environment retry past attempt 3 and emits a single exhaustion event", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "retry_transient_environment_failure",
+      contextSnapshot: {
+        wakeReason: "process_lost_environment_retry",
+        retryReason: "retry_transient_environment_failure",
+        retryOfRunId: "previous-run",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    // After attempt 3, the bounded null-environment ladder must NOT queue another
+    // retry on the same reason chain. The release/promote path may still spin up
+    // an issue.continuation_recovery run as a separate auto-recovery attempt, but
+    // it must NOT carry the null-environment retry reason.
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId),
+      ));
+    const nullEnvRetries = retries.filter(
+      (row) => row.scheduledRetryReason === "retry_transient_environment_failure",
+    );
+    expect(nullEnvRetries).toHaveLength(0);
+
+    const exhaustionEvents = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.companyId, companyId),
+        eq(heartbeatRunEvents.runId, runId),
+        eq(heartbeatRunEvents.eventType, "lifecycle"),
+      ));
+    const exhaustion = exhaustionEvents.find((event) =>
+      typeof event.message === "string"
+      && event.message.includes("Bounded retry exhausted")
+      && (event.payload as Record<string, unknown> | null)?.retryReason === "retry_transient_environment_failure",
+    );
+    expect(exhaustion).toBeDefined();
+  });
+
+  it("does not route a monitor-dispatch loss through the null-environment ladder", async () => {
+    // The fingerprint (no pid, no pgid, no lease) matches monitor-dispatch
+    // losses too. Monitor-dispatch losses are owned by the monitor scheduler
+    // (a future wake is already scheduled), so the reaper must NOT enter the
+    // bounded null-env ladder. Instead the issue is escalated to the board
+    // via a legacy_execution_requires_reconciliation recovery action.
     const { agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    const rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failed = rows.find((row) => row.id === runId);
+    const retry = rows.find((row) => row.retryOfRunId === runId);
+
+    // No environment-allocation diagnostic should be attached — the run was a
+    // monitor dispatch loss, not an environment-selection failure.
+    expect(failed?.resultJson).not.toMatchObject({
+      environmentAllocationDiagnostic: expect.objectContaining({
+        phase: "environment_selection",
+      }),
+    });
+    expect(failed?.stderrExcerpt ?? "").not.toContain("[environment-allocation]");
+    // No retry at all — monitor-dispatch with a future wake is handled by the
+    // monitor scheduler, not by the null-env or legacy retry ladder.
+    expect(retry).toBeUndefined();
+    // The issue is escalated to the board via the reconciliation recovery path.
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toEqual([
+      expect.objectContaining({
+        ownerType: "board",
+        cause: "legacy_execution_requires_reconciliation",
+      }),
+    ]);
+  });
+
+  it("does not route a plan-approval continuation loss through the null-environment ladder", async () => {
+    // A request_confirmation/accepted continuation wake has the same null-env
+    // fingerprint, but is owned by the `interaction_continuation_infra_retry`
+    // path. The bounded null-env ladder must NOT override it.
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: new Date("2026-03-19T00:00:00.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "automation",
+        reason: "issue_commented",
+        status: "claimed",
+        payload: {
+          issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          mutation: "interaction",
+        },
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        invocationSource: "automation",
+        processPid: null,
+        processGroupId: null,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const retry = rows.find((row) => row.retryOfRunId === runId);
+    // Plan-approval path keeps its own retry reason; the null-env ladder
+    // must not have fired.
+    expect(retry?.scheduledRetryReason).toBe(INTERACTION_CONTINUATION_INFRA_RETRY_REASON);
+  });
+
+  it("does not route a process-loss retry through the null-environment ladder when the legacy retry budget is exhausted", async () => {
+    // The bounded null-env ladder shares the de-facto "have we already retried?"
+    // budget with the legacy `process_lost_retry` path. A run whose
+    // processLossRetryCount has already reached 1 must NOT enter the bounded
+    // null-env ladder even when the fingerprint matches.
+    const { agentId, runId } = await seedRunFixture({
+      adapterType: "codex_local",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      processLossRetryCount: 1,
+      contextSnapshot: {
+        wakeReason: "process_lost_retry",
+        retryReason: "issue_continuation_needed",
+        retryOfRunId: "original-run",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failed = rows.find((row) => row.id === runId);
+    // No environment-allocation diagnostic should be attached — this run was
+    // already retried once via the legacy path and is past the budget.
+    expect(failed?.resultJson).not.toMatchObject({
+      environmentAllocationDiagnostic: expect.objectContaining({
+        phase: "environment_selection",
+      }),
+    });
+    // No further retry should be scheduled.
+    const retries = rows.filter((row) => row.retryOfRunId === runId);
+    expect(retries).toHaveLength(0);
+  });
+
+  it("does not route process loss through the null-environment ladder when a child pid was recorded", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "codex_local",
+      agentStatus: "idle",
+      processPid: 4321,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    const rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failed = rows.find((row) => row.id === runId);
+    const retry = rows.find((row) => row.retryOfRunId === runId);
+
+    expect(failed?.resultJson).not.toMatchObject({
+      environmentAllocationDiagnostic: expect.objectContaining({
+        phase: "environment_selection",
+      }),
+    });
+    expect(failed?.stderrExcerpt ?? "").not.toContain("[environment-allocation]");
+    // Legacy path enqueues an immediate retry. The retry row is inserted
+    // with status "scheduled_retry" (dueAt = now + 30s) and only promoted by
+    // promoteDueScheduledRetries once scheduledRetryAt has elapsed, so the
+    // observed status here is one of: scheduled_retry, queued, or running.
+    expect(retry).toMatchObject({
+      retryOfRunId: runId,
+      processLossRetryCount: 1,
+    });
+    expect(["scheduled_retry", "queued", "running"]).toContain(retry?.status);
+    // Legacy path uses the immediate process_lost_retry wake reason, not the
+    // bounded environment retry wake reason.
+    expect(retry?.contextSnapshot).toMatchObject({
+      wakeReason: "process_lost_retry",
+    });
+    expect(retry?.contextSnapshot).not.toMatchObject({
+      wakeReason: "process_lost_environment_retry",
+    });
+    // And it must NOT carry the null-environment scheduledRetryReason.
+    expect(retry?.scheduledRetryReason).not.toBe("retry_transient_environment_failure");
+  });
+
+  it("restores one lost monitor dispatch before escalating a second process loss", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
       processPid: null,

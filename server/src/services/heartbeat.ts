@@ -748,13 +748,14 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
-const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
-  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
-export {
-  INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
-  INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
-};
+const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_REASON = "retry_transient_environment_failure";
+const NULL_ENVIRONMENT_PROCESS_LOSS_WAKE_REASON = "process_lost_environment_retry";
+const PROCESS_LOST_RETRY_REASON = "process_lost_retry";
+const PROCESS_LOST_RETRY_WAKE_REASON = "process_lost_retry";
+const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS = [60_000, 180_000, 540_000] as const;
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
+const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -823,6 +824,10 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
 ]);
 export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
+export {
+  INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+  INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+};
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
@@ -1922,6 +1927,21 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
     dueAt: new Date(now.getTime() + delayMs),
     maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   };
+}
+
+// This signature deliberately excludes a process that was ever spawned. A
+// lost child process remains on the legacy process-loss path; this ladder is
+// only for dispatches that died before an execution environment existed.
+export function isNullEnvironmentProcessLoss(input: {
+  usageJson: unknown;
+  processPid: number | null;
+  processGroupId: number | null;
+  hasEnvironmentLease: boolean;
+}) {
+  return input.usageJson == null &&
+    input.processPid == null &&
+    input.processGroupId == null &&
+    !input.hasEnvironmentLease;
 }
 
 async function resolveRunScopedMentionedSkillKeys(input: {
@@ -13963,8 +13983,20 @@ export function heartbeatService(
     // transient retries; process loss must not open a second retry budget.
     if (run.runtimeMode === "native" || legacyExecutionNeedsReconciliation(run))
       return null;
-    const scheduled = await scheduleBoundedRetryForRun(run, agent, { now });
-    return scheduled.outcome === "scheduled" ? scheduled.run : null;
+    const successorLossRetryCount = (run.processLossRetryCount ?? 0) + 1;
+    const scheduled = await scheduleBoundedRetryForRun(run, agent, {
+      now,
+      retryReason: PROCESS_LOST_RETRY_REASON,
+      wakeReason: PROCESS_LOST_RETRY_WAKE_REASON,
+    });
+    if (scheduled.outcome !== "scheduled" || !scheduled.run) return null;
+    // Mirror the budget that the reaper's alreadyRetriedOnce guard reads.
+    const [bumped] = await db
+      .update(heartbeatRuns)
+      .set({ processLossRetryCount: successorLossRetryCount })
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .returning();
+    return bumped ?? { ...scheduled.run, processLossRetryCount: successorLossRetryCount };
   }
 
   function toHotRestartIntentRun(input: {
@@ -15880,7 +15912,21 @@ export function heartbeatService(
       return null;
     }
 
-    return scheduleBoundedRetryForRun(run, agent, {
+    // The reaper promoted this run to a process_lost CAS failure before any
+    // provider work produced output; the retry is an explicit
+    // infrastructure-loss replay, not an ambiguous bootstrap that the legacy
+    // reconciliation gate is meant to block. Mark the failed run as safe
+    // bootstrap evidence on the in-memory copy we hand to
+    // scheduleBoundedRetryForRun so the shared gate does not refuse the retry.
+    const runForRetry: typeof run = {
+      ...run,
+      resultJson: {
+        ...(parseObject(run.resultJson) ?? {}),
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
+
+    return scheduleBoundedRetryForRun(runForRetry, agent, {
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
       maxAttempts: INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS,
@@ -18529,49 +18575,127 @@ export function heartbeatService(
         readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
         monitorNextCheckAt !== undefined &&
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
-      const shouldRetry =
-        (run.processLossRetryCount ?? 0) < 1 &&
-        ((tracksLegacyLocalChild &&
-          (!!run.processPid || !!run.processGroupId)) ||
-          monitorDispatchLostWithoutFutureWake);
+      const environmentLease = await db
+        .select({ id: environmentLeases.id })
+        .from(environmentLeases)
+        .where(and(
+          eq(environmentLeases.companyId, run.companyId),
+          eq(environmentLeases.heartbeatRunId, run.id),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      // Atomically revoke an expired legacy controller lease before we
+      // classify or terminalize. Renewal and revocation serialize on the run
+      // row, so a concurrent renewal that wins the CAS means another path is
+      // still owning the run and we must skip this iteration.
       if (!(await revokeExpiredLegacyController(db, run))) continue;
+      // The null-environment retry ladder only fires when no more specific
+      // retry path already owns the run:
+      //   - Monitor-dispatch losses fall through to the legacy
+      //     `process_lost_retry` path (which uses
+      //     monitorDispatchLostWithoutFutureWake to decide whether a future
+      //     wake is already scheduled).
+      //   - Resolved interaction-continuation wakes fall through to the
+      //     plan-approval infrastructure retry.
+      //   - Runs that have already been retried once via the legacy path
+      //     (`processLossRetryCount >= 1`) are not eligible for the bounded
+      //     null-env ladder; the legacy retry count is the de-facto
+      //     "have we already retried?" budget shared with the new ladder.
+      const isMonitorDispatchRun = readNonEmptyString(runContext.wakeReason) === "issue_monitor_due";
+      const alreadyRetriedOnce = (run.processLossRetryCount ?? 0) >= 1;
+      const nullEnvironmentProcessLoss =
+        !isMonitorDispatchRun &&
+        !alreadyRetriedOnce &&
+        !isResolvedInteractionContinuationWakeContext(runContext) &&
+        isNullEnvironmentProcessLoss({
+          usageJson: run.usageJson,
+          processPid: run.processPid,
+          processGroupId: run.processGroupId,
+          hasEnvironmentLease: environmentLease !== null,
+        });
+      const shouldRetryLegacyProcessLoss = (run.processLossRetryCount ?? 0) < 1 && (
+        (tracksLegacyLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        monitorDispatchLostWithoutFutureWake
+      );
+      const shouldRetry = nullEnvironmentProcessLoss || shouldRetryLegacyProcessLoss;
       const baseMessage = buildProcessLossMessage(run);
-      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
+      const allocationDiagnostic = nullEnvironmentProcessLoss
+        ? {
+            phase: "environment_selection",
+            outcome: "failed",
+            reasonCode: "no_environment_or_lease_recorded",
+            environmentId: null,
+            leaseId: null,
+            scratchDirHealth: "unknown",
+            capturedAt: now.toISOString(),
+          }
+        : null;
+      const allocationDiagnosticLine = allocationDiagnostic
+        ? `[environment-allocation] ${allocationDiagnostic.phase}:${allocationDiagnostic.reasonCode}`
+        : null;
+      const unmanagedBackgroundTaskEvidence = null;
 
+      const failurePatch = {
+        error: shouldRetry
+          ? `${baseMessage}; ${nullEnvironmentProcessLoss ? "scheduling bounded environment retry" : "retrying once"}`
+          : baseMessage,
+        errorCode: "process_lost",
+        finishedAt: now,
+        resultJson: await (async () => {
+          // Only runs whose historical invocation actually used a conversation
+          // adapter can carry the continuation policy on a process-loss stop.
+          // The agent's CURRENT adapter type must not relabel a lost process
+          // run when an admin switches it mid-flight (see test "does not
+          // relabel a lost process run when its agent changes to a
+          // conversation adapter"); runUsedConversationAdapter checks the
+          // persisted invocation event, not agents.adapterType.
+          const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
+          const result = mergeRunStopMetadataForAgent(
+            { adapterType, adapterConfig },
+            "failed",
+            {
+              conversationContinuationEligible,
+              resultJson: parseObject(run.resultJson),
+              errorCode: "process_lost",
+              errorMessage: shouldRetry
+                ? `${baseMessage}; ${nullEnvironmentProcessLoss ? "scheduling bounded environment retry" : "retrying once"}`
+                : baseMessage,
+            },
+          );
+          const withAllocationDiagnostic = allocationDiagnostic
+            ? { ...result, environmentAllocationDiagnostic: allocationDiagnostic }
+            : result;
+          return unmanagedBackgroundTaskEvidence
+            ? {
+              ...withAllocationDiagnostic,
+              stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+              unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
+            }
+            : withAllocationDiagnostic;
+        })(),
+        ...(allocationDiagnosticLine
+          ? { stderrExcerpt: appendWithByteCap(run.stderrExcerpt ?? "", allocationDiagnosticLine, MAX_EXCERPT_BYTES) }
+          : {}),
+      };
+      // Compare-and-set terminalization: the CAS guarantees another concurrent
+      // recovery/drain path that already moved this run out of "running" wins
+      // the race, and we keep that terminal outcome instead of overwriting it.
+      // The native-ownership predicate inside setRunStatusFromLive also blocks
+      // terminalizing a native run whose ownership is still held elsewhere.
       const failureWrite = await setRunStatusFromLive(
         run.id,
         "failed",
         ["running"],
-        {
-          error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          errorCode: "process_lost",
-          finishedAt: now,
-          resultJson: (() => {
-            const result = mergeRunStopMetadataForAgent(
-              { adapterType, adapterConfig },
-              "failed",
-              {
-                conversationContinuationEligible,
-                resultJson: parseObject(run.resultJson),
-                errorCode: "process_lost",
-                errorMessage: shouldRetry
-                  ? `${baseMessage}; retrying once`
-                  : baseMessage,
-              },
-            );
-            return result;
-          })(),
-        },
+        failurePatch,
       );
-      if (!failureWrite.updated || !failureWrite.run) continue;
-      let finalizedRun: typeof heartbeatRuns.$inferSelect | null =
-        failureWrite.run;
+      if (!(failureWrite.updated && failureWrite.run)) continue;
+      let finalizedRun: typeof failureWrite.run = failureWrite.run;
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry
+          ? `${baseMessage}; ${nullEnvironmentProcessLoss ? "scheduling bounded environment retry" : "retrying once"}`
+          : baseMessage,
       });
-      if (!finalizedRun) finalizedRun = await getRun(run.id);
-      if (!finalizedRun) continue;
       finalizedRun =
         (await classifyAndPersistRunLiveness(
           finalizedRun,
@@ -18587,7 +18711,20 @@ export function heartbeatService(
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       const retryAgent = await getAgent(run.agentId);
-      if (shouldRetry) {
+      if (nullEnvironmentProcessLoss) {
+        if (retryAgent) {
+          const attempt = (finalizedRun.scheduledRetryAttempt ?? 0) + 1;
+          const delayMs = NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS[attempt - 1];
+          const scheduled = await scheduleBoundedRetryForRun(finalizedRun, retryAgent, {
+            now,
+            retryReason: NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_REASON,
+            wakeReason: NULL_ENVIRONMENT_PROCESS_LOSS_WAKE_REASON,
+            maxAttempts: NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS.length,
+            ...(delayMs != null ? { delayMs } : {}),
+          });
+          retriedRun = scheduled.outcome === "scheduled" ? scheduled.run : null;
+        }
+      } else if (shouldRetryLegacyProcessLoss) {
         if (retryAgent) {
           retriedRun = await enqueueProcessLossRetry(
             finalizedRun,
@@ -18618,6 +18755,7 @@ export function heartbeatService(
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+          ...(allocationDiagnostic ? { environmentAllocationDiagnostic: allocationDiagnostic } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
