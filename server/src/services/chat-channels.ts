@@ -6084,7 +6084,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     credentials: Record<string, string>,
   ): Promise<VerifiedProviderIdentity> {
     if (provider === "imessage-photon") {
-      const inspection = await new PhotonCloudClient(fetchImpl).inspect(credentials.projectId, credentials.projectSecret);
+      const inspection = await inspectPhotonCredentials(credentials.projectId, credentials.projectSecret);
       const line = inspection.lines.find((candidate) => candidate.lineId === credentials.lineId && candidate.eligible);
       if (!line || !inspection.eligible) throw unprocessable("Select an eligible dedicated Photon line");
       return { providerAccountId: inspection.projectId, providerAccountLabel: inspection.projectName, botExternalId: line.phoneNumber, botUsername: line.phoneNumber, botLabel: line.phoneNumber };
@@ -8126,6 +8126,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     };
   }
 
+  async function inspectPhotonCredentials(projectId: string, projectSecret: string) {
+    try {
+      return await new PhotonCloudClient(fetchImpl).inspect(projectId, projectSecret);
+    } catch (error) {
+      if (!(error instanceof PhotonError)) throw error;
+      // These are safe provider-facing validation messages, never raw response
+      // bodies. Preserve them for the setup UI without changing runtime errors.
+      throw new HttpError(error.code === "quota" ? 429 : 422, error.message, {
+        code: `photon_${error.code}`,
+      });
+    }
+  }
+
   async function inspectPhoton(
     endpointId: string,
     input: { projectId: string; projectSecret: string },
@@ -8133,7 +8146,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const record = await endpointRecord(endpointId);
     if (!record || record.endpoint.provider !== "imessage-photon")
       throw notFound("iMessage Photon endpoint not found");
-    const inspection = await new PhotonCloudClient(fetchImpl).inspect(
+    const inspection = await inspectPhotonCredentials(
       input.projectId,
       input.projectSecret,
     );

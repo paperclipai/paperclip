@@ -55,7 +55,7 @@ import { issueThreadInteractionService } from "../../services/issue-thread-inter
 import { resolveExternalChatQuestionResponse } from "../../services/native-runtime/external-chat-question-response.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../../services/chat-run-publications.js";
 import { PhotonChatAdapter } from "../../services/photon/adapter.js";
-import { PhotonCloudClient } from "../../services/photon/cloud.js";
+import { PhotonCloudClient, PhotonError } from "../../services/photon/cloud.js";
 import { photonFixture, photonEvent, photonChat, stream } from "./fixture.js";
 
 function idleStream<T>(): TypedEventStream<T> {
@@ -357,6 +357,24 @@ describe.sequential("iMessage Photon channel control plane", () => {
       },
     };
   }
+  it("returns actionable setup validation failures without replacing credentials", async () => {
+    const t = await setup();
+    const allocation = vi.spyOn(PhotonCloudClient.prototype, "allocation");
+    allocation.mockRejectedValueOnce(new PhotonError("credentials", "Photon rejected this project ID or secret"));
+    await expect(t.service.inspectPhoton(t.endpoint.id, {
+      projectId: "project", projectSecret: "invalid",
+    })).rejects.toMatchObject({ status: 422, details: { code: "photon_credentials" } });
+    allocation.mockRejectedValueOnce(new PhotonError("quota", "Photon Cloud request limit reached; retry later"));
+    await expect(t.service.inspectPhoton(t.endpoint.id, {
+      projectId: "project", projectSecret: "secret",
+    })).rejects.toMatchObject({ status: 429, details: { code: "photon_quota" } });
+    allocation.mockRejectedValueOnce(new PhotonError("credentials", "Photon rejected this project ID or secret"));
+    await expect(t.service.configure(t.endpoint.id, {
+      action: "reconnect", credentials: { projectSecret: "invalid" },
+    }, t.userId)).rejects.toMatchObject({ status: 422 });
+    await t.start();
+    await t.qualify();
+  });
   it("requires a fresh linked message and an agent reply before setup completes", async () => {
     const t = await setup();
     await expect(t.service.test(t.endpoint.id)).rejects.toThrow("test message");

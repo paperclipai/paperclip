@@ -1,12 +1,12 @@
 # iMessage Photon verification
 
 Date: 2026-09-11. Branch: `codex/imessage-photon`.
-Base inspected: `1c4bcff2b`; rebased onto `f12b647ae` (`origin/master`).
-Implementation checked: `7ada38eb7ef5dff5441f23c02131798b11d57712`.
+Base inspected: `1c4bcff2b`; rebased onto `fe3808517` (`origin/master`).
+Initial implementation checked: `7ada38eb7ef5dff5441f23c02131798b11d57712`.
 **Status: experimental implementation; not live-provider qualified.**
 
 [PR #13299](https://github.com/paperclipai/paperclip/pull/13299) carries the current
-CI and review results. Greptile reviewed the implementation commit at 5/5 with no
+CI and review results. The Photon migration is `0274_jittery_anthem.sql`, regenerated after master added its own 0273 migration. Greptile reviewed the implementation commit at 5/5 with no
 actionable comments. This record distinguishes local evidence from live proof.
 
 ## Environment and versions
@@ -58,6 +58,8 @@ Both the recorded answer digest and reconstructed proof now use the existing
 canonical hash. This is a native authorization composition test, not evidence of
 a live model turn through Photon.
 
+The Photon/OpenAPI follow-up also verifies safe setup credential and quota errors, the complete board-only inspection contract, group participant response fields, and the unchanged credential binding after rejected replacement.
+
 The Photon browser cases in `tests/e2e/chat-adapters-ui.spec.ts` cover catalog
 discovery, multiple-line selection, password input, keyboard selection, vaulted
 credential payload shape, setup completion, group enablement, light/dark themes,
@@ -66,15 +68,16 @@ Slack, Discord, GitHub, Teams, and Telegram surfaces.
 
 | Check | Result |
 | --- | --- |
-| Photon targeted tests | 30 passed, including checkpoint takeover, Live Photo companion retention, and native continuation authorization. |
+| Photon targeted tests | 31 passed, including checkpoint takeover, Live Photo companion retention, and native continuation authorization. |
 | Token gates | Passed. All four gates clean. |
 | Workspace typecheck | Full `pnpm -r typecheck` passed before and after rebase. |
 | Full chat-adapters browser suite | 38 passed, including Photon light/dark/mobile coverage and existing providers. |
+| OpenAPI contract | 8 passed, including mounted-route completeness, board-only inspection, and token-free response schemas. |
 | Post-rebase channel/native checks | 87 passed across Photon, explicit native continuation, and chat-control admission retry. |
 | Native session resume | 37 passed after building the required local fake-provider binary. |
 | UI Vitest project | 6,008 passed across 582 files after rebase. |
 | Shared catalog project | 727 passed, including exact catalog and branding coverage. |
-| Repository Vitest suite | `pnpm test:run` exercised the general-server suite; initial catalog/fixture failures were corrected and focused reruns pass. Full gate status and route-suite results are recorded in the linked PR. |
+| Repository Vitest suite | The initial `pnpm test:run` overlapped edits/rebase and was stopped; it is not a final-commit pass. Fresh targeted and CI checks supersede it. The serialized route run found the missing Photon OpenAPI contract, which is fixed and passes its 8-case suite. Full gate status is recorded in the linked PR. |
 | Build | Full `pnpm build` passed before and after rebase. |
 | Generated forward migration | Generated through `pnpm db:generate`; `@paperclipai/db check:migrations` passed. Disposable database migrations exercised by integration tests. |
 | Native HEIF platform packages | macOS arm64 executed; other published platforms not executed. |
