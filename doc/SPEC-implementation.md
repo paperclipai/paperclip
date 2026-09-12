@@ -1620,6 +1620,30 @@ outcomes without a separate email composer. See
 [AgentMail connections](connections/AGENTMAIL.md) for setup, transports, recovery,
 authorization, and the API/CLI contract.
 
+### Experimental iMessage Photon channel
+
+A Photon Cloud project can represent one agent through the existing
+experimental channel subsystem. DMs and explicitly enabled groups create or
+continue task-bound conversations. Linked sender identity is the default;
+telephone numbers, email addresses, names, and group membership do not grant
+Paperclip authority. Photos/files and ordinary questions/confirmations use the
+existing attachment, interaction, continuation, and publication contracts.
+Pause and Disconnect govern runtime behavior independently of the UI gate.
+Local Mac access, unsolicited conversations, and SMS/RCS
+fallback are excluded. Live qualification is required before release readiness.
+Pro shared allocation supports DMs only, with sender enrollment in Photon and
+separate identity linking in Paperclip. Shared channels reserve one project, not
+a pool phone number; group admission and publication are disabled. Dedicated
+allocation retains one selected number and individually enabled groups.
+
+iMessage task completion ends a turn, not its conversation. Subsequent messages
+reopen the same task, including after restart; only explicit `/new` or `/close`
+allows the next message to start another task. The open task receives committed
+inbound comments live, with “Sent from iMessage” attribution on user bubbles.
+
+See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
+contract, setup, recovery, boundaries, and qualification status.
+
 ### Native task completion
 
 For ordinary low-risk tasks, accept the current agent's structured `done` claim

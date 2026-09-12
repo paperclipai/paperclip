@@ -634,6 +634,16 @@
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/zapier.svg",
       "assetType": "svg",
       "darkVariantRequired": false
+    },
+    {
+      "slug": "imessage-photon",
+      "provider": "iMessage Photon",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/imessage-photon.png",
+      "officialSourceUrl": "https://photon.codes/",
+      "upstreamAssetUrl": "https://framerusercontent.com/images/XbFmp7b9ze39qL1GdqVbmJXbiS8.png?height=512&width=512",
+      "assetType": "png",
+      "darkVariantRequired": false
     }
   ]
 }

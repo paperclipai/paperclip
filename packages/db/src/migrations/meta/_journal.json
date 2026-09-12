@@ -1912,6 +1912,13 @@
       "when": 1789219070888,
       "tag": "0274_agent_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 275,
+      "version": "7",
+      "when": 1789221632037,
+      "tag": "0275_easy_dragon_man",
+      "breakpoints": true
     }
   ]
 }

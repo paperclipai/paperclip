@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   CHAT_PROVIDERS,
   configureChatEndpointSchema,
+  inspectPhotonProjectSchema,
   confirmChatIdentityLinkSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
@@ -152,6 +153,12 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       );
     },
   );
+
+  router.post("/chat-endpoints/:endpointId/photon/inspect", validate(inspectPhotonProjectSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res.json(await service.inspectPhoton(endpointId(req), req.body));
+  });
 
   router.post(
     "/chat-endpoints/:endpointId/setup",

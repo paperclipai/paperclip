@@ -27,6 +27,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "discord",
   "microsoft-teams",
   "telegram",
+  "imessage-photon",
 ]);
 
 export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>

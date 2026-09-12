@@ -262,6 +262,9 @@ import {
   confirmChatIdentityLinkSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
+  inspectPhotonProjectSchema,
+  photonProjectIdSchema,
+  photonLineIdSchema,
   publishChatPublicationSchema,
   resolveChatActionSchema,
   resolveChatPublicationSchema,
@@ -787,6 +790,7 @@ const chatEndpointResponseSchema = z
     providerAccountId: z.string().nullable(),
     providerAccountLabel: z.string().nullable(),
     botExternalId: z.string().nullable(),
+    photonAllocation: z.enum(["dedicated", "shared"]).optional(),
     botUsername: z.string().nullable(),
     botLabel: z.string().nullable(),
     botAvatarUrl: z.string().nullable(),
@@ -820,6 +824,7 @@ const chatEndpointResourceResponseSchema = z
     availability: chatResourceAvailabilitySchema,
     enabled: z.boolean(),
     metadata: z.record(z.string(), z.unknown()),
+    participants: z.array(z.string()).optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -1448,6 +1453,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/setup",
   "POST /api/chat-endpoints/{endpointId}/setup-secret",
   "POST /api/chat-endpoints/{endpointId}/test",
+  "POST /api/chat-endpoints/{endpointId}/photon/inspect",
   "GET /api/chat-endpoints/{endpointId}/resources",
   "PUT /api/chat-endpoints/{endpointId}/resources",
   "GET /api/chat-endpoints/{endpointId}/principals",
@@ -2124,7 +2130,7 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Configure or change chat endpoint lifecycle state",
   description:
-    "Runs a setup or lifecycle action. `configure` and `reconnect` accept provider credentials (Slack: `botToken`, `signingSecret`; GitHub: `appId`, `privateKey` after Paperclip generates the webhook secret; Discord: `applicationId`, `guildId`, `botToken`; Microsoft Teams: `clientId`, `tenantId`, `clientSecret`; Telegram: `botToken`). Credentials are stored as Paperclip secret references and are never returned. Other actions do not require credentials.",
+    "Runs a setup or lifecycle action. `configure` and `reconnect` accept provider credentials (Slack: `botToken`, `signingSecret`; GitHub: `appId`, `privateKey` after Paperclip generates the webhook secret; Discord: `applicationId`, `guildId`, `botToken`; Microsoft Teams: `clientId`, `tenantId`, `clientSecret`; Telegram: `botToken`; iMessage Photon: `projectSecret`, with nonsecret `photon.projectId` and `photon.lineId` configuration). Credentials are stored as Paperclip secret references and are never returned. Other actions do not require credentials.",
   request: {
     params: z.object({ endpointId: z.string().uuid() }),
     body: jsonBody(configureChatEndpointSchema),
@@ -2137,6 +2143,9 @@ registry.registerPath({
     404: r.notFound,
     409: r.conflict,
     422: r.unprocessable,
+    429: { description: "Provider request limit reached; retry later" },
+    502: { description: "Provider returned an invalid response; inspect provider health" },
+    503: { description: "Provider temporarily unavailable; retry later" },
   },
 });
 
@@ -2160,11 +2169,46 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/chat-endpoints/{endpointId}/photon/inspect",
+  tags: ["chat-channels"],
+  summary: "Inspect Photon shared project or dedicated numbers for channel setup",
+  description:
+    "Requires a board user with connection-management access. The project secret is write-only input. Returns the project's actual allocation and eligibility for shared DMs or dedicated lines, never project secrets or minted line tokens. Responses are not cached. Inspection alone does not activate the channel.",
+  request: {
+    params: z.object({ endpointId: z.string().uuid() }),
+    body: jsonBody(inspectPhotonProjectSchema),
+  },
+  responses: {
+    200: r.ok(z.object({
+      projectId: photonProjectIdSchema,
+      projectName: z.string(),
+      allocation: z.enum(["dedicated", "shared"]),
+      eligible: z.boolean(),
+      lines: z.array(z.object({
+        lineId: photonLineIdSchema,
+        phoneNumber: z.string(),
+        eligible: z.boolean(),
+        unavailableReason: z.string().optional(),
+      }).strict()),
+    }).strict()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: { description: "Photon request limit reached; retry later" },
+    502: { description: "Photon returned an invalid response; inspect provider health" },
+    503: { description: "Photon temporarily unavailable; retry later" },
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/chat-endpoints/{endpointId}/test",
   tags: ["chat-channels"],
   summary: "Complete a chat endpoint setup test",
   description:
-    "Activates a verifying endpoint only after Paperclip has received a real provider event since the server-issued setup test boundary.",
+    "Activates a verifying endpoint only after Paperclip has received a real provider event since the server-issued setup test boundary. iMessage Photon additionally requires a fresh linked sender's task and a successful outbound agent publication.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(chatEndpointResponseSchema),
@@ -2181,7 +2225,7 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "List destinations discovered for a chat endpoint",
   description:
-    "Lists provider destinations such as Slack and Discord channels, Teams channels, GitHub repositories, and Telegram chats. Direct-message resources are intentionally omitted.",
+    "Lists provider destinations such as Slack and Discord channels, Teams channels, GitHub repositories, Telegram chats, and iMessage Photon groups. Direct-message resources are intentionally omitted.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(z.array(chatEndpointResourceResponseSchema)),

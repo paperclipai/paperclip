@@ -385,6 +385,7 @@ describe("openapi routes", () => {
       ["post", "/api/chat-endpoints/{endpointId}/setup"],
       ["post", "/api/chat-endpoints/{endpointId}/setup-secret"],
       ["post", "/api/chat-endpoints/{endpointId}/test"],
+      ["post", "/api/chat-endpoints/{endpointId}/photon/inspect"],
       ["get", "/api/chat-endpoints/{endpointId}/resources"],
       ["put", "/api/chat-endpoints/{endpointId}/resources"],
       ["get", "/api/chat-endpoints/{endpointId}/principals"],
@@ -449,7 +450,7 @@ describe("openapi routes", () => {
         properties: {
           provider: {
             type: "string",
-            enum: ["slack", "github", "discord", "microsoft-teams", "telegram"],
+            enum: ["slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon"],
           },
           assignedAgentId: { type: "string", format: "uuid" },
         },
@@ -509,6 +510,21 @@ describe("openapi routes", () => {
     );
     expect(setup.responses["409"]).toBeDefined();
     expect(setup.responses["422"]).toBeDefined();
+    expect(setup.responses["502"]).toBeDefined();
+    expect(setup.responses["503"]).toBeDefined();
+
+    const photon = spec.paths["/api/chat-endpoints/{endpointId}/photon/inspect"].post;
+    expect(photon.requestBody.content["application/json"].schema.required).toEqual([
+      "projectId", "projectSecret",
+    ]);
+    const photonResponse = photon.responses["200"].content["application/json"].schema;
+    expect(photonResponse.properties.allocation.enum).toEqual(["dedicated", "shared"]);
+    expect(photonResponse.properties.lines.items.additionalProperties).toBe(false);
+    expect(JSON.stringify(photonResponse)).not.toMatch(/projectSecret|token/);
+    expect(photon.responses["422"]).toBeDefined();
+    expect(photon.responses["429"]).toBeDefined();
+    expect(photon.responses["502"]).toBeDefined();
+    expect(photon.responses["503"]).toBeDefined();
 
     const setupSecret =
       spec.paths["/api/chat-endpoints/{endpointId}/setup-secret"].post;
