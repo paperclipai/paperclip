@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decideSessionCompactionTrigger,
+  decideSessionNearRotationWarning,
   type SessionCompactionTriggerInput,
 } from "../services/heartbeat.ts";
 import type { SessionCompactionPolicy } from "@paperclipai/adapter-utils";
@@ -13,6 +14,7 @@ const DISABLED_POLICY: SessionCompactionPolicy = {
   maxCachedInputTokens: 0,
   rotateOnZeroOpenIssues: false,
   rotateOnNewIssueWake: false,
+  maxSessionTurns: 0,
 };
 
 const ADR_0044_DEFAULT_POLICY: SessionCompactionPolicy = {
@@ -23,6 +25,7 @@ const ADR_0044_DEFAULT_POLICY: SessionCompactionPolicy = {
   maxCachedInputTokens: 500_000,
   rotateOnZeroOpenIssues: true,
   rotateOnNewIssueWake: true,
+  maxSessionTurns: 150,
 };
 
 function buildInput(overrides: Partial<SessionCompactionTriggerInput> = {}): SessionCompactionTriggerInput {
@@ -30,6 +33,8 @@ function buildInput(overrides: Partial<SessionCompactionTriggerInput> = {}): Ses
     policy: DISABLED_POLICY,
     runsCount: 1,
     latestRawUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    sessionCachedInputTokens: 0,
+    sessionTurnsCount: 0,
     sessionAgeHours: 0,
     openIssuesCount: 1,
     wakeReason: null,
@@ -42,15 +47,77 @@ describe("decideSessionCompactionTrigger", () => {
     expect(decideSessionCompactionTrigger(buildInput({ policy: ADR_0044_DEFAULT_POLICY }))).toBeNull();
   });
 
-  it("T1 triggers when cached_input >= maxCachedInputTokens", () => {
+  it("T1 triggers when session-cumulative cache_read >= maxCachedInputTokens", () => {
     const result = decideSessionCompactionTrigger(
       buildInput({
         policy: ADR_0044_DEFAULT_POLICY,
-        latestRawUsage: { inputTokens: 0, cachedInputTokens: 600_000, outputTokens: 0 },
+        sessionCachedInputTokens: 600_000,
       }),
     );
     expect(result?.triggeredBy).toBe("t1");
     expect(result?.reason).toMatch(/cache_read reached 600,000 tokens/);
+  });
+
+  it("T1 does NOT trigger from a single run's latestRawUsage alone (must be session-cumulative)", () => {
+    const result = decideSessionCompactionTrigger(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        latestRawUsage: { inputTokens: 0, cachedInputTokens: 600_000, outputTokens: 0 },
+        sessionCachedInputTokens: 200_000,
+      }),
+    );
+    expect(result).toBeNull();
+  });
+
+  it("T5 triggers when session-cumulative turns >= maxSessionTurns", () => {
+    const result = decideSessionCompactionTrigger(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionTurnsCount: 150,
+      }),
+    );
+    expect(result?.triggeredBy).toBe("t5");
+    expect(result?.reason).toMatch(/turns reached 150/);
+  });
+
+  it("T5 does NOT trigger below maxSessionTurns", () => {
+    const result = decideSessionCompactionTrigger(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionTurnsCount: 149,
+      }),
+    );
+    expect(result).toBeNull();
+  });
+
+  it("ignores T5 when maxSessionTurns is 0 (disabled)", () => {
+    const policy: SessionCompactionPolicy = { ...ADR_0044_DEFAULT_POLICY, maxSessionTurns: 0 };
+    const result = decideSessionCompactionTrigger(
+      buildInput({ policy, sessionTurnsCount: 1_000 }),
+    );
+    expect(result).toBeNull();
+  });
+
+  it("priority: T1 wins over T5 when both conditions hold", () => {
+    const result = decideSessionCompactionTrigger(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionCachedInputTokens: 600_000,
+        sessionTurnsCount: 200,
+      }),
+    );
+    expect(result?.triggeredBy).toBe("t1");
+  });
+
+  it("priority: T5 wins over T2 when both conditions hold", () => {
+    const result = decideSessionCompactionTrigger(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionTurnsCount: 200,
+        sessionAgeHours: 10,
+      }),
+    );
+    expect(result?.triggeredBy).toBe("t5");
   });
 
   it("T2 triggers when sessionAgeHours >= maxSessionAgeHours", () => {
@@ -134,7 +201,7 @@ describe("decideSessionCompactionTrigger", () => {
       buildInput({
         policy,
         runsCount: 6,
-        latestRawUsage: { inputTokens: 0, cachedInputTokens: 800_000, outputTokens: 0 },
+        sessionCachedInputTokens: 800_000,
       }),
     );
     expect(result?.triggeredBy).toBe("legacy_runs");
@@ -144,7 +211,7 @@ describe("decideSessionCompactionTrigger", () => {
     const result = decideSessionCompactionTrigger(
       buildInput({
         policy: ADR_0044_DEFAULT_POLICY,
-        latestRawUsage: { inputTokens: 0, cachedInputTokens: 800_000, outputTokens: 0 },
+        sessionCachedInputTokens: 800_000,
         sessionAgeHours: 10,
       }),
     );
@@ -190,7 +257,7 @@ describe("decideSessionCompactionTrigger", () => {
     const result = decideSessionCompactionTrigger(
       buildInput({
         policy,
-        latestRawUsage: { inputTokens: 0, cachedInputTokens: 10_000_000, outputTokens: 0 },
+        sessionCachedInputTokens: 10_000_000,
       }),
     );
     expect(result).toBeNull();
@@ -199,6 +266,70 @@ describe("decideSessionCompactionTrigger", () => {
   it("ignores T2 when maxSessionAgeHours is 0 (disabled)", () => {
     const policy: SessionCompactionPolicy = { ...ADR_0044_DEFAULT_POLICY, maxSessionAgeHours: 0 };
     const result = decideSessionCompactionTrigger(buildInput({ policy, sessionAgeHours: 100 }));
+    expect(result).toBeNull();
+  });
+});
+
+describe("decideSessionNearRotationWarning", () => {
+  it("returns null when nothing is close to threshold", () => {
+    expect(
+      decideSessionNearRotationWarning(buildInput({ policy: ADR_0044_DEFAULT_POLICY })),
+    ).toBeNull();
+  });
+
+  it("warns when cache_read is at 80% of maxCachedInputTokens", () => {
+    const result = decideSessionNearRotationWarning(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionCachedInputTokens: 400_000,
+      }),
+    );
+    expect(result?.reason).toMatch(/cache_read is at 400,000 tokens/);
+  });
+
+  it("does NOT warn just below the 80% cache_read ratio", () => {
+    const result = decideSessionNearRotationWarning(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionCachedInputTokens: 399_999,
+      }),
+    );
+    expect(result).toBeNull();
+  });
+
+  it("warns when turns are at 80% of maxSessionTurns", () => {
+    const result = decideSessionNearRotationWarning(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionTurnsCount: 120,
+      }),
+    );
+    expect(result?.reason).toMatch(/used 120 turns/);
+  });
+
+  it("does NOT warn just below the 80% turns ratio", () => {
+    const result = decideSessionNearRotationWarning(
+      buildInput({
+        policy: ADR_0044_DEFAULT_POLICY,
+        sessionTurnsCount: 119,
+      }),
+    );
+    expect(result).toBeNull();
+  });
+
+  it("ignores cache_read ratio when maxCachedInputTokens is 0 (disabled)", () => {
+    const policy: SessionCompactionPolicy = { ...ADR_0044_DEFAULT_POLICY, maxCachedInputTokens: 0 };
+    const result = decideSessionNearRotationWarning(
+      buildInput({ policy, sessionCachedInputTokens: 10_000_000 }),
+    );
+    expect(result).toBeNull();
+  });
+
+  it("ignores turns ratio when maxSessionTurns is 0 (disabled)", () => {
+    const policy: SessionCompactionPolicy = { ...ADR_0044_DEFAULT_POLICY, maxSessionTurns: 0 };
+    const result = decideSessionNearRotationWarning(
+      buildInput({ policy, sessionTurnsCount: 1_000 }),
+    );
     expect(result).toBeNull();
   });
 });

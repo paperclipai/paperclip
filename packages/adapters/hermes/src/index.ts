@@ -57,6 +57,7 @@ const sessionManagement: AdapterSessionManagement = {
     maxCachedInputTokens: 0,
     rotateOnZeroOpenIssues: false,
     rotateOnNewIssueWake: false,
+    maxSessionTurns: 0,
   },
 };
 

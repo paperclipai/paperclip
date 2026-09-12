@@ -3041,6 +3041,7 @@ describe("parseSessionCompactionPolicy", () => {
       maxCachedInputTokens: 0,
       rotateOnZeroOpenIssues: false,
       rotateOnNewIssueWake: false,
+      maxSessionTurns: 0,
     });
   });
 
@@ -3050,9 +3051,10 @@ describe("parseSessionCompactionPolicy", () => {
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
       maxSessionAgeHours: 6,
-      maxCachedInputTokens: 500_000,
+      maxCachedInputTokens: 5_000_000,
       rotateOnZeroOpenIssues: true,
       rotateOnNewIssueWake: true,
+      maxSessionTurns: 150,
     });
   });
 
@@ -3065,6 +3067,7 @@ describe("parseSessionCompactionPolicy", () => {
       maxCachedInputTokens: 0,
       rotateOnZeroOpenIssues: false,
       rotateOnNewIssueWake: false,
+      maxSessionTurns: 0,
     });
     expect(parseSessionCompactionPolicy(buildAgent("opencode_local"))).toEqual({
       enabled: true,
@@ -3074,6 +3077,7 @@ describe("parseSessionCompactionPolicy", () => {
       maxCachedInputTokens: 0,
       rotateOnZeroOpenIssues: false,
       rotateOnNewIssueWake: false,
+      maxSessionTurns: 0,
     });
   });
 
@@ -3097,10 +3101,11 @@ describe("parseSessionCompactionPolicy", () => {
       maxCachedInputTokens: 0,
       rotateOnZeroOpenIssues: false,
       rotateOnNewIssueWake: false,
+      maxSessionTurns: 0,
     });
   });
 
-  it("supports ADR-0044 per-agent overrides (T1/T2/T3/T4)", () => {
+  it("supports ADR-0044 per-agent overrides (T1/T2/T3/T4/T5)", () => {
     expect(
       parseSessionCompactionPolicy(
         buildAgent("claude_local", {
@@ -3110,6 +3115,7 @@ describe("parseSessionCompactionPolicy", () => {
               maxSessionAgeHours: 12,
               rotateOnZeroOpenIssues: false,
               rotateOnNewIssueWake: false,
+              maxSessionTurns: 100,
             },
           },
         }),
@@ -3122,6 +3128,7 @@ describe("parseSessionCompactionPolicy", () => {
       maxCachedInputTokens: 1_000_000,
       rotateOnZeroOpenIssues: false,
       rotateOnNewIssueWake: false,
+      maxSessionTurns: 100,
     });
   });
 });

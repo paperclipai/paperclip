@@ -4,9 +4,10 @@ export interface SessionCompactionPolicy {
   maxRawInputTokens: number;
   maxSessionAgeHours: number;
   // ADR-0044 additions
-  maxCachedInputTokens: number;        // T1: threshold on cache_read_input_tokens (0 = disabled)
+  maxCachedInputTokens: number;        // T1: threshold on session-cumulative cache_read_input_tokens (0 = disabled)
   rotateOnZeroOpenIssues: boolean;     // T3: rotate when openIssuesCount == 0
   rotateOnNewIssueWake: boolean;       // T4: rotate when wakeReason == "issue_assigned"
+  maxSessionTurns: number;             // T5: threshold on session-cumulative turn count (0 = disabled)
 }
 
 export type NativeContextManagement = "confirmed" | "likely" | "unknown" | "none";
@@ -32,6 +33,7 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   maxCachedInputTokens: 0,
   rotateOnZeroOpenIssues: false,
   rotateOnNewIssueWake: false,
+  maxSessionTurns: 0,
 };
 
 // Adapters with native context management still participate in session resume,
@@ -44,6 +46,7 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxCachedInputTokens: 0,
   rotateOnZeroOpenIssues: false,
   rotateOnNewIssueWake: false,
+  maxSessionTurns: 0,
 };
 
 // ADR-0044 «Heartbeat session lifecycle» — fresh-session policy applied to claude_local by default.
@@ -53,9 +56,10 @@ const CLAUDE_LOCAL_ADR_0044_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 0,                    // not used (variant D rejected by ADR-0044)
   maxRawInputTokens: 0,                 // not used (cached_input is the meaningful signal)
   maxSessionAgeHours: 6,                // T2 default for execution agents
-  maxCachedInputTokens: 500_000,        // T1 default for execution agents
+  maxCachedInputTokens: 5_000_000,      // T1 default: session-cumulative cache_read across all runs, not per-run
   rotateOnZeroOpenIssues: true,         // T3
   rotateOnNewIssueWake: true,           // T4
+  maxSessionTurns: 150,                 // T5 default: session-cumulative turns, matches maxTurnsPerRun continuation cap
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
@@ -171,6 +175,7 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const maxCachedInputTokens = readNumber(compaction.maxCachedInputTokens);
   const rotateOnZeroOpenIssues = readBoolean(compaction.rotateOnZeroOpenIssues);
   const rotateOnNewIssueWake = readBoolean(compaction.rotateOnNewIssueWake);
+  const maxSessionTurns = readNumber(compaction.maxSessionTurns);
 
   if (enabled !== undefined) explicit.enabled = enabled;
   if (maxSessionRuns !== undefined) explicit.maxSessionRuns = maxSessionRuns;
@@ -179,6 +184,7 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   if (maxCachedInputTokens !== undefined) explicit.maxCachedInputTokens = maxCachedInputTokens;
   if (rotateOnZeroOpenIssues !== undefined) explicit.rotateOnZeroOpenIssues = rotateOnZeroOpenIssues;
   if (rotateOnNewIssueWake !== undefined) explicit.rotateOnNewIssueWake = rotateOnNewIssueWake;
+  if (maxSessionTurns !== undefined) explicit.maxSessionTurns = maxSessionTurns;
 
   return explicit;
 }
@@ -205,6 +211,7 @@ export function resolveSessionCompactionPolicy(
       maxCachedInputTokens: explicitOverride.maxCachedInputTokens ?? basePolicy.maxCachedInputTokens,
       rotateOnZeroOpenIssues: explicitOverride.rotateOnZeroOpenIssues ?? basePolicy.rotateOnZeroOpenIssues,
       rotateOnNewIssueWake: explicitOverride.rotateOnNewIssueWake ?? basePolicy.rotateOnNewIssueWake,
+      maxSessionTurns: explicitOverride.maxSessionTurns ?? basePolicy.maxSessionTurns,
     },
     adapterSessionManagement,
     explicitOverride,
@@ -224,6 +231,7 @@ export function hasSessionCompactionThresholds(policy: Pick<
   | "maxCachedInputTokens"
   | "rotateOnZeroOpenIssues"
   | "rotateOnNewIssueWake"
+  | "maxSessionTurns"
 >) {
   return (
     policy.maxSessionRuns > 0 ||
@@ -231,6 +239,7 @@ export function hasSessionCompactionThresholds(policy: Pick<
     policy.maxSessionAgeHours > 0 ||
     policy.maxCachedInputTokens > 0 ||
     policy.rotateOnZeroOpenIssues === true ||
-    policy.rotateOnNewIssueWake === true
+    policy.rotateOnNewIssueWake === true ||
+    policy.maxSessionTurns > 0
   );
 }
