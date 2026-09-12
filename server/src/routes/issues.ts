@@ -15271,7 +15271,7 @@ export function issueRoutes(
         suppressImmediateRecovery: true,
         resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
       });
-      await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId);
+      await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
         agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,

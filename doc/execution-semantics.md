@@ -1034,3 +1034,11 @@ owns the next turn even before it acquires the task execution lock. A recovery
 hold or a plain operator Stop does not by itself authorize old input. The
 successor guard is scoped to the same agent so another agent's review
 participation keeps its independent recovery path.
+
+An explicit queued-message Interrupt also grants one scoped cleanup retry for
+the stopped run. Old ephemeral leases whose cleanup predates provider stop
+receipts are rechecked through the recorded provider teardown path. Retained
+resources and sandboxes owned by another lease are not rechecked this way.
+Delivery still requires the provider's verified stop receipt. Periodic queue
+retries do not gain extra cleanup attempts, and the queue displays the server's
+waiting reason while cleanup remains unresolved.
