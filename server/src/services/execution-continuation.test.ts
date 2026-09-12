@@ -133,6 +133,99 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("retains an edited brief alongside historical direction on the same provider-session resume", async () => {
+      const taskId = randomUUID(), priorRunId = randomUUID(), commentId = randomUUID();
+      const oldBrief = 'Run bash "$HOME/task/acceptance-step.sh".';
+      const newBrief = "Run sh /tmp/current-verification.sh exactly once; do not run task/acceptance-step.sh.";
+      await db.insert(issues).values({ id: taskId, companyId, title: "Existing task", description: oldBrief,
+        status: "in_progress", assigneeAgentId: agentId });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId: taskId,
+        authorType: "user", authorUserId: "local-board", body: oldBrief });
+      const input = { db, companyId, issueId: taskId, agentId,
+        context: { wakeReason: "issue_status_changed" }, summary: null, exposeLowTrustRaw: false };
+      const before = await buildExecutionContinuation(input);
+      await db.insert(heartbeatRuns).values({ id: priorRunId, companyId, agentId, status: "succeeded",
+        sessionIdAfter: "original-provider-conversation", contextSnapshot: {
+          issueId: taskId, paperclipIssue: { description: oldBrief }, executionContinuation: before,
+        } });
+      await db.update(issues).set({ description: newBrief }).where(eq(issues.id, taskId));
+      const after = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId });
+      expect(after.objective).toBe(newBrief);
+      const stalePointer = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId,
+        context: { wakeReason: "issue_status_changed", latestCommentId: commentId } });
+      expect(stalePointer.objective).toBe(newBrief);
+
+      expect(after.messages).toEqual(before.messages);
+      expect(after.resumeDelta).toMatchObject({ baseRunId: priorRunId, messages: [] });
+      const prompt = renderPaperclipWakePrompt({ reason: "issue_status_changed",
+        issue: { id: taskId, title: "Existing task", description: newBrief },
+        executionContinuation: after, fallbackFetchNeeded: false }, { resumedSession: true });
+      expect(prompt).toContain(newBrief);
+      expect(prompt).toContain("Paperclip Resume Delta");
+      const [retained] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, priorRunId));
+      expect(retained.sessionIdAfter).toBe("original-provider-conversation");
+      // A second ordinary resume must not promote the older comment again now
+      // that the newly delivered description is equal to the stored description.
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: taskId,
+        paperclipIssue: { description: newBrief }, executionContinuation: after,
+      } }).where(eq(heartbeatRuns.id, priorRunId));
+      const secondResume = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId });
+      expect(secondResume.objective).toBe(newBrief);
+      expect(secondResume.resumeDelta?.messages).toEqual([]);
+
+
+      // A later comment may refine the brief or authorize the next planning step.
+      const direction = "The plan is approved; implement only its first step.";
+      const directionId = randomUUID();
+      await db.insert(issueComments).values({ id: directionId, companyId, issueId: taskId, authorType: "user",
+        authorUserId: "local-board", body: direction, createdAt: new Date(Date.now() + 1000) });
+      const coalesced = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId });
+      expect(coalesced.objective).toBe(direction);
+      const later = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId,
+        context: { wakeReason: "issue_commented", commentId: directionId } });
+      expect(later.objective).toBe(direction);
+      expect(later.resumeDelta?.messages.map(message => message.body)).toEqual([direction]);
+
+      // Unchanged task resumes keep the comment's refinement, with no new comment required.
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: taskId,
+        paperclipIssue: { description: newBrief }, executionContinuation: later,
+      } }).where(eq(heartbeatRuns.id, priorRunId));
+      const unchanged = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId });
+      expect(unchanged.objective).toBe(direction);
+      expect(unchanged.resumeDelta?.messages).toEqual([]);
+
+      // An accepted plan interaction retains the originating request and decision.
+      const approvalId = randomUUID();
+      await db.insert(issueThreadInteractions).values({ id: approvalId, companyId, issueId: taskId,
+        kind: "request_confirmation", status: "accepted", sourceRunId: priorRunId,
+        sourceCommentId: directionId, originCommentIds: [directionId],
+        payload: { version: 1, prompt: "Approve the plan?", target: {
+          type: "issue_document", key: "plan", revisionId: randomUUID(), revisionNumber: 1,
+        } }, result: { version: 1, outcome: "accepted" } });
+      const approved = await buildExecutionContinuation({ ...input,
+        context: { interactionId: approvalId, wakeReason: "issue_interaction_resolved" } });
+      expect(approved.objective).toBe(direction);
+      expect(approved.originCommentIds).toContain(directionId);
+      expect(approved.interactionOutcomes).toContainEqual(expect.objectContaining({
+        id: approvalId, kind: "request_confirmation", status: "accepted",
+      }));
+
+      // Conversations continue their current human message, not their persistent brief.
+      await db.update(issues).set({ conversationAgentId: agentId, conversationUserId: "local-board",
+        conversationState: "active" }).where(eq(issues.id, taskId));
+      const conversation = await buildExecutionContinuation(input);
+      expect(conversation.objective).toBe(direction);
+      // Removing the comment that supported the objective cannot replay its old body.
+      await db.update(issues).set({ conversationAgentId: null, conversationUserId: null,
+        conversationState: null }).where(eq(issues.id, taskId));
+      await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, directionId));
+      const deletedDirection = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId });
+      expect(deletedDirection.objective).toBe(newBrief);
+      expect(deletedDirection.messages.find(message => message.id === directionId)?.body).toBe("");
+
+
+    });
+
     it("cancelled admission must not hide the interrupted execution", async () => {
       const rejectedId = randomUUID();
       await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", createdAt: new Date("2026-09-08T10:00:00Z") }).where(eq(heartbeatRuns.id, runId));

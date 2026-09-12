@@ -1332,7 +1332,28 @@ describe("renderPaperclipWakePrompt", () => {
     });
   });
 
-  it("omits the issue description from non-assignment resume deltas and leaves a fetch breadcrumb", () => {
+  it("delivers an edited task brief on an ordinary resumed status wake", () => {
+    const description = "Run sh /tmp/current-verification.sh once; do not run task/acceptance-step.sh.";
+    const wake = {
+      reason: "issue_status_changed",
+      issue: { id: "issue-1", title: "Existing task", status: "in_progress", description },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+    const prompt = renderPaperclipWakePrompt(wake, { resumedSession: true });
+    expect(prompt).toContain(description);
+    expect(prompt).toContain("Paperclip Resume Delta");
+    expect(prompt).not.toContain("omitted from this resume delta");
+    const selected = selectPaperclipTaskMarkdown({
+      paperclipWake: wake,
+      paperclipTaskMarkdown: `Current task: ${description}`,
+      paperclipTaskMarkdownCompact: "Existing task",
+    }, { resumedSession: true });
+    expect(selected).toContain(description);
+  });
+
+  it("keeps the current issue description on unchanged and assignment-shaped resumes", () => {
     const basePayload = {
       issue: {
         id: "issue-1",
@@ -1352,10 +1373,9 @@ describe("renderPaperclipWakePrompt", () => {
       { ...basePayload, reason: "issue_commented" },
       { resumedSession: true },
     );
-    expect(commentResume).not.toContain("Issue description:");
-    expect(commentResume).toContain(
-      "- issue description: omitted from this resume delta; fetch the issue if you need the latest brief",
-    );
+    expect(commentResume).toContain("Issue description:");
+    expect(commentResume).toContain(basePayload.issue.description);
+    expect(commentResume).not.toContain("omitted from this resume delta");
 
     // Assignment-shaped resumes still deliver the brief: the resuming session
     // may be picking this issue up for the first time.
@@ -3040,7 +3060,7 @@ describe("selectPaperclipTaskMarkdown", () => {
     ).toBe(fullMarkdown);
   });
 
-  it("returns the compact markdown for non-assignment resume deltas", () => {
+  it("retains the full current brief on non-assignment resume deltas", () => {
     expect(
       selectPaperclipTaskMarkdown(
         {
@@ -3050,7 +3070,7 @@ describe("selectPaperclipTaskMarkdown", () => {
         },
         { resumedSession: true },
       ),
-    ).toBe(compactMarkdown);
+    ).toBe(fullMarkdown);
   });
 
   it("falls back to the full markdown when no compact variant exists", () => {
