@@ -389,7 +389,13 @@ export const issuesApi = {
     data: { queueId: string; targetRunId: string | null; revision: string },
   ) => api.post<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/interrupt`, data),
   interruptLatestQueuedComments: async (id: string, expectedTargetRunId: string | null): Promise<IssueQueuedCommentQueue> => {
-    const queue = await issuesApi.getQueuedComments(id);
+    // The queue record can lag just behind the optimistic UI state that
+    // enables the Interrupt button, so retry briefly before giving up.
+    let queue = await issuesApi.getQueuedComments(id);
+    for (let attempt = 0; !queue.queueId && attempt < 3; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      queue = await issuesApi.getQueuedComments(id);
+    }
     if (!queue.queueId || (queue.targetRunId && queue.targetRunId !== expectedTargetRunId)) {
       throw new Error("The queued messages changed. Refresh and try again.");
     }
