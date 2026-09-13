@@ -10702,6 +10702,28 @@ async function createRunnerdBackendWithinSessionClaim(
     };
   };
 
+  const claimUntouchedSessionInResumedLease = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
+    const identity = readRunnerdDurableIdentity(root);
+    if (!durableIdentityMatchesExecution(identity, input.execution) ||
+        identity?.runnerInstanceId !== effectiveRunnerInstanceId ||
+        identity?.environmentLeaseId !== effectiveEnvironmentLeaseId ||
+        !runnerdStateProvesIncompleteBootstrap(root)) return false;
+    // A reusable workspace may have failed before any harness was created.
+    // Claim this exact new session atomically under readable real directories.
+    // Missing files inside an existing session never authorize a fresh start.
+    const probe = await remoteCommandRunner.execute({
+      command: "sh",
+      args: ["-c",
+        'set -eu; umask 077; test -d "$1" && test ! -L "$1" && test -r "$1" && test -x "$1" || exit 1; if test ! -e "$2" && test ! -L "$2"; then mkdir -- "$2"; fi; test -d "$2" && test ! -L "$2" && test -r "$2" && test -x "$2" || exit 1; mkdir -- "$3"',
+        "paperclip-runner-claim-unstarted-session", remoteRuntimeRoot,
+        posix.dirname(remoteSessionRoot), remoteSessionRoot],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    return probe.exitCode === 0 && !probe.timedOut;
+  };
+
   const recordInPlaceHarnessReuse = async (
     providerSessionIdentity: Record<string, unknown>,
     startedAtMs = Date.now(),
@@ -10958,12 +10980,16 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      throw new Error("runner_harness_state_mismatch");
+                      if (state.incompleteReason !== "unavailable" || backupAvailable ||
+                          !(await claimUntouchedSessionInResumedLease())) {
+                        throw new Error("runner_harness_state_mismatch");
+                      }
+                    } else {
+                      await recordInPlaceHarnessReuse(
+                        state.providerSessionIdentity,
+                        reuseStartedAtMs,
+                      );
                     }
-                    await recordInPlaceHarnessReuse(
-                      state.providerSessionIdentity,
-                      reuseStartedAtMs,
-                    );
                   } else if (
                     sandboxLeaseAcquisition?.outcome === "replacement"
                   ) {

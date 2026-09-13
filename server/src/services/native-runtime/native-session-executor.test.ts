@@ -9500,6 +9500,77 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
+  it.each(["fresh", "existing_state", "symlink_parent", "wrong_identity", "connected", "pending_turn", "remote_probe_failed", "backup_present"])(
+    "bootstraps only an untouched provider session in a resumed workspace lease: %s", async (scenario) => {
+    const remoteCwd = join(isolatedStateDirectory, "remote");
+    const runtimeRoot = join(remoteCwd, ".paperclip-runtime", "paperclip-runner");
+    await mkdir(runtimeRoot, { recursive: true });
+    const sessionRoot = join(runtimeRoot, "sessions", createHash("sha256").update(execution.session.normalizedSessionId!).digest("hex"));
+    if (scenario === "existing_state") await mkdir(sessionRoot, { recursive: true });
+    if (scenario === "symlink_parent") await symlink(isolatedStateDirectory, join(runtimeRoot, "sessions"));
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      if (command.args?.[2] === "paperclip-runner-claim-unstarted-session") {
+        let exitCode = 1;
+        if (scenario !== "remote_probe_failed") {
+          try { execFileSync("sh", command.args, { stdio: "pipe" }); exitCode = 0; } catch {}
+        }
+        return { exitCode, timedOut: false, stdout: "", stderr: "" };
+      }
+      if (command.args?.[0] === "--build-metadata") return {
+        exitCode: 0, timedOut: false, stdout: JSON.stringify({
+          schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+          packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+          prpTransportModes: ["listen_ws"],
+        }), stderr: "",
+      };
+      if (command.args?.[0] === "--version") return {
+        exitCode: 0, timedOut: false, stdout: "codex-cli 0.153.4", stderr: "",
+      };
+      if (command.args?.[1]?.includes("base64")) return {
+        exitCode: 1, timedOut: false, stdout: "", stderr: "",
+      };
+      return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+    });
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution), execution, runnerInstanceId: "runner-new-in-retained-workspace",
+      runnerIngressAuthorized: true,
+      runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd, environmentId: "environment",
+        leaseId: "lease-resumed", providerKey: "daytona",
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox-retained" },
+        runner: { execute: remoteExecute },
+      } as never,
+    });
+    expect(backend).toBeDefined();
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
+      prepareExternalRunnerState: () => Promise<void>;
+    };
+    await mkdir(join(options.stateDirectory!, "control-plane"), { recursive: true });
+    await writeFile(join(options.stateDirectory!, "control-plane", "control-plane-state.json"), JSON.stringify({
+      schema: "paperclip.runner.durable.control-plane-state.v1",
+      identity: { ...options.prpIdentity, ...(scenario === "wrong_identity" ? { runId: "other-run" } : {}) },
+      connectionCount: scenario === "connected" ? 1 : 0, committedEvents: [],
+      commands: [{ type: "run.prepare", status: "pending" }, { type: scenario === "pending_turn" ? "turn.start" : "session.open", status: "pending" }],
+    }));
+    if (scenario === "backup_present") {
+      await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
+      await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
+    }
+    if (scenario === "fresh") {
+      await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+      expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(true);
+      const claimCommand = remoteExecute.mock.calls.find(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")![0];
+      expect((await lstat(sessionRoot)).mode & 0o777).toBe(0o700);
+      // The exact same claim cannot silently reopen an existing partial root.
+      expect(() => execFileSync("sh", claimCommand.args!, { stdio: "pipe" })).toThrow();
+    } else {
+      await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch");
+      expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
+    }
+  });
+
   it("uses the image's shared Codex without uploading or installing artifacts", async () => {
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(
