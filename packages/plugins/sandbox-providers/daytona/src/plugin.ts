@@ -1126,7 +1126,11 @@ const sandboxHandleActivityGates = (() => {
     gates.clear();
   }
 
-  return { begin, waitForIdle, end, reset };
+  function isActive(scope: SandboxScope): boolean {
+    return gates.has(sandboxHandleCacheKey(scope));
+  }
+
+  return { begin, waitForIdle, isActive, end, reset };
 })();
 
 type SandboxLeaseAdmissionOptions = {
@@ -2187,6 +2191,11 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
+    // A confirmed stop may precede completion of an old SDK request. Do not
+    // restart its sandbox under that request; it could still write or execute.
+    if (sandboxHandleLeaseAdmissionStates.isClosed(scope) && sandboxHandleActivityGates.isActive(scope)) {
+      throw new Error("The stopped Daytona sandbox is still settling cancelled work. Retry shortly.");
+    }
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
@@ -2283,6 +2292,16 @@ const plugin = definePlugin({
       if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
 
       evictSandboxHandle(scope);
+      if (params.cancelActiveWork) {
+        // Graceful release waits for activity below. Stop must not wait on the
+        // command it is cancelling. Admission is already closed for this lease.
+        const timeoutSeconds = Math.min(toTimeoutSeconds(config.timeoutMs), 30);
+        await withLivenessTimeout("sandbox.refreshData", Math.min(config.livenessTimeoutMs, 30_000), () => sandbox.refreshData());
+        if (sandbox.state !== "stopped") await sandbox.stop(timeoutSeconds);
+        sandboxHandleSessionStore.clear(scope);
+        await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+        return { providerLeaseId: params.providerLeaseId, state: "stopped" };
+      }
       await sandboxHandleActivityGates.waitForIdle(scope);
       await teardownSession(sandbox, scope);
       // Close every duplex channel on this lease before the stop or the delete,

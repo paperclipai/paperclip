@@ -255,6 +255,20 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  it.each([false, true])("only requests active-work cancellation for explicit Stop: %s", async (cancelActiveWork) => {
+    const releaseRunLeases = vi.fn().mockResolvedValue([]);
+    const runtime = makeMockRuntime({ releaseRunLeases });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    await orchestrator.releaseForRun({
+      heartbeatRunId: "run-1", companyId: "company-1", agentId: "agent-1",
+      providerResourceDisposition: "stop_and_retain", cancelActiveWork,
+    });
+    expect(releaseRunLeases).toHaveBeenCalledWith(
+      "run-1", "released", expect.any(Function), "stop_and_retain",
+      ...(cancelActiveWork ? [true] : []),
+    );
+  });
+
   it("happy path: returns lease, executionTarget, and remoteExecution on successful realization", async () => {
     const executionTarget = { kind: "local", environmentId: "env-1", leaseId: "lease-1" };
     const remoteExecution = { kind: "local", environmentId: "env-1", leaseId: "lease-1" };

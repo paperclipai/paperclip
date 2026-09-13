@@ -39,6 +39,7 @@ import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts
 import * as environmentsModule from "../services/environments.ts";
 import { logger } from "../middleware/logger.ts";
 import { environmentService } from "../services/environments.ts";
+import { remoteExecutionHasStopped } from "../services/remote-execution-termination.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
@@ -462,6 +463,34 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     return { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease };
   }
+
+  it.each(["stopped", "missing", "wrong-lease", "error"])(
+    "startup cancellation is run-scoped and needs a matching receipt: %s",
+    async (outcome) => {
+      const { pluginId, companyId, runId, reusableLease, environment } = await seedReusablePluginSandboxLease();
+      const other = await environmentService(db).acquireLease({
+        companyId, environmentId: environment.id, heartbeatRunId: null,
+        leasePolicy: "ephemeral", provider: "fake-plugin", providerLeaseId: "other-sandbox",
+      });
+      const call = vi.fn(async () => {
+        if (outcome === "error") throw new Error("provider unavailable");
+        if (outcome === "missing") return undefined;
+        return { providerLeaseId: outcome === "wrong-lease" ? "other-sandbox" : reusableLease.providerLeaseId, state: "stopped" };
+      });
+      const workerManager = {
+        isRunning: () => true, call,
+        getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }),
+      } as unknown as PluginWorkerManager;
+      const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+      await runtimeWithPlugin.releaseRunLeases(runId, "released", undefined, "stop_and_retain", true);
+      expect(call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.objectContaining({
+        companyId, providerLeaseId: reusableLease.providerLeaseId, cancelActiveWork: true,
+      }), expect.any(Number));
+      expect(call).toHaveBeenCalledOnce();
+      expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(outcome === "stopped");
+      await expect(environmentService(db).getLeaseById(other.id)).resolves.toMatchObject({ status: "active" });
+    },
+  );
 
   it("retains a successful reusable sandbox lease without stopping the provider resource", async () => {
     const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();

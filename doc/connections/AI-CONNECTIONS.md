@@ -127,6 +127,20 @@ process may already hold credentials. The revoke confirmation lists attributed
 active runs and exposes the existing Stop action; it does not promise immediate
 provider-side revocation.
 
+### Stop during sandbox preparation
+
+ACPX startup registers cancellation while it materializes the remote auth home
+and stages files. Stop requests termination of that run's sandbox. Daytona closes
+admission and stops the sandbox before waiting for outstanding setup commands.
+The host requires a receipt for the exact company, run, and provider lease before
+abandoning the blocked setup RPC. Normal completion still drains work gracefully.
+
+Late setup responses cannot launch the agent. A cancelled sandbox cannot resume
+while its old provider requests are still settling; a retry receives an explicit
+error instead. If termination cannot be verified, the adapter keeps ownership
+until the outstanding operation settles, and Stop is not acknowledged as complete.
+Local execution and cancellation of an already-running agent turn are unchanged.
+
 ## Legacy adoption
 
 Migration `0273` indexes only explicitly owned personal secrets with a recognized

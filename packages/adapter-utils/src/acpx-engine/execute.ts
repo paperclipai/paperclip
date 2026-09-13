@@ -1,3 +1,4 @@
+import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -4115,23 +4116,28 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // run inside this wrap and overrides the store, so an in-step exec still
         // parents to its step span. On a local or SSH target
         // `spanParent.parentContext` is a no-op token, so the wrap is inert.
-        prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
-          buildRuntime({
-            ctx,
-            engine,
-            deps,
-            ledger: runResourceLedger,
-            stagedIdleMs: warmIdleMs,
-            spanParent,
-            getRuntimeParentContext,
-            runtimeSpan: runRuntimeSpan,
-            stageRuntimeSpan: runStageSpan,
-          }),
-        );
-        buildRuntimeSettled = true;
-        // Capture the run's staging lease release now that the runtime built. The
-        // run root `finally` releases it as the final settlement act.
-        releaseStagingLease = prepared.sessionStagingLeaseRelease;
+        const startupCancellation = cancellableSandboxStartup(ctx);
+        try {
+          prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
+            buildRuntime({
+              ctx: startupCancellation.context,
+              engine,
+              deps,
+              ledger: runResourceLedger,
+              stagedIdleMs: warmIdleMs,
+              spanParent,
+              getRuntimeParentContext,
+              runtimeSpan: runRuntimeSpan,
+              stageRuntimeSpan: runStageSpan,
+            }),
+          );
+          buildRuntimeSettled = true;
+          // Capture acquired resources before the cancellation boundary so the
+          // normal settlement path also releases a just-completed build.
+          releaseStagingLease = prepared.sessionStagingLeaseRelease;
+        } finally {
+          await startupCancellation.finish();
+        }
         // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
         // server on the run result. A referenced project that failed to stage into the sandbox is a
         // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
