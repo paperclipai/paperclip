@@ -211,7 +211,7 @@ describe("native runner file handoff", () => {
         .resolves.toContain("Completion report accepted");
       await expect(nativeCompletionFeedback(db, runId, doneReport(["README.md"])))
         .resolves.toContain("Completion report accepted");
-      await expect(nativeCompletionFeedback(db, runId, { ...doneReport([]), artifacts: [{ ref: "unpublished.pdf" }] }))
+      await expect(nativeCompletionFeedback(db, runId, { ...doneReport([]), artifacts: [{ kind: "file", ref: "unpublished.pdf" }] }))
         .rejects.toThrow("workspace-only file");
     } finally {
       await db.update(issues).set({ title: "Prepare a requested file" }).where(eq(issues.id, issueId));
