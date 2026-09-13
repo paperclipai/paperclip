@@ -23,3 +23,8 @@ Review every changed package version/integrity, then run the workflow boundary
 tests and the report/publisher smoke with local evidence and a fake AWS CLI.
 Never run that update command in the reporting workflow. Do not edit the
 CI-owned root pnpm lock for this package.
+
+The exact `fast-uri` override uses the patched 3.1.6 line for the URI parsing
+advisories, including [GHSA-f65p-4m7j-42xc](https://github.com/fastify/fast-uri/security/advisories/GHSA-f65p-4m7j-42xc).
+Do not inherit an older vulnerable version solely because it appears in the
+workspace lock. The standalone runtime follows the repository Node engine policy.

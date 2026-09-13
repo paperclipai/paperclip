@@ -11,6 +11,9 @@
     "zod": "4.4.3"
   },
   "overrides": {
-    "fast-uri": "3.1.2"
+    "fast-uri": "3.1.6"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

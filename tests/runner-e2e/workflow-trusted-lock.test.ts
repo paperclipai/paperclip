@@ -13,6 +13,11 @@ it("locks every reporting registry artifact with integrity and exact direct vers
   const manifest = JSON.parse(readFileSync(path.join(root, runtime, "package.json"), "utf8"));
   const lock = JSON.parse(readFileSync(path.join(root, runtime, "package-lock.json"), "utf8"));
   expect(manifest.private).toBe(true);
+  expect(manifest.engines).toEqual({ node: ">=24.11.0" });
+  expect(lock.packages[""].engines).toEqual(manifest.engines);
+  // 3.1.6 fixes the six URI parsing advisories affecting the inherited 3.1.2 lock.
+  expect(manifest.overrides["fast-uri"]).toBe("3.1.6");
+  expect(lock.packages["node_modules/fast-uri"].version).toBe("3.1.6");
   expect(manifest.scripts).toBeUndefined();
   expect(lock.lockfileVersion).toBe(3);
   expect(lock.packages[""].dependencies).toEqual(manifest.dependencies);
