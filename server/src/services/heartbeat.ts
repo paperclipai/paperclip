@@ -23692,6 +23692,26 @@ export function heartbeatService(
                     },
                     onDispatch: markDispatchStarted,
                     signal: executionControl.controller.signal,
+                    ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {
+                      stopRemoteStartup: async () => {
+                        // Scope comes from the running host invocation, never agent
+                        // config. Keep adapter ownership until setup has unwound.
+                        if (!executionControl.controller.signal.aborted) {
+                          throw new Error("Remote startup stop requires a cancelled run");
+                        }
+                        const release = await envOrchestrator.releaseForRun({
+                          heartbeatRunId: run.id,
+                          companyId: agent.companyId,
+                          agentId: agent.id,
+                          status: "released",
+                          providerResourceDisposition: "stop_and_retain",
+                          cancelActiveWork: true,
+                        });
+                        if (release.errors.length || !await remoteExecutionHasStopped(db, agent.companyId, run.id)) {
+                          throw new Error("Could not verify remote startup stopped");
+                        }
+                      },
+                    } : {}),
                     onCancellationReady: async () => {
                       await registerAdapterExecutionControl(run.id, executionControl);
                       const current = await getRun(run.id);

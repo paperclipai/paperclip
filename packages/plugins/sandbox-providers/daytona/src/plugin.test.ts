@@ -2645,6 +2645,52 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
+    it("cancels active work before waiting for a stalled execute to drain", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let release!: () => void;
+      sandbox.process.executeCommand.mockImplementation(async () => {
+        await new Promise<void>(resolve => { release = resolve; });
+        return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+      });
+      mockGet.mockResolvedValue(sandbox);
+      const execute = plugin.definition.onEnvironmentExecute!(execParams("lease-a"));
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      const cancellation = plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true },
+        cancelActiveWork: true,
+      });
+      try {
+        await vi.waitFor(() => expect(sandbox.stop).toHaveBeenCalledTimes(1), { timeout: 500 });
+        await expect(cancellation).resolves.toEqual({ providerLeaseId: "lease-a", state: "stopped" });
+        await expect(plugin.definition.onEnvironmentExecute!(execParams("lease-a"))).rejects.toThrow(/no longer active/);
+        await expect(plugin.definition.onEnvironmentResumeLease!({
+          driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+          providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true },
+        })).rejects.toThrow(/still settling cancelled work/);
+        expect(sandbox.start).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await execute;
+        await cancellation;
+      }
+    });
+
+    it("does not report termination when the provider rejects Stop", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      sandbox.stop.mockRejectedValue(new Error("provider unavailable"));
+      mockGet.mockResolvedValue(sandbox);
+      await expect(plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true },
+        cancelActiveWork: true,
+      })).rejects.toThrow("provider unavailable");
+      expect(sandbox.delete).not.toHaveBeenCalled();
+      await expect(plugin.definition.onEnvironmentExecute!(execParams("lease-a"))).rejects.toThrow(/no longer active/);
+    });
+
     it("waits for an in-flight execute before teardown cleanup starts", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });

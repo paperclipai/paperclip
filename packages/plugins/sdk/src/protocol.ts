@@ -662,6 +662,9 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Explicit operator cancellation: terminate active work instead of waiting
+   * for command/sync activity to drain. Still requires a provider receipt. */
+  cancelActiveWork?: boolean;
   providerLeaseId: string | null;
   leaseMetadata?: Record<string, unknown>;
 }
