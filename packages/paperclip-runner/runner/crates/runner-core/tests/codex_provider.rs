@@ -3522,12 +3522,17 @@ fn durable_backend_rotates_tool_authority_for_fresh_run_attach() {
 #[test]
 fn durable_backend_drains_a_bounded_completed_turn_tail_during_warm_attach() {
     let directory = temporary_directory("durable-warm-attach-tail");
+    let notification_gate = directory.join("emit-passive-tail");
     let config = provider_config(
         &directory,
         &[
             "--durable-turn-ids",
             "--emit-post-completion-warning",
             "--emit-post-completion-passive-statuses",
+            "--post-completion-notification-gate",
+            notification_gate
+                .to_str()
+                .expect("notification gate is UTF-8"),
         ],
     );
     let runner_config = durable_config(&directory);
@@ -3584,6 +3589,19 @@ fn durable_backend_drains_a_bounded_completed_turn_tail_during_warm_attach() {
         .expect("readiness probe drains only the completed turn tail");
     assert_eq!(readiness.result["warmAttachReady"], true);
     assert_eq!(readiness.result["warmAttachBlockers"], json!([]));
+
+    // Release passive notices after a successful readiness probe. This closes the
+    // actual probe-to-attachment race without normal event polling consuming them.
+    fs::write(&notification_gate, b"release").expect("release passive provider notices");
+    let emitted_gate = notification_gate.with_extension("emitted");
+    let emitted_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !emitted_gate.is_file() {
+        assert!(
+            std::time::Instant::now() < emitted_deadline,
+            "passive notices must be emitted"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 
     let attached = executor
         .execute(&command(

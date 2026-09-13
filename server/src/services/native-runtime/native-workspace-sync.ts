@@ -97,6 +97,7 @@ export type NativeWorkspaceInboundEvidence =
       kind: "new_run";
       acquisition: "created" | "resumed" | "replacement" | null;
       hasPriorStamp: boolean;
+      legacyWorkspaceResume?: boolean;
     };
 
 export function classifyNativeWorkspaceInbound(
@@ -108,7 +109,7 @@ export function classifyNativeWorkspaceInbound(
     }
     return evidence.sameProviderLease ? "adopt_remote" : "durable_seed";
   }
-  return evidence.acquisition === "resumed" && evidence.hasPriorStamp
+  return evidence.acquisition === "resumed" && (evidence.hasPriorStamp || evidence.legacyWorkspaceResume)
     ? "adopt_remote"
     : "host_current";
 }
@@ -823,6 +824,7 @@ export async function prepareNativeWorkspaceSync(input: {
       kind: "new_run",
       acquisition,
       hasPriorStamp: priorStamp !== null,
+      legacyWorkspaceResume: target.legacyWorkspaceResume,
     });
     runtime = await prepareRuntime({
       runId: input.runId,
@@ -838,7 +840,7 @@ export async function prepareNativeWorkspaceSync(input: {
     if (!currentSnapshot) {
       throw new Error("native_workspace_sync_snapshot_missing");
     }
-    if (acquisition === "resumed" && priorStamp) {
+    if (acquisition === "resumed" && priorStamp && !target.legacyWorkspaceResume) {
       const currentHostSha256 = directorySnapshotSha256(
         currentSnapshot.baseline,
       );

@@ -86,12 +86,14 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+import * as targets from "@paperclipai/adapter-utils/execution-target";
 import { execute } from "./execute.js";
 
 describe("gemini remote execution", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
@@ -231,12 +233,20 @@ describe("gemini remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
 
-  it("pre-selects gemini-api-key auth in the managed HOME for sandbox execution", async () => {
+  it.each(["/home/daytona", undefined])("pre-selects gemini-api-key auth in the sandbox HOME (%s)", async (workFolderHome) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-sandbox-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
 
+    // The command recorder does not implement archive transfer; this test
+    // exercises CLI authentication paths, while transport tests cover syncing.
+    vi.spyOn(targets, "prepareAdapterExecutionTargetRuntime").mockResolvedValue({
+      target: { kind: "remote", transport: "sandbox", remoteCwd: "/remote/workspace", workFolderHome },
+      runtimeRootDir: "/remote/workspace/.paperclip-runtime/gemini",
+      workspaceRemoteDir: "/remote/workspace", assetDirs: {}, additionalSourceDirs: {},
+      additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace: async () => {},
+    });
     const geminiOutput = [
       JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-session-2", model: "gemini-2.5-pro" }),
       JSON.stringify({ type: "message", role: "assistant", content: "hello" }),
@@ -294,6 +304,7 @@ describe("gemini remote execution", () => {
         kind: "remote",
         transport: "sandbox",
         providerKey: "kubernetes",
+        workFolderHome,
         remoteCwd: "/remote/workspace",
         runner: { execute: runnerExecute },
       },
@@ -306,8 +317,7 @@ describe("gemini remote execution", () => {
     const settingsWrite = runnerScripts.find((script) => script.includes(".gemini/settings.json"));
     expect(settingsWrite).toBeDefined();
     expect(settingsWrite).toContain("gemini-api-key");
-    // The managed HOME lives under the per-run runtime root, never a real home.
-    expect(settingsWrite).toContain(".paperclip-runtime");
+    expect(settingsWrite).toContain(workFolderHome ?? "/remote/workspace/.paperclip-runtime/gemini");
   });
 
   it("resumes saved Gemini sessions for remote SSH execution only when the identity matches", async () => {

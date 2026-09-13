@@ -113,6 +113,11 @@ describe("runner E2E catalog", () => {
     const initialPrompt = daytonaWarmContinuityTask.buildPrompt("nonce");
     const followups =
       daytonaWarmContinuityTask.buildFollowupMessages?.("nonce") ?? [];
+    for (const prompt of [initialPrompt, ...followups]) {
+      expect(prompt).toContain(
+        '"${PAPERCLIP_TASK_DIR:-$PWD}/daytona-warm-nonce.txt"',
+      );
+    }
     expect(initialPrompt).toContain('"kind":"request_confirmation"');
     expect(initialPrompt).toContain(
       '"reviewInteractionId":"<returned interaction id>"',
@@ -279,7 +284,9 @@ describe("runner E2E catalog", () => {
       question?.buildPrompt("nonce"),
       ...breadthTasks,
     ]) {
-      const terminalTextInstruction = prompt?.match(/then emit (?:exactly|only)/)?.[0];
+      const terminalTextInstruction = prompt?.match(
+        /then emit (?:exactly|only)/,
+      )?.[0];
       expect(terminalTextInstruction).toBeDefined();
       expect(prompt!.indexOf("paperclip_finish exactly once")).toBeLessThan(
         prompt!.indexOf(terminalTextInstruction!),

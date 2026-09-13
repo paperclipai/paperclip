@@ -6514,6 +6514,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const executionWorkspaceId = randomUUID();
     const provisionMarkerPath = path.join(workspaceRoot, "runtime-provisioning.marker");
     const markerPath = path.join(workspaceRoot, "runtime-spawned.marker");
+    const readyMarkerPath = path.join(workspaceRoot, "runtime-ready.marker");
     const provisionScript = [
       `require("node:fs").writeFileSync(${JSON.stringify(provisionMarkerPath)}, "provisioning");`,
       "setTimeout(() => {}, 1200);",
@@ -6522,11 +6523,13 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       `${JSON.stringify(process.execPath)} -e ${JSON.stringify(provisionScript)}`;
     const serverScript = [
       `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "spawned");`,
-      "setTimeout(() => {",
+      "const ready = setInterval(() => {",
+      `  if (!require("node:fs").existsSync(${JSON.stringify(readyMarkerPath)})) return;`,
+      "  clearInterval(ready);",
       "  require(\"node:http\")",
       "    .createServer((_req, res) => { res.end(\"ok\"); })",
       "    .listen(Number(process.env.PORT), \"127.0.0.1\");",
-      "}, 100);",
+      "}, 10);",
       "setInterval(() => {}, 1000);",
     ].join(" ");
     const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serverScript)}`;
@@ -6593,7 +6596,9 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
           .from(workspaceRuntimeServices)
           .where(eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceId))
           .then((rows) => rows[0] ?? null);
-        if (row?.status === status) return row;
+        if (row?.status === status && (status !== "starting" || row.providerRef !== null)) {
+          return row;
+        }
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       throw new Error(`Timed out waiting for persisted runtime service status ${status}`);
@@ -6674,6 +6679,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       expect(startingRow.providerRef).toMatch(/^\d+$/);
       expect(startingRow.port).toEqual(expect.any(Number));
 
+      // A process marker can arrive before its PID is persisted. Hold readiness
+      // until the complete starting row has been observed, rather than racing a
+      // fixed delay on a busy test runner.
+      await fs.writeFile(readyMarkerPath, "ready");
       const services = await startPromise;
       expect(services).toHaveLength(1);
       expect(services[0]).toMatchObject({

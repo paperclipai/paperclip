@@ -165,6 +165,7 @@ describe("Codex security configuration", () => {
       GITHUB_TOKEN: "github-secret", OPENAI_API_KEY: "provider-secret",
       CODEX_HOME: "/home/daytona/.codex", DATABASE_URL: "host-secret",
     });
+    expect(args).toContain("allow_login_shell=false");
     const prefix = "shell_environment_policy.include_only=";
     const allowed = JSON.parse(args.find((arg) => arg.startsWith(prefix))!.slice(prefix.length));
     // Codex applies this allowlist AFTER its explicit environment overrides.
@@ -179,6 +180,7 @@ describe("Codex security configuration", () => {
       HOME: "/host/private", CODEX_HOME: "/host/codex", PATH: "/bin",
       GITHUB_TOKEN: "github-secret",
     });
+    expect(localArgs).not.toContain("allow_login_shell=false");
     const localAllowed = JSON.parse(localArgs.find((arg) => arg.startsWith(prefix))!.slice(prefix.length));
     expect(localAllowed.sort()).toEqual(["GITHUB_TOKEN", "PATH"]);
   });
@@ -239,6 +241,9 @@ describe("Codex security configuration", () => {
   it("uses the outer sandbox for default-mode commands only when the controller authorizes it", () => {
     const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" };
     const externalArgs = createIsolatedCodexAppServerArgs(source);
+    // Adding this protected flag to pre-work-folder sessions breaks run.attach
+    // even though their provider session and retained workspace are intact.
+    expect(externalArgs).not.toContain("allow_login_shell=false");
     const serializedExternalArgs = externalArgs.join("\n");
     expect(externalArgs).toContain(
       "--dangerously-bypass-approvals-and-sandbox",

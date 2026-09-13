@@ -206,6 +206,8 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   readonly reusableLeaseConfigured?: boolean;
   /** Host-observed provenance for this exact sandbox acquisition. */
   readonly sandboxLeaseAcquisition?: SandboxLeaseAcquisition | null;
+  /** Host-validated resume of an old task: retain its authoritative working copy. */
+  readonly legacyWorkspaceResume?: boolean;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
@@ -464,6 +466,15 @@ export function adapterExecutionTargetUsesManagedHome(
   target: AdapterExecutionTarget | null | undefined,
 ): boolean {
   return target?.kind === "remote" && target.transport === "sandbox";
+}
+
+/** Resolve the sandbox home without replacing a host-bound work-folder home. */
+export function adapterExecutionTargetManagedHomeDir(
+  target: AdapterExecutionTarget | null | undefined,
+  runtimeRootDir: string | null | undefined,
+): string | null {
+  if (target?.kind !== "remote" || target.transport !== "sandbox") return null;
+  return target.workFolderHome ?? runtimeRootDir ?? null;
 }
 
 /**
@@ -1504,7 +1515,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
     syncWorkspace: target.workFolderHome ? false : input.syncWorkspace,
-    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceInboundMode: input.workspaceInboundMode
+      ?? (target.legacyWorkspaceResume ? "adopt_remote" : undefined),
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
@@ -1717,6 +1729,9 @@ export async function prepareGitHubOperationLaunchers(input: {
   // the managed launchers after startup without loading a host user's profile.
   const profile = `export PATH=${shellQuote(managedPath)}\n`;
   const files: Record<string, string> = Object.fromEntries([
+    // Warm task paths can live inside an ESM repository. These extensionless
+    // launchers use CommonJS regardless of the surrounding project's type.
+    ["package.json", JSON.stringify({ type: "commonjs" })],
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);

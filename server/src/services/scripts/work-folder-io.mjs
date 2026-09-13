@@ -113,6 +113,9 @@ function scan() {
     const files = execFileSync("git", ["-C", input.root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
       { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).split("\0").filter(Boolean);
     for (const relative of [...new Set(files)].sort()) {
+      // Git reports nested repositories with a trailing slash. Private runner
+      // caches can contain them and must be excluded before path validation.
+      if (relative.split("/").includes(".paperclip-runtime")) continue;
       try { fs.lstatSync(full(relative)); entry(relative); } catch (error) { if (error.code !== "ENOENT") throw error; }
     }
     for (const name of children(gitDir)) {

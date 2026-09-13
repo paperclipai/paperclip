@@ -72,6 +72,8 @@ describe("work folder HTTP ownership and streaming", () => {
       folders: { task: null, agent: null, user: folder.id, project: null }, repositories: [] } });
     const runApp = app({ type: "agent", source: "agent_jwt", companyId, agentId, runId, onBehalfOfUserId: ownerId });
     await request(runApp).get(base).expect(200);
+    const sync = await request(runApp).get(`${base}/sync`).expect(200);
+    expect(sync.body).toEqual([expect.objectContaining({ runId, agentId, active: true })]);
     await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, ownerId)));
     await request(runApp).get(base).expect(404);
     await db.update(companyMemberships).set({ status: "active" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, ownerId)));

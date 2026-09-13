@@ -23,6 +23,47 @@ function stubLogger() {
 }
 
 describe("finalizeServerShutdown", () => {
+  it("awaits idle sandbox checkpoints before app and database teardown", async () => {
+    const release = deferred<{ closed: number; busy: number; failed: number }>();
+    const closeIdleSandboxSessions = vi.fn(() => release.promise);
+    const shutdownAppServices = vi.fn(async () => undefined);
+    const stopEmbeddedPostgres = vi.fn(async () => undefined);
+    const pending = finalizeServerShutdown({
+      signal: "SIGTERM", closeIdleSandboxSessions, shutdownAppServices, stopEmbeddedPostgres,
+      shutdownInstrumentation: async () => undefined,
+      shutdownSentry: async () => undefined, log: stubLogger(),
+    });
+    await vi.waitFor(() => expect(closeIdleSandboxSessions).toHaveBeenCalledOnce());
+    expect(shutdownAppServices).not.toHaveBeenCalled();
+    expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
+    release.resolve({ closed: 2, busy: 1, failed: 0 });
+    await pending;
+    expect(stopEmbeddedPostgres).toHaveBeenCalledOnce();
+  });
+
+  it.each(["timeout", "rejected", "incomplete"] as const)("reports %s idle checkpoint without blocking shutdown forever", async (failure) => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const stopEmbeddedPostgres = vi.fn(async () => undefined);
+      const pending = finalizeServerShutdown({
+        signal: "SIGTERM", sandboxSessionTimeoutMs: 250,
+        closeIdleSandboxSessions: async () => {
+          if (failure === "timeout") return new Promise(() => undefined);
+          if (failure === "rejected") throw new Error("transport disconnected");
+          return { closed: 0, busy: 0, failed: 1 };
+        },
+        shutdownAppServices: undefined, stopEmbeddedPostgres,
+        shutdownInstrumentation: async () => undefined,
+        shutdownSentry: async () => undefined, log,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await pending;
+      expect(log.error).toHaveBeenCalledOnce();
+      expect(stopEmbeddedPostgres).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("awaits the setup-token cleanup before the database stop and the process exit", async () => {
     const order: string[] = [];
     // The held promise models the setup-token session cancellation and its

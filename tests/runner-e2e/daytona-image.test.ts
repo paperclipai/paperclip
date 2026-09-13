@@ -37,9 +37,13 @@ describe("runner E2E Daytona image contract", () => {
     expect(normalizedDockerfile).not.toContain(
       "COPY packages/paperclip-runner ./packages/paperclip-runner",
     );
+    // Branch images need the full manifest graph for workspace patches. The
+    // resolved lock is verified before the frozen provider dependency install.
+    expect(dockerfile).toContain("COPY packages ./packages");
     expect(dockerfile).toContain(
-      "COPY packages ./packages",
+      "pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile",
     );
+    expect(dockerfile).toContain("sha256sum -c /tmp/provider-lock.sha256");
     expect(dockerfile).toContain(
       "/opt/paperclip-runner/provider-pack/provider-pack.json",
     );
@@ -136,9 +140,7 @@ describe("runner E2E Daytona image contract", () => {
     const providerInstall = dockerfile.indexOf(
       "pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
     );
-    const runnerSourceCopy = dockerfile.indexOf(
-      "COPY packages ./packages",
-    );
+    const runnerSourceCopy = dockerfile.indexOf("COPY packages ./packages");
     const providerRevisionArg = dockerfile.indexOf(
       "ARG PAPERCLIP_RUNNER_SOURCE_REVISION",
     );
@@ -149,6 +151,11 @@ describe("runner E2E Daytona image contract", () => {
     expect(providerInstall).toBeGreaterThan(0);
     expect(runnerSourceCopy).toBeGreaterThan(0);
     expect(runnerSourceCopy).toBeLessThan(providerInstall);
+    const lockVerification = dockerfile.indexOf(
+      "sha256sum -c /tmp/provider-lock.sha256",
+    );
+    expect(lockVerification).toBeGreaterThan(runnerSourceCopy);
+    expect(lockVerification).toBeLessThan(providerInstall);
     expect(providerInstall).toBeLessThan(providerRevisionArg);
     expect(cliInstall).toBeGreaterThan(0);
     expect(cliInstall).toBeLessThan(finalMetadataArgs);

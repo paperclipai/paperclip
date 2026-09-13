@@ -90,6 +90,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+import * as targets from "@paperclipai/adapter-utils/execution-target";
 import { execute } from "./execute.js";
 
 describe("pi remote execution", () => {
@@ -101,6 +102,41 @@ describe("pi remote execution", () => {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it.each(["/home/daytona", undefined])("launches Pi with the correct sandbox home (%s)", async (workFolderHome) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-sandbox-home-"));
+    cleanupDirs.push(rootDir);
+    const runtimeRootDir = "/home/daytona/repos/main/.paperclip-runtime/runs/home-test/pi";
+    const processSpy = vi.spyOn(targets, "runAdapterExecutionTargetProcess").mockResolvedValue({
+      exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null,
+      startedAt: new Date().toISOString(),
+    });
+    vi.spyOn(targets, "prepareAdapterExecutionTargetRuntime").mockResolvedValue({
+      runtimeRootDir, workspaceRemoteDir: "/home/daytona/repos/main", assetDirs: {},
+      restoreWorkspace: async () => {}, target: { kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/main", workFolderHome },
+      additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null,
+    });
+    vi.spyOn(targets, "ensureAdapterExecutionTargetCommandResolvable").mockResolvedValue(undefined);
+    vi.spyOn(targets, "resolveAdapterExecutionTargetCommandForLogs").mockResolvedValue("pi");
+    vi.spyOn(targets, "ensureAdapterExecutionTargetFile").mockResolvedValue(undefined);
+    try {
+      await execute({
+        runId: "home-test",
+        agent: { id: "agent-1", companyId: "company-1", name: "Pi Builder", adapterType: "pi_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: "pi", model: "openai/gpt-5.4-mini", env: { HOME: "/home/daytona" } },
+        context: { paperclipWorkspace: { cwd: rootDir, source: "project_primary" } },
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/main", workFolderHome },
+        onLog: async () => {},
+      });
+      expect(processSpy).toHaveBeenCalled();
+      const options = processSpy.mock.calls[0][4];
+      expect(options.env.HOME).toBe(workFolderHome ?? runtimeRootDir);
+      expect(options.env.PAPERCLIP_WORKSPACE_CWD).toBe("/home/daytona/repos/main");
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 

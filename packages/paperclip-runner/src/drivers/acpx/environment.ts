@@ -1,3 +1,4 @@
+import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
 
@@ -25,6 +26,9 @@ export function createSanitizedAcpxSpawnInput(
 ): SanitizedAcpxSpawnInput {
   const source = environment ?? process.env;
   const scoped = externalWorkFolderEnvironment(source);
+  // Only explicit controller input may carry repository credentials. Never
+  // discover GitHub credentials or shell startup hooks in the host environment.
+  const github = environment ? githubCredentialEnvironment(environment) : {};
   const result: NodeJS.ProcessEnv = {};
   const credentialNames =
     agent === "pi"
@@ -59,6 +63,7 @@ export function createSanitizedAcpxSpawnInput(
     "PAPERCLIP_NATIVE_MCP_URL",
     ...credentialNames,
     ...Object.keys(scoped),
+    ...Object.keys(github),
   ]);
   let retainedBytes = 0;
   for (const [key, value] of Object.entries({ ...source, ...scoped })) {

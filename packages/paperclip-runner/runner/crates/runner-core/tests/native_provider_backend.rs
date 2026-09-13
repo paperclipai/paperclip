@@ -84,6 +84,10 @@ fn qualified_artifact(path: PathBuf) -> QualifiedLaunchArtifact {
 }
 
 fn opencode_config(state_dir: &Path) -> DurableRunnerConfig {
+    opencode_config_with_switches(state_dir, "")
+}
+
+fn opencode_config_with_switches(state_dir: &Path, switches: &str) -> DurableRunnerConfig {
     let command = state_dir.join("qualified-opencode-proxy-command");
     let proxy_script = state_dir.join("qualified-opencode-proxy-script");
     let executable = state_dir.join("qualified-opencode-executable");
@@ -95,7 +99,7 @@ fn opencode_config(state_dir: &Path) -> DurableRunnerConfig {
     fs::write(
         &proxy_script,
         format!(
-            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract\n",
+            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract {switches}\n",
             env!("CARGO_BIN_EXE_fake-codex-app-server"),
             state_dir.join("fake-opencode-state.json").display(),
             state_dir.join("fake-opencode-calls.log").display(),
@@ -625,6 +629,101 @@ fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
     executor
         .execute(&command(4, "session.close", json!({})))
         .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn opencode_result_survives_controller_interruption_and_durable_close() {
+    let directory = temporary_directory("opencode-result-interruption");
+    let config = opencode_config_with_switches(&directory, "--emit-opencode-result");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Complete, then await interruption."}),
+        ))
+        .unwrap();
+    let mut observed = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = executor.poll_events().unwrap();
+        let count = events.len();
+        observed.extend(events);
+        executor.acknowledge_events(count).unwrap();
+        if observed
+            .iter()
+            .any(|event| event.event_type == "run.result.proposed")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(observed
+        .iter()
+        .any(|event| event.event_type == "run.result.proposed"));
+    let read_state = || -> Value {
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap()
+    };
+    let active = read_state();
+    assert!(active["activeProviderTurnId"].is_string());
+    executor
+        .execute(&command(4, "turn.interrupt", json!({})))
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = executor
+            .poll_events()
+            .expect("interruption retains the validated result's exact process and turn authority");
+        let count = events.len();
+        observed.extend(events);
+        executor.acknowledge_events(count).unwrap();
+        if observed
+            .iter()
+            .any(|event| event.event_type == "run.terminal")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|event| event.event_type == "run.result.proposed")
+            .count(),
+        1
+    );
+    let terminal = observed
+        .iter()
+        .find(|event| event.event_type == "run.terminal")
+        .expect("accepted result remains terminal");
+    assert_eq!(terminal.payload["reportedWorkDisposition"], "done");
+    let settled = read_state();
+    assert_eq!(settled["completedTurnAuthoritative"], true);
+    assert_eq!(
+        settled["completedProviderTurnId"],
+        active["activeProviderTurnId"]
+    );
+    assert_eq!(
+        settled["completedTurnProcessGeneration"],
+        active["providerProcessGeneration"]
+    );
+    assert!(settled["activeProviderTurnId"].is_null());
+    executor
+        .execute(&command(5, "session.close", json!({})))
+        .expect("durably close after interrupted completion");
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }

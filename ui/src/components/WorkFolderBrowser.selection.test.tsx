@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WorkFolderBrowser } from "./WorkFolderBrowser";
 
-const api = vi.hoisted(() => ({ list: vi.fn(), sync: vi.fn(), operation: vi.fn() }));
+const api = vi.hoisted(() => ({ list: vi.fn(), sync: vi.fn(), operation: vi.fn(), preview: vi.fn(), downloadUrl: vi.fn() }));
 vi.mock("@/api/work-folders", () => ({ workFoldersApi: api }));
+vi.mock("@/components/FileViewerSheet", () => ({ FileContentViewer: ({ content }: { content: { content: { data: string } } }) => <pre>{content.content.data}</pre> }));
 const owner = { companyId: "company", scope: "task" as const, ownerId: "task" };
 const a = { id: "a", path: "a.txt", kind: "file" };
 const b = { id: "b", path: "b.txt", kind: "file" };
@@ -29,6 +30,8 @@ beforeEach(async () => {
   active = [a, b]; deleted = [];
   api.list.mockImplementation(async (_owner, trash) => ({ files: [...(trash ? deleted : active)] }));
   api.sync.mockResolvedValue([]);
+  api.preview.mockImplementation(async (_owner, file) => ({ content: { data: `contents of ${file.path}` } }));
+  api.downloadUrl.mockReturnValue("/download");
   api.operation.mockImplementation(async (_owner, operation) => {
     if (operation.action === "delete") {
       const matches = (file: typeof a) => file.path === operation.path || file.path.startsWith(`${operation.path}/`);
@@ -50,6 +53,24 @@ afterEach(async () => {
   await act(async () => root.unmount()); client.clear(); container.remove(); vi.clearAllMocks();
 });
 describe("cached file selection and retained trash", () => {
+  it("does not flash an old preview error while retrying a cached file", async () => {
+    const row = (path: string) => container.querySelector<HTMLElement>(`[data-file-tree-path="${path}"]`)!;
+    await click(row("a.txt"));
+    expect(container.textContent).toContain("contents of a.txt");
+    api.preview.mockRejectedValueOnce(new Error("File preview could not be loaded"));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["work-folders", owner.companyId, owner.scope, owner.ownerId, "preview"] }); });
+    await settle();
+    expect(container.textContent).toContain("File preview could not be loaded");
+    await click(row("b.txt"));
+    let resolvePreview!: (value: { content: { data: string } }) => void;
+    api.preview.mockImplementationOnce(() => new Promise((resolve) => { resolvePreview = resolve; }));
+    await click(row("a.txt"));
+    expect(container.textContent).toContain("Loading preview…");
+    expect(container.textContent).not.toContain("File preview could not be loaded");
+    await act(async () => { resolvePreview({ content: { data: "restored file contents" } }); });
+    await settle();
+    expect(container.textContent).toContain("restored file contents");
+  });
   it("moves an empty directory to trash when its checkbox is selected", async () => {
     active = [{ id: "empty", path: "empty", kind: "directory" }];
     await act(async () => { await client.invalidateQueries(); });

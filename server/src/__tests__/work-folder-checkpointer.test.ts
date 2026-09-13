@@ -31,4 +31,17 @@ describe("shared work folder checkpoint cadence", () => {
     expect(onError).toHaveBeenCalledWith(error);
     await expect(sync.stop()).rejects.toThrow("Storage unavailable");
   });
+  it("does not restart a failed final save during error teardown", async () => {
+    vi.useFakeTimers();
+    const checkpoint = vi.fn().mockRejectedValueOnce(new Error("socket hang up")).mockResolvedValue(undefined);
+    const onError = vi.fn().mockResolvedValue(undefined);
+    const sync = startWorkFolderCheckpointer({ checkpoint, onError });
+    const firstStop = sync.stop();
+    await expect(firstStop).rejects.toThrow("socket hang up");
+    expect(sync.stop()).toBe(firstStop);
+    await expect(sync.stop()).rejects.toThrow("socket hang up");
+    await vi.advanceTimersByTimeAsync(360_000);
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
 });

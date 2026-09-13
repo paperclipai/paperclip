@@ -6,6 +6,7 @@ export function startWorkFolderCheckpointer(input: {
   onError(error: unknown): Promise<void>;
 }) {
   let active: Promise<void> | null = null;
+  let finalFlush: Promise<void> | null = null;
   let stopped = false;
   function checkpoint() {
     const pending = (async () => {
@@ -33,6 +34,13 @@ export function startWorkFolderCheckpointer(input: {
   }
   return {
     flush,
-    async stop() { stopped = true; clearInterval(timer); await flush(); },
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+      // Success and error teardown can both call stop. Never begin another
+      // save after the caller has already terminalized this run on failure.
+      finalFlush ??= flush();
+      return finalFlush;
+    },
   };
 }

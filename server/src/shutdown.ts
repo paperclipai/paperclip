@@ -104,6 +104,8 @@ export async function closeHttpListenerForShutdown(input: {
 export async function finalizeServerShutdown(input: {
   signal: "SIGINT" | "SIGTERM";
   shutdownAppServices: (() => Promise<void>) | undefined;
+  closeIdleSandboxSessions?: () => Promise<{ closed: number; busy: number; failed: number }>;
+  sandboxSessionTimeoutMs?: number;
   /**
    * Stops the HTTP listener and drains its connections (see
    * `closeHttpListenerForShutdown`). Runs first, while every application
@@ -132,6 +134,32 @@ export async function finalizeServerShutdown(input: {
       await input.closeHttpListener();
     } catch (err) {
       input.log.error({ err, signal }, "HTTP listener shutdown failed");
+    }
+  }
+
+  if (input.closeIdleSandboxSessions) {
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutMs = input.sandboxSessionTimeoutMs ?? 30_000;
+    try {
+      const result = await Promise.race([
+        input.closeIdleSandboxSessions(),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+      if (result === null || result.failed > 0) {
+        input.log.error(
+          { signal, timeoutMs, result },
+          "Idle sandbox native session checkpoint incomplete during shutdown",
+        );
+      } else {
+        input.log.info({ signal, result }, "Idle sandbox native sessions parked for shutdown");
+      }
+    } catch (err) {
+      input.log.error({ signal, err }, "Idle sandbox native session shutdown failed");
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

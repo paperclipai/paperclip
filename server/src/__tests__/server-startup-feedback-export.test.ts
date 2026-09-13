@@ -367,6 +367,12 @@ vi.mock("../services/question-response-delivery.js", () => ({
   })),
 }));
 
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({
+  closeIdleSandboxNativeSessionsForShutdown: vi.fn(async () => ({
+    closed: 0, busy: 0, failed: 0,
+  })),
+}));
+
 vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
   nativeQuestionCancellationIdentity: vi.fn(() => null),

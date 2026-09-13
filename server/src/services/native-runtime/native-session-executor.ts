@@ -60,7 +60,6 @@ import {
   acpxRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
-  defaultCapabilityRunnerdBinary,
   executeNativeSession,
   applyNativeSessionGoalControl,
   inspectWarmRunTransition,
@@ -226,6 +225,10 @@ export async function detachNativeSessionsForRestart(
 const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
+// This file contains the PRP journal as well as its identity. Match the
+// runner transport's 64 MiB control-plane state bound; ordinary tool output
+// can exceed 2 MiB without invalidating the session identity.
+const NATIVE_CONTROL_PLANE_STATE_MAX_BYTES = 64 * 1024 * 1024;
 const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
@@ -341,6 +344,7 @@ type WarmNativeSession = {
   configDigest: string;
   companyId: string;
   environmentId: string | null;
+  sandbox: boolean;
   busy: boolean;
   closeOnReleaseReason?: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -406,6 +410,37 @@ async function closeIdleWarmNativeSessions(input: {
     }
   }
   return { closed, busy, failed };
+}
+
+/** Park idle sandbox sessions while their host still has database and transport
+ * access. Active turns retain their existing restart/reattach contract. */
+export async function closeIdleSandboxNativeSessionsForShutdown(input: {
+  reason: string;
+}): Promise<{ closed: number; busy: number; failed: number }> {
+  const result = { closed: 0, busy: 0, failed: 0 };
+  const pending: WarmNativeSession[] = [];
+  for (const [sessionId, entry] of warmNativeSessions) {
+    if (!entry.sandbox) continue;
+    if (entry.busy) {
+      result.busy += 1;
+      continue;
+    }
+    if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+    // Fence every selected owner before the first asynchronous close.
+    warmNativeSessions.delete(sessionId);
+    pending.push(entry);
+  }
+  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+    for (let entry = pending.shift(); entry; entry = pending.shift()) {
+      try {
+        await entry.session.close({ reason: input.reason });
+        result.closed += 1;
+      } catch {
+        result.failed += 1;
+      }
+    }
+  }));
+  return result;
 }
 
 function readBoundedNativeFile(
@@ -4745,7 +4780,7 @@ export function runnerdStateProvesIncompleteBootstrap(root: string): boolean {
       JSON.parse(
         readBoundedNativeFile(
           statePath,
-          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
           "runner_durable_identity_too_large",
         ).toString("utf8"),
       ),
@@ -4798,7 +4833,7 @@ function readRunnerdDurableIdentity(
       JSON.parse(
         readBoundedNativeFile(
           statePath,
-          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
           "runner_durable_identity_too_large",
         ).toString("utf8"),
       ),
@@ -7705,6 +7740,22 @@ async function executePaperclipNativeSessionWithinScope(
           warmConfigDigest,
           input.runnerExecutionTarget?.kind ?? "local",
         );
+        await input.onEvent?.({
+          eventType: "native.session.process_rotation",
+          stream: "system",
+          level: "info",
+          message: "Native process rotated for the next run",
+          payload: {
+            reason: entry.configDigest === warmConfigDigest && credentialRunChanged
+              ? "run_scoped_github_capability" : "configuration_changed",
+            previousRunId: entry.credentialRunId ?? null,
+            runId: input.execution.binding.runId,
+            companyId: input.execution.binding.companyId,
+            agentId: input.execution.binding.agentId,
+            nativeSessionId: nativeSessionKey(input.execution),
+            runnerInstanceId: input.runnerInstanceId,
+          },
+        });
       } else {
         if (entry.busy) throw new Error("native_session_supervisor_busy");
         entry.busy = true;
@@ -8031,6 +8082,9 @@ async function executePaperclipNativeSessionWithinScope(
                     companyId: input.execution.binding.companyId,
                     environmentId:
                       input.runnerExecutionTarget?.environmentId ?? null,
+                    sandbox:
+                      input.runnerExecutionTarget?.kind === "remote" &&
+                      input.runnerExecutionTarget.transport === "sandbox",
                     busy: true,
                     idleTimer: null,
                     lastActivityAt: new Date().toISOString(),
@@ -9004,6 +9058,17 @@ export function assertRemoteRunnerBuildMetadata(
   ) {
     throw new Error("runner_remote_artifact_contract_incompatible");
   }
+  // An older image may implement the same durable protocol but still reject
+  // passive Codex notices during warm attachment. Stage the current artifact
+  // without changing the checkpoint contract or replacing the sandbox.
+  if (
+    !Array.isArray(metadata.capabilities) ||
+    !metadata.capabilities.includes("codex.warm-attachment.passive-notices.v1")
+  ) {
+    throw new Error(
+      "runner_remote_capability_missing:codex.warm-attachment.passive-notices.v1",
+    );
+  }
   const modes = Array.isArray(metadata.prpTransportModes)
     ? metadata.prpTransportModes
     : [];
@@ -9014,7 +9079,7 @@ export function assertRemoteRunnerBuildMetadata(
   }
 }
 
-async function stageRemoteRunnerFile(input: {
+export async function stageRemoteRunnerFile(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
   sourcePath: string;
@@ -9022,36 +9087,59 @@ async function stageRemoteRunnerFile(input: {
   mode: number;
 }): Promise<void> {
   const runner = input.runner;
-  if (runner.syncIn) {
-    await runner.syncIn([
-      {
-        operationId: `runner-stage-${randomUUID()}`,
-        files: [
-          {
+  // The old launcher can be a symlink into the sandbox image. Publish a new
+  // file atomically instead of following that link or truncating working bytes.
+  const temporaryPath = `${input.targetPath}.upload-${randomUUID()}`;
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  try {
+    if (runner.syncIn) {
+      await runner.syncIn([
+        {
+          operationId: `runner-stage-${randomUUID()}`,
+          files: [{
             sourcePath: input.sourcePath,
-            targetPath: input.targetPath,
+            targetPath: temporaryPath,
             kind: "file",
             mode: input.mode,
-          },
-        ],
-      },
-    ]);
-    return;
-  }
-  const bytes = readFileSync(input.sourcePath);
-  const directory = posix.dirname(input.targetPath);
-  const script =
-    `umask 077; mkdir -p '${directory.replaceAll("'", "'\\''")}' && ` +
-    `base64 -d > '${input.targetPath.replaceAll("'", "'\\''")}' && ` +
-    `chmod ${input.mode.toString(8)} '${input.targetPath.replaceAll("'", "'\\''")}'`;
-  const result = await runner.execute({
-    command: "sh",
-    args: ["-c", script],
-    stdin: bytes.toString("base64"),
-    bypassSession: true,
-  });
-  if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_staging_failed");
+          }],
+        },
+      ]);
+    } else {
+      const bytes = readFileSync(input.sourcePath);
+      const result = await runner.execute({
+        command: "sh",
+        args: ["-c", [
+          `umask 077; mkdir -p ${quote(posix.dirname(input.targetPath))}`,
+          `base64 -d > ${quote(temporaryPath)}`,
+          `chmod ${input.mode.toString(8)} ${quote(temporaryPath)}`,
+        ].join(" && ")],
+        stdin: bytes.toString("base64"),
+        bypassSession: true,
+      });
+      if (result.exitCode !== 0 || result.timedOut) {
+        throw new Error("runner_remote_staging_failed");
+      }
+    }
+    const published = await runner.execute({
+      command: "sh",
+      args: ["-c", [
+        `test -f ${quote(temporaryPath)}`,
+        `test ! -L ${quote(temporaryPath)}`,
+        `test ! -d ${quote(input.targetPath)}`,
+        `mv -f -- ${quote(temporaryPath)} ${quote(input.targetPath)}`,
+      ].join(" && ")],
+      bypassSession: true,
+    });
+    if (published.exitCode !== 0 || published.timedOut) {
+      throw new Error("runner_remote_staging_failed");
+    }
+  } catch (error) {
+    await runner.execute({
+      command: "sh",
+      args: ["-c", `rm -f -- ${quote(temporaryPath)}`],
+      bypassSession: true,
+    }).catch(() => undefined);
+    throw error;
   }
 }
 
@@ -9598,6 +9686,18 @@ export function createRemoteRunnerProcessLauncher(input: {
           ],
           bypassSession: true,
           timeoutMs: 10_000,
+        }).catch(async (error: unknown) => {
+          // kill() is synchronous, so it cannot return the provider promise to
+          // its caller. A stopping/replaced sandbox may reject the signal RPC;
+          // observe that rejection without taking down the host process.
+          const message = `[paperclip] Failed to signal sandbox runner: ${error instanceof Error ? error.message : String(error)}\n`;
+          try {
+            if (input.onLog) await input.onLog("stderr", message);
+            else console.warn(message.trimEnd());
+          } catch {
+            // The run log may already be closed during shutdown.
+            console.warn(message.trimEnd());
+          }
         });
         return true;
       },
@@ -10341,8 +10441,10 @@ async function createRunnerdBackendWithinSessionClaim(
       }
     }
     if (!usedPreinstalledRunner) {
-      const sourceBinary =
-        explicitRemoteBinary ?? defaultCapabilityRunnerdBinary();
+      // Use the same server-resolved artifact the transport hashes. The
+      // package's development fallback does not resolve the vendored layout
+      // in a built server, even though its bin/paperclip-runnerd is present.
+      const sourceBinary = controllerRunnerBinary;
       if (!existsSync(sourceBinary)) {
         throw new Error("runner_remote_artifact_unavailable");
       }

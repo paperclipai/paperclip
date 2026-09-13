@@ -94,6 +94,17 @@ describe("native workspace sync durable metadata", () => {
     ).toThrow("native_workspace_sync_unexpected_existing_descriptor");
   });
 
+  it("adopts only a validated legacy resume when an older release has no sync stamp", () => {
+    for (const acquisition of ["created", "replacement", null] as const) {
+      expect(classifyNativeWorkspaceInbound({kind: "new_run", acquisition,
+        hasPriorStamp: false, legacyWorkspaceResume: true})).toBe("host_current");
+    }
+    for (const hasPriorStamp of [true, false]) {
+      expect(classifyNativeWorkspaceInbound({kind: "new_run", acquisition: "resumed",
+        hasPriorStamp, legacyWorkspaceResume: true})).toBe("adopt_remote");
+    }
+  });
+
   it("reads backward-compatible references and the resource disposition", () => {
     const base = {
       schema: "paperclip.native-workspace-sync/v1",

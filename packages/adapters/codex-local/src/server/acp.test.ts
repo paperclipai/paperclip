@@ -909,6 +909,47 @@ describe("codex_local ACP lane", () => {
     expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
   });
 
+  it.each([false, true])("stages an explicit API key without changing host credentials (existing auth: %s)", async (existingAuth) => {
+    const root = await makeTempRoot("paperclip-codex-acp-api-auth-");
+    const localCwd = path.join(root, "worktree");
+    const sandboxHome = path.join(root, "sandbox-home");
+    const sourceHome = path.join(root, "codex-home");
+    const sharedHome = path.join(root, "shared-home");
+    await Promise.all([localCwd, path.join(sandboxHome, "repos", "primary"), sourceHome, sharedHome].map((dir) => fs.mkdir(dir, { recursive: true })));
+    const original = subscriptionAuthJson("host-account", OLDER_REFRESH, "host");
+    await fs.writeFile(path.join(sharedHome, "auth.json"), original, { mode: 0o600 });
+    if (existingAuth) await fs.symlink(path.join(sharedHome, "auth.json"), path.join(sourceHome, "auth.json"));
+    process.env.CODEX_HOME = sharedHome;
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(localCwd, {
+      config: {
+        engine: "acp", cwd: localCwd, agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        env: { CODEX_HOME: sourceHome, OPENAI_API_KEY: "explicit-test-key" },
+        promptTemplate: "Do the assigned work.",
+      },
+      context: { issueId: "issue-1", paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" } },
+      executionTarget: { kind: "remote", transport: "sandbox", providerKey: "fake-plugin",
+        remoteCwd: path.join(sandboxHome, "repos", "primary"), workFolderHome: sandboxHome,
+        runner: createLocalSandboxRunner() } as never,
+      authToken: "real-run-jwt",
+      onMeta: async (payload: AdapterInvocationMeta) => { meta.push(payload); },
+    }));
+    expect(result.exitCode).toBe(0);
+    const remoteHome = String(meta[0]?.env?.CODEX_HOME ?? "");
+    expect(remoteHome).toBe(path.join(sandboxHome, ".codex"));
+    expect(JSON.parse(await fs.readFile(path.join(remoteHome, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "explicit-test-key" });
+    expect((await fs.stat(path.join(remoteHome, "auth.json"))).mode & 0o777).toBe(0o600);
+    await expect(fs.readFile(path.join(sharedHome, "auth.json"), "utf8")).resolves.toBe(original);
+    if (existingAuth) {
+      expect((await fs.lstat(path.join(sourceHome, "auth.json"))).isSymbolicLink()).toBe(true);
+      await expect(fs.readFile(path.join(sourceHome, "auth.json"), "utf8")).resolves.toBe(original);
+    } else await expect(fs.access(path.join(sourceHome, "auth.json"))).rejects.toThrow();
+  });
+
   it("copies a strictly-newer sandbox Codex auth back to the shared host on teardown", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-copyback-newer-");
     const localCwd = path.join(root, "worktree");

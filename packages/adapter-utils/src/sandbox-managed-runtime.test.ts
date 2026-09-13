@@ -42,6 +42,7 @@ import {
   type StartupTracer,
 } from "./acpx-engine/startup-timing.js";
 import type { RunProcessResult } from "./server-utils.js";
+import { prepareAdapterExecutionTargetRuntime } from "./execution-target.js";
 
 function toArrayBuffer(bytes: Buffer): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -400,6 +401,51 @@ describe("sandbox managed runtime", () => {
     await expect(
       readFile(path.join(localWorkspaceDir, "continuity.txt"), "utf8"),
     ).resolves.toBe("remote finalized\n");
+  });
+
+  it.each([undefined, "adopt_remote"] as const)("preserves an old task's Git index and local state through a resumed target (%s)", async (workspaceInboundMode) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-legacy-git-resume-"));
+    cleanupDirs.push(rootDir);
+    const remoteDir = path.join(rootDir, "remote");
+    const localDir = path.join(rootDir, "host");
+    await initGitRepo(remoteDir);
+    await git(rootDir, ["clone", remoteDir, localDir]);
+    await writeFile(path.join(remoteDir, "unpublished.txt"), "remote commit\n");
+    await git(remoteDir, ["add", "unpublished.txt"]);
+    await git(remoteDir, ["commit", "-qm", "unpublished"]);
+    const head = await git(remoteDir, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(remoteDir, "README.md"), "staged\n");
+    await git(remoteDir, ["add", "README.md"]);
+    await writeFile(path.join(remoteDir, "README.md"), "unstaged\n");
+    await writeFile(path.join(remoteDir, "untracked.txt"), "untracked\n");
+    await fsPromises.appendFile(path.join(remoteDir, ".git", "info", "exclude"), "\n.cache-marker\n");
+    await writeFile(path.join(remoteDir, ".cache-marker"), "retained cache\n");
+    await git(remoteDir, ["config", "paperclip.retained", "yes"]);
+    const prepared = await prepareAdapterExecutionTargetRuntime({
+      runId: "legacy-resume", adapterKey: "test", workspaceLocalDir: localDir,
+      target: { kind: "remote", transport: "sandbox", remoteCwd: remoteDir,
+        providerKey: "test", leaseId: "retained-lease", legacyWorkspaceResume: true,
+        runner: makeInlineSpawnRunner() },
+      workspaceInboundMode,
+      ...(workspaceInboundMode ? { workspaceDurableSeed: {
+        workspaceArchivePath: path.join(rootDir, "seed", "workspace.tar"),
+        gitArchivePath: path.join(rootDir, "seed", "git.tar"),
+      } } : {}),
+    });
+    const verifyRemote = async () => {
+      expect(await git(remoteDir, ["rev-parse", "HEAD"])).toBe(head);
+      expect(await git(remoteDir, ["show", ":README.md"])).toBe("staged");
+      expect(await readFile(path.join(remoteDir, "README.md"), "utf8")).toBe("unstaged\n");
+      expect(await readFile(path.join(remoteDir, "untracked.txt"), "utf8")).toBe("untracked\n");
+      expect(await git(remoteDir, ["config", "paperclip.retained"])).toBe("yes");
+      expect(await git(remoteDir, ["check-ignore", ".cache-marker"])).toBe(".cache-marker");
+      expect(await readFile(path.join(remoteDir, ".cache-marker"), "utf8")).toBe("retained cache\n");
+    };
+    await verifyRemote();
+    await prepared.restoreWorkspace();
+    await verifyRemote();
+    expect(await readFile(path.join(localDir, "README.md"), "utf8")).toBe("unstaged\n");
+    expect(await git(localDir, ["rev-parse", "HEAD"])).toBe(head);
   });
 
   it("reconstructs a replacement workspace from the exact durable pre-turn seed", async () => {

@@ -1250,6 +1250,32 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  it("refreshes a recently cached handle before resuming an externally stopped sandbox", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-reuse", state: "started" });
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => ({
+      exitCode: 0, result: command.includes("reusable-sandbox-lease.json") ? JSON.stringify({ token: "sentinel-token" }) : "bash",
+    }));
+    mockGet.mockResolvedValue(sandbox);
+    const params = {
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+      config: { timeoutMs: 300000, reuseLease: true },
+      leaseMetadata: { workspaceSentinel: {
+        path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+        token: "sentinel-token", result: "written",
+      } },
+    };
+    await plugin.definition.onEnvironmentResumeLease!(params);
+    expect(sandbox.start).not.toHaveBeenCalled();
+    sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+    const resumed = await plugin.definition.onEnvironmentResumeLease!(params);
+    expect(mockGet).toHaveBeenCalledTimes(1);
+    expect(sandbox.refreshData).toHaveBeenCalledTimes(2);
+    expect(sandbox.start).toHaveBeenCalledWith(300);
+    expect(resumed).toMatchObject({ providerLeaseId: sandbox.id, metadata: { resumedFromState: "stopped" } });
+    expect(sandbox.delete).not.toHaveBeenCalled();
+  });
+
   it("expires a reusable lease when the workspace sentinel does not match", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox({ id: "sandbox-reuse", state: "stopped" });
@@ -1304,16 +1330,16 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.stop).toHaveBeenCalled();
   });
 
-  it("does not acknowledge termination when both provider stop and delete fail", async () => {
+  it("does not acknowledge termination or delete a reusable sandbox when stopping fails", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox({ id: "sandbox-failed-stop", state: "started" });
     sandbox.stop.mockRejectedValueOnce(new Error("stop failed"));
-    sandbox.delete.mockRejectedValueOnce(new Error("delete failed"));
     mockGet.mockResolvedValue(sandbox);
     await expect(plugin.definition.onEnvironmentReleaseLease?.({
       driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
       providerLeaseId: sandbox.id, config: { reuseLease: true },
-    })).rejects.toThrow("delete failed");
+    })).rejects.toThrow("stop failed");
+    expect(sandbox.delete).not.toHaveBeenCalled();
   });
 
   it("stops reusable leases and deletes ephemeral leases on release", async () => {
@@ -1398,13 +1424,13 @@ describe("Daytona sandbox provider plugin", () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  it("falls back to delete when stopping a reusable lease from an error state fails", async () => {
+  it("preserves a reusable lease when stopping it from an error state fails", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const errored = createMockSandbox({ id: "sandbox-error", state: "error" });
     errored.stop.mockRejectedValueOnce(new Error("stop failed"));
     mockGet.mockResolvedValue(errored);
 
-    await plugin.definition.onEnvironmentReleaseLease?.({
+    await expect(plugin.definition.onEnvironmentReleaseLease!({
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
@@ -1413,20 +1439,19 @@ describe("Daytona sandbox provider plugin", () => {
         timeoutMs: 300000,
         reuseLease: true,
       },
-    });
+    })).rejects.toThrow("stop failed");
 
     expect(errored.stop).toHaveBeenCalledWith(300);
-    expect(errored.delete).toHaveBeenCalledWith(300, true);
+    expect(errored.delete).not.toHaveBeenCalled();
   });
 
-  it("falls back to delete when stopping a healthy reusable lease fails mid-call", async () => {
+  it("preserves a healthy reusable lease when stopping it fails mid-call", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox({ id: "sandbox-running", state: "started" });
     sandbox.stop.mockRejectedValueOnce(new Error("api timeout"));
     mockGet.mockResolvedValue(sandbox);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    await plugin.definition.onEnvironmentReleaseLease?.({
+    await expect(plugin.definition.onEnvironmentReleaseLease!({
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
@@ -1435,11 +1460,10 @@ describe("Daytona sandbox provider plugin", () => {
         timeoutMs: 300000,
         reuseLease: true,
       },
-    });
+    })).rejects.toThrow("api timeout");
 
     expect(sandbox.stop).toHaveBeenCalledWith(300);
-    expect(sandbox.delete).toHaveBeenCalledWith(300, true);
-    expect(warnSpy).toHaveBeenCalled();
+    expect(sandbox.delete).not.toHaveBeenCalled();
   });
 
   describe("session model lifecycle (per-lease session store)", () => {

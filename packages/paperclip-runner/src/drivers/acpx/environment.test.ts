@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 
@@ -43,6 +43,41 @@ describe("ACPX launch environment", () => {
     );
     expect(Object.isFrozen(codex)).toBe(true);
     expect(Object.isFrozen(codex.env)).toBe(true);
+  });
+
+  it.each(["codex", "claude", "pi"] as const)(
+    "preserves controller-projected GitHub credentials for %s",
+    (agent) => {
+      const projected = {
+        PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:1234",
+        PAPERCLIP_GITHUB_BROKER_TOKEN: "run-scoped-secret",
+        PAPERCLIP_GITHUB_LAUNCHER_DIR: "/private/github",
+        BASH_ENV: "/private/github/bashrc",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.helper",
+        GIT_CONFIG_VALUE_0: "/private/helper",
+      };
+      const input = createSanitizedAcpxSpawnInput({
+        ...projected,
+        GIT_CONFIG_KEY_1: "not.projected",
+        GIT_CONFIG_VALUE_1: "not-visible",
+      }, agent);
+      expect(input.env).toEqual(projected);
+    },
+  );
+
+  it("does not inherit ambient host GitHub credentials or shell hooks", () => {
+    vi.stubEnv("PAPERCLIP_GITHUB_BROKER_TOKEN", "host-secret");
+    vi.stubEnv("GITHUB_TOKEN", "host-secret");
+    vi.stubEnv("BASH_ENV", "/host/startup");
+    try {
+      const { env } = createSanitizedAcpxSpawnInput(undefined, "pi");
+      expect(env).not.toHaveProperty("PAPERCLIP_GITHUB_BROKER_TOKEN");
+      expect(env).not.toHaveProperty("GITHUB_TOKEN");
+      expect(env).not.toHaveProperty("BASH_ENV");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("rejects unsafe or unbounded retained values", () => {

@@ -9,7 +9,7 @@ import {
   overrideAdapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
-  adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetManagedHomeDir,
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
@@ -462,8 +462,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           executionTargetIsRemote,
           executionCwd: effectiveExecutionCwd,
         });
-        if (adapterExecutionTargetUsesManagedHome(executionTarget) && preparedRemoteRuntime.runtimeRootDir) {
-          env.HOME = preparedRemoteRuntime.runtimeRootDir;
+        const managedRemoteHomeDir = adapterExecutionTargetManagedHomeDir(
+          executionTarget, preparedRemoteRuntime.runtimeRootDir,
+        );
+        if (managedRemoteHomeDir) {
+          env.HOME = managedRemoteHomeDir;
         }
         remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
         remoteSkillsDir = preparedRemoteRuntime.assetDirs.skills ?? null;

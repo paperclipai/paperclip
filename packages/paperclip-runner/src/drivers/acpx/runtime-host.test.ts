@@ -452,7 +452,7 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
-  it("owns an authenticated semantic bridge without persisting its secret", async () => {
+  it.each(["codex", "pi"] as const)("owns a %s semantic bridge without persisting its secret", async (agent) => {
     const fixture = await hostFixture();
     const handler = vi.fn(async ({ tool }) => ({ tool, ok: true }));
     let bridge:
@@ -461,8 +461,8 @@ describe("ACPX runtime host", () => {
     const host = await AcpxRuntimeHost.open(
       {
         ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
+        agent,
+        model: resolveQualifiedAcpxProfile(agent, agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "gpt-5.6-sol").qualificationModel,
         permissionMode: "deny-all",
         environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
         semanticTools: {
@@ -484,7 +484,16 @@ describe("ACPX runtime host", () => {
       fixture.dependencies({
         openRuntime: async (options) => {
           bridge = options.mcpServers[0];
-          return runtimePort();
+          if (agent === "pi") {
+            expect(options.launchEnvironment.PAPERCLIP_PI_TOOL_BRIDGE_URL).toBe(bridge!.url);
+            expect(options.launchEnvironment.PAPERCLIP_PI_TOOL_BRIDGE_TOKEN).toBe(bridge!.bearerToken);
+          } else {
+            expect(options.launchEnvironment.PAPERCLIP_PI_TOOL_BRIDGE_TOKEN).toBeUndefined();
+          }
+          return runtimePort({ getStatus: async () => ({ models: {
+            currentModelId: options.profile.reportedModelId,
+            availableModelIds: [options.profile.reportedModelId],
+          } }) });
         },
       }),
     );

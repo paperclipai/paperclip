@@ -648,6 +648,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
+    let emit_opencode_result = args.iter().any(|value| value == "--emit-opencode-result");
     let replay_completed_tool_call = args
         .iter()
         .any(|value| value == "--replay-completed-tool-call");
@@ -1447,7 +1448,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
                     }}}))?;
                 }
-                if fail_after_second_turn_start && turn_start_count == 2 {
+                if emit_opencode_result {
+                    send(json!({
+                        "method": "paperclip/runResult",
+                        "params": {
+                            "threadId": state.thread_id,
+                            "turnId": provider_turn_id,
+                            "result": {
+                                "schema": "paperclip.run_result.v1",
+                                "reportedWorkDisposition": "done",
+                                "summary": "Finished before controller interruption.",
+                                "completionClaim": {
+                                    "contractRevision": "revision-1",
+                                    "objectiveSatisfied": true,
+                                    "criteria": [{"criterionId": "criterion-1", "status": "satisfied", "evidenceRefs": []}],
+                                    "remainingWork": []
+                                },
+                                "evidence": [], "verification": [], "attentionRequests": [], "artifacts": []
+                            }
+                        }
+                    }))?;
+                } else if fail_after_second_turn_start && turn_start_count == 2 {
                     return Err("configured failure after second turn start".into());
                 } else if fail_turn_immediately {
                     send(json!({
@@ -1598,38 +1619,71 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }))?;
                     }
                     if emit_post_completion_passive_statuses {
-                        for notification in [
-                            json!({
-                                "method": "remoteControl/status/changed",
-                                "params": {"status": "disabled", "environmentId": null}
-                            }),
-                            json!({
-                                "method": "mcpServer/startupStatus/updated",
-                                "params": {"name": "codex_apps", "status": "ready", "error": null}
-                            }),
-                            json!({
-                                "method": "account/rateLimits/updated",
-                                "params": {"rateLimits": {}}
-                            }),
-                            json!({
-                                "method": "rawResponseItem/completed",
-                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "item": {"id": "raw-tail", "type": "reasoning"}}
-                            }),
-                            json!({
-                                "method": "rawResponse/completed",
-                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "response": {"id": "response-tail"}}
-                            }),
-                            json!({
-                                "method": "thread/goal/updated",
-                                "params": {"threadId": state.thread_id, "goal": "finish the turn"}
-                            }),
-                            json!({
-                                "method": "thread/goal/cleared",
-                                "params": {"threadId": state.thread_id}
-                            }),
-                        ] {
-                            send(notification)?;
-                        }
+                        let gate = post_completion_notification_gate.clone();
+                        let thread_id = state.thread_id.clone();
+                        let tail_turn_id = provider_turn_id.clone();
+                        // Goal reconciliation reads must remain responsive while
+                        // the test holds back the post-terminal passive notices.
+                        thread::spawn(move || {
+                            let result = (|| -> io::Result<()> {
+                                if let Some(gate) = gate.as_ref() {
+                                    let deadline =
+                                        std::time::Instant::now() + Duration::from_secs(5);
+                                    while !gate.is_file() {
+                                        if std::time::Instant::now() >= deadline {
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::TimedOut,
+                                                "post-completion notification gate timed out",
+                                            ));
+                                        }
+                                        thread::sleep(Duration::from_millis(1));
+                                    }
+                                }
+                                for notification in [
+                                    json!({
+                                        "method": "deprecationNotice",
+                                        "params": {"summary": "A provider setting is deprecated", "details": null}
+                                    }),
+                                    json!({
+                                        "method": "remoteControl/status/changed",
+                                        "params": {"status": "disabled", "environmentId": null}
+                                    }),
+                                    json!({
+                                        "method": "mcpServer/startupStatus/updated",
+                                        "params": {"name": "codex_apps", "status": "ready", "error": null}
+                                    }),
+                                    json!({
+                                        "method": "account/rateLimits/updated",
+                                        "params": {"rateLimits": {}}
+                                    }),
+                                    json!({
+                                        "method": "rawResponseItem/completed",
+                                        "params": {"threadId": thread_id, "turnId": tail_turn_id, "item": {"id": "raw-tail", "type": "reasoning"}}
+                                    }),
+                                    json!({
+                                        "method": "rawResponse/completed",
+                                        "params": {"threadId": thread_id, "turnId": tail_turn_id, "response": {"id": "response-tail"}}
+                                    }),
+                                    json!({
+                                        "method": "thread/goal/updated",
+                                        "params": {"threadId": thread_id, "goal": "finish the turn"}
+                                    }),
+                                    json!({
+                                        "method": "thread/goal/cleared",
+                                        "params": {"threadId": thread_id}
+                                    }),
+                                ] {
+                                    send(notification)?;
+                                }
+                                if let Some(gate) = gate.as_ref() {
+                                    fs::write(gate.with_extension("emitted"), b"emitted")?;
+                                }
+                                Ok(())
+                            })();
+                            if let Err(error) = result {
+                                eprintln!("post-completion passive tail failed: {error}");
+                            }
+                        });
                     }
                     if emit_post_completion_foreign_turn {
                         let gate = post_completion_notification_gate.clone();

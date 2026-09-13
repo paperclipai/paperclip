@@ -1,4 +1,5 @@
 import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
+import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -251,9 +252,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
     } catch (error) {
       return {
         recovered: false,
-        reason: redact(String(error), [
-          this.#options.environment?.OPENROUTER_API_KEY,
-        ]),
+        reason: redact(String(error), openCodeSensitiveValues(this.#options.environment)),
       };
     }
   }
@@ -1858,12 +1857,12 @@ async function startRuntime(input: {
   const assignedMcp = nativeMcpLaunchBinding(
     input.options.environment ?? process.env,
   );
+  const sensitiveValues = [password, ...openCodeSensitiveValues(input.options.environment)];
   input.trace?.addSensitiveValues([
-    password,
+    ...sensitiveValues,
     authHeader,
     bridge.secret,
     assignedMcp?.token,
-    input.options.environment?.OPENROUTER_API_KEY,
   ]);
   const instructionRoot =
     input.options.runtimeContext?.instructions.bundle.rootPath;
@@ -1933,6 +1932,9 @@ async function startRuntime(input: {
     {
       HOME: isolatedHome,
       ...externalWorkFolderEnvironment(input.options.environment ?? {}),
+      ...(input.options.environment
+        ? githubCredentialEnvironment(input.options.environment)
+        : {}),
       XDG_CONFIG_HOME: configHome,
       XDG_DATA_HOME: dataHome,
       XDG_CACHE_HOME: cacheHome,
@@ -1969,10 +1971,7 @@ async function startRuntime(input: {
   let diagnostics = "";
   child.stderr?.on("data", (chunk) => {
     const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-    const redactedDiagnostic = redact(raw.toString("utf8"), [
-      password,
-      input.options.environment?.OPENROUTER_API_KEY,
-    ]);
+    const redactedDiagnostic = redact(raw.toString("utf8"), sensitiveValues);
     diagnostics = `${diagnostics}${redactedDiagnostic}`.slice(-8_192);
     const frameId = input.trace?.frame({
       direction: "provider_stderr",
@@ -2035,10 +2034,7 @@ async function startRuntime(input: {
       process: child,
       bridge,
       trace: input.trace,
-      sensitiveValues: [
-        password,
-        input.options.environment?.OPENROUTER_API_KEY,
-      ].filter((value): value is string => Boolean(value)),
+      sensitiveValues,
       close: async (closeInput = {}) => {
         await bridge.close().catch(() => {});
         if (child.exitCode === null && child.signalCode === null && child.pid) {
@@ -2537,6 +2533,16 @@ function safeTraceRulePath(value: string): string {
     .replaceAll("/", "_")
     .slice(0, 120);
 }
+function openCodeSensitiveValues(environment: NodeJS.ProcessEnv | undefined): string[] {
+  const github = environment ? githubCredentialEnvironment(environment) : {};
+  return [
+    environment?.OPENROUTER_API_KEY,
+    ...Object.entries(github)
+      .filter(([key]) => key.endsWith("TOKEN") || /^GIT_CONFIG_VALUE_\d+$/.test(key))
+      .map(([, value]) => value),
+  ].filter((value): value is string => Boolean(value));
+}
+
 function redact(
   value: string,
   sensitiveValues: readonly (string | undefined)[] = [],

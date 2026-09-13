@@ -2193,6 +2193,10 @@ const plugin = definePlugin({
         return { providerLeaseId: null, metadata: { expired: true } };
       }
 
+        // Explicit resume must observe external stops even when the warm handle
+        // cache is younger than the auto-stop refresh threshold.
+        await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
+
         // A stopped sandbox loses its session shell, so the stored session id is
         // stale after a real restart. Clear the id only when the sandbox is not
         // already running, and clear it before the restart. A stopped sandbox has
@@ -2295,15 +2299,9 @@ const plugin = definePlugin({
       await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
-          try {
-            await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
-          } catch (error) {
-            console.warn(
-              `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
-            );
-            await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
-            return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
-          }
+          // A failed stop says nothing about the safety of deleting the working
+          // copy. Surface the failure so the host retains the lease for retry.
+          await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
         }
         return { providerLeaseId: params.providerLeaseId, state: "stopped" };
       }

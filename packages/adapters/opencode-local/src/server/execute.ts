@@ -9,7 +9,7 @@ import {
   overrideAdapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
-  adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetManagedHomeDir,
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
@@ -431,9 +431,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionCwd: effectiveExecutionCwd,
       });
       remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
-      const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
-      if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
-        preparedRuntimeConfig.env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
+      const managedRemoteHomeDir = adapterExecutionTargetManagedHomeDir(
+        executionTarget, preparedExecutionTargetRuntime.runtimeRootDir,
+      );
+      if (managedRemoteHomeDir) {
+        preparedRuntimeConfig.env.HOME = managedRemoteHomeDir;
       }
       if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
         preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
@@ -444,12 +446,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runtimeRootDir: preparedExecutionTargetRuntime.runtimeRootDir,
         runId,
         configDir: preparedExecutionTargetRuntime.assetDirs.xdgConfig,
+        workFolderHome: executionTarget.transport === "sandbox" ? executionTarget.workFolderHome : undefined,
       });
       const remoteHomeDir = config.managedAiConnection
         ? preparedRuntimeConfig.env.HOME
-        : managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-          ? preparedExecutionTargetRuntime.runtimeRootDir
-          : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+        : managedRemoteHomeDir
+          ?? await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
             cwd,
             env: preparedRuntimeConfig.env,
             timeoutSec,

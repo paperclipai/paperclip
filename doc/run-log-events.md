@@ -153,6 +153,22 @@ sinks. See the
 [Sandbox Duplex Transport Instrumentation](observability.md#sandbox-duplex-transport-instrumentation)
 section in the Observability contract.
 
+## Native Process Rotation
+
+`native.session.process_rotation` records a controller-initiated close of a
+settled warm session before opening the next run. Its system-stream payload
+contains `reason` (`run_scoped_github_capability` or `configuration_changed`),
+`previousRunId` (nullable), `runId`, `companyId`, `agentId`, `nativeSessionId`,
+and `runnerInstanceId`. It contains no token, environment, path, or credential
+value. The event records rotation intent after the prior process closes; the
+new run must still succeed to establish successful continuation.
+
+A subsequent run uses a fresh process for its own GitHub capability while
+preserving the durable conversation. Warm qualification accepts a changed
+process fingerprint only with a matching system rotation event for that exact
+run transition and a process start inside the new run. Unexpected restarts,
+configuration changes, and conversation, runner-instance or sandbox changes
+remain failures. Same-process warm reuse remains required without a rotation.
 ## Execution recovery
 
 Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.

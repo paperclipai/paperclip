@@ -249,6 +249,10 @@ describe("plugin-worker-manager stderr failure context", () => {
       await expect(pendingCall).rejects.toBeInstanceOf(JsonRpcCallError);
       await expect(pendingCall).rejects.toMatchObject({
         message: expect.stringContaining("terminated"),
+        cause: expect.objectContaining({
+          message: "Sandbox command requested here",
+          stack: expect.stringContaining("plugin-worker-manager.test.ts"),
+        }),
       });
       expect(unhandledRejection).not.toHaveBeenCalled();
     } finally {

@@ -305,6 +305,52 @@ describe("ACPX engine startup characterization", () => {
       expect(bridgeExecEnv?.PAPERCLIP_SANDBOX_EXEC_CHANNEL).toBe("bridge");
       expect(bridgeExecEnv?.PAPERCLIP_API_KEY).toBeUndefined();
     });
+
+    it("keeps the managed Git executable first when the remote agent command starts", async () => {
+      const { root, stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+      const launcherDir = path.join(root, "managed-github");
+      await fs.mkdir(launcherDir);
+      await fs.writeFile(path.join(launcherDir, "git"), "#!/bin/sh\nprintf managed-git", { mode: 0o700 });
+      const launchPath = `${launcherDir}:${path.dirname(process.execPath)}:/usr/bin:/bin`;
+      let launchPayload: { command: string; args: string[]; env: Record<string, string> } | undefined;
+      executionTarget.runner = createLocalSandboxRunner((input) => {
+        const match = input.args?.[1]?.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+        if (match) launchPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8"));
+      });
+      await runExecutor({
+        agent: "custom", agentCommand: "git", stateDir, cwd: localCwd,
+        env: { PATH: launchPath, PAPERCLIP_GITHUB_LAUNCHER_DIR: launcherDir },
+      }, { authToken: "test-run-jwt", executionTarget });
+      expect(launchPayload).toBeDefined();
+      expect(launchPayload!.env.PATH).toBe(launchPath);
+      // Execute the actual launch payload. Checking only its env would miss a
+      // login shell subsequently replacing PATH with the image's defaults.
+      let stdout = "";
+      const result = await runChildProcess("managed-git-launch", launchPayload!.command, launchPayload!.args, {
+        cwd: root, env: launchPayload!.env, timeoutSec: 5, graceSec: 1,
+        onLog: async (stream, chunk) => { if (stream === "stdout") stdout += chunk; },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toBe("managed-git");
+
+      expect(launchPayload!.args[0]).toBe("-lc");
+      // Emulate a login profile that initializes a custom runtime and replaces
+      // PATH. Its additional executable and initialization must remain usable.
+      const profileBin = path.join(root, "profile-bin");
+      await fs.mkdir(profileBin);
+      await fs.writeFile(path.join(profileBin, "custom-runtime"),
+        '#!/bin/sh\ntest "$PROFILE_RUNTIME_READY" = yes || exit 9\ngit', { mode: 0o700 });
+      const profile = `export PROFILE_RUNTIME_READY=yes\nexport PATH='${profileBin}:/usr/bin:/bin'\n`;
+      const runtimeCommand = launchPayload!.args[1]!.replace(/exec git$/, "exec custom-runtime");
+      stdout = "";
+      const customResult = await runChildProcess("profile-git-launch", launchPayload!.command,
+        [launchPayload!.args[0]!, profile + runtimeCommand], {
+          cwd: root, env: launchPayload!.env, timeoutSec: 5, graceSec: 1,
+          onLog: async (stream, chunk) => { if (stream === "stdout") stdout += chunk; },
+        });
+      expect(customResult.exitCode).toBe(0);
+      expect(stdout).toBe("managed-git");
+    });
   });
 
   // Item 2: the 17 fingerprint fields folded into `configFingerprint`, and the
@@ -485,6 +531,44 @@ describe("ACPX engine startup characterization", () => {
       expect(stageEvent).toBeTruthy();
       // And session/new binds to the in-sandbox workspace cwd the seam returned.
       expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
+    });
+
+    it("preserves the Codex tool environment for work-folder sandboxes without changing other features", async () => {
+      const { stateDir, executionTarget, remoteCwd } = await setupRemoteSandbox();
+      const { meta } = await runExecutor({
+        agent: "codex", stateDir, cwd: remoteCwd,
+        env: { CODEX_CONFIG: JSON.stringify({ features: { shell_snapshot: true, existing_feature: true } }) },
+      }, {
+        authToken: "real-run-jwt",
+        executionTarget: { ...executionTarget, workFolderHome: remoteCwd },
+      });
+      expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+        allow_login_shell: false, features: { shell_snapshot: false, existing_feature: true },
+      });
+    });
+
+    it("keeps sandbox work folders remote while spawning the ACP proxy on the host", async () => {
+      const { root, stateDir, executionTarget } = await setupRemoteSandbox();
+      const home = path.join(root, "sandbox-home");
+      const primary = path.join(home, "repos", "primary");
+      await fs.mkdir(primary, { recursive: true });
+      await fs.writeFile(path.join(primary, "keep.txt"), "sandbox work");
+      const mkdir = vi.spyOn(fs, "mkdir");
+      const { sessionInputs, runtimeOptions } = await runExecutor(
+        { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: primary },
+        {
+          authToken: "real-run-jwt",
+          context: { paperclipWorkspace: { cwd: primary, source: "project" } },
+          executionTarget: { ...executionTarget, remoteCwd: primary, workFolderHome: home },
+        },
+      );
+      expect(mkdir.mock.calls.some(([directory]) => directory === primary)).toBe(false);
+      expect(sessionInputs[0]?.cwd).toBe(home);
+      expect(runtimeOptions[0]?.spawnCwd).toBe(path.join(stateDir, "work-folder-proxy"));
+      await expect(fs.readFile(path.join(primary, "keep.txt"), "utf8")).resolves.toBe("sandbox work");
+      expect(vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0].workspaceLocalDir)
+        .toBe(path.join(stateDir, "work-folder-proxy"));
+      mkdir.mockRestore();
     });
 
     it("threads a managed-home asset through the same seam after the workspace", async () => {

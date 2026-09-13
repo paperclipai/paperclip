@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   access,
+  chmod,
   lstat,
+  appendFile,
   mkdir,
   mkdtemp,
   readdir,
@@ -238,6 +240,7 @@ import {
   buildNativeHarnessBackupManifest,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
+  closeIdleSandboxNativeSessionsForShutdown,
   closeIdleWarmNativeSessionsForRestart,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
@@ -280,6 +283,7 @@ import {
   semanticProviderPlanMarkdown,
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
+  stageRemoteRunnerFile,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
@@ -292,7 +296,7 @@ beforeEach(() => {
 });
 
 describe("remote runner process supervision", () => {
-  it("detaches runnerd from the provider RPC and monitors its durable identity", async () => {
+  it.each([false, true])("supervises detached runnerd and observes signal failures (%s)", async (signalFails) => {
     let launchNonce = "";
     const execute = vi.fn(
       async (input: {
@@ -355,6 +359,7 @@ describe("remote runner process supervision", () => {
           };
         }
         if (label === "paperclip-runner-signal") {
+          if (signalFails) throw new Error("Sandbox state change in progress");
           return {
             exitCode: 0,
             signal: null,
@@ -367,6 +372,7 @@ describe("remote runner process supervision", () => {
       },
     );
     const onSpawn = vi.fn(async () => undefined);
+    const onLog = vi.fn(async () => undefined);
     const launcher = createRemoteRunnerProcessLauncher({
       target: {
         kind: "remote",
@@ -382,6 +388,7 @@ describe("remote runner process supervision", () => {
       diagnosticsDirectory: "/runtime/diagnostics",
       runnerInstanceId: "runner-remote",
       onSpawn,
+      onLog,
     });
 
     const handle = launcher({
@@ -425,6 +432,11 @@ describe("remote runner process supervision", () => {
         ),
       ).toBe(true),
     );
+    if (signalFails) {
+      await vi.waitFor(() => expect(onLog).toHaveBeenCalledWith(
+        "stderr", expect.stringContaining("Failed to signal sandbox runner: Sandbox state change in progress"),
+      ));
+    }
   });
 
   it("terminates a detached runner when its process identity cannot be adopted", async () => {
@@ -1629,6 +1641,79 @@ describe("remote provider checkpoint snapshots", () => {
   });
 });
 
+describe("atomic remote runner replacement", () => {
+  for (const useSyncIn of [true, false]) {
+    it(`replaces an old launcher symlink without writing through it (${useSyncIn ? "provider" : "shell"})`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "runner-replace-"));
+      try {
+        const sourcePath = join(root, "new runner's bytes");
+        const imageBinary = join(root, "image-runner");
+        const targetPath = join(root, "paperclip-runnerd");
+        await writeFile(sourcePath, "fixed runner");
+        await writeFile(imageBinary, "old image runner");
+        await symlink(imageBinary, targetPath);
+        const runner = {
+          execute: async (command: { command: string; args?: string[]; stdin?: string }) => {
+            const stdout = execFileSync(command.command, command.args ?? [], { input: command.stdin, encoding: "utf8" });
+            return { exitCode: 0, stdout, stderr: "" };
+          },
+          ...(useSyncIn ? { syncIn: async (operations: Array<{ files: Array<{ sourcePath: string; targetPath: string; mode: number }> }>) => {
+            const file = operations[0]!.files[0]!;
+            expect(file.targetPath).not.toBe(targetPath);
+            await writeFile(file.targetPath, await readFile(file.sourcePath));
+            await chmod(file.targetPath, file.mode);
+          } } : {}),
+        };
+        await stageRemoteRunnerFile({ target: {} as never, runner: runner as never, sourcePath, targetPath, mode: 0o755 });
+        expect(await readFile(targetPath, "utf8")).toBe("fixed runner");
+        expect((await lstat(targetPath)).isSymbolicLink()).toBe(false);
+        expect((await lstat(targetPath)).mode & 0o777).toBe(0o755);
+        expect(await readFile(imageBinary, "utf8")).toBe("old image runner");
+        expect((await readdir(root)).filter(name => name.includes(".upload-"))).toEqual([]);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+  }
+
+  it("retains the existing launcher when a provider upload is interrupted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "runner-interrupted-"));
+    try {
+      const targetPath = join(root, "paperclip-runnerd");
+      await writeFile(targetPath, "recoverable old runner");
+      const runner = {
+        syncIn: async (operations: Array<{ files: Array<{ targetPath: string }> }>) => {
+          await writeFile(operations[0]!.files[0]!.targetPath, "partial upload");
+          throw new Error("upload interrupted");
+        },
+        execute: async (command: { command: string; args?: string[] }) => {
+          execFileSync(command.command, command.args ?? []);
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      };
+      await expect(stageRemoteRunnerFile({ target: {} as never, runner: runner as never, sourcePath: "unused", targetPath, mode: 0o755 })).rejects.toThrow("upload interrupted");
+      expect(await readFile(targetPath, "utf8")).toBe("recoverable old runner");
+      expect(await readdir(root)).toEqual(["paperclip-runnerd"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("does not publish through a launcher symlink to a directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "runner-directory-link-"));
+    try {
+      const directory = join(root, "unrelated");
+      const targetPath = join(root, "paperclip-runnerd");
+      const sourcePath = join(root, "candidate");
+      await mkdir(directory); await symlink(directory, targetPath); await writeFile(sourcePath, "runner");
+      const runner = { execute: async (command: { command: string; args?: string[]; stdin?: string }) => {
+        try { execFileSync(command.command, command.args ?? [], { input: command.stdin }); return { exitCode: 0, stdout: "", stderr: "" }; }
+        catch { return { exitCode: 1, stdout: "", stderr: "failed" }; }
+      } };
+      await expect(stageRemoteRunnerFile({ target: {} as never, runner: runner as never, sourcePath, targetPath, mode: 0o755 })).rejects.toThrow("runner_remote_staging_failed");
+      expect(await readdir(directory)).toEqual([]);
+      expect((await lstat(targetPath)).isSymbolicLink()).toBe(true);
+      expect((await readdir(root)).filter(name => name.includes(".upload-"))).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("remote provider checkpoint restores", () => {
   it("does not upload excluded Codex scratch trees or credentials", async () => {
     const sourcePath = await mkdtemp(
@@ -1789,6 +1874,7 @@ describe("remote runner build metadata", () => {
     binaryName: "paperclip-runnerd",
     packageName: "@paperclipai/paperclip-runner",
     binaryContractVersion: 2,
+    capabilities: ["codex.warm-attachment.passive-notices.v1"],
     prpTransportModes: ["dial_ws_loopback", "dial_wss", "listen_ws"],
   };
 
@@ -1808,6 +1894,13 @@ describe("remote runner build metadata", () => {
         "listen_ws",
       ),
     ).toThrow("runner_remote_artifact_contract_incompatible");
+  });
+
+  it("rejects preinstalled binaries that lack safe passive-notice attachment", () => {
+    for (const capabilities of [undefined, [], ["unrelated"]]) {
+      expect(() => assertRemoteRunnerBuildMetadata({ ...current, capabilities }, "listen_ws"))
+        .toThrow("runner_remote_capability_missing:codex.warm-attachment.passive-notices.v1");
+    }
   });
 
   it("requires the selected transport without falling through", () => {
@@ -5094,6 +5187,73 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it.each([
+    { transport: "sandbox", busy: false, fail: false },
+    { transport: "sandbox", busy: true, fail: false },
+    { transport: "sandbox", busy: false, fail: true },
+    { transport: "ssh", busy: false, fail: false },
+    { transport: "local", busy: false, fail: false },
+  ] as const)("shutdown parks only idle sandbox sessions: $transport busy=$busy fail=$fail", async ({ transport, busy, fail }) => {
+    const id = `shutdown-${transport}-${busy}-${fail}`;
+    const close = vi.fn(async () => {
+      if (fail) throw new Error("checkpoint unavailable");
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const warmExecution = {
+      ...execution,
+      binding: { ...execution.binding, runId: id, executionWorkspaceId: id },
+      session: {
+        ...execution.session,
+        normalizedSessionId: id,
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 100 },
+      },
+    } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      options.onSession?.({ close });
+      if (busy) await held;
+      return {
+        result: { summary: "completed" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: id, normalizedSessionId: id, providerSessionId: id,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1,
+        highestContiguousSourceSeq: 1, usage: null,
+      };
+    });
+    const running = executePaperclipNativeSession({
+      db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: id,
+      runnerExecutionTarget: transport === "local" ? undefined : transport === "sandbox" ? {
+        kind: "remote", transport: "sandbox", environmentId: id, remoteCwd: `/tmp/${id}`,
+      } : {
+        kind: "remote", transport: "ssh", environmentId: id, remoteCwd: `/tmp/${id}`,
+        spec: {
+          host: "runner.internal", port: 22, username: "runner",
+          remoteWorkspacePath: `/tmp/${id}`, remoteCwd: `/tmp/${id}`,
+          privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+        },
+      },
+    });
+    await vi.waitFor(() => expect(state.execute).toHaveBeenCalledOnce());
+    if (!busy) await running;
+    try {
+      const result = await closeIdleSandboxNativeSessionsForShutdown({ reason: "server shutdown" });
+      if (transport === "sandbox" && !busy) {
+        expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "server shutdown" });
+        expect(result[fail ? "failed" : "closed"]).toBeGreaterThanOrEqual(1);
+        await closeIdleSandboxNativeSessionsForShutdown({ reason: "duplicate shutdown" });
+        expect(close).toHaveBeenCalledOnce();
+      } else {
+        expect(close).not.toHaveBeenCalled();
+        if (busy) expect(result.busy).toBeGreaterThanOrEqual(1);
+      }
+    } finally {
+      release();
+      await running;
+      // Unselected sessions retain their existing idle-close behavior.
+      await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 1_000 });
+    }
+  });
+
   it.each([true, false])(
     "uses provider turn completion without a semantic-result cutoff: chat=%s",
     async (conversationMode) => {
@@ -5595,6 +5755,7 @@ describe("native warm session supervision", () => {
       process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
       process.env.PAPERCLIP_HOME = stateBase;
       const firstClose = vi.fn(async () => undefined);
+      const onEvent = vi.fn(async () => undefined);
       const firstSession = { close: firstClose };
       const first = {
         ...execution,
@@ -5795,6 +5956,7 @@ describe("native warm session supervision", () => {
         } as unknown as Db;
         await executePaperclipNativeSession({
           db: continuationDb,
+          onEvent,
           execution: second,
           runnerEnvironment: {
             PAPERCLIP_GITHUB_AUTH_MODE: secondMode,
@@ -5808,11 +5970,24 @@ describe("native warm session supervision", () => {
           runnerExecutionTarget: remoteTarget,
         });
         if (replacesProvider) {
+          expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+            eventType: "native.session.process_rotation",
+            stream: "system",
+            payload: expect.objectContaining({
+              runId: second.binding.runId,
+              companyId: second.binding.companyId,
+              agentId: second.binding.agentId,
+              nativeSessionId: second.session.normalizedSessionId,
+              runnerInstanceId: "runner-runnerd-warm",
+            }),
+          }));
+          expect(JSON.stringify(onEvent.mock.calls)).not.toContain("run-capability");
           expect(firstClose).toHaveBeenCalledOnce();
           expect(firstClose).toHaveBeenCalledWith({
             reason: "warm native session configuration changed",
           });
         } else {
+          expect(onEvent).not.toHaveBeenCalledWith(expect.objectContaining({ eventType: "native.session.process_rotation" }));
           expect(firstClose).not.toHaveBeenCalled();
           await vi.waitFor(
             () =>
@@ -7541,7 +7716,7 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it("migrates a suspended prior-run authority only when its persisted execution has the same full session scope", async () => {
+  it.each([0, 5 * 1024 * 1024])("migrates a suspended prior-run authority with %i bytes of journal data only within its full session scope", async (journalBytes) => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-prior-run-session-state-"),
     );
@@ -7602,12 +7777,15 @@ describe("runnerd provider runtime wiring", () => {
       await writeFile(
         join(legacyRoot, "control-plane", "control-plane-state.json"),
         JSON.stringify(
-          durableControlPlaneState({
-            runId: priorExecution.binding.runId,
-            normalizedSessionId: priorExecution.session.normalizedSessionId,
-            runnerInstanceId: "runner-prior-run-scope",
-            environmentLeaseId: "lease-prior-run-scope",
-          }),
+          {
+            ...durableControlPlaneState({
+              runId: priorExecution.binding.runId,
+              normalizedSessionId: priorExecution.session.normalizedSessionId,
+              runnerInstanceId: "runner-prior-run-scope",
+              environmentLeaseId: "lease-prior-run-scope",
+            }),
+            journalData: "x".repeat(journalBytes),
+          },
         ),
       );
       await writeFile(
@@ -8807,7 +8985,7 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it.each(["missing", "malformed", "unknown_schema", "mismatched"] as const)(
+  it.each(["missing", "malformed", "unknown_schema", "mismatched", "oversized"] as const)(
     "fails closed on %s durable identity in an existing scoped root",
     async (caseName) => {
       const stateBase = await mkdtemp(
@@ -8861,12 +9039,31 @@ describe("runnerd provider runtime wiring", () => {
                 : JSON.stringify(
                     durableControlPlaneState({
                       runId: scopedExecution.binding.runId,
-                      normalizedSessionId: "session-owned-by-another-scope",
-                      runnerInstanceId: "runner-owned-by-another-scope",
-                      environmentLeaseId: "lease-owned-by-another-scope",
+                      normalizedSessionId: caseName === "oversized"
+                        ? scopedExecution.session.normalizedSessionId
+                        : "session-owned-by-another-scope",
+                      runnerInstanceId: `runner-${caseName}-scoped-state`,
+                      environmentLeaseId: scopedExecution.binding.executionWorkspaceId,
                     }),
                   ),
           );
+        }
+        if (caseName === "oversized") {
+          // Valid JSON beyond the bound: without the size guard this exact
+          // identity and ready runner would otherwise be accepted.
+          const padding = " ".repeat(1024 * 1024);
+          for (let i = 0; i < 64; i++) {
+            await appendFile(join(scopedRoot, "control-plane", "control-plane-state.json"), padding);
+          }
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+          await writeFile(join(scopedRoot, "runner", "runner-state.json"), JSON.stringify(
+            durableRunnerState({
+              runId: scopedExecution.binding.runId,
+              normalizedSessionId: scopedExecution.session.normalizedSessionId,
+              runnerInstanceId: `runner-${caseName}-scoped-state`,
+              environmentLeaseId: scopedExecution.binding.executionWorkspaceId,
+            }, "ready"),
+          ));
         }
         state.createBackend.mockClear();
         state.createTransport.mockClear();
@@ -9627,6 +9824,7 @@ describe("runnerd provider runtime wiring", () => {
             binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner",
             binaryContractVersion: 2,
+            capabilities: ["codex.warm-attachment.passive-notices.v1"],
             prpTransportModes: ["listen_ws"],
           });
         } else if (command.args?.[0] === "--version") {
@@ -9695,6 +9893,50 @@ describe("runnerd provider runtime wiring", () => {
       remoteExecute.mock.calls.some(([call]) => call.command === "npm"),
     ).toBe(false);
   });
+
+  it.each(["missing", "incompatible"])(
+    "stages the server-resolved artifact when the image runner is %s",
+    async (imageRunner) => {
+      const artifact = join(isolatedStateDirectory, "vendored-runnerd");
+      await writeFile(artifact, "server-owned runner bytes", { mode: 0o700 });
+      state.resolveRunnerBinary.mockReturnValueOnce(artifact);
+      const syncIn = vi.fn(async () => { throw new Error("observed-runner-upload"); });
+      const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+        const script = command.args?.[1] ?? "";
+        let stdout = "";
+        if (script.includes("command -v paperclip-runnerd")) {
+          stdout = imageRunner === "missing" ? "" : "/usr/local/bin/paperclip-runnerd\n";
+        } else if (command.args?.[0] === "--build-metadata") {
+          stdout = "{}"; // An incompatible image must fall back to the app artifact.
+        } else if (script === "uname -s; uname -m") {
+          const os = process.platform === "darwin" ? "Darwin" : "Linux";
+          const arch = process.arch === "x64" ? "x86_64" : "aarch64";
+          stdout = `${os}\n${arch}\n`;
+        }
+        return { exitCode: 0, signal: null, timedOut: false, stderr: "", stdout };
+      });
+      await createRunnerdBackend({
+        db: leaseDb(execution), execution, runnerInstanceId: "runner-vendored-artifact",
+        runnerIngressAuthorized: true,
+        runnerExecutionTarget: {
+          kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+          environmentId: "environment", leaseId: "lease", providerKey: "daytona",
+          effectiveCapabilities: { runnerWebSocketIngress: true },
+          runner: { execute: remoteExecute, syncIn },
+        } as never,
+      });
+      state.createTransport.mockClear();
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const transport = state.createTransport.mock.calls[0]![0] as RunnerTransportOptions & {
+        controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
+      };
+      expect(transport.runnerBinary).toBe(artifact);
+      await expect(transport.controlPlaneRegistration({})).rejects.toThrow("observed-runner-upload");
+      expect(syncIn).toHaveBeenCalledWith([
+        expect.objectContaining({ files: [expect.objectContaining({ sourcePath: artifact, kind: "file", mode: 0o700 })] }),
+      ]);
+    },
+  );
 
   it("binds a remote launch to the configured controller-owned runner artifact", async () => {
     const remoteCwd = "/home/daytona/paperclip-workspace";

@@ -219,7 +219,13 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     expect(target.reusableLeaseConfigured).toBe(true);
   });
 
-  it("carries host-owned sandbox acquisition provenance without persisting provider ids in metadata", async () => {
+  it.each([
+    { layout: "legacy", outcome: "resumed", adopt: true },
+    { layout: "legacy", outcome: "created", adopt: false },
+    { layout: "legacy", outcome: "replacement", adopt: false },
+    { layout: "scoped", outcome: "resumed", adopt: false },
+    { layout: undefined, outcome: "resumed", adopt: false },
+  ])("carries host-owned acquisition and legacy adoption for $layout/$outcome", async ({layout, outcome, adopt}) => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
       config: { provider: "daytona", reuseLease: true, timeoutMs: 30_000 },
@@ -235,13 +241,14 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
       leaseId: "lease-row-1",
       leaseMetadata: {
         remoteCwd: "/work",
+        workFolderLayout: "legacy",
         sandboxLeaseAcquisition: { outcome: "resumed" },
       },
       lease: {
         id: "lease-row-1",
         providerLeaseId: "daytona-sandbox-1",
         leasePolicy: "reuse_by_environment",
-        metadata: { sandboxLeaseAcquisition: { outcome: "resumed" } },
+        metadata: { workFolderLayout: layout, sandboxLeaseAcquisition: { outcome } },
       } as never,
       environmentRuntime: {
         supportsSync: () => false,
@@ -252,9 +259,10 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
       throw new Error("expected a sandbox target");
     }
     expect(target.sandboxLeaseAcquisition).toEqual({
-      outcome: "resumed",
+      outcome,
       providerLeaseId: "daytona-sandbox-1",
     });
+    expect(target.legacyWorkspaceResume).toBe(adopt);
   });
 });
 

@@ -1395,10 +1395,9 @@ export function environmentService(db: Db) {
       metadata?: Record<string, unknown> | null;
       /**
        * Atomically retire the previous database ownership record when this
-       * acquisition reuses the same provider resource for a new run. The
-       * provider resume happens before this write, so a failed transaction
-       * leaves the prior retained row recoverable instead of publishing two
-       * reusable owners for one sandbox.
+       * acquisition reuses the same provider resource for a new run. Claim it
+       * before the resume RPC: a failed transaction preserves the prior row,
+       * and a competing acquisition cannot touch the provider without ownership.
        */
       replacesReusableLeaseId?: string | null;
       /**

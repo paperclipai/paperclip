@@ -197,6 +197,9 @@ export async function prepareSandboxWorkFolders(input: {
       if (entry.kind === "directory") await transport.mkdir(paths[scope]!, entry.path);
       else {
         const result = await svc.content(folder, entry.path);
+        // A shared file can change after listing. Validate and baseline the
+        // version opened by content(), whose metadata and stream belong together.
+        Object.assign(entry, { byteSize: result.file.byteSize, sha256: result.file.sha256, executable: result.file.executable });
         try { await transport.write(paths[scope]!, staging, entry, result.stream); } finally { result.stream.destroy(); }
       }
     }
@@ -318,25 +321,30 @@ export async function prepareSandboxWorkFolders(input: {
     },
     async onError() { await saveState("failed", "Files could not be saved; the sandbox must be retained for recovery"); },
   });
-  return { manifest, home, identityChanged, primaryRepo: bindings.find(({ binding }) => manifest.repositories.some((repo) => repo.bindingId === binding.id && repo.primary))?.root ?? bindings[0]?.root ?? paths.task!,
-    env: { HOME: home, AGENT_HOME: paths.agent!, PAPERCLIP_PRIMARY_REPO: bindings.find(({ binding }) => manifest.repositories.some((repo) => repo.bindingId === binding.id && repo.primary))?.root ?? bindings[0]?.root ?? paths.task!, PAPERCLIP_TASK_DIR: paths.task!, PAPERCLIP_AGENT_DIR: paths.agent!,
-      PAPERCLIP_USER_DIR: paths.user!, PAPERCLIP_PROJECT_DIR: paths.project!, PAPERCLIP_REPOS_DIR: paths.repos! },
-    flush: checkpointer.flush, stop: async (beforeCompletion?: () => Promise<void>) => {
+  let completion: Promise<void> | null = null;
+  function stop(beforeCompletion?: () => Promise<void>) {
+    // Error teardown must observe the original outcome, including failures
+    // after the data save. A later run owns any recovery of this working copy.
+    completion ??= (async () => {
       await checkpointer.stop();
       const [run] = await db.select({ refreshRequested: workFolderRuns.refreshRequested }).from(workFolderRuns)
         .where(eq(workFolderRuns.runId, input.runId));
       if (run?.refreshRequested) {
-        // The agent has stopped. The successful final flush above protects its
-        // edits before accepting incoming shared files at this safe boundary.
+        // The successful final flush protects edits before incoming refresh.
         await assertBindings();
         for (const scope of WORK_FOLDER_SCOPES) await incoming(scope);
         await db.update(workFolderRuns).set({ refreshRequested: false, baselines, updatedAt: new Date() })
           .where(eq(workFolderRuns.runId, input.runId));
       }
-      // Native resume identity must be published after the data is durable,
-      // but before completion can release a new turn onto this sandbox.
+      // Publish resume identity after data is durable, before releasing a turn.
       await beforeCompletion?.();
       manifest.finalCheckpointAt = new Date().toISOString();
       await saveState("saved");
-    } };
+    })();
+    return completion;
+  }
+  return { manifest, home, identityChanged, primaryRepo: bindings.find(({ binding }) => manifest.repositories.some((repo) => repo.bindingId === binding.id && repo.primary))?.root ?? bindings[0]?.root ?? paths.task!,
+    env: { HOME: home, AGENT_HOME: paths.agent!, PAPERCLIP_PRIMARY_REPO: bindings.find(({ binding }) => manifest.repositories.some((repo) => repo.bindingId === binding.id && repo.primary))?.root ?? bindings[0]?.root ?? paths.task!, PAPERCLIP_TASK_DIR: paths.task!, PAPERCLIP_AGENT_DIR: paths.agent!,
+      PAPERCLIP_USER_DIR: paths.user!, PAPERCLIP_PROJECT_DIR: paths.project!, PAPERCLIP_REPOS_DIR: paths.repos! },
+    flush: checkpointer.flush, stop };
 }

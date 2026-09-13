@@ -3292,6 +3292,10 @@ export function createPluginWorkerHandle(
     timeoutMs?: number,
     executeLogSink?: ExecuteLogSink,
   ): Promise<HostToWorkerMethods[M][1]> {
+    // A worker response arrives on a different stack from its caller. Preserve
+    // command-call provenance so late sandbox failures identify their owner
+    // without recording command arguments, credentials, or worker payloads.
+    const caller = method === "environmentExecute" ? new Error("Sandbox command requested here") : undefined;
     const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
         reject(
@@ -3347,7 +3351,9 @@ export function createPluginWorkerHandle(
           if (isJsonRpcSuccessResponse(response)) {
             settle(resolve, response.result as HostToWorkerMethods[M][1]);
           } else if ("error" in response && response.error) {
-            settle(reject, new JsonRpcCallError(response.error));
+            const error = new JsonRpcCallError(response.error);
+            if (caller) error.cause = caller;
+            settle(reject, error);
           } else {
             settle(reject, new Error(`Unexpected response format for "${method}"`));
           }

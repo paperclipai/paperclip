@@ -486,6 +486,46 @@ it("preserves only bounded GitHub credential projection at the runner spawn boun
   expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
 });
 
+it.each(["codex", "claude", "pi"] as const)("carries scoped HOME through the runner launch boundary to the %s ACPX environment", async (agent) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-scoped-home-"));
+  const home = resolve(root, "sandbox-home");
+  const scoped = {
+    HOME: home,
+    PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+    PAPERCLIP_TASK_DIR: resolve(home, "task"),
+    PAPERCLIP_AGENT_DIR: resolve(home, "agent"),
+    PAPERCLIP_USER_DIR: resolve(home, "user"),
+    PAPERCLIP_PROJECT_DIR: resolve(home, "project"),
+    PAPERCLIP_REPOS_DIR: resolve(home, "repos"),
+    PAPERCLIP_PRIMARY_REPO: resolve(home, "repos", "primary"),
+    PAPERCLIP_WORKSPACE_CWD: resolve(home, "repos", "primary"),
+    AGENT_HOME: resolve(home, "agent"),
+  };
+  const launches: RunnerProcessLaunchSpec[] = [];
+  try {
+    spawnRunner({
+      connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+      stateDirectory: root, identity, ticket: "bootstrap-ticket",
+      maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+      runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+      environment: { ...scoped, DATABASE_URL: "must-not-cross" },
+      processLauncher: (spec) => {
+        launches.push(spec);
+        return {
+          child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+          completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }),
+        };
+      },
+    });
+    expect(launches[0]!.environment).toMatchObject(scoped);
+    expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
+    const { createSanitizedAcpxSpawnInput } = await import("../drivers/acpx/environment.js");
+    expect(createSanitizedAcpxSpawnInput(launches[0]!.environment, agent).env).toMatchObject(scoped);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("preserves the controller-selected ACPX provider package root", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
   spawnRunner({

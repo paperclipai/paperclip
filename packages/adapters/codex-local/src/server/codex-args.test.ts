@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
+  it.each([null, "existing-session"])("preserves the sandbox tool environment when resuming %s", (resumeSessionId) => {
+    const result = buildCodexExecArgs({ extraArgs: ["-c", "allow_login_shell=true"] },
+      { resumeSessionId, preserveSandboxEnvironment: true });
+    expect(result.args).toContain("features.shell_snapshot=false");
+    expect(result.args.indexOf("allow_login_shell=false")).toBeGreaterThan(result.args.indexOf("allow_login_shell=true"));
+    expect(result.args.slice(-1)).toEqual(["-"]);
+    expect(buildCodexExecArgs({}).args).toEqual([
+      "exec", "--json", "-c", 'sandbox_mode="workspace-write"',
+      "-c", "sandbox_workspace_write.network_access=true", "-",
+    ]);
+  });
+
   it("forwards GPT-6 Astra, its ultra reasoning effort, and fast mode", () => {
     const result = buildCodexExecArgs({
       model: "gpt-6-astra",

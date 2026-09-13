@@ -123,6 +123,7 @@ import {
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { systemdNotify } from "./services/systemd-notify.js";
+import { closeIdleSandboxNativeSessionsForShutdown } from "./services/native-runtime/native-session-executor.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
   createEmbeddedPostgresSupervisor,
@@ -2003,6 +2004,9 @@ async function startServerWithDatabaseTeardown(
     await finalizeServerShutdown({
       signal,
       shutdownAppServices: appShutdown,
+      closeIdleSandboxSessions: () => closeIdleSandboxNativeSessionsForShutdown({
+        reason: `server shutdown (${signal})`,
+      }),
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
       closeDatabase: closeDatabaseClients,

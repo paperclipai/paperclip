@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -15,11 +16,33 @@ let source: Promise<string> | undefined;
 // Linux's 128 KiB single-argument limit, including a provider shell wrapper.
 const WRITE_CHUNK_BYTES = 48 * 1024;
 
+function transientReadFailure(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const code = (error as Error & { code?: string }).code;
+  return ["ECONNRESET", "EPIPE", "EAI_AGAIN", "ECONNABORTED"].includes(code ?? "")
+    || error.message === "socket hang up";
+}
+
 export function workFolderTransport(runner: CommandManagedRuntimeRunner) {
   async function command(input: Record<string, unknown>): Promise<unknown> {
     source ??= readFile(new URL("./scripts/work-folder-io.mjs", import.meta.url), "utf8");
-    const result = await runner.execute({ command: "node", args: ["--input-type=module", "-e", await source,
-      Buffer.from(JSON.stringify(input)).toString("base64")], bypassSession: true, timeoutMs: 120_000 });
+    const args = ["--input-type=module", "-e", await source, Buffer.from(JSON.stringify(input)).toString("base64")];
+    const readOnly = ["home", "scan", "read"].includes(String(input.operation));
+    const deadline = Date.now() + 120_000;
+    let result;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        result = await runner.execute({ command: "node", args, bypassSession: true,
+          timeoutMs: Math.max(1, deadline - Date.now()) });
+        break;
+      } catch (error) {
+        // A lost read response is safe to repeat. Staging writes, publishes and
+        // moves may already have happened, so never replay them here.
+        const waitMs = 250 * (attempt + 1);
+        if (!readOnly || attempt >= 2 || !transientReadFailure(error) || Date.now() + waitMs >= deadline) throw error;
+        await delay(waitMs);
+      }
+    }
     if (result.exitCode !== 0 || result.timedOut) throw new Error(`Work folder ${String(input.operation)} failed: ${result.stderr.slice(0, 1500)}`);
     return JSON.parse(result.stdout);
   }

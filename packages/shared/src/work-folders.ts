@@ -33,8 +33,12 @@ export interface WorkFolderListing {
 
 export interface WorkFolderSyncStatus {
   runId: string;
+  /** Identifies the run to inspect when a shared folder has an unsaved copy. */
+  agentId?: string;
   state: "starting" | "saved" | "saving" | "failed";
   lastSavedAt: string | null;
+  /** Successful run finalization; absent on older servers and periodic-only saves. */
+  finalCheckpointAt?: string | null;
   error: string | null;
   refreshRequested: boolean;
   active: boolean;

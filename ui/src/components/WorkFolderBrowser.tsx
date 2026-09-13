@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
+import { Link } from "@/lib/router";
 
 function tree(files: WorkFile[]) {
   const root: FileTreeNode = { name: "", path: "", kind: "dir", children: [] };
@@ -83,16 +84,24 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
     }
     else if (action.type === "restore" || action.type === "purge") await workFoldersApi.operation(owner, { action: action.type, fileId: action.fileId }, crypto.randomUUID());
     else for (const run of (syncQuery.data ?? []).filter((run) => run.active)) await workFoldersApi.refresh(owner, run.runId);
-  }, onSuccess: async (_data, action) => {
+  }, onMutate: () => setAnnouncement(""), onSuccess: async (_data, action) => {
     setAnnouncement(action.type === "refresh" ? "Refresh requested for the next safe run boundary." : "Files saved.");
   }, onSettled: () => queryClient.invalidateQueries({ queryKey: key }) });
   const statuses = syncQuery.data ?? [];
-  const failed = statuses.find((status) => status.state === "failed");
+  const failures = statuses.filter((status) => status.state === "failed");
   const saving = mutation.isPending || statuses.some((status) => status.state === "saving");
   const lastSaved = statuses.map((status) => status.lastSavedAt)
     .filter((value): value is string => Boolean(value)).sort().at(-1);
   const lastOperation = filesQuery.data?.lastOperationAt;
-  const saveFailed = Boolean(failed) || mutation.isError;
+  const saveLabel = mutation.isPending ? "Saving…"
+    : mutation.isError ? "Save failed"
+    : syncQuery.isError ? "Save status unavailable"
+    : !exampleFiles && syncQuery.isPending ? "Loading save status…"
+    : saving ? "Saving…"
+    : failures.length > 0 ? "Run save failed"
+    : !lastSaved && statuses.some((status) => status.active) ? "Waiting for first save"
+    : lastSaved || lastOperation || files.length > 0 ? "Saved"
+    : "No saved files";
   const disabled = mutation.isPending || Boolean(exampleFiles);
   return <Tabs value={trash ? "trash" : "files"} onValueChange={(value) => { setTrash(value === "trash"); setSelectedPath(null); setCheckedFiles(new Set()); }} className={cn("flex min-h-0 flex-col gap-3", fillHeight && "flex-1")}>
     <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -107,7 +116,7 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
       </TabsList>
       {!trash && canManageTrash && deletePaths.length > 0 && <Button variant="outline" size="sm" disabled={disabled} onClick={() => mutation.mutate({ type: "deleteSelected", paths: deletePaths })}><Trash2 aria-hidden />Move {deletePaths.length} {selectionLabel}{deletePaths.length === 1 ? "" : "s"} to trash</Button>}
       {!readOnly && <Button variant="outline" size="sm" disabled={disabled || !statuses.some((status) => status.active)} onClick={() => mutation.mutate({ type: "refresh" })}><RefreshCw aria-hidden />Refresh sandbox</Button>}
-      <span className="text-xs text-muted-foreground" role="status">{saving ? "Saving…" : saveFailed ? "Save failed" : "Saved"}</span>
+      <span className="text-xs text-muted-foreground" role="status">{saveLabel}</span>
       {lastSaved && <span className="text-xs text-muted-foreground">Last agent save {new Date(lastSaved).toLocaleTimeString()}</span>}
       {lastOperation && (!lastSaved || lastOperation > lastSaved) && <span className="text-xs text-muted-foreground">Files updated {new Date(lastOperation).toLocaleTimeString()}</span>}
     </div>
@@ -116,7 +125,15 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
       <Button variant="outline" size="sm" disabled={disabled || !directory} onClick={() => mutation.mutate({ type: "mkdir" })}><FolderPlus aria-hidden />Create folder</Button>
     </div>}
     {[filesQuery.error, syncQuery.error, mutation.error].filter(Boolean).map((error, index) => <p key={index} role="alert" className="text-sm text-destructive">{(error as Error).message}</p>)}
-    {failed && <p role="alert" className="text-sm text-destructive">{failed.error}</p>}
+    {failures.length > 0 && <div role="alert" className="text-sm text-destructive">
+      <p>{failures.length === 1 ? "A sandbox run could not save its files." : `${failures.length} sandbox runs could not save their files.`} The files below are saved copies.</p>
+      <ul className="max-h-24 space-y-1 overflow-auto">
+        {failures.map((failure) => <li key={failure.runId}>
+          {failure.error}{" "}
+          {failure.agentId && <Link className="underline" to={`/agents/${encodeURIComponent(failure.agentId)}/runs/${encodeURIComponent(failure.runId)}`} aria-label={`View failed run ${failure.runId}`}>View failed run</Link>}
+        </li>)}
+      </ul>
+    </div>}
     <p className="sr-only" aria-live="polite">{announcement}</p>
     {trash ? <TabsContent value="trash" className={cn("overflow-auto", fillHeight ? "min-h-0 flex-1" : "max-h-96")}><p className="mb-3 text-sm text-muted-foreground">Deleted cached files are retained here. Restore them to return them to Files.</p>{files.length === 0 ? <p className="text-sm text-muted-foreground">Trash is empty.</p> : files.map((file) => <div key={file.id} className="flex items-center gap-2 border-b py-2">
       <span className="min-w-0 flex-1 truncate text-sm">{file.path}</span>{canManageTrash && <Button size="sm" variant="outline" disabled={disabled} onClick={() => mutation.mutate({ type: "restore", fileId: file.id })}><RotateCcw aria-hidden />Restore</Button>}
@@ -142,12 +159,12 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
             return next;
           });
         }}
-        onSelectFile={setSelectedPath} loading={!exampleFiles && filesQuery.isLoading} empty={{ title: "No files yet", description: readOnly ? "No cached files have been saved for this scope." : "Upload files here, or create them during a sandbox run." }} ariaLabel={`${owner.scope} files`} /></div>
+        onSelectFile={setSelectedPath} loading={!exampleFiles && filesQuery.isLoading} empty={filesQuery.isError ? { title: "File list unavailable", description: "The saved contents could not be listed." } : { title: "No files yet", description: readOnly ? "No cached files have been saved for this scope." : "Upload files here, or create them during a sandbox run." }} ariaLabel={`${owner.scope} files`} /></div>
       <div className="flex min-h-0 flex-col gap-2 md:col-span-2">
         {selected && <div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm">{selected.path}</span>
           {selected.kind === "file" && !exampleFiles && <Button asChild size="sm" variant="outline"><a href={workFoldersApi.downloadUrl(owner, selected.path)} download><Download aria-hidden />Download</a></Button>}
           </div>}
-        {preview.isLoading ? <p className="text-sm text-muted-foreground">Loading preview…</p> : preview.error ? <p role="alert" className="text-sm text-muted-foreground">{preview.error.message}</p> : preview.data ?
+        {preview.isLoading || (preview.isFetching && preview.isError) ? <p className="text-sm text-muted-foreground">Loading preview…</p> : preview.error ? <p role="alert" className="text-sm text-muted-foreground">{preview.error.message}</p> : preview.data ?
           <div className={cn("flex min-h-0 flex-col overflow-auto rounded-md border", fillHeight ? "flex-1" : "max-h-96")}><FileContentViewer content={preview.data} highlightedLine={null} /></div> : <p className="text-sm text-muted-foreground">Select a file to preview it.</p>}
       </div>
     </TabsContent>}

@@ -13,7 +13,7 @@ use crate::generated_acpx_sidecar_contract::{
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
-    WORK_FOLDER_ENVIRONMENT_KEYS,
+    GITHUB_CREDENTIAL_ENVIRONMENT_KEYS, WORK_FOLDER_ENVIRONMENT_KEYS,
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
@@ -127,6 +127,7 @@ impl AcpxSidecarTransport {
         ];
         keys.extend_from_slice(credential_keys);
         keys.extend_from_slice(WORK_FOLDER_ENVIRONMENT_KEYS);
+        keys.extend_from_slice(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS);
         Self::start_with_environment_keys(config, &keys)
     }
 
@@ -753,6 +754,58 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn forwards_projected_github_environment_through_actual_sidecar_spawn() {
+        const CHILD: &str = "PAPERCLIP_ACPX_ENV_TEST_CHILD";
+        if std::env::var(CHILD).as_deref() != Ok("1") {
+            // Set synthetic credentials on a separate test process. Do not
+            // mutate the shared environment of parallel Rust tests.
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "acpx_sidecar_transport::tests::forwards_projected_github_environment_through_actual_sidecar_spawn",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "test-run-capability")
+                .env("BASH_ENV", "/dev/null")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "credential.helper")
+                .env("GIT_CONFIG_VALUE_0", "test-helper")
+                .env("GIT_CONFIG_KEY_32", "outside-ceiling")
+                .env("UNRELATED_TEST_SECRET", "must-not-cross")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_owned(), r#"printf '%s\n' "$PAPERCLIP_GITHUB_BROKER_TOKEN|$BASH_ENV|$GIT_CONFIG_COUNT|$GIT_CONFIG_KEY_0|$GIT_CONFIG_VALUE_0|$GIT_CONFIG_KEY_32|$UNRELATED_TEST_SECRET""#.to_owned()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(3),
+            shutdown_grace: Duration::from_millis(100),
+        };
+        for agent in ["claude", "codex", "pi"] {
+            let mut transport = AcpxSidecarTransport::start_for_agent(&config, agent).unwrap();
+            let line = transport
+                .receive_stdout_line(Duration::from_secs(3), "environment probe")
+                .unwrap();
+            assert_eq!(
+                line.as_deref(),
+                Some("test-run-capability|/dev/null|1|credential.helper|test-helper||"),
+                "{agent}"
+            );
+            transport.shutdown().unwrap();
+        }
+    }
 
     #[test]
     fn parse_frame_does_not_echo_untrusted_deserialization_details() {

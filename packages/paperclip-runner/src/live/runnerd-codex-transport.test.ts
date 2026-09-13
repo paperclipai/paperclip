@@ -3475,6 +3475,39 @@ it.each(["codex", "opencode", "acpx"] as const)("keeps the natural sandbox home 
   expect(() => createRunnerdCodexAppServerArgs({ environment, codexHome: `${home}/.codex` })).not.toThrow();
 });
 
+it("preserves only explicit GitHub bindings through the OpenCode runner boundary", () => {
+  vi.stubEnv("PAPERCLIP_GITHUB_BROKER_TOKEN", "ambient-host-secret");
+  vi.stubEnv("BASH_ENV", "/ambient/shell-hook");
+  const projected = {
+    PAPERCLIP_GITHUB_BROKER_TOKEN: "controller-run-capability",
+    PAPERCLIP_GITHUB_BRIDGE_TOKEN: "controller-bridge-capability",
+    PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3456",
+    BASH_ENV: "/runtime/github-launcher/profile.sh",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+  };
+  const launch = (environment: NodeJS.ProcessEnv | undefined) => createCapabilityRunnerdProviderEnvironment({
+    provider: "opencode",
+    options: { provider: "opencode", environment },
+    identity: { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" },
+    codexHome: "/isolated/home", runtimeContextPath: "/runtime/context.json", hasRuntimeContext: false,
+  });
+  try {
+    const environment = launch({ ...projected, GIT_CONFIG_KEY_1: "unbounded", PAPERCLIP_API_KEY: "control-plane-secret", DATABASE_URL: "host-secret" });
+    expect(environment).toMatchObject(projected);
+    expect(environment).not.toHaveProperty("GIT_CONFIG_KEY_1");
+    expect(environment).not.toHaveProperty("PAPERCLIP_API_KEY");
+    expect(environment).not.toHaveProperty("DATABASE_URL");
+    for (const input of [undefined, {}]) {
+      expect(launch(input)).not.toHaveProperty("PAPERCLIP_GITHUB_BROKER_TOKEN");
+      expect(launch(input)).not.toHaveProperty("BASH_ENV");
+    }
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 it("denies the isolated Codex home without denying a remote execution workspace", () => {
   const args = createRunnerdCodexAppServerArgs({
     environment: {

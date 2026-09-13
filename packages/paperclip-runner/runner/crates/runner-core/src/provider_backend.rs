@@ -4073,6 +4073,22 @@ impl CodexCommandExecutor {
                         }
                     }
                     let normalized = normalize_provider_notification(state, &method, &params)?;
+                    if method == "paperclip/runResult" {
+                        // The OpenCode proxy publishes its validated semantic
+                        // result as a notification rather than a correlated
+                        // tool response. Bind the same exact active process and
+                        // turn authority used by deliver_tool_result before a
+                        // controller interruption can settle that provider turn.
+                        self.provider
+                            .as_mut()
+                            .expect("provider remains present after result validation")
+                            .mark_active_turn_result_authoritative()
+                            .map_err(|error| {
+                                DurableRunnerError::invalid(format!(
+                                    "failed to bind OpenCode result to its active provider turn: {error}"
+                                ))
+                            })?;
+                    }
                     let normalized_event_count = normalized.len();
                     if terminal_event_type.is_some() {
                         state.settle_active_provider_turn_identity()?;

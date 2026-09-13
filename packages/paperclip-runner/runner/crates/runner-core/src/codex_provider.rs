@@ -16,7 +16,8 @@ use crate::durable::{redact_text, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     is_node_interpreter, BoundedLogBuffer, ProcessExitFact, ProcessOutput, SupervisedProcess,
-    VerifiedProcessArgument, VerifiedProcessLaunch, WORK_FOLDER_ENVIRONMENT_KEYS,
+    VerifiedProcessArgument, VerifiedProcessLaunch, GITHUB_CREDENTIAL_ENVIRONMENT_KEYS,
+    WORK_FOLDER_ENVIRONMENT_KEYS,
 };
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
 use crate::provider_events::normalized_codex_terminal_event_type;
@@ -602,109 +603,6 @@ struct ProviderExitDrain {
     warning_emitted: bool,
 }
 
-// The controller accepts at most 32 process-scoped Git config entries and
-// projects only these exact GitHub credential names into runnerd. Keep the
-// provider child boundary equally explicit: runnerd may inherit a configured
-// entry from this static ceiling, but cannot introduce another environment
-// variable by changing GIT_CONFIG_COUNT.
-const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
-    "PAPERCLIP_RUNNER_NETWORK_ACCESS",
-    "PAPERCLIP_RUNNER_NETWORK_ROOTS",
-    "PAPERCLIP_GITHUB_AUTH_MODE",
-    "PAPERCLIP_GITHUB_HOST_HOME",
-    "PAPERCLIP_GIT_METADATA_ROOTS",
-    "GIT_SSH",
-    "ZDOTDIR",
-    "BASH_ENV",
-    "PAPERCLIP_GITHUB_BROKER_URL",
-    "PAPERCLIP_GITHUB_BROKER_TOKEN",
-    "PAPERCLIP_GITHUB_LAUNCHER_DIR",
-    "GH_CONFIG_DIR",
-    "GH_ENTERPRISE_TOKEN",
-    "GITHUB_ENTERPRISE_TOKEN",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_SYSTEM",
-    "GIT_CONFIG_NOSYSTEM",
-    "GIT_ASKPASS",
-    "SSH_ASKPASS",
-    "SSH_AUTH_SOCK",
-    "GIT_SSH_COMMAND",
-    "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "PAPERCLIP_GIT_TOKEN",
-    "GIT_TERMINAL_PROMPT",
-    "GIT_CONFIG_COUNT",
-    "GIT_AUTHOR_NAME",
-    "GIT_AUTHOR_EMAIL",
-    "GIT_COMMITTER_NAME",
-    "GIT_COMMITTER_EMAIL",
-    "GIT_CONFIG_KEY_0",
-    "GIT_CONFIG_VALUE_0",
-    "GIT_CONFIG_KEY_1",
-    "GIT_CONFIG_VALUE_1",
-    "GIT_CONFIG_KEY_2",
-    "GIT_CONFIG_VALUE_2",
-    "GIT_CONFIG_KEY_3",
-    "GIT_CONFIG_VALUE_3",
-    "GIT_CONFIG_KEY_4",
-    "GIT_CONFIG_VALUE_4",
-    "GIT_CONFIG_KEY_5",
-    "GIT_CONFIG_VALUE_5",
-    "GIT_CONFIG_KEY_6",
-    "GIT_CONFIG_VALUE_6",
-    "GIT_CONFIG_KEY_7",
-    "GIT_CONFIG_VALUE_7",
-    "GIT_CONFIG_KEY_8",
-    "GIT_CONFIG_VALUE_8",
-    "GIT_CONFIG_KEY_9",
-    "GIT_CONFIG_VALUE_9",
-    "GIT_CONFIG_KEY_10",
-    "GIT_CONFIG_VALUE_10",
-    "GIT_CONFIG_KEY_11",
-    "GIT_CONFIG_VALUE_11",
-    "GIT_CONFIG_KEY_12",
-    "GIT_CONFIG_VALUE_12",
-    "GIT_CONFIG_KEY_13",
-    "GIT_CONFIG_VALUE_13",
-    "GIT_CONFIG_KEY_14",
-    "GIT_CONFIG_VALUE_14",
-    "GIT_CONFIG_KEY_15",
-    "GIT_CONFIG_VALUE_15",
-    "GIT_CONFIG_KEY_16",
-    "GIT_CONFIG_VALUE_16",
-    "GIT_CONFIG_KEY_17",
-    "GIT_CONFIG_VALUE_17",
-    "GIT_CONFIG_KEY_18",
-    "GIT_CONFIG_VALUE_18",
-    "GIT_CONFIG_KEY_19",
-    "GIT_CONFIG_VALUE_19",
-    "GIT_CONFIG_KEY_20",
-    "GIT_CONFIG_VALUE_20",
-    "GIT_CONFIG_KEY_21",
-    "GIT_CONFIG_VALUE_21",
-    "GIT_CONFIG_KEY_22",
-    "GIT_CONFIG_VALUE_22",
-    "GIT_CONFIG_KEY_23",
-    "GIT_CONFIG_VALUE_23",
-    "GIT_CONFIG_KEY_24",
-    "GIT_CONFIG_VALUE_24",
-    "GIT_CONFIG_KEY_25",
-    "GIT_CONFIG_VALUE_25",
-    "GIT_CONFIG_KEY_26",
-    "GIT_CONFIG_VALUE_26",
-    "GIT_CONFIG_KEY_27",
-    "GIT_CONFIG_VALUE_27",
-    "GIT_CONFIG_KEY_28",
-    "GIT_CONFIG_VALUE_28",
-    "GIT_CONFIG_KEY_29",
-    "GIT_CONFIG_VALUE_29",
-    "GIT_CONFIG_KEY_30",
-    "GIT_CONFIG_VALUE_30",
-    "GIT_CONFIG_KEY_31",
-    "GIT_CONFIG_VALUE_31",
-];
-
 const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "CODEX_HOME",
     "OPENAI_API_KEY",
@@ -1171,6 +1069,7 @@ impl CodexProvider {
                     let safe_tail_method = matches!(
                         method.as_str(),
                         "warning"
+                            | "deprecationNotice"
                             | "configWarning"
                             | "remoteControl/status/changed"
                             | "mcpServer/startupStatus/updated"
@@ -4292,7 +4191,17 @@ done
     #[test]
     fn github_credentials_cross_only_the_bounded_provider_environment() {
         assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 95);
+        assert_eq!(
+            GITHUB_CREDENTIAL_ENVIRONMENT_KEYS
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(),
+            "provider environment keys must be unique",
+        );
         for key in [
+            "ZDOTDIR",
+            "BASH_ENV",
             "PAPERCLIP_RUNNER_NETWORK_ACCESS",
             "PAPERCLIP_RUNNER_NETWORK_ROOTS",
             "PAPERCLIP_GITHUB_AUTH_MODE",

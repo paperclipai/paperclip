@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -10,9 +10,11 @@ import { agents, assets, companyMemberships, issueAttachments, companies, create
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { prepareSandboxWorkFolders } from "../services/sandbox-work-folders.js";
 import { bindWarmSandboxWorkspace } from "../services/sandbox-workspace-binding.js";
+import { findUnboundLegacyTaskWorkspace } from "../services/legacy-sandbox-workspace.js";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "../services/work-folder-retention.js";
 import * as activityLog from "../services/activity-log.js";
 import { workFolderService } from "../services/work-folders.js";
+import * as workFolderServices from "../services/work-folders.js";
 import { collectWorkFolderGarbage } from "../services/work-folder-garbage.js";
 import { localTestWorkFolderRunner } from "./helpers/work-folder-runner.js";
 const exec = promisify(execFile);
@@ -49,6 +51,57 @@ describe("shared sandbox work-folder lifecycle", () => {
   afterAll(async () => {
     for (const run of active) await run.stop().catch(() => {});
     await database?.cleanup(); if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+  it.each(["codex_local", "paperclip_runner"])("recovers an unbound pre-change %s workspace only for its recorded identity", async (adapterType) => {
+    const task = randomUUID(), runId = randomUUID(), workspaceId = randomUUID(), leaseId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "owner",
+      status: "succeeded", contextSnapshot: { issueId: task } });
+    await db.insert(issues).values({ id: task, companyId, projectId, title: "Unbound old task", assigneeAgentId: agentId });
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId, sourceIssueId: task,
+      mode: "shared_workspace", strategyType: "project_primary", name: "Retained old workspace" });
+    const metadata = { driver: "sandbox", agentId, reusableSandboxLease: { version: 1, companyId, agentId,
+      environmentId, executionWorkspaceId: workspaceId, adapterType, provider: "daytona" } };
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, issueId: task,
+      executionWorkspaceId: workspaceId, heartbeatRunId: runId, status: "retained", leasePolicy: "reuse_by_environment",
+      provider: "daytona", providerLeaseId: "original-sandbox", metadata });
+    const input = { companyId, issueId: task, projectId, agentId, responsibleUserId: "owner", adapterType,
+      executionWorkspaceId: null, executionWorkspacePreference: null,
+      environment: { id: environmentId, driver: "sandbox" as const, config: { reuseLease: true } } };
+    expect(await findUnboundLegacyTaskWorkspace(db, input)).toBe(workspaceId);
+    const malformedIds = Array.from({ length: adapterType === "codex_local" ? 101 : 1 }, () => randomUUID());
+    await db.insert(environmentLeases).values(malformedIds.map((id) => ({ id, companyId, environmentId, issueId: task,
+      executionWorkspaceId: workspaceId, heartbeatRunId: runId, status: "retained", leasePolicy: "reuse_by_environment",
+      provider: "daytona", providerLeaseId: "invalid-newer-sandbox", createdAt: new Date(Date.now() + 1000),
+      metadata: { ...metadata, reusableSandboxLease: { ...metadata.reusableSandboxLease, executionWorkspaceId: randomUUID() } } })));
+    await db.update(environmentLeases).set({ createdAt: sql`'2026-01-01T00:00:00.123455Z'::timestamptz` }).where(eq(environmentLeases.id, leaseId));
+    await db.update(environmentLeases).set({ createdAt: sql`'2026-01-01T00:00:00.123456Z'::timestamptz` }).where(inArray(environmentLeases.id, malformedIds));
+    // Includes a second page: validate identities before selecting a candidate.
+    expect(await findUnboundLegacyTaskWorkspace(db, input)).toBe(workspaceId);
+    await db.delete(environmentLeases).where(inArray(environmentLeases.id, malformedIds));
+    for (const bad of [{ companyId: randomUUID() }, { issueId: randomUUID() }, { projectId: randomUUID() },
+      { agentId: randomUUID() }, { responsibleUserId: null }, { responsibleUserId: "another-user" },
+      { adapterType: "other-adapter" }, { executionWorkspaceId: randomUUID() },
+      { executionWorkspacePreference: "create_new" }, { environment: null },
+      { environment: { ...input.environment, id: randomUUID() } },
+      { environment: { ...input.environment, driver: "local" as const } },
+      { environment: { ...input.environment, config: { reuseLease: false } } }]) {
+      expect(await findUnboundLegacyTaskWorkspace(db, { ...input, ...bad })).toBeNull();
+    }
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+    expect(await findUnboundLegacyTaskWorkspace(db, input)).toBeNull();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: task } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(executionWorkspaces).set({ status: "archived" }).where(eq(executionWorkspaces.id, workspaceId));
+    expect(await findUnboundLegacyTaskWorkspace(db, input)).toBeNull();
+    await db.update(executionWorkspaces).set({ status: "active" }).where(eq(executionWorkspaces.id, workspaceId));
+    await db.update(environmentLeases).set({ metadata: { ...metadata,
+      reusableSandboxLease: { ...metadata.reusableSandboxLease, executionWorkspaceId: randomUUID() } } }).where(eq(environmentLeases.id, leaseId));
+    expect(await findUnboundLegacyTaskWorkspace(db, input)).toBeNull();
+    await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, leaseId));
+    expect(await findUnboundLegacyTaskWorkspace(db, input)).toBe(workspaceId);
+    await db.insert(workFolderRuns).values({ runId, companyId, manifest: { version: 1, companyId, runId,
+      taskId: task, projectId, agentId, responsibleUserId: "owner", leaseId, sandboxKey: leaseId,
+      home: "/home/daytona", folders: { task: null, agent: null, user: null, project: null }, repositories: [] } });
+    expect(await findUnboundLegacyTaskWorkspace(db, input)).toBeNull();
   });
   it("keeps the host's warm task binding without enabling user-configurable worktrees", async () => {
     const task = randomUUID(), runId = randomUUID(), workspaceId = randomUUID();
@@ -106,13 +159,50 @@ describe("shared sandbox work-folder lifecycle", () => {
         runner: { execute: (input) => localTestWorkFolderRunner.execute({ ...input, env: { ...input.env, HOME: home } }) } } });
     active.push(run); return run;
   }
+  it("uses downloaded metadata when a shared file changes after the startup listing", async () => {
+    const svc = workFolderService(db, storage);
+    const folder = await svc.ensure({ companyId, scope: "project", ownerId: projectId });
+    const filePath = "startup-concurrent.txt";
+    await svc.write(folder, { path: filePath, body: Buffer.from("old"), operationId: randomUUID() });
+    const createService = workFolderServices.workFolderService;
+    let replaced = false;
+    const factory = vi.spyOn(workFolderServices, "workFolderService").mockImplementation((...args) => {
+      const service = createService(...args);
+      return { ...service, list: async (...listArgs) => {
+        const listing = await service.list(...listArgs);
+        if (listArgs[0].id === folder.id && !replaced) {
+          replaced = true;
+          await svc.write(folder, { path: filePath, body: Buffer.from("new content with a different size"),
+            executable: true, operationId: randomUUID() });
+        }
+        return listing;
+      } };
+    });
+    let run: Awaited<ReturnType<typeof prepare>>;
+    try { run = await prepare(path.join(root, "startup-concurrent"), randomUUID()); }
+    finally { factory.mockRestore(); }
+    expect(replaced).toBe(true);
+    expect(await fs.readFile(path.join(run.home, "project", filePath), "utf8")).toBe("new content with a different size");
+    expect((await fs.stat(path.join(run.home, "project", filePath))).mode & 0o111).not.toBe(0);
+    // The baseline must describe the bytes actually received. An unchanged
+    // sandbox must not overwrite a still newer shared edit during final flush.
+    await svc.write(folder, { path: filePath, body: Buffer.from("another writer"), operationId: randomUUID() });
+    await run.stop(); active.splice(active.indexOf(run), 1);
+    const content = await svc.content(folder, filePath);
+    let text = "";
+    for await (const chunk of content.stream) text += chunk.toString();
+    expect(text).toBe("another writer");
+  }, 120_000);
+
   it("retains unaudited edits and retries without misreporting a completed checkpoint", async () => {
-    const run = await prepare(path.join(root, "activity-failure"), randomUUID());
+    const physicalId = randomUUID();
+    const run = await prepare(path.join(root, "activity-failure"), physicalId);
+    let completingRun = run;
     await run.flush();
     const [before] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, run.manifest.runId));
     await fs.writeFile(path.join(run.home, "task/activity-proof.txt"), "saved after logging recovers");
     const beforeCompletion = vi.fn(async () => {
-      const [state] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, run.manifest.runId));
+      const [state] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, completingRun.manifest.runId));
       expect(state?.state).toBe("saved");
       expect(state?.manifest.finalCheckpointAt).toBeUndefined();
       const folder = await workFolderService(db, storage).ensure({ companyId, scope: "task", ownerId: taskId });
@@ -129,14 +219,32 @@ describe("shared sandbox work-folder lifecycle", () => {
       expect((await workFolderService(db, storage).list(folder)).files.some((file) => file.path === "activity-proof.txt")).toBe(false);
       expect(await fs.readFile(path.join(run.home, "task/activity-proof.txt"), "utf8")).toBe("saved after logging recovers");
     } finally { activity.mockRestore(); }
-    await run.stop(beforeCompletion); active.splice(active.indexOf(run), 1);
+    await expect(run.stop(beforeCompletion)).rejects.toThrow("activity unavailable");
+    active.splice(active.indexOf(run), 1);
+    completingRun = await prepare(run.home, randomUUID(), physicalId);
+    await completingRun.stop(beforeCompletion); active.splice(active.indexOf(completingRun), 1);
     expect(beforeCompletion).toHaveBeenCalledTimes(1);
-    const [saved] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, run.manifest.runId));
+    const [saved] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, completingRun.manifest.runId));
     expect(saved?.state).toBe("saved");
     expect(saved?.manifest.finalCheckpointAt).toBeTruthy();
     expect(saved!.lastSavedAt!.getTime()).toBeGreaterThan(before!.lastSavedAt!.getTime());
     const folder = await workFolderService(db, storage).ensure({ companyId, scope: "task", ownerId: taskId });
     expect((await workFolderService(db, storage).list(folder)).files.some((file) => file.path === "activity-proof.txt")).toBe(true);
+  }, 120_000);
+
+  it("does not repeat failed post-save finalization during teardown", async () => {
+    const run = await prepare(path.join(root, "completion-failure"), randomUUID());
+    const finish = vi.fn().mockRejectedValueOnce(new Error("session persistence unavailable")).mockResolvedValue(undefined);
+    const stopped = run.stop(finish);
+    await expect(stopped).rejects.toThrow("session persistence unavailable");
+    expect(run.stop(finish)).toBe(stopped);
+    await expect(run.stop(finish)).rejects.toThrow("session persistence unavailable");
+    expect(finish).toHaveBeenCalledTimes(1);
+    const [state] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, run.manifest.runId));
+    expect(state?.state).toBe("saved");
+    expect(state?.lastSavedAt).toBeTruthy();
+    expect(state?.manifest.finalCheckpointAt).toBeUndefined();
+    active.splice(active.indexOf(run), 1);
   }, 120_000);
 
   it("reuses clones and restores saved unpushed work, staged changes, and task files after losing the sandbox", async () => {
@@ -232,10 +340,14 @@ describe("shared sandbox work-folder lifecycle", () => {
     expect((await svc.list(folder)).files).toHaveLength(0);
     expect(await fs.readFile(path.join(run.home, "user/private"), "utf8")).toBe("pending private edit");
     await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.id, membership!.id));
-    await run.stop(); active.splice(active.indexOf(run), 1);
+    await expect(run.stop()).rejects.toThrow("no longer authorized");
+    active.splice(active.indexOf(run), 1);
+    const retry = await prepare(run.home, randomUUID(), leaseId, userId);
+    await retry.stop(); active.splice(active.indexOf(retry), 1);
+    expect((await svc.list(folder)).files.map((file) => file.path)).toContain("private");
   }, 120_000);
 
-  it("does not publish a partial repository checkpoint and retries a failed final save", async () => {
+  it("does not publish a partial repository checkpoint and recovers a failed final save in a new run", async () => {
     const leaseId = randomUUID();
     const run = await prepare(path.join(root, "interrupted-checkpoint"), leaseId);
     await run.flush();
@@ -253,7 +365,10 @@ describe("shared sandbox work-folder lifecycle", () => {
       expect(after!.checkpointKey).toBe(before!.checkpointKey);
       expect(await retainUnsavedWorkFolderLease(db, { id: leaseId, companyId })).toBe(true);
     } finally { fail.mockRestore(); }
-    await run.stop(); active.splice(active.indexOf(run), 1);
+    await expect(run.stop()).rejects.toThrow("Injected storage outage");
+    active.splice(active.indexOf(run), 1);
+    const retry = await prepare(run.home, randomUUID(), leaseId);
+    await retry.stop(); active.splice(active.indexOf(retry), 1);
     await fs.rm(run.home, { recursive: true });
     const recovered = await prepare(path.join(root, "interrupted-recovered"), randomUUID());
     expect(await fs.readFile(path.join(recovered.primaryRepo, "new-unsaved-file"), "utf8")).toBe("must survive a failed save");

@@ -6,11 +6,38 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { githubBrokerEnvironment, githubLauncherSource } from "./github-launcher.js";
+import { prepareGitHubOperationLaunchers } from "./execution-target.js";
+import { runChildProcess } from "./server-utils.js";
+import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+  it("runs staged git and gh launchers inside an ES-module repository", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-esm-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const realBin = path.join(root, "real-bin");
+    await mkdir(realBin);
+    await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+    await writeFile(path.join(realBin, "gh"), "#!/bin/sh\nprintf gh-fixture", { mode: 0o700 });
+    const target = { kind: "remote" as const, transport: "sandbox" as const,
+      providerKey: "fixture", remoteCwd: root,
+      runner: { execute: async (input: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => runChildProcess("github-esm-fixture", input.command, input.args ?? [], {
+        cwd: input.cwd ?? root, env: input.env ?? {}, stdin: input.stdin,
+        timeoutSec: 15, graceSec: 1, onLog: async () => {},
+      }) },
+    };
+    // The second run models the fresh per-run wrapper staged on warm startup.
+    for (const runId of ["cold", "warm"]) {
+      const env = await prepareGitHubOperationLaunchers({ runId, target, cwd: root,
+        env: { PATH: `${realBin}:${process.env.PATH}`, PAPERCLIP_GITHUB_BROKER_TOKEN: "" } });
+      const launcher = env.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+      expect((await exec(path.join(launcher, "git"), ["--version"], { cwd: root, env: { ...process.env, ...env } })).stdout).toMatch(/^git version /);
+      expect((await exec(path.join(launcher, "gh"), [], { cwd: root, env: { ...process.env, ...env } })).stdout).toBe("gh-fixture");
+    }
+  });
+
   it.each(["broker-offline", "config-unwritable", "capability-rejected"])("keeps real local Git usable when %s", async (failure) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-failure-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

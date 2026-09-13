@@ -8,7 +8,10 @@ import type {
 export type WorkFolderScenario =
   | "saved"
   | "saving"
+  | "waiting"
   | "failed"
+  | "olderFailure"
+  | "multipleFailures"
   | "empty"
   | "loading"
   | "unavailable"
@@ -82,7 +85,7 @@ export function createWorkFolderFixture(
       });
       contents.set(path, blob);
     }
-    if (scenario !== "empty") {
+    if (scenario !== "empty" && scenario !== "waiting") {
       add(
         "README.md",
         `# ${workFolderLabels[scope as WorkFolderScope]}\n\nFiles available to this ${scope}'s sandbox runs.\n\n## Current work\n\n- Review the launch brief\n- Keep the original uploads\n- Share the final report\n`,
@@ -147,21 +150,30 @@ export function createWorkFolderFixture(
     if (action === "sync") {
       const status: WorkFolderSyncStatus = {
         runId: "run-storybook",
+        agentId: workFolderOwners.agent.ownerId,
         state:
-          scenario === "saving"
+          scenario === "waiting" ? "starting" : scenario === "saving"
             ? "saving"
             : scenario === "failed"
               ? "failed"
               : "saved",
-        lastSavedAt: savedAt,
-        active: scenario === "saving" || scenario === "failed",
+        lastSavedAt: scenario === "waiting" ? null : savedAt,
+        active: scenario === "waiting" || scenario === "saving" || scenario === "failed",
         refreshRequested: false,
         error:
           scenario === "failed"
             ? "Storage is unavailable. Your working files are retained in the sandbox; retry when storage recovers."
             : null,
       };
-      return Response.json([status]);
+      const olderFailure = {
+        ...status, runId: "earlier-run-storybook", state: "failed", active: false,
+        lastSavedAt: "2026-09-07T14:00:00.000Z",
+        error: "An earlier sandbox could not reach storage. Its working copy was retained.",
+      };
+      return Response.json(scenario === "multipleFailures" ? [status, olderFailure, {
+        ...olderFailure, runId: "another-failed-run-storybook",
+        error: "Another sandbox upload was interrupted. Its working copy was retained.",
+      }] : scenario === "olderFailure" ? [status, olderFailure] : [status]);
     }
     if (action === "refresh") return Response.json({ ok: true });
     if (!action) {

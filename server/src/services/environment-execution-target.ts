@@ -366,6 +366,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
     const syncLease = () => target.workFolderHome
       ? { ...input.lease!, metadata: { ...input.lease!.metadata, remoteCwd: target.workFolderHome } }
       : input.lease!;
+    const acquisition = sandboxLeaseAcquisitionFromMetadata(
+      input.lease?.metadata?.sandboxLeaseAcquisition,
+      input.lease?.providerLeaseId,
+    );
     const target: AdapterSandboxExecutionTarget = {
       kind: "remote",
       transport: "sandbox",
@@ -388,10 +392,9 @@ export async function resolveEnvironmentExecutionTarget(input: {
             ? { mode: "per_turn", idleTimeoutMs: null }
             : null,
       reusableLeaseConfigured: parsed.config.reuseLease === true,
-      sandboxLeaseAcquisition: sandboxLeaseAcquisitionFromMetadata(
-        input.lease?.metadata?.sandboxLeaseAcquisition,
-        input.lease?.providerLeaseId,
-      ),
+      sandboxLeaseAcquisition: acquisition,
+      legacyWorkspaceResume: acquisition?.outcome === "resumed"
+        && input.lease?.metadata?.workFolderLayout === "legacy",
       // Attach the host duplex observability recorder next to the runner. The bridge
       // binds it to the fixed observability surface. Absent keeps the no-op
       // default, so the surface stays inert on a run with no injected recorder.

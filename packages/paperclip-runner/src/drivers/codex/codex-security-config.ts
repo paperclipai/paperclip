@@ -233,6 +233,11 @@ export function createIsolatedCodexAppServerArgs(
     `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
     ...(externalRunnerSandbox
       ? [
+          // Existing unscoped sessions keep their protected launch profile.
+          // Only the new scoped layout requires HOME/PATH to survive shell startup.
+          ...(externalWorkFolderEnvironment(source).HOME
+            ? ["-c", "allow_login_shell=false"]
+            : []),
           "-c",
           `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.filesystem={":root"="write"}`,
           "-c",
