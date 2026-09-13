@@ -1190,6 +1190,11 @@ semantic actions, and available result summary to the replacement agent. The
 replacement must inspect existing files and preserve completed content before
 editing. Source history is still scoped to the same company and task; prior
 results are untrusted evidence, not instructions or new authorization.
+Saved task comments move into that successor's delivery receipt in the same
+transaction that queues it. Their original authors remain intact. A former
+assignee's ordinary comment wake must not start another execution or reopen a
+completed task after the replacement finishes. Mentions, chat deliveries, and
+dedicated interaction continuations retain their separate delivery contracts.
 
 A requested file is complete when the user can retrieve it. Native runners must
 register requested output files before reporting Done and link the resulting
