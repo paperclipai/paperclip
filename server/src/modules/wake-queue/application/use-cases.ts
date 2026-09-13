@@ -167,7 +167,7 @@ async function runReleaseDrain(
     }
     processedWakeIds.add(candidate.id);
 
-    const ordinaryTaskComment = !candidate.authorizedFailedChatRetry &&
+    const ordinaryTaskComment = !candidate.authorizedFailedChatRetry && candidate.payload.mutation !== "interaction" &&
       !candidate.preservesIndependentContinuation && candidate.queuedCommentIds.length > 0 &&
       ["issue_commented", "issue_reopened_via_comment"].includes(candidate.wakeReason ?? candidate.reason ?? "");
     if (ordinaryTaskComment && candidate.agentId !== issue.assigneeAgentId) {

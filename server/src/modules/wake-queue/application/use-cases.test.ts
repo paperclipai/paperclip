@@ -190,6 +190,7 @@ describe("releaseIssueExecution", () => {
     { agentId: ISSUE.assigneeAgentId!, wakeReason: "issue_commented", preservesIndependentContinuation: false, authorizedFailedChatRetry: false },
     { agentId: "mentioned-agent", wakeReason: "issue_comment_mentioned", preservesIndependentContinuation: false, authorizedFailedChatRetry: false },
     { agentId: "interaction-agent", wakeReason: "issue_commented", preservesIndependentContinuation: true, authorizedFailedChatRetry: false },
+    { agentId: "interaction-payload-agent", wakeReason: "issue_commented", preservesIndependentContinuation: false, authorizedFailedChatRetry: false, payload: { mutation: "interaction" } },
     { agentId: "chat-agent", wakeReason: "issue_commented", preservesIndependentContinuation: false, authorizedFailedChatRetry: true },
   ])("preserves the independently authorized $agentId/$wakeReason wake", async (authority) => {
     const queuedCommentIds = ["saved-user-direction"];
