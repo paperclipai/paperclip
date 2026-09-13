@@ -1926,6 +1926,20 @@
       "when": 1789245055965,
       "tag": "0276_hard_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 277,
+      "version": "7",
+      "when": 1789258667522,
+      "tag": "0277_omniscient_darwin",
+      "breakpoints": true
+    },
+    {
+      "idx": 278,
+      "version": "7",
+      "when": 1789258722176,
+      "tag": "0278_natural_nehzno",
+      "breakpoints": true
     }
   ]
 }

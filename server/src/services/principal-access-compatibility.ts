@@ -22,6 +22,7 @@ export async function insertMissingPrincipalGrants(
     principalId: string;
     grants: GrantInput[];
     grantedByUserId: string | null;
+    grantOrigin?: "explicit" | "role_default" | "legacy_unknown";
   },
 ): Promise<number> {
   if (input.grants.length === 0) return 0;
@@ -36,6 +37,7 @@ export async function insertMissingPrincipalGrants(
         principalId: input.principalId,
         permissionKey: grant.permissionKey,
         scope: grant.scope ?? null,
+        grantOrigin: input.grantOrigin ?? "explicit",
         grantedByUserId: input.grantedByUserId,
         createdAt: now,
         updatedAt: now,
@@ -70,6 +72,7 @@ export async function ensureHumanRoleDefaultGrants(
     principalId: input.principalId,
     grants: grantsForHumanRole(role),
     grantedByUserId: input.grantedByUserId,
+    grantOrigin: "role_default",
   });
 }
 

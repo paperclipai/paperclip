@@ -10,6 +10,7 @@ export { agents } from "./agents.js";
 export { builtInManagedResources } from "./built_in_managed_resources.js";
 export { agentMemberships } from "./agent_memberships.js";
 export { boardApiKeys } from "./board_api_keys.js";
+export { boardApiKeyAuthorizationEvents } from "./board_api_key_authorization_events.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";

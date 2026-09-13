@@ -18,6 +18,9 @@ const PAPERCLIP_TOOL_ACTION_SIGNING_SECRET =
 const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
 
 process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
+// JWT signing is instance-derived. Keep the Playwright worker that mints test
+// tokens on the same instance boundary as the web server that verifies them.
+process.env.PAPERCLIP_INSTANCE_ID = PAPERCLIP_INSTANCE_ID;
 process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
 // Worker processes reload this config; retain the main process's server path
 // for specs that seed historical database state in the throwaway instance.
