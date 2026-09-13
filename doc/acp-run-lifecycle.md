@@ -90,6 +90,37 @@ phase name is one member of a closed allowlist. An event never carries a
 command, an argument, a path, an environment value, or a raw identifier. A
 run-log write failure never fails the run.
 
+## Run scratch directory lifecycle
+
+Local execution targets get a per-run scratch directory under `os.tmpdir()`
+(`paperclip-run-<issue>-<run>-…`) before the adapter launches, created by
+`prepareHeartbeatRunScratch` in `server/src/services/run-scratch.ts`. The
+absolute path is exported to the run process through `PAPERCLIP_RUN_SCRATCH_DIR`,
+`PAPERCLIP_TASK_SCRATCH_DIR`, `PAPERCLIP_SCRATCH_DIR`, and `PAPERCLIP_TMPDIR`
+(via `buildHeartbeatRunScratchEnv`); `TMPDIR`/`TEMP`/`TMP` are only set from the
+scratch dir when the run has no configured temp override. A marker file
+(`.paperclip-run-scratch.json`) records the owning company, agent, and run id.
+Remote execution targets skip the local scratch dir entirely: the directory
+lives on the server host, so a remote runner manages its own filesystem.
+
+The normal cleanup path runs in the run executor's `finally` block once the run
+is terminal. Two sweeper passes cover the cases where that `finally` never ran
+(server crash or restart mid-run) or where a cleanup skip was never retried:
+
+- **Startup sweep.** On server boot, after orphaned-run recovery,
+  `sweepOrphanedRunScratchDirs` (in `server/src/services/run-scratch-sweeper.ts`)
+  scans `os.tmpdir()` for marked `paperclip-run-*` directories.
+- **Periodic sweep.** The same sweep re-runs every 6 hours
+  (`startRunScratchSweeper`), so a scratch dir left by a crash at any point is
+  removed without manual ops intervention.
+
+A dir is removed only when its marker is valid, it is older than a 60-minute
+grace period (so a run terminalizing at sweep time is not raced), and its runId
+is terminal or no longer exists in the database. Runs still queued or running
+are left alone. Removal first does a best-effort recursive `chmod` (dirs
+`u+rwx`, files `u+rw`) because tool caches such as go module caches can leave
+read-only files behind that would otherwise make `fs.rm` fail with `EACCES`.
+
 ## Known limitations and deferred work
 
 - **Host-lane runtime reuse is disabled.** A run-minted API key is a stateless
