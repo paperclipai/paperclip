@@ -196,6 +196,21 @@ describe("managed AI connections", () => {
   it("serializes subscription refresh and releases the lease after execution", async () => {
     const subscription = { ...input, binding: { ...binding, method: "subscription" as const }, responsibleUserId: "alice", config: { model: "same-model" } };
     const first = await prepareManagedAiRuntime(db, subscription);
+    const selected = await service.select({ ...subscription, userId: "alice" });
+    const lockKey = `ai-runtime:${selected.grant.id}`;
+    const held = await db.execute(sql`
+      select activity.state, activity.xact_start
+      from pg_locks locks join pg_stat_activity activity on activity.pid = locks.pid
+      where locks.locktype = 'advisory' and locks.granted
+        and locks.classid = (hashtextextended(${lockKey}, 0) >> 32)::int::oid
+        and locks.objid = (hashtextextended(${lockKey}, 0) & 4294967295)::oid
+        and locks.objsubid = 1
+    `);
+    // A transaction-pooling proxy may move an idle, unpinned client to a
+    // different backend. The lock must hold a transaction for its lifetime.
+    expect(held).toHaveLength(1);
+    expect(held[0].state).toBe("idle in transaction");
+    expect(held[0].xact_start).not.toBeNull();
     await expect(prepareManagedAiRuntime(db, subscription)).rejects.toThrow("in use");
     await first.cleanup();
     const next = await prepareManagedAiRuntime(db, subscription);

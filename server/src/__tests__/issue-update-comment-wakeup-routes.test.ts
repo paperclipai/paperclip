@@ -305,9 +305,12 @@ describe("issue update comment wakeups", () => {
         assigneeAgentId: ASSIGNEE_AGENT_ID,
         assigneeUserId: null,
         comment: "write the whole thing",
+        commentClientRequestId: "55555555-5555-4555-8555-555555555555",
       });
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "write the whole thing", expect.anything(),
+      expect.objectContaining({ clientRequestId: "55555555-5555-4555-8555-555555555555" }));
     // The route dispatches the wake after it sends the response, so wait for
     // the fire-and-forget dispatch to settle. This keeps the wake inside this
     // test and stops it from leaking into the next test as an extra call.
@@ -571,9 +574,12 @@ describe("issue update comment wakeups", () => {
       .post(`/api/issues/${existing.id}/comments`)
       .send({
         body: "please handle this top-level thread comment",
+        clientRequestId: "66666666-6666-4666-8666-666666666666",
       });
 
     expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "please handle this top-level thread comment", expect.anything(),
+      expect.objectContaining({ clientRequestId: "66666666-6666-4666-8666-666666666666" }), expect.anything());
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
