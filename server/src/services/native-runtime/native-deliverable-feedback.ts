@@ -84,9 +84,10 @@ export async function validateNativeDeliverableEvidence(
     )) : [];
     const accessibleProduct = products.some(product => {
       if (["failed", "cancelled", "archived"].includes(product.status)) return false;
-      const resource = product.metadata?.resourceRef as { kind?: unknown; path?: unknown } | undefined;
-      const accessible = (typeof product.url === "string" && /^https?:\/\//iu.test(product.url)) ||
-        (resource?.kind === "workspace_file" && typeof resource.path === "string" && resource.path.length > 0);
+      // A workspace_file resource is only a locator: registration neither checks
+      // its current bytes nor keeps them alive after workspace cleanup. Requested
+      // files need a published URL or the verified attachment receipt above.
+      const accessible = typeof product.url === "string" && /^https?:\/\//iu.test(product.url);
       return accessible && [product.url, `work_product:${product.id}`, `work-product:${product.id}`, `artifact:${product.id}`]
         .some(ref => typeof ref === "string" && refs.has(ref));
     });

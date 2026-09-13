@@ -226,9 +226,11 @@ describe("native runner file handoff", () => {
         await expect(nativeCompletionFeedback(db, runId, doneReport([ref])))
           .resolves.toContain("Completion report accepted");
       }
-      await db.update(issueWorkProducts).set({ url: null, metadata: { resourceRef: { kind: "workspace_file", path: "report.pdf" } } }).where(eq(issueWorkProducts.id, product.id));
+      // Metadata can name a nonexistent or cleaned-up workspace file; it is not a download.
+      await db.update(issueWorkProducts).set({ url: null, metadata: { resourceRef: { kind: "workspace_file", path: "missing-report.pdf" } } }).where(eq(issueWorkProducts.id, product.id));
       await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
-        .resolves.toContain("Completion report accepted");
+        .rejects.toThrow("requested file has no accessible delivery evidence");
+      await db.update(issueWorkProducts).set({ url: product.url }).where(eq(issueWorkProducts.id, product.id));
       await db.update(issueWorkProducts).set({ status: "failed" }).where(eq(issueWorkProducts.id, product.id));
       await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
         .rejects.toThrow("requested file has no accessible delivery evidence");

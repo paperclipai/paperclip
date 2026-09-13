@@ -1207,7 +1207,9 @@ that the task is complete.
 For an explicit file output in the current request, an empty report, a
 verification-only reference, or an unregistered URL cannot satisfy delivery.
 The report must cite a task-scoped attachment or a registered accessible work
-product. Reading or reviewing an existing file for an inline answer does not
+product with a published URL. A `workspace_file` locator alone is not delivery
+evidence: it neither verifies the file nor preserves its bytes after cleanup.
+Reading or reviewing an existing file for an inline answer does not
 require uploading that input. Ambiguous prose remains subject to the runner's
 completion contract; the server's explicit-output check is deliberately narrow.
 
