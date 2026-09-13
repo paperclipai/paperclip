@@ -1470,6 +1470,13 @@ describe("renderPaperclipWakePrompt", () => {
       "confirmation:{issueId}:plan:{revisionId}",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID",
+    );
+    // Same rule as above: no brace placeholders in URL paths for manual writes.
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
+      "/issues/{issueId}",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Wait for acceptance before creating implementation subtasks",
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(

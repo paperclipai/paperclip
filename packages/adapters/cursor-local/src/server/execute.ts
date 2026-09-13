@@ -121,6 +121,17 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
+export function renderApiAccessNote(env: Record<string, string>): string {
+  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
+  return [
+    "Paperclip API access note:",
+    "Use shell commands with curl to make Paperclip API requests when needed.",
+    "Include X-Paperclip-Run-Id on mutating requests.",
+    "",
+    "",
+  ].join("\n");
+}
+
 async function buildCursorSkillsDir(config: Record<string, unknown>): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-skills-"));
   const target = path.join(tmp, "skills");
@@ -584,6 +595,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
+  const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
@@ -591,6 +603,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     taskContextNote,
     sessionHandoffNote,
     paperclipEnvNote,
+    apiAccessNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -601,6 +614,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     taskContextChars: taskContextNote.length,
     sessionHandoffChars: sessionHandoffNote.length,
     runtimeNoteChars: paperclipEnvNote.length,
+    apiAccessNoteChars: apiAccessNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 
