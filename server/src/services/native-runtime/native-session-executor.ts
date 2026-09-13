@@ -78,7 +78,7 @@ import {
   type NativeSessionGoalControl,
 } from "../../vendor/paperclip-runner/index.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
+import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
   resolvePaperclipRunnerTransport,
@@ -9919,7 +9919,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const remoteTarget = target.kind === "remote" ? target : null;
   const remoteCommandRunner = remoteTarget
     ? remoteTarget.transport === "ssh"
-      ? createSshCommandManagedRuntimeRunner({
+      ? createNativeSshCommandRunner({
           spec: remoteTarget.spec,
           defaultCwd: remoteTarget.remoteCwd,
         })
