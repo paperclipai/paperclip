@@ -13,7 +13,6 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { WorkFolderButton } from "@/components/WorkFolderBrowser";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -272,7 +271,6 @@ export function ProfileSettings() {
         </form>
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
-        {selectedCompanyId && <WorkFolderButton owner={{ companyId: selectedCompanyId, scope: "user", ownerId: sessionQuery.data.user.id }} label="My files" />}
       </section>
     </div>
   );

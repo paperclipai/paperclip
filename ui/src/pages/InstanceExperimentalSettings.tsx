@@ -503,6 +503,16 @@ export function InstanceExperimentalSettings() {
         </div>
 
         <ExperimentalToggleCard
+          title="Allow viewing cached task files"
+          description="Show a cached-file inspector in task properties for the task, agent, responsible user, and project. Saved copies may lag behind the live sandbox filesystem."
+          checked={experimentalQuery.data?.enableCachedTaskFiles === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableCachedTaskFiles: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableCachedTaskFiles"
+          managed={managedKeys.enableCachedTaskFiles}
+          ariaLabel="Allow viewing cached task files"
+        />
+        <ExperimentalToggleCard
           title="Paperclip Developer Mode"
           description="Show internal Paperclip maintainer tools and observability links, including Honeycomb trace queries on run pages."
           checked={enablePaperclipDeveloperMode}

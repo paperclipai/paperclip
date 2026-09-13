@@ -1,5 +1,6 @@
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { FileTree } from "@/components/FileTree";
 import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
@@ -8,7 +9,6 @@ import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
-import { WorkFolderBrowser } from "@/components/WorkFolderBrowser";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
 import type { ComposioServiceRow } from "./apps/composio-services";
@@ -480,6 +480,7 @@ function TaskExecutionControlsExample() {
 }
 
 export function DesignGuide() {
+  const [checkedFilePaths, setCheckedFilePaths] = useState(new Set<string>());
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -514,14 +515,6 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}
       {/* ============================================================ */}
-      <Section title="Work folders">
-        <WorkFolderBrowser owner={{ companyId: "example", scope: "task", ownerId: "example" }} exampleFiles={[
-          { id: "notes", path: "notes", kind: "directory", byteSize: 0, sha256: null, executable: false, contentType: "application/octet-stream", deletedAt: null, updatedAt: "2026-09-07T00:00:00Z" },
-          { id: "readme", path: "notes/README.md", kind: "file", byteSize: 24, sha256: null, executable: false, contentType: "text/markdown", deletedAt: null, updatedAt: "2026-09-07T00:00:00Z" },
-        ]} />
-        <WorkFolderBrowser owner={{ companyId: "example", scope: "user", ownerId: "example" }} exampleFiles={[]} />
-      </Section>
-
       <Section title="Component Coverage">
         <p className="text-sm text-muted-foreground">
           This page should be updated when new UI primitives or app-level patterns ship.
@@ -2351,6 +2344,20 @@ export function DesignGuide() {
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
         </div>
+      </Section>
+
+      <Section title="File tree selection">
+        <p className="text-sm text-muted-foreground">Cached file browsers include folders in selection, including empty folders. Other file trees select files by default.</p>
+        <FileTree
+          nodes={[{ name: "empty", path: "empty", kind: "dir", children: [] }, { name: "notes.txt", path: "notes.txt", kind: "file", children: [] }]}
+          selectedFile={null} expandedDirs={new Set()} checkedFiles={checkedFilePaths}
+          onSelectFile={() => {}} onToggleDir={() => {}} includeDirectoriesInSelection
+          onToggleCheck={(path) => setCheckedFilePaths((before) => {
+            const next = new Set(before);
+            if (next.has(path)) next.delete(path); else next.add(path);
+            return next;
+          })}
+        />
       </Section>
 
       <Section title="AI Connections">

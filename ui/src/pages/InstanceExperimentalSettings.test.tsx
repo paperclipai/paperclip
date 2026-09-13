@@ -91,6 +91,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
+    enableCachedTaskFiles: false,
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
@@ -183,6 +184,19 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     setWorktreeRuntimeMeta(false);
     setWorktreeInstanceIdMeta(null);
     vi.clearAllMocks();
+  });
+
+  it("offers cached task file inspection under development settings, off by default", async () => {
+    await renderPage();
+    const toggle = container.querySelector<HTMLButtonElement>('section[aria-labelledby="developer-mode-heading"] button[aria-label="Allow viewing cached task files"]');
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(() => toggle!.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableCachedTaskFiles: true });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    await act(() => toggle!.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableCachedTaskFiles: false });
   });
 
   it("renders a page-level warning about instability and lack of guarantees", async () => {

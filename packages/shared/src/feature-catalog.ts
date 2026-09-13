@@ -231,6 +231,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableCachedTaskFiles: {
+    title: "Allow viewing cached task files",
+    description: "Inspect saved task, agent, responsible-user, and project files from task properties. These are cached copies, not the live sandbox filesystem.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableServerInfoDebugView: {
     title: "Server Info Debug View",
     description:

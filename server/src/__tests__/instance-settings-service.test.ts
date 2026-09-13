@@ -7,6 +7,12 @@ import {
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("defaults cached task file inspection off and retains explicit saved settings", () => {
+    expect(normalizeExperimentalSettings({}).enableCachedTaskFiles).toBe(false);
+    expect(normalizeExperimentalSettings({ enableCachedTaskFiles: true }).enableCachedTaskFiles).toBe(true);
+    expect(normalizeExperimentalSettings({ enableCachedTaskFiles: false }).enableCachedTaskFiles).toBe(false);
+  });
+
   it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
     for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
       expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
@@ -26,6 +32,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
+      enableCachedTaskFiles: false,
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
       autoRestartDevServerWhenIdle: true,
@@ -56,6 +63,7 @@ describe("instance settings service", () => {
       enableStatusCards: false,
       enableDecisions: false,
       enableGoalsSidebarLink: true,
+      enableCachedTaskFiles: false,
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
       enableSimplifiedEnglishInteractions: false,

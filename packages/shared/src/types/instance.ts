@@ -79,6 +79,7 @@ export interface InstanceExperimentalSettings {
   enableStatusCards: boolean;
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
+  enableCachedTaskFiles: boolean;
   enableServerInfoDebugView: boolean;
   /** Shows internal Paperclip maintainer tools and observability links. */
   enablePaperclipDeveloperMode: boolean;

@@ -132,11 +132,22 @@ directories are not supported by this checkpoint format.
 
 ## API and UI
 
-The task, agent, project, and current-user pages expose a Files dialog using the
-shared file tree and viewer. It supports uploads, folder creation, previews,
-downloads, deletion, trash restore/purge, and sync state with the last agent save
-time. Direct file-operation timestamps are labeled separately as “Files updated”;
-a delete, restore, or idempotent receipt is not presented as an agent checkpoint.
+Cached-file inspection is an opt-in development tool. Enable **Allow viewing
+cached task files** in Experimental settings under Paperclip Developer Mode.
+Task properties then show **Files → View cached files** beneath Execution in
+the Workspace section. The dialog previews and downloads the task, project,
+assigned agent, and responsible user's saved collections. Missing bindings are
+empty; private user files are available only to that user. Existing server
+ownership checks apply independently of the visibility setting.
+
+The inspector clearly identifies saved copies that can lag behind agent edits.
+Checkboxes select files; the move-to-trash action appears only for a nonempty
+selection. Each scope has Files and Trash tabs, with restoration from retained
+trash. Upload, folder creation, sandbox refresh, and permanent purge controls
+remain outside this inspector. It does not list repositories or the live sandbox disk.
+Agent, project, and profile pages have no standalone stored-file entry points.
+Live sandbox filesystem inspection remains a separate future feature. The
+editable stored-file browser remains in Storybook for design reference.
 
 All routes start at
 `/api/companies/:companyId/work-folders/:scope/:ownerId`:
@@ -166,7 +177,9 @@ new pinned staging stack with the branch's Cloud image and matching migrator.
 The deployed harness must target that tenant URL without launching a local
 server. Enumerate every sandbox-capable adapter/engine and native profile
 exposed by the stack; missing credentials or skipped required profiles block
-acceptance. Record real browser operations, two actual 180-second intervals,
+acceptance. Verify that the removed stored-file entry points are absent from
+the UI; browser-based file-management acceptance is deferred with the separate
+inspection features. Record API/runner operations, two actual 180-second intervals,
 short-run flushes, independent task checkouts, identity/privacy boundaries,
 interrupted saves, and recovery without the original sandbox or app volume.
 
