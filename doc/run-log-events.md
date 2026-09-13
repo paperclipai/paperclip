@@ -68,6 +68,19 @@ server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 
+## Verified Local Codex Replacement Evidence
+
+The server writes `native.stopped_text_turn_verified` in the same transaction
+that schedules a fresh successor for a stopped local Codex run. It records the
+runner and provider process identities, retained-state digests, provider thread
+and turn IDs, and IDs of exactly receipted task-completion calls. The server first
+checks the complete turn inventory, process-stop receipt, and execution binding.
+Unknown actions or changed retained state prevent this event and replacement.
+
+The record documents why the old execution can be retired. It does not make the
+old session resumable, rewrite provider files, or authorize replay on its own.
+It remains in the local run log and adds no Telemetry or OpenTelemetry export.
+
 ## Sandbox Startup Run-Log Event
 
 Paperclip writes one `run.startup.step` event to the run log for each bring-up

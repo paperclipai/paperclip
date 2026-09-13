@@ -29,6 +29,16 @@ function derived(overrides: Partial<DerivedMonitorState> & { state: DerivedMonit
 }
 
 describe("buildMonitorSurfaceCopy", () => {
+  it.each(["retrying", "due-now", "overdue"] as const)("keeps workspace contention neutral when %s", (state) => {
+    const copy = buildMonitorSurfaceCopy(derived({
+      state, source: "scheduled-retry", nextCheckAt: NOW.toISOString(), attemptCount: 4,
+    }), NOW, "workspace_busy");
+    expect(copy!.bannerTitle).toBe("Waiting for workspace");
+    expect(copy!.stripTitle).toBe("Waiting for workspace");
+    expect(copy!.tone).toBe("info");
+    expect(copy!.workspaceWait).toBe(true);
+    expect(copy!.bannerMeta.join(" ")).not.toMatch(/Attempt|overdue|retry/i);
+  });
   it("leads with two-unit relative time while scheduled", () => {
     const copy = buildMonitorSurfaceCopy(
       derived({
@@ -134,6 +144,19 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
       scheduledRetry: null,
     } as unknown as Issue;
   }
+
+  it("explains automatic workspace waiting without promising that a reply bypasses the lock", () => {
+    const issue = {
+      status: "todo", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
+    } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<><IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} /><IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} /></>));
+    expect(container.textContent).toContain("Waiting for workspace");
+    expect(container.textContent).toContain("You can keep sending instructions while the agent waits.");
+    expect(container.textContent).not.toContain("wakes the agent now");
+    expect(container.querySelector("button")).toBeNull();
+    flushSync(() => root.unmount());
+  });
 
   it("renders the banner with a working Check now button while waiting", () => {
     const onCheckNow = vi.fn();
