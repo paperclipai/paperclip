@@ -126,7 +126,7 @@ jobs:
             echo "The requested repository branch did not resolve to a commit." >&2
             exit 1
           fi
-          test "$target_sha" = 378f1aec81481fe9ef387cabe9a60c16d4babdef
+          test "$target_sha" = 26164f1d90976cd89e0867ef3d93bf364455d773
           echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
           echo "ref=refs/heads/$TARGET_BRANCH" >> "$GITHUB_OUTPUT"
           echo "Resolved the requested repository branch to $target_sha."
@@ -805,7 +805,7 @@ jobs:
           test "$WORKFLOW_SHA" = "$REVIEWED_PREVIEW_SHA"
           reviewed_branch_sha="$(gh api repos/paperclipai/paperclip/branches/codex%2Fwork-folders-qualification-preview-r125 --jq .commit.sha)"
           test "$reviewed_branch_sha" = "$WORKFLOW_SHA"
-          test "$TARGET_SHA" = 378f1aec81481fe9ef387cabe9a60c16d4babdef
+          test "$TARGET_SHA" = 26164f1d90976cd89e0867ef3d93bf364455d773
           jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
           triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
           jq -e --argjson candidate "$triggering_actor_id" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
