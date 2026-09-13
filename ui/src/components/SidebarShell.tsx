@@ -215,30 +215,36 @@ export function SidebarShell({
         onBlurCapture={onPanelBlurCapture}
       >
         {children}
-        {canResize ? (
-          <div
-            role="separator"
-            aria-label="Resize sidebar"
-            aria-orientation="vertical"
-            aria-valuemin={MIN_SIDEBAR_WIDTH}
-            aria-valuemax={MAX_SIDEBAR_WIDTH}
-            aria-valuenow={width}
-            tabIndex={0}
-            className={cn(
-              "absolute inset-y-0 right-0 z-20 w-3 cursor-col-resize touch-none outline-none",
-              "before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-transparent before:transition-colors",
-              "hover:before:bg-border focus-visible:before:bg-ring",
-              isResizing && "before:bg-ring",
-            )}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={endResize}
-            onPointerCancel={endResize}
-            onLostPointerCapture={endResize}
-            onKeyDown={handleKeyDown}
-          />
-        ) : null}
       </div>
+      {canResize ? (
+        <div
+          role="separator"
+          aria-label="Resize sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_SIDEBAR_WIDTH}
+          aria-valuenow={width}
+          tabIndex={0}
+          data-dragging={isResizing ? "" : undefined}
+          className="group absolute inset-y-0 z-20 cursor-col-resize touch-none outline-none"
+          style={{ right: -4, width: 8 }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+          onLostPointerCapture={endResize}
+          onKeyDown={handleKeyDown}
+        >
+          <div
+            className={cn(
+              "mx-auto h-full w-0.5 transition-colors",
+              isResizing
+                ? "bg-ring"
+                : "bg-transparent group-hover:bg-ring group-focus-visible:bg-ring",
+            )}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

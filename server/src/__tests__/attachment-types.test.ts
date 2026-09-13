@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_ALLOWED_TYPES,
+  formatAttachmentSize,
   INLINE_ATTACHMENT_TYPES,
   inferOfficeAttachmentContentTypeFromFilename,
   isInlineAttachmentContentType,
   matchesContentType,
+  MAX_ATTACHMENT_BYTES,
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   parseAllowedTypes,
@@ -112,11 +114,34 @@ describe("matchesContentType", () => {
       expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(true);
     }
   });
+
+  it("allows common chat audio types by default", () => {
+    for (const contentType of [
+      "audio/mpeg",
+      "audio/mp4",
+      "audio/ogg",
+      "audio/wav",
+      "audio/webm",
+    ]) {
+      expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(
+        true,
+      );
+    }
+  });
 });
 
 describe("normalizeContentType", () => {
   it("lowercases and trims explicit types", () => {
     expect(normalizeContentType(" Application/Zip ")).toBe("application/zip");
+  });
+
+  it("normalizes provider Content-Type header parameters to the MIME essence", () => {
+    expect(normalizeContentType(" Text/Plain ; charset=utf-8 ")).toBe(
+      "text/plain",
+    );
+    expect(normalizeContentType("image/svg+xml; charset=utf-8")).toBe(
+      "image/svg+xml",
+    );
   });
 
   it("falls back to octet-stream when the type is missing", () => {
@@ -197,5 +222,40 @@ describe("isInlineAttachmentContentType", () => {
     expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/html");
     expect(isInlineAttachmentContentType("text/html")).toBe(false);
     expect(isInlineAttachmentContentType("application/zip")).toBe(false);
+  });
+});
+
+describe("formatAttachmentSize", () => {
+  it("renders the default deployment cap as a round megabyte figure", () => {
+    expect(MAX_ATTACHMENT_BYTES).toBe(10 * 1024 * 1024);
+    expect(formatAttachmentSize(MAX_ATTACHMENT_BYTES)).toBe("10 MB");
+  });
+
+  it("keeps one decimal place for fractional sizes and drops a trailing .0", () => {
+    expect(formatAttachmentSize(10.5 * 1024 * 1024)).toBe("10.5 MB");
+    expect(formatAttachmentSize(1024 * 1024)).toBe("1 MB");
+    expect(formatAttachmentSize(2.25 * 1024 * 1024)).toBe("2.3 MB");
+  });
+
+  it("renders sub-megabyte values in kilobytes", () => {
+    expect(formatAttachmentSize(1024)).toBe("1 KB");
+    expect(formatAttachmentSize(512 * 1024)).toBe("512 KB");
+    expect(formatAttachmentSize(1536)).toBe("1.5 KB");
+  });
+
+  it("steps up to gigabytes for very large caps", () => {
+    expect(formatAttachmentSize(2 * 1024 * 1024 * 1024)).toBe("2 GB");
+  });
+
+  it("keeps sub-kilobyte values in bytes rather than collapsing to 0 KB", () => {
+    expect(formatAttachmentSize(10)).toBe("10 bytes");
+    expect(formatAttachmentSize(1)).toBe("1 byte");
+    expect(formatAttachmentSize(1023)).toBe("1023 bytes");
+  });
+
+  it("never renders a nonsense figure for a degenerate input", () => {
+    expect(formatAttachmentSize(0)).toBe("0 bytes");
+    expect(formatAttachmentSize(-1)).toBe("0 bytes");
+    expect(formatAttachmentSize(Number.NaN)).toBe("0 bytes");
   });
 });

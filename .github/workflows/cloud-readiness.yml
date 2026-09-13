@@ -1,0 +1,96 @@
+name: Cloud readiness
+run-name: Cloud readiness ${{ github.sha }}
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: {}
+
+# Source verification must start outside the full npm release's queue.
+concurrency:
+  group: cloud-readiness-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-cloud.yml
+
+  verify:
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      ref: ${{ github.sha }}
+
+  artifacts:
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    name: Wait for exact-source cloud artifacts
+    # Bookkeeping must not wait for the AWS builders it observes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Wait for verified image and exact-source migrator
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/cloud-readiness.mjs "$SOURCE_SHA"
+
+  source_verified:
+    # npm canary publication reuses this exact-source verification proof.
+    # Keep it independent of image/migrator availability, and fail closed when
+    # any source check fails, is cancelled, or is skipped.
+    name: Cloud source verified v1
+    needs: [verify]
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    # Bookkeeping must not wait for the AWS builders it observes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Check the source verification consumer
+        run: node --test scripts/cloud-source-verification.test.mjs
+      - name: Record source verification
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          echo "Cloud source verified v1: $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  ready:
+    # Versioned consumer contract. Never add always() or continue-on-error:
+    # failed, cancelled, or skipped prerequisites must not report readiness.
+    name: Cloud deployable v1
+    needs: [verify, image, artifacts]
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    # Bookkeeping must not wait for the AWS builders it observes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record cloud readiness
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          echo "Cloud deployable v1: $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "Source verification passed; the full-SHA image and exact-source migrator are available." >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployment tooling must still resolve and pin the image and migrator and validate migration compatibility." >> "$GITHUB_STEP_SUMMARY"

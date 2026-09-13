@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { PERMISSION_KEYS } from "../constants.js";
-import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
 import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
@@ -38,13 +37,15 @@ export const portabilityFileEntrySchema = z.union([
   }),
 ]);
 
+// Deliberately non-strict: packages exported by older versions still carry
+// retired company keys such as `brandColor` and `attachmentMaxBytes`. Zod
+// strips keys the schema does not name, so those bundles keep importing —
+// the retired settings are simply ignored.
 export const portabilityCompanyManifestEntrySchema = z.object({
   path: z.string().min(1),
   name: z.string().min(1),
   description: z.string().nullable(),
-  brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
-  attachmentMaxBytes: z.number().int().min(1).max(MAX_COMPANY_ATTACHMENT_MAX_BYTES).nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
   feedbackDataSharingEnabled: z.boolean().default(false),
   feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),

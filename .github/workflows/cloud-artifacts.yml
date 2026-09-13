@@ -1,0 +1,34 @@
+name: Cloud artifacts
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dispatch_migrator:
+    name: Start exact-source cloud migrator publication
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      # This separate workflow starts at merge, outside the full npm release's
+      # concurrency group. Publication stays in release.yml so npm recognizes
+      # the established trusted-publisher identity and npm-canary environment.
+      # No source checkout or package code runs with the dispatch credential.
+      - name: Dispatch the migrator-only release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          request_id="$(cat /proc/sys/kernel/random/uuid)"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref master \
+            --field channel=cloud-migrator \
+            --field source_ref="$SOURCE_SHA" \
+            --field request_id="$request_id"
+          echo "Started Cloud migrator $SOURCE_SHA in release.yml (request $request_id)." >> "$GITHUB_STEP_SUMMARY"

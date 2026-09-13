@@ -16,7 +16,7 @@
   "properties": {
     "schema": { "const": "paperclip.prp.semantic_tool.v1" },
     "schemaVersion": { "const": 1 },
-    "phase": { "enum": ["input", "result"] },
+    "phase": { "enum": ["input", "result", "reconciled"] },
     "operationId": { "$ref": "#/$defs/stableId" },
     "callId": { "$ref": "#/$defs/stableId" },
     "correlation": {
@@ -80,7 +80,10 @@
   },
   "allOf": [
     {
-      "if": { "properties": { "phase": { "const": "result" } } },
+      "if": {
+        "properties": { "phase": { "enum": ["result", "reconciled"] } },
+        "required": ["phase"]
+      },
       "then": {
         "required": [
           "outcome",

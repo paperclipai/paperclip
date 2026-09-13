@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { INSTANCE_FEATURE_KEYS } from "./feature-catalog.js";
 import {
+  HIDEABLE_COMPANY_PAGES,
+  HIDEABLE_COMPANY_SECTIONS,
   HIDEABLE_GENERAL_SECTIONS,
   HIDEABLE_SETTING_KEYS,
   UI_ONLY_GENERAL_SECTIONS,
   experimentalSettingKey,
+  hidesCompanyPage,
+  hidesCompanySection,
   hidesExperimentalSetting,
   hidesGeneralSection,
   hidesInstancePage,
@@ -19,6 +23,19 @@ describe("hideable setting keys", () => {
     );
     expect(experimental).toEqual(INSTANCE_FEATURE_KEYS.map(experimentalSettingKey));
     expect(new Set(HIDEABLE_SETTING_KEYS).size).toBe(HIDEABLE_SETTING_KEYS.length);
+  });
+
+  it("covers every top-level company settings page except the General root", () => {
+    expect(HIDEABLE_COMPANY_PAGES).toEqual([
+      "company.members",
+      "company.invites",
+      "company.secrets",
+      "company.export",
+      "company.import",
+    ]);
+    for (const page of HIDEABLE_COMPANY_PAGES) {
+      expect(HIDEABLE_SETTING_KEYS).toContain(page);
+    }
   });
 
   it("maps field-backed general sections onto real general-settings fields", () => {
@@ -56,6 +73,27 @@ describe("membership helpers", () => {
       "instance.plugins,instance.general.censorUsernameInLogs,instance.experimental.enableEnvironments",
     ).hidden,
   );
+
+  it("answers company-page membership", () => {
+    const companyHidden = new Set(parseHiddenSettingsList("company.import,company.secrets").hidden);
+    expect(hidesCompanyPage(companyHidden, "company.import")).toBe(true);
+    expect(hidesCompanyPage(companyHidden, "company.secrets")).toBe(true);
+    expect(hidesCompanyPage(companyHidden, "company.export")).toBe(false);
+  });
+
+  it("answers company-section membership independently of the parent page", () => {
+    const sectionHidden = new Set(parseHiddenSettingsList("company.secrets.vaults").hidden);
+    expect(hidesCompanySection(sectionHidden, "company.secrets.vaults")).toBe(true);
+    expect(hidesCompanySection(sectionHidden, "company.secrets.proposals")).toBe(false);
+    expect(hidesCompanyPage(sectionHidden, "company.secrets")).toBe(false);
+  });
+
+  it("keeps every company section key parseable and prefixed by its page", () => {
+    for (const key of HIDEABLE_COMPANY_SECTIONS) {
+      expect(parseHiddenSettingsList(key).hidden).toEqual([key]);
+      expect(key.startsWith("company.")).toBe(true);
+    }
+  });
 
   it("answers page, section, and experimental membership", () => {
     expect(hidesInstancePage(hidden, "instance.plugins")).toBe(true);

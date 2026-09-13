@@ -51,7 +51,9 @@ import type {
   UserSecretCoverageSummary,
   UserSecretDefinition,
 } from "@paperclipai/shared";
+import { hidesCompanySection } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
+import { useHiddenSettings } from "../hooks/useHiddenSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import {
@@ -652,6 +654,15 @@ export function Secrets() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const [activeTab, setActiveTab] = useState<SecretsTab>("secrets");
+  // Operator-hidden sub-tabs (UI-only; the secrets APIs stay live for agents).
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const hideVaultsTab = hidesCompanySection(hiddenSettings, "company.secrets.vaults");
+  const hideProposalsTab = hidesCompanySection(hiddenSettings, "company.secrets.proposals");
+  useEffect(() => {
+    if ((activeTab === "vaults" && hideVaultsTab) || (activeTab === "proposals" && hideProposalsTab)) {
+      setActiveTab("secrets");
+    }
+  }, [activeTab, hideVaultsTab, hideProposalsTab]);
   const [secretDetailTab, setSecretDetailTab] = useState("details");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
@@ -779,7 +790,7 @@ export function Secrets() {
       ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
       : ["secret-proposals", "__disabled__"],
     queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
-    enabled: Boolean(selectedCompanyId),
+    enabled: Boolean(selectedCompanyId) && !hideProposalsTab,
   });
 
   const secrets = secretsQuery.data ?? EMPTY_SECRETS;
@@ -1787,7 +1798,7 @@ export function Secrets() {
 
   if (!selectedCompanyId) {
     return (
-      <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
+      <div className="p-6 text-sm text-muted-foreground">Select an organization to manage secrets.</div>
     );
   }
 
@@ -1808,23 +1819,27 @@ export function Secrets() {
           items={[
             { value: "secrets", label: "Secrets" },
             { value: "my-secrets", label: "My secrets" },
-            { value: "vaults", label: "Provider vaults" },
-            {
-              value: "proposals",
-              label: (
-                <span className="inline-flex items-center gap-1.5">
-                  Proposals
-                  {pendingProposalCount > 0 ? (
-                    <Badge
-                      variant="outline"
-                      className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
-                    >
-                      {pendingProposalCount}
-                    </Badge>
-                  ) : null}
-                </span>
-              ),
-            },
+            ...(hideVaultsTab ? [] : [{ value: "vaults", label: "Provider vaults" }]),
+            ...(hideProposalsTab
+              ? []
+              : [
+                  {
+                    value: "proposals",
+                    label: (
+                      <span className="inline-flex items-center gap-1.5">
+                        Proposals
+                        {pendingProposalCount > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+                          >
+                            {pendingProposalCount}
+                          </Badge>
+                        ) : null}
+                      </span>
+                    ),
+                  },
+                ]),
           ]}
           align="start"
           value={activeTab}
@@ -1884,7 +1899,7 @@ export function Secrets() {
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
               onClick={() => openImportFromVault()}
-              onManageVaults={() => setActiveTab("vaults")}
+              onManageVaults={hideVaultsTab ? undefined : () => setActiveTab("vaults")}
               className="ml-auto"
             />
             {showFolderView ? (
@@ -1958,7 +1973,7 @@ export function Secrets() {
               !(showFolderView && folderPath) ? (
               <EmptyState
                 icon={KeyRound}
-                message="No secrets yet. Create a shared company secret or one that each user supplies."
+                message="No secrets yet. Create a shared organization secret or one that each user supplies."
                 action="New secret"
                 onAction={openCreateSecret}
               />
@@ -2076,7 +2091,7 @@ export function Secrets() {
                             <div className="mt-1">
                               {row.kind === "company" ? (
                                 <MetaChip>
-                                  <ShieldCheck className="h-3 w-3" /> Company
+                                  <ShieldCheck className="h-3 w-3" /> Organization
                                 </MetaChip>
                               ) : (
                                 <UserSecretChip label="Each user" />
@@ -2141,7 +2156,7 @@ export function Secrets() {
                           {row.kind === "company" ? (
                             <>
                               <MetaChip>
-                                <ShieldCheck className="h-3 w-3" /> Company
+                                <ShieldCheck className="h-3 w-3" /> Organization
                               </MetaChip>
                               <SecretProviderIndicator
                                 secret={row.secret}
@@ -2187,6 +2202,7 @@ export function Secrets() {
         >
           <MyUserSecretsTab companyId={selectedCompanyId} />
         </TabsContent>
+        {!hideVaultsTab && (
         <TabsContent value="vaults">
           <ProviderVaultsTab
             providers={providers}
@@ -2210,11 +2226,14 @@ export function Secrets() {
             }
           />
         </TabsContent>
+        )}
+        {!hideProposalsTab && (
         <TabsContent value="proposals">
           {selectedCompanyId ? (
             <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
           ) : null}
         </TabsContent>
+        )}
       </Tabs>
 
       <Sheet
@@ -2253,7 +2272,7 @@ export function Secrets() {
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   <MetaChip>
-                    <ShieldCheck className="h-3 w-3" /> Company
+                    <ShieldCheck className="h-3 w-3" /> Organization
                   </MetaChip>
                   <MetaChip>{modeLabel(selectedSecret.managedMode)}</MetaChip>
                   <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
@@ -2535,11 +2554,15 @@ export function Secrets() {
           providerConfigs={providerConfigs}
           existingSecrets={secrets}
           initialProviderConfigId={importInitialVaultId}
-          onManageVaults={() => {
-            setImportOpen(false);
-            setImportInitialVaultId(null);
-            setActiveTab("vaults");
-          }}
+          onManageVaults={
+            hideVaultsTab
+              ? undefined
+              : () => {
+                  setImportOpen(false);
+                  setImportInitialVaultId(null);
+                  setActiveTab("vaults");
+                }
+          }
           onImportComplete={() => {
             void secretsQuery.refetch();
           }}
@@ -2581,12 +2604,12 @@ export function Secrets() {
                   }}
                 >
                   <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="company">Company</TabsTrigger>
+                    <TabsTrigger value="company">Organization</TabsTrigger>
                     <TabsTrigger value="user">Each user</TabsTrigger>
                   </TabsList>
                 </Tabs>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Company stores one shared value. Each user lets every member supply their own value under My secrets.
+                  Organization stores one shared value. Each user lets every member supply their own value under My secrets.
                 </p>
               </div>
             ) : null}
@@ -3182,7 +3205,7 @@ export function Secrets() {
           <DialogHeader>
             <DialogTitle>Delete user-provided secret</DialogTitle>
             <DialogDescription>
-              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole company.
+              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole organization.
               Existing member values become unreferenced and active bindings must be remapped.
             </DialogDescription>
           </DialogHeader>
@@ -3351,7 +3374,7 @@ function SecretsFiltersPopover({
               <div className="space-y-0.5">
                 {[
                   { value: "all" as const, label: "All sources" },
-                  { value: "company" as const, label: "Company" },
+                  { value: "company" as const, label: "Organization" },
                   { value: "user" as const, label: "Each user" },
                 ].map((option) => (
                   <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -3445,7 +3468,8 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
 interface ImportFromVaultButtonProps {
   providerConfigs: CompanySecretProviderConfig[];
   onClick: () => void;
-  onManageVaults: () => void;
+  /** Absent when the operator hides the Provider vaults tab. */
+  onManageVaults?: () => void;
   className?: string;
 }
 
@@ -3465,6 +3489,7 @@ function ImportFromVaultButton({
   if (awsConfigs.length === 0) return null;
 
   if (eligible.length === 0) {
+    if (!onManageVaults) return null;
     return (
       <Button
         variant="ghost"
@@ -3585,7 +3610,7 @@ export function ProviderVaultsTab({
               <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
                 {isComingSoonFamily
                   ? "Not yet supported."
-                  : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
+                  : "No organization-specific vaults yet. Secrets can still use the deployment default provider settings."}
               </div>
             ) : (
               <div className="space-y-3">
@@ -4619,7 +4644,7 @@ function SecretDetailsTab({
       <DetailRow label="Description">
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
-      <DetailRow label="Provided by">Company</DetailRow>
+      <DetailRow label="Provided by">Organization</DetailRow>
       <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
       <DetailRow label="Provider">{providerLabel(providers, secret.provider)}</DetailRow>
       <DetailRow label="Provider vault">{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>

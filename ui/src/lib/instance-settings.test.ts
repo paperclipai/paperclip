@@ -19,9 +19,6 @@ describe("normalizeRememberedInstanceSettingsPath", () => {
     expect(normalizeRememberedInstanceSettingsPath("/settings/access?tab=users#admins")).toBe(
       "/company/settings/instance/access?tab=users#admins",
     );
-    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/heartbeats")).toBe(
-      "/company/settings/instance/heartbeats",
-    );
     expect(normalizeRememberedInstanceSettingsPath("/instance/settings/plugins/example?tab=config#logs")).toBe(
       "/company/settings/instance/plugins/example?tab=config#logs",
     );
@@ -46,12 +43,16 @@ describe("normalizeRememberedInstanceSettingsPath", () => {
     expect(normalizeRememberedInstanceSettingsPath("/instance/settings/nope")).toBe(
       DEFAULT_INSTANCE_SETTINGS_PATH,
     );
+    // The Heartbeats page was removed; remembered paths remap to the default.
+    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/heartbeats")).toBe(
+      DEFAULT_INSTANCE_SETTINGS_PATH,
+    );
     expect(normalizeRememberedInstanceSettingsPath(null)).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
   });
 });
 
 describe("filterHiddenInstanceSettingsPath", () => {
-  const hidden = new Set(["instance.plugins", "instance.heartbeats"]);
+  const hidden = new Set(["instance.plugins", "instance.environments"]);
 
   it("remaps hidden pages (including sub-paths) to the default settings path", () => {
     expect(
@@ -61,7 +62,7 @@ describe("filterHiddenInstanceSettingsPath", () => {
       filterHiddenInstanceSettingsPath("/company/settings/instance/plugins/plugin-1", hidden),
     ).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
     expect(
-      filterHiddenInstanceSettingsPath("/company/settings/instance/heartbeats", hidden),
+      filterHiddenInstanceSettingsPath("/company/settings/instance/environments", hidden),
     ).toBe(DEFAULT_INSTANCE_SETTINGS_PATH);
   });
 

@@ -17,9 +17,9 @@ This process needs durable delivery, restart recovery, and governed access to
 Paperclip actions. It must not become a second control plane. It must also land
 without changing the behavior of existing adapters.
 
-The initial implementation is intentionally narrow. It supports Codex through
-an explicit, experimental adapter. Other providers and developer tools remain
-outside this decision.
+The implementation remains behind one explicit experimental adapter and one
+default-off instance flag. Its qualified provider catalog includes Codex,
+OpenCode, Claude Managed, AWS AgentCore, and pinned Claude/Codex ACPX profiles.
 
 ## Decision
 
@@ -28,8 +28,8 @@ the language-neutral Paperclip Runner Protocol (PRP), the Rust runner process,
 provider drivers, deterministic replay, and semantic action dispatch contracts.
 
 Add one explicit adapter named `paperclip_runner`. The adapter is available only
-when an instance-level, default-off rollout flag is enabled. Its first supported
-provider is Codex.
+when an instance-level, default-off rollout flag is enabled. Provider selection
+is persisted per run and may use only a qualified provider profile.
 
 Do not route existing adapters through Paperclip Runner. A direct adapter keeps
 its current invocation, transcript, interaction, cancellation, and finalization
@@ -49,8 +49,8 @@ paths.
 - Replace existing direct adapters.
 - Move business authorization or issue status policy into Rust.
 - Give runnerd a broad Paperclip API credential.
-- Support OpenCode, ACPX, Claude Managed, AWS AgentCore, or remote sandboxes in
-  the first production slice.
+- Support unqualified provider versions, arbitrary ACPX agents, or editable
+  remote-resource identity in agent configuration.
 - Expose browser SDK, React SDK, eval, lab, or scenario-explorer package entry
   points in the initial release.
 - Commit recorded screenshots, stress logs, or construction history as product
@@ -65,9 +65,9 @@ Paperclip server
   |  authenticated PRP v1 WebSocket
   v
 paperclip-runnerd
-  |  Codex app-server protocol
+  |  qualified native provider protocol
   v
-Codex
+Codex / OpenCode / ACPX / Claude Managed / AWS AgentCore
 ```
 
 The server opens a native run and launches a verified runnerd artifact in the
@@ -234,7 +234,8 @@ The rollout has three gates:
 
 1. The instance flag is enabled.
 2. The agent explicitly selects `paperclip_runner`.
-3. The adapter selects a supported provider. The initial provider is `codex`.
+3. The adapter selects a provider from the qualified catalog: Codex, OpenCode,
+   pinned Claude/Codex ACPX, Claude Managed, or AWS AgentCore.
 
 The adapter is hidden from creation and selection surfaces while the flag is
 off. Server validation also rejects a fresh runner selection or start while the

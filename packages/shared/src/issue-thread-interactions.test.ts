@@ -9,6 +9,7 @@ import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  paperclipQuestionSetPayloadSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   requestItemVerdictsResultSchema,
@@ -256,6 +257,44 @@ describe("issue thread interaction schemas", () => {
       expirationReason: "superseded_by_comment",
       commentId: "11111111-1111-4111-8111-111111111111",
     });
+  });
+
+  it("retains canonical runner question sets without narrowing their public bounds", () => {
+    const questionSet = {
+      schema: "paperclip.question_set.v1" as const,
+      title: "Runner input",
+      questions: [{
+        id: "deployment-color",
+        prompt: "Which deployment color should the runner use?",
+        required: true,
+        answerMode: "single_select" as const,
+        options: [{ id: "blue", label: "Blue" }],
+      }],
+    };
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      continuationPolicy: "none",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "deployment-color",
+          prompt: "Which deployment color should the runner use?",
+          selectionMode: "single",
+          allowOther: false,
+          options: [{ id: "blue", label: "Blue" }],
+        }],
+        questionSet,
+      },
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
+    if (parsed.kind !== "ask_user_questions") return;
+    expect(parsed.payload.questionSet).toEqual(questionSet);
+
+    expect(() => paperclipQuestionSetPayloadSchema.parse({
+      ...questionSet,
+      questions: [{ ...questionSet.questions[0], answerMode: "text", options: questionSet.questions[0].options }],
+    })).toThrow("text questions cannot define options");
   });
 
   it("rejects unsafe request_confirmation target hrefs", () => {

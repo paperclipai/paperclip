@@ -29,6 +29,8 @@ describe("isSupportedNodeVersion", () => {
     expect(warning).toContain(NODE_VERSION_INSTALL_GUIDE_URL);
     expect(warning).toContain("piped install.sh form cannot upgrade");
     expect(warning).toContain("Restart Paperclip after upgrading");
+    expect(warning).toContain(process.execPath);
+    expect(warning).toContain("startup executable and PATH");
   });
 
   it("emits at most one warning when CLI and server boot in the same process", () => {

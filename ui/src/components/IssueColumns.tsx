@@ -47,8 +47,25 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   updated: "Latest visible activity time.",
 };
 
+export function issueColumnDescription(
+  column: InboxIssueColumn,
+  presentation: "legacy" | "task" = "legacy",
+): string {
+  if (column === "id" && presentation === "task") {
+    return "Task identifier like PAP-1009 on the trailing edge.";
+  }
+  if (column === "status" && presentation === "task") {
+    return "Task state icon on the leading edge.";
+  }
+  return issueColumnDescriptions[column];
+}
+
+export function issueActivityTimestamp(issue: Issue): string {
+  return timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
+}
+
 export function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
+  return `Updated ${issueActivityTimestamp(issue)}`;
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -69,16 +86,22 @@ export function IssueColumnPicker({
   availableColumns,
   visibleColumnSet,
   onToggleColumn,
+  showDateGroupSeparators,
+  onToggleDateGroupSeparators,
   onResetColumns,
   title,
   iconOnly = false,
+  rowPresentation = "legacy",
 }: {
   availableColumns: InboxIssueColumn[];
   visibleColumnSet: ReadonlySet<InboxIssueColumn>;
   onToggleColumn: (column: InboxIssueColumn, enabled: boolean) => void;
+  showDateGroupSeparators?: boolean;
+  onToggleDateGroupSeparators?: (enabled: boolean) => void;
   onResetColumns: () => void;
   title: string;
   iconOnly?: boolean;
+  rowPresentation?: "legacy" | "task";
 }) {
   return (
     <DropdownMenu>
@@ -119,11 +142,28 @@ export function IssueColumnPicker({
                 {issueColumnLabels[column]}
               </span>
               <span className="text-xs leading-relaxed text-muted-foreground">
-                {issueColumnDescriptions[column]}
+                {issueColumnDescription(column, rowPresentation)}
               </span>
             </span>
           </DropdownMenuCheckboxItem>
         ))}
+        {showDateGroupSeparators !== undefined && onToggleDateGroupSeparators ? (
+          <DropdownMenuCheckboxItem
+            checked={showDateGroupSeparators}
+            onSelect={(event) => event.preventDefault()}
+            onCheckedChange={(checked) => onToggleDateGroupSeparators(checked === true)}
+            className="items-start rounded-lg px-3 py-2.5 pl-8"
+          >
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium text-foreground">
+                Date group separators
+              </span>
+              <span className="text-xs leading-relaxed text-muted-foreground">
+                Show Today, Yesterday, and Earlier rules on newest-first task lists.
+              </span>
+            </span>
+          </DropdownMenuCheckboxItem>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onSelect={onResetColumns}
@@ -262,7 +302,7 @@ export function InboxIssueTrailingColumns({
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
-  const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
+  const activityText = issueActivityTimestamp(issue);
   const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
   const originatingActor = deriveOriginatingActor(issue);
   const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;

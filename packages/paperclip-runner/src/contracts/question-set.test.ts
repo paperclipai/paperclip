@@ -18,7 +18,7 @@ const questionSet: PaperclipQuestionSet = {
       required: true,
       answerMode: "single_select",
       options: [
-        { id: "staging", label: "Staging" },
+        { id: "staging", label: "Staging", recommended: true },
         { id: "production", label: "Production" },
       ],
       customAnswer: { enabled: true, label: "Other" },
@@ -36,15 +36,13 @@ const questionSet: PaperclipQuestionSet = {
 describe("Paperclip question-set contract", () => {
   it("round-trips the portable presentation model", () => {
     expect(parsePaperclipQuestionSet(questionSet)).toEqual(questionSet);
-    expect(
-      parsePaperclipQuestionResponse(questionSet, {
-        schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
-        answers: {
-          environment: { selectedOptionIds: ["staging"] },
-          replicas: { text: "3" },
-        },
-      }),
-    ).toEqual({
+    expect(parsePaperclipQuestionResponse(questionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: {
+        environment: { selectedOptionIds: ["staging"] },
+        replicas: { text: "3" },
+      },
+    })).toEqual({
       schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
       answers: {
         environment: { selectedOptionIds: ["staging"] },
@@ -54,55 +52,40 @@ describe("Paperclip question-set contract", () => {
   });
 
   it("rejects missing, unknown, and provider-shaped answers", () => {
-    expect(() =>
-      parsePaperclipQuestionResponse(questionSet, {
-        schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
-        answers: {
-          environment: { selectedOptionIds: ["unknown"] },
-          replicas: { text: "3" },
-        },
-      }),
-    ).toThrow(/unknown option/);
-    expect(() =>
-      parsePaperclipQuestionResponse(questionSet, {
-        schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
-        answers: { environment: { selectedOptionIds: ["staging"] } },
-      }),
-    ).toThrow(/replicas.*required/);
-    expect(() =>
-      parsePaperclipQuestionResponse(questionSet, {
-        answers: { environment: { answers: ["Staging"] } },
-      }),
-    ).toThrow(/paperclip.question_response.v1/);
-    expect(() =>
-      parsePaperclipQuestionResponse(questionSet, {
-        schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
-        answers: {
-          environment: { answers: ["Staging"] },
-          replicas: { text: "3" },
-        },
-      }),
-    ).toThrow(/canonical response contract/);
+    expect(() => parsePaperclipQuestionResponse(questionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: { environment: { selectedOptionIds: ["unknown"] }, replicas: { text: "3" } },
+    })).toThrow(/unknown option/);
+    expect(() => parsePaperclipQuestionResponse(questionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: { environment: { selectedOptionIds: ["staging"] } },
+    })).toThrow(/replicas.*required/);
+    expect(() => parsePaperclipQuestionResponse(questionSet, {
+      answers: { environment: { answers: ["Staging"] } },
+    })).toThrow(/paperclip.question_response.v1/);
+    expect(() => parsePaperclipQuestionResponse(questionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: {
+        environment: { answers: ["Staging"] },
+        replicas: { text: "3" },
+      },
+    })).toThrow(/canonical response contract/);
   });
 
   it("applies typed numeric validation before an adapter sees the answer", () => {
-    expect(() =>
-      parsePaperclipQuestionResponse(questionSet, {
-        schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
-        answers: {
-          environment: { customText: "Canary" },
-          replicas: { text: "3.5" },
-        },
-      }),
-    ).toThrow(/valid integer/);
-    expect(() =>
-      parsePaperclipQuestionResponse(questionSet, {
-        schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
-        answers: {
-          environment: { customText: "Canary" },
-          replicas: { text: "21" },
-        },
-      }),
-    ).toThrow(/at most 20/);
+    expect(() => parsePaperclipQuestionResponse(questionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: {
+        environment: { customText: "Canary" },
+        replicas: { text: "3.5" },
+      },
+    })).toThrow(/valid integer/);
+    expect(() => parsePaperclipQuestionResponse(questionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: {
+        environment: { customText: "Canary" },
+        replicas: { text: "21" },
+      },
+    })).toThrow(/at most 20/);
   });
 });

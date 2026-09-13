@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockOnboardingLocalAiConnection } from "./helpers/onboarding-ai-connection";
 import {
   expectLandsOnFirstTaskWithoutDashboardBounce,
   instrumentNavLog,
@@ -8,12 +9,34 @@ import {
 const AGENT_NAME = "CEO";
 const TASK_TITLE = "Paperclip onboarding";
 
+/**
+ * The first task opens with the chief of staff's opening card sitting where
+ * the composer is. Cancel hands the plain composer back (the card stays
+ * pending), and the composer is where the mode toggle lives.
+ *
+ * The card arrives with the interactions fetch, after the composer's first
+ * paint, so a bare `count()` right after navigation sees no card and skips
+ * the click; the card then lands on top of the composer and hides the mode
+ * toggle. Wait for the card (or, if it is already dismissed, the pending
+ * strip it leaves behind) before deciding, and only return once the plain
+ * composer is back.
+ */
+async function dismissOpeningCard(page: import("@playwright/test").Page) {
+  const takeover = page.getByTestId("task-chat-composer-takeover");
+  const pendingStrip = page.getByTestId("task-chat-pending-input-indicator");
+  await expect(takeover.or(pendingStrip).first()).toBeVisible({ timeout: 30_000 });
+  const cancel = takeover.getByRole("button", { name: "Cancel", exact: true });
+  if (await cancel.count()) await cancel.first().click();
+  await expect(page.getByTestId("task-chat-composer-mode")).toBeVisible({ timeout: 30_000 });
+}
+
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const timestamp = Date.now();
   const companyName = `PAP-3413-${timestamp}`;
   const screenshotDir = "test-results/planning-mode";
 
   await instrumentNavLog(page);
+  await mockOnboardingLocalAiConnection(page);
 
   await page.route("**/test-environment", (route) =>
     route.fulfill({
@@ -48,30 +71,45 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto("/onboarding");
-  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Company|Add Agent/ });
+  const startBtn = page.getByRole("button", { name: /Start Onboarding|New Organization|Add Agent/ });
   if (await startBtn.count()) await startBtn.first().click();
 
-  const createCard = page.getByRole("button", { name: /Build a new company/ });
+  const createCard = page.getByRole("button", { name: /Build a new organization/ });
   if (await createCard.count()) await createCard.first().click();
 
-  await expect(page.getByRole("heading", { name: "Name your organization" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "What is the name of your organization?" })).toBeVisible({ timeout: 15_000 });
 
-  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
+  await page.locator('input[placeholder="e.g. Northwind Labs"]').fill(companyName);
+  await page.getByRole("button", { name: /^Continue/ }).click();
 
   // Naming the company creates it and goes straight to the agent step.
 
-  // The lead is no longer pre-named. Choosing a role fills the name from the
-  // role's label, which is also what gates "Next".
-  await page.waitForSelector("#onboarding-agent-role", { timeout: 30_000 });
-  await page.locator("#onboarding-agent-role").click();
-  await page.getByRole("option", { name: "CEO", exact: true }).click();
-  await expect(page.locator("#onboarding-agent-name")).toHaveValue(AGENT_NAME);
+  // The agent step asks for a name and nothing else; the name is what gates
+  // "Next", and the hire is filed under the neutral `general` role.
+  await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
 
-  await page.getByRole("button", { name: /^Next/ }).click();
-  await page.getByRole("button", { name: /^Connect$/ }).click();
+  await page.getByRole("button", { name: /^Next$/ }).click();
 
-  await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
+  // The connect step arrives with no source selected — the tile row is a
+  // question, not a confirmation — so its CTA stays disabled until one is
+  // pressed. It reads "Connect", not "Next": the button starts the sign-in
+  // where there is one to start. The test simulates successful local account
+  // connection, then exercises the real first-task creation flow.
+  //
+  // Waited on for enabled rather than visible: it is already on screen, and
+  // clicking a disabled button raises nothing and does nothing.
+  const source = page.getByRole("radio").first();
+  await source.waitFor({ timeout: 30_000 });
+  await source.click();
+  const connectNext = page.getByRole("button", { name: /^Connect$/ });
+  await expect(connectNext).toBeEnabled({ timeout: 30_000 });
+  await connectNext.click();
+
+  // The review step names the agent rather than the step.
+  await expect(
+    page.getByRole("heading", { name: "Let's get started..." }),
+  ).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Get started/ }).click();
   // The wizard now drops the user straight onto the first task's detail page,
   // and must not bounce through the dashboard (PAP-404).
@@ -116,6 +154,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await setMode("planning");
 
   await page.goto(issuePath);
+  await dismissOpeningCard(page);
   await expect(page.getByText("Plan mode").first()).toBeVisible();
   const desktopPlanningToggle = page.getByTestId("task-chat-composer-mode");
   await expect(desktopPlanningToggle).toBeVisible();
@@ -135,6 +174,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto(issuePath);
+  await dismissOpeningCard(page);
   await page.getByTestId("task-chat-composer-mode").click();
   await page.getByRole("menuitem", { name: /Auto mode/ }).click();
   await expect(page.getByTestId("task-chat-composer-mode")).toHaveAttribute("data-pending-work-mode", "standard");
@@ -146,6 +186,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await setMode("planning");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(issuePath);
+  await dismissOpeningCard(page);
   await expect(page.getByText("Plan mode").first()).toBeVisible();
   const mobilePlanningToggle = page.getByTestId("task-chat-composer-mode");
   await expect(mobilePlanningToggle).toBeVisible();

@@ -50,9 +50,9 @@ const RESOLVER_POLICY_LABELS: Record<IssueThreadInteractionCanonicalResolverPoli
  */
 const RESOLVER_POLICY_EFFECTS: Record<IssueThreadInteractionCanonicalResolverPolicy, string> = {
   anyone:
-    "Anyone in the company can respond — the board or any agent, including the one that asked.",
+    "Anyone in the organization can respond — the board or any agent, including the one that asked.",
   not_creator:
-    "Anyone in the company except the agent that created the card, and its run. Use this when the answer has to come from someone else.",
+    "Anyone in the organization except the agent that created the card, and its run. Use this when the answer has to come from someone else.",
   human_only: "Only a person on the board can respond. Agents are turned away.",
 };
 
@@ -125,6 +125,7 @@ export interface InteractionAudienceFacts {
   effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
   resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
   hasAddressee: boolean;
+  isUserAddressee?: boolean;
 }
 
 /**
@@ -143,7 +144,7 @@ export function describeInteractionAudience({
   interaction: IssueThreadInteraction;
   /** Display label of the creating actor, when known. */
   creatorLabel?: string | null;
-  /** Display label of the named addressee agent, when the card has one. */
+  /** Display label of the named addressee, when the card has one. */
   addresseeLabel?: string | null;
 }): InteractionAudienceDescription {
   return describeResolverAudience({
@@ -152,7 +153,8 @@ export function describeInteractionAudience({
       requestedResolverPolicy: interaction.requestedResolverPolicy,
       effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
       resolverPolicyProvenance: interaction.resolverPolicyProvenance,
-      hasAddressee: Boolean(interaction.addresseeAgentId),
+      hasAddressee: Boolean(interaction.addresseeAgentId || interaction.addresseeUserId),
+      isUserAddressee: Boolean(interaction.addresseeUserId),
     },
     creatorLabel,
     addresseeLabel,
@@ -176,21 +178,34 @@ export function describeResolverAudience({
   const policy = facts.effectiveResolverPolicy;
   const requestedPolicy = facts.requestedResolverPolicy;
   const hasAddressee = facts.hasAddressee;
-  const addressee = addresseeLabel?.trim() || "the addressed agent";
-  const creator = creatorLabel?.trim() || "the agent that created it";
+  const isUserAddressee = facts.isUserAddressee === true;
+  // `formatAssigneeUserLabel` returns the display-cased "You" for the signed-in
+  // reader, which is right for a badge and wrong mid-sentence ("Only You can
+  // respond."). Every use below is inside a sentence.
+  const midSentence = (label: string) => (label === "You" ? "you" : label);
+  const addressee = midSentence(
+    addresseeLabel?.trim() || (isUserAddressee ? "the addressed user" : "the addressed agent"),
+  );
+  const creator = midSentence(creatorLabel?.trim() || "the agent that created it");
 
-  const summary = policy === "human_only"
-    ? "Only a person on the board can respond — agents cannot resolve this card."
+  const summary = isUserAddressee
+    ? `Only ${addressee} can respond.`
+    : policy === "human_only"
+    ? `${hasAddressee ? `Assigned to ${addressee}. ` : ""}Only a person on the board can respond — agents cannot resolve this card.`
     : hasAddressee
       ? `Only ${addressee} or a person on the board can respond.`
       : policy === "not_creator"
-        ? `Anyone in the company except ${creator} can respond.`
-        : "Anyone in the company can respond — the board or any agent, including the one that asked.";
+        ? `Anyone in the organization except ${creator} can respond.`
+        : "Anyone in the organization can respond — the board or any agent, including the one that asked.";
 
   // Same fact, fewer words: a collapsed row has to answer "is this mine to
   // decide?" in one glance, next to the buttons that act on the answer.
-  const shortSummary = policy === "human_only"
-    ? "Only the board can respond"
+  const shortSummary = isUserAddressee
+    ? `Only ${addressee} can respond`
+    : policy === "human_only"
+    ? hasAddressee
+      ? `Assigned to ${addressee} · board only`
+      : "Only the board can respond"
     : hasAddressee
       ? `Only ${addressee} or the board can respond`
       : policy === "not_creator"
@@ -207,7 +222,7 @@ export function describeResolverAudience({
   const narrowedNote = source === "governed_action"
     ? "This card runs a governed action, so it stays human-only whatever audience was requested."
     : source === "company_cap"
-      ? `Company interaction governance narrowed this from ${RESOLVER_POLICY_LABELS[requestedPolicy]} to ${RESOLVER_POLICY_LABELS[policy]}.`
+      ? `Organization interaction governance narrowed this from ${RESOLVER_POLICY_LABELS[requestedPolicy]} to ${RESOLVER_POLICY_LABELS[policy]}.`
       : provenance === "legacy_inherited_restriction"
         ? "Created before Anyone became the default, so it stays restricted. A new card would be open."
         : null;
@@ -228,9 +243,9 @@ export function describeResolverAudience({
     policy,
     requestedPolicy,
     // A named addressee owns the response, so the label must not read "Anyone"
-    // while the sentence next to it names one agent. `human_only` still wins,
-    // because an addressed agent cannot resolve a human-only card.
-    label: policy !== "human_only" && hasAddressee
+    // while the sentence next to it names one actor. `human_only` wins for an
+    // agent addressee, while a user addressee is the narrower human audience.
+    label: (policy !== "human_only" || isUserAddressee) && hasAddressee
       ? "Addressed"
       : RESOLVER_POLICY_LABELS[policy],
     summary,
@@ -259,7 +274,8 @@ export function describeAttentionResolverAudience(
       requestedResolverPolicy: audience.requestedResolverPolicy,
       effectiveResolverPolicySource: audience.effectiveResolverPolicySource,
       resolverPolicyProvenance: audience.resolverPolicyProvenance,
-      hasAddressee: Boolean(audience.addresseeAgentId),
+      hasAddressee: Boolean(audience.addresseeAgentId || audience.addresseeUserId),
+      isUserAddressee: Boolean(audience.addresseeUserId),
     },
     creatorLabel: audience.createdByAgentName,
     addresseeLabel: audience.addresseeName,

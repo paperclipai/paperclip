@@ -226,6 +226,29 @@ describe("shouldRouteAgentlessCompanyToOnboarding", () => {
     ).toBe(false);
   });
 
+  it("does not trust a cached empty list while it is being refreshed", () => {
+    // The wizard hires the first agent and lands on the first task. A
+    // dashboard reached from there can still hold the empty list it cached
+    // before the hire, with the refetch in flight — offering on it reopens
+    // "Create your first agent" for a company that just got one.
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentsRefreshing: true,
+        agentCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentsRefreshing: false,
+        agentCount: 0,
+      }),
+    ).toBe(true);
+  });
+
   it("does not redirect onto onboarding from onboarding", () => {
     // The loop: finish the wizard without creating an agent, and a redirect
     // that ignored the current path would send you straight back in.
@@ -270,6 +293,43 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
     });
     expect(resolved).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
     expect(resolved!.initialStep).not.toBe(ONBOARDING_MISSION_STEP);
+  });
+
+  it("never resolves into the create wizard on a managed stack", () => {
+    // POST /companies is a 403 floor on Cloud-managed stacks — a create wizard
+    // there is a dead end wearing a form. A managed stack holds exactly one
+    // company, so the useful reading of a bare or unmatched onboarding path is
+    // that company's agent arc.
+    const one = [{ id: "c1", issuePrefix: "PC1" }];
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/onboarding",
+        companies: one,
+        cloudManaged: true,
+      }),
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/NOPE/onboarding",
+        companyPrefix: "NOPE",
+        companies: one,
+        cloudManaged: true,
+      }),
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
+  });
+
+  it("opens nothing on a managed stack whose companies are not exactly one", () => {
+    // Zero companies means the list is still loading or errored — offering
+    // creation would 403; opening an arc would name nobody. Do neither.
+    for (const companies of [[], [{ id: "c1", issuePrefix: "PC1" }, { id: "c2", issuePrefix: "PC2" }]]) {
+      expect(
+        resolveRouteOnboardingOptions({
+          pathname: "/onboarding",
+          companies,
+          cloudManaged: true,
+        }),
+      ).toBeNull();
+    }
   });
 
   it("keeps sending an unmatched prefix to company creation", () => {

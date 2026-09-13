@@ -1,8 +1,9 @@
 # Codex provider boundary
 
 `paperclip-runnerd` supports one provider in this layer: Codex app-server as a
-local supervised process. The Paperclip server does not select or launch this
-path yet.
+local supervised process. The Paperclip server selects this path only for the
+default-off `paperclip_runner` adapter. Every direct adapter keeps its existing
+execution and finalization path.
 
 ## Command lifecycle
 
@@ -10,6 +11,9 @@ path yet.
   `driver: "codex_app_server"`, `providerVersion`, `command`, bounded `args`, an
   existing absolute `cwd`, optional `model`, `instructions`, and
   `approvalPolicy: "never"`.
+- The server also binds the immutable completion-contract revision and criterion
+  identifiers. A completed Codex turn emits one `run.result.proposed` followed
+  by one `run.terminal`; server finalization accepts only that bound pair.
 - `session.open` initializes Codex and starts a thread. A recovered runner
   resumes the recorded thread and reads it before accepting another turn.
 - `turn.start` requires bounded non-empty `payload.text`. `turn.steer`,
@@ -37,7 +41,9 @@ window remains indeterminate and is not retried. Codex JSON-RPC notifications
 received before a synchronous response are buffered rather than lost. Reusing
 a pending structured-input request ID with different content fails closed.
 Normalized events remain in the provider sidecar until the durable PRP outbox
-has committed and acknowledged them.
+has committed and acknowledged them. The server persists the native binding
+before process launch and reuses it after restart, including when the rollout
+flag has since been disabled.
 
 ## Normalization and authorization
 
@@ -46,5 +52,5 @@ redacted session, turn, item, plan, usage, tool-execution, notice, and structure
 input events. Unknown notifications are ignored.
 
 Codex starts with an empty dynamic-tool inventory. Catalog presence is not
-authorization, and semantic operations remain unavailable until the separate
-catalog and run-scoped authorization layers land.
+authorization. The coordinator projects only the already landed, same-task
+read bindings for the exact company and native run.

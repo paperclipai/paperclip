@@ -54,10 +54,10 @@ import { sendPtyInputInChunks } from "./pty-chunked-input.js";
  * worker forwards the data and the exit with no adapter.
  */
 export interface DuplexChannelSession {
-  /** Registers the one data listener. The session streams each raw chunk in order. */
-  onData(listener: (chunk: string) => void): void;
+  /** Registers the one data listener. The session streams each raw byte chunk in order. */
+  onData(listener: (chunk: Uint8Array) => void): void;
   /** Writes raw input bytes to the pseudo-terminal. */
-  write(data: string): void;
+  write(data: Uint8Array): void;
   /**
    * Resolves when the command ends or the transport closes. A numeric `exitCode`
    * is a real process exit. `transportClosed` is true when the pseudo-terminal
@@ -169,18 +169,16 @@ export function buildDuplexChannelLaunchWrapper(
  * {@link DuplexChannelSession}. The session allocates a real pseudo-terminal in
  * raw mode, streams the raw output, accepts host input, and stops the child.
  *
- * The function decodes the terminal bytes as a UTF-8 stream, so a multibyte
- * character that splits across two output chunks stays whole. It buffers the
- * output until the transport registers the listener, so no early chunk is lost.
+ * The function forwards the terminal bytes unchanged. It buffers the output
+ * until the transport registers the listener, so no early chunk is lost.
  */
 export async function openDaytonaDuplexChannelSession(
   process: DaytonaPtyProcess,
   command: readonly string[],
   options?: DaytonaDuplexChannelOptions,
 ): Promise<DuplexChannelSession> {
-  const decoder = new TextDecoder("utf-8");
-  let listener: ((chunk: string) => void) | null = null;
-  let buffered = "";
+  let listener: ((chunk: Uint8Array) => void) | null = null;
+  let buffered: Buffer = Buffer.alloc(0);
 
   const diagnosticsPath =
     options?.diagnosticsPath ?? `/tmp/paperclip-duplex-${randomUUID()}.log`;
@@ -191,13 +189,12 @@ export async function openDaytonaDuplexChannelSession(
     cols: DUPLEX_CHANNEL_PTY_COLS,
     rows: DUPLEX_CHANNEL_PTY_ROWS,
     onData: (data: Uint8Array): void => {
-      // Decode the terminal bytes as a stream, so a split multibyte character
-      // stays whole across two chunks. Forward the raw text; the frame codec owns
-      // the newline-delimited JSON parsing.
-      const text = decoder.decode(data, { stream: true });
-      if (text.length === 0) return;
-      if (listener) listener(text);
-      else buffered += text;
+      // Forward the raw bytes unchanged; the frame codec owns the
+      // newline-delimited JSON parsing and any multi-byte character
+      // reassembly on the read side.
+      if (data.byteLength === 0) return;
+      if (listener) listener(data);
+      else buffered = buffered.length === 0 ? Buffer.from(data) : Buffer.concat([buffered, data]);
     },
   });
 
@@ -233,15 +230,15 @@ export async function openDaytonaDuplexChannelSession(
   let writeChain: Promise<void> = Promise.resolve();
 
   return {
-    onData(next: (chunk: string) => void): void {
+    onData(next: (chunk: Uint8Array) => void): void {
       listener = next;
       if (buffered.length > 0) {
         const pending = buffered;
-        buffered = "";
+        buffered = Buffer.alloc(0);
         next(pending);
       }
     },
-    write(data: string): void {
+    write(data: Uint8Array): void {
       // Send the input as byte-bounded chunks under the provider message cap. A
       // whole payload in one message can cross the cap and take the channel down,
       // so the chunker slices the payload and sends each chunk in order. The chain

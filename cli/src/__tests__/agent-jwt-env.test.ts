@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ensureAgentJwtSecret,
+  ensureToolActionSigningSecret,
   mergePaperclipEnvEntries,
   readAgentJwtSecretFromEnv,
   readPaperclipEnvEntries,
@@ -24,6 +25,7 @@ describe("agent jwt env helpers", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
   });
 
   afterEach(() => {
@@ -40,6 +42,17 @@ describe("agent jwt env helpers", () => {
     expect(fs.existsSync(envPath)).toBe(true);
     const contents = fs.readFileSync(envPath, "utf-8");
     expect(contents).toContain("PAPERCLIP_AGENT_JWT_SECRET=");
+  });
+
+  it("creates an independent tool-action signing secret next to the config", () => {
+    const configPath = tempConfigPath();
+    const result = ensureToolActionSigningSecret(configPath);
+
+    expect(result.created).toBe(true);
+    expect(result.secret).toHaveLength(64);
+    const entries = readPaperclipEnvEntries(resolveAgentJwtEnvFile(configPath));
+    expect(entries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET).toBe(result.secret);
+    expect(entries.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
   });
 
   it("loads secret from .env next to explicit config path", () => {

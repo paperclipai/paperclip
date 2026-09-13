@@ -24,8 +24,8 @@
           },
           "additionalProperties": false
         },
-        "turnId": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "itemId": { "type": "string", "minLength": 1, "maxLength": 160 }
+        "turnId": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "itemId": { "type": "string", "minLength": 1, "maxLength": 240 }
       },
       "additionalProperties": false
     },

@@ -895,6 +895,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               onLog,
               recorder,
               serviceIndex: selectedServiceIndex,
+              runtimeServiceId: selectedRuntimeServiceId,
             });
           } catch (error) {
             // A failed start must leave the workspace stopped and retryable rather than

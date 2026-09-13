@@ -29,6 +29,9 @@ const mockProjectService = vi.hoisted(() => ({
 const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   destroyReusableSandboxLeasesForEnvironment: vi.fn(async () => ({ destroyed: 0, failed: 0, skippedLiveRun: 0 })),
 }));
+const mockCloseWarmNativeSessionsForEnvironment = vi.hoisted(() =>
+  vi.fn(async () => ({ closed: 0, busy: 0, failed: 0 })),
+);
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
   getGeneral: vi.fn(),
@@ -110,6 +113,10 @@ vi.mock("../services/environments.js", () => ({
 
 vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: () => mockEnvironmentRuntimeService,
+}));
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({
+  closeWarmNativeSessionsForEnvironment:
+    mockCloseWarmNativeSessionsForEnvironment,
 }));
 
 vi.mock("../services/execution-workspaces.js", () => ({
@@ -229,7 +236,8 @@ const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 // it only needs to be identity-checkable in assertions.
 const routeDbTx = { __routeDbTx: true };
 const routeDb = {
-  transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(routeDbTx),
+  transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> =>
+    fn(routeDbTx),
 };
 
 function createApp(actor: Record<string, unknown>, options: Record<string, unknown> = {}) {
@@ -279,7 +287,15 @@ describe("environment routes", () => {
     mockProjectService.getById.mockReset();
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment.mockReset();
-    mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment.mockResolvedValue({ destroyed: 0, failed: 0, skippedLiveRun: 0 });
+    mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment.mockResolvedValue(
+      { destroyed: 0, failed: 0, skippedLiveRun: 0 },
+    );
+    mockCloseWarmNativeSessionsForEnvironment.mockReset();
+    mockCloseWarmNativeSessionsForEnvironment.mockResolvedValue({
+      closed: 0,
+      busy: 0,
+      failed: 0,
+    });
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({ executionMode: "any" });
@@ -1655,12 +1671,21 @@ describe("environment routes", () => {
     const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
 
     expect(res.status).toBe(200);
-    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment)
-      .toHaveBeenCalledExactlyOnceWith({
-        environmentId: "env-1",
-        failureReason: "environment_deleted",
-      });
-    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
+    expect(
+      mockEnvironmentRuntimeService.destroyReusableSandboxLeasesForEnvironment,
+    ).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "env-1",
+      failureReason: "environment_deleted",
+    });
+    expect(
+      mockCloseWarmNativeSessionsForEnvironment,
+    ).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "env-1",
+      reason: "environment deleted",
+    });
+    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith(
+      "env-1",
+    );
     expect(res.body.destroyedReusableSandboxLeaseCount).toBe(2);
   });
 
@@ -2154,11 +2179,11 @@ describe("environment routes", () => {
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
-  it("keeps the host-owned stream flag and drops a removed flag a saved config still carries", async () => {
-    // The host owns `streamRunLogs`. It reads it to select the run-log stream. A
-    // provider plugin normalizes only its own driver fields, so it drops the host
-    // flag from its normalized config. The host must re-apply it, or the saved
-    // environment loses the operator opt-out and the stream never starts.
+  it("keeps host-owned sandbox flags and drops a removed flag a saved config still carries", async () => {
+    // The host owns run-log streaming and runner lifecycle. A provider plugin
+    // may normalize only its own driver fields, so it drops these host flags.
+    // The host must re-apply them or a saved warm environment silently becomes
+    // per-turn at execution time.
     //
     // `streamAgentSessionOutput` is a removed operator flag. A saved config can
     // still carry it, but session-output streaming now follows the capability
@@ -2172,22 +2197,31 @@ describe("environment routes", () => {
       config: { provider: "fake-plugin", image: "fake:test" },
     };
     mockEnvironmentService.create.mockResolvedValue(environment);
-    mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ provider, config }) => {
-      // Drop the host flag to reproduce a plugin that allowlists driver fields.
-      const { streamRunLogs, ...driverConfig } = config as Record<string, unknown>;
-      void streamRunLogs;
-      return {
-        normalizedConfig: driverConfig,
-        pluginId: `plugin-${provider}`,
-        pluginKey: `plugin.${provider}`,
-        driver: {
-          driverKey: provider,
-          kind: "sandbox_provider",
-          displayName: provider,
-          configSchema: { type: "object" },
-        },
-      };
-    });
+    mockValidatePluginSandboxProviderConfig.mockImplementation(
+      async ({ provider, config }) => {
+        // Drop the host flag to reproduce a plugin that allowlists driver fields.
+        const {
+          streamRunLogs,
+          runnerLifecycleMode,
+          runnerIdleTimeoutMs,
+          ...driverConfig
+        } = config as Record<string, unknown>;
+        void streamRunLogs;
+        void runnerLifecycleMode;
+        void runnerIdleTimeoutMs;
+        return {
+          normalizedConfig: driverConfig,
+          pluginId: `plugin-${provider}`,
+          pluginKey: `plugin.${provider}`,
+          driver: {
+            driverKey: provider,
+            kind: "sandbox_provider",
+            displayName: provider,
+            configSchema: { type: "object" },
+          },
+        };
+      },
+    );
     const pluginWorkerManager = {};
     const app = createApp({
       type: "board",
@@ -2204,6 +2238,8 @@ describe("environment routes", () => {
           provider: "fake-plugin",
           image: "fake:test",
           streamRunLogs: false,
+          runnerLifecycleMode: "warm",
+          runnerIdleTimeoutMs: 180_000,
           streamAgentSessionOutput: true,
         },
       });
@@ -2213,6 +2249,8 @@ describe("environment routes", () => {
     // The removed key never reaches the persisted config.
     expect(persisted.streamAgentSessionOutput).toBeUndefined();
     expect(persisted.streamRunLogs).toBe(false);
+    expect(persisted.runnerLifecycleMode).toBe("warm");
+    expect(persisted.runnerIdleTimeoutMs).toBe(180_000);
   });
 
   it("creates a schema-driven sandbox environment with secret-ref fields persisted as secrets", async () => {

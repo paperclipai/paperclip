@@ -616,13 +616,13 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(12);
+    expect(feed.totalCount).toBe(11);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
       join_request: 1,
       recovery_action: 1,
-      productivity_review: 1,
+      productivity_review: 0,
       blocker_attention: 1,
       review: 2,
       failed_run: 1,
@@ -634,7 +634,6 @@ describeEmbeddedPostgres("attention service", () => {
       "issue_thread_interaction",
       "join_request",
       "recovery_action",
-      "productivity_review",
       "blocker_attention",
       "review",
       "failed_run",
@@ -651,7 +650,14 @@ describeEmbeddedPostgres("attention service", () => {
       expect(item.rank).toBeGreaterThan(0);
     }
     expect(feed.items.some((item) => item.subject.title === "Revision requested")).toBe(false);
+    expect(feed.items.some((item) => item.sourceKind === "productivity_review")).toBe(false);
     expect(feed.items.some((item) => item.subject.title === "Agent productivity review excluded")).toBe(false);
+    const legacyReviews = await db.select().from(issues).where(eq(issues.originKind, "issue_productivity_review"));
+    expect(legacyReviews).toHaveLength(2);
+    expect(legacyReviews).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Human productivity review", status: "todo", assigneeUserId: "board-user", parentId: productivitySourceIssueId }),
+      expect.objectContaining({ title: "Agent productivity review excluded", status: "todo", assigneeAgentId: workerId, parentId: agentProductivitySourceIssueId }),
+    ]));
     expect(feed.items.some((item) => item.subject.title === "Agent review excluded")).toBe(false);
     expect(feed.items.some((item) =>
       item.sourceKind === "failed_run" && item.subject.metadata?.errorCode === "provider_quota"
@@ -860,9 +866,23 @@ describeEmbeddedPostgres("attention service", () => {
       addresseeAgentId: reviewerId,
       payload: { version: 1, questions: [] },
     });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      title: "User-addressed question",
+      createdByAgentId: workerId,
+      addresseeUserId: "board-user",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, questions: [] },
+    });
     await agentService(db).pause(reviewerId);
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const otherUserFeed = await attentionService(db).list(companyId, { userId: "other-user" });
     const audienceByTitle = new Map(feed.items
       .filter((item) => item.sourceKind === "issue_thread_interaction")
       .map((item) => [item.subject.title, item.resolverAudience]));
@@ -888,6 +908,11 @@ describeEmbeddedPostgres("attention service", () => {
       addresseeAgentId: reviewerId,
       addresseeName: "Reviewer",
     });
+    expect(audienceByTitle.get("User-addressed question")).toMatchObject({
+      addresseeUserId: "board-user",
+      effectiveResolverPolicy: "human_only",
+    });
+    expect(otherUserFeed.items.some((item) => item.subject.title === "User-addressed question")).toBe(false);
     // Non-interaction rows carry no resolver policy at all.
     expect(feed.items.find((item) => item.sourceKind !== "issue_thread_interaction")?.resolverAudience)
       .toBeNull();

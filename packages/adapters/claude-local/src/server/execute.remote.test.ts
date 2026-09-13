@@ -13,15 +13,17 @@ const {
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async (): Promise<RunProcessResult> => ({
+  runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[]): Promise<RunProcessResult> => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
-    stdout: [
-      JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
-      JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }),
-      JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }),
-    ].join("\n"),
+    stdout: args.includes("--version")
+      ? "2.1.251 (Claude Code)\n"
+      : [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
+          JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }),
+          JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }),
+        ].join("\n"),
     stderr: "",
     pid: 123,
     startedAt: new Date().toISOString(),
@@ -76,12 +78,15 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
+import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
 describe("claude remote execution", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    resetClaudeCliCapabilitiesCacheForTests();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -90,6 +95,8 @@ describe("claude remote execution", () => {
   });
 
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {
+    vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
+    vi.stubEnv("ANTHROPIC_MODEL", "host-only-model");
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -116,6 +123,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
         instructionsFilePath: instructionsPath,
         env: {
@@ -184,6 +192,7 @@ describe("claude remote execution", () => {
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
+    expect(call?.[2]).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
     expect(call?.[2]).toContain("--allowedTools");
     expect(call?.[2]).toContain(
       "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
@@ -249,6 +258,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
       },
       context: {
@@ -310,6 +320,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
       },
       context: {
@@ -377,6 +388,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
       },
       context: {
@@ -401,6 +413,129 @@ describe("claude remote execution", () => {
     });
 
     expect(result.errorCode).toBe("duplex_channel_lost");
+  });
+
+  describe("CLI-lane model pass-through", () => {
+    async function executeWithModel(prefix: string, config: Record<string, unknown>) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+      cleanupDirs.push(rootDir);
+      const workspaceDir = path.join(rootDir, "workspace");
+      await mkdir(workspaceDir, { recursive: true });
+
+      const result = await execute({
+        runId: "run-model-passthrough",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+        engine: "cli",
+          command: "claude",
+          ...config,
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+            source: "project_primary",
+          },
+        },
+        executionTransport: {
+          remoteExecution: {
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteWorkspacePath: "/remote/workspace",
+            remoteCwd: "/remote/workspace",
+            privateKey: "PRIVATE KEY",
+            knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+            strictHostKeyChecking: true,
+          },
+        },
+        onLog: async () => {},
+      });
+
+      const call = runChildProcess.mock.calls.find((candidate) =>
+        (candidate[2] as string[]).includes("--print"),
+      ) as unknown as [string, string, string[]] | undefined;
+      return { args: call?.[2] ?? [], result };
+    }
+
+    it("passes the exact configured Fable 5.1 ID as --model on the CLI lane", async () => {
+      const { args } = await executeWithModel("paperclip-claude-model-direct-", {
+        model: "claude-fable-5-1",
+      });
+
+      const modelFlag = args.indexOf("--model");
+      expect(modelFlag).toBeGreaterThanOrEqual(0);
+      expect(args[modelFlag + 1]).toBe("claude-fable-5-1");
+    });
+
+    it("passes the Bedrock-native Fable 5.1 ID as --model under Bedrock auth", async () => {
+      const { args } = await executeWithModel("paperclip-claude-model-bedrock-", {
+        model: "us.anthropic.claude-fable-5-1",
+        env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+      });
+
+      const modelFlag = args.indexOf("--model");
+      expect(modelFlag).toBeGreaterThanOrEqual(0);
+      expect(args[modelFlag + 1]).toBe("us.anthropic.claude-fable-5-1");
+    });
+
+    it("skips --model for a direct Anthropic ID under Bedrock auth", async () => {
+      const { args } = await executeWithModel("paperclip-claude-model-bedrock-skip-", {
+        model: "claude-fable-5-1",
+        env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+      });
+
+      expect(args).not.toContain("--model");
+    });
+
+    it("rejects Fable 5.1 before launch when the CLI is older than 2.1.251", async () => {
+      runChildProcess.mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "2.1.247 (Claude Code)\n",
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      });
+
+      const { args, result } = await executeWithModel("paperclip-claude-model-old-cli-", {
+        model: "claude-fable-5-1",
+      });
+
+      expect(args).toEqual([]);
+      expect(result.errorCode).toBe("claude_cli_version_incompatible");
+      expect(result.errorMessage).toContain("requires Claude Code 2.1.251 or newer");
+      expect(result.resultJson).toMatchObject({
+        requiredClaudeCodeVersion: "2.1.251",
+        detectedClaudeCodeVersion: "2.1.247",
+      });
+    });
+
+    it("leaves Fable compatibility to explicitly configured custom CLI wrappers", async () => {
+      const { args, result } = await executeWithModel("paperclip-claude-model-wrapper-", {
+        command: "/opt/paperclip/claude-wrapper",
+        model: "claude-fable-5-1",
+      });
+
+      expect(args).toContain("--model");
+      expect(args).toContain("claude-fable-5-1");
+      expect(result.errorCode).not.toBe("claude_cli_version_incompatible");
+      expect(runChildProcess.mock.calls.some((call) =>
+        (call[2] as string[]).includes("--version"),
+      )).toBe(false);
+    });
   });
 
 });

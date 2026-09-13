@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "slug": "mem0",
+  "name": "Mem0",
+  "description": "Connect Mem0's provider-hosted MCP server.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/mem0.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.mem0.ai/*"
+  ],
+  "docsUrl": "https://docs.mem0.ai/platform/mem0-mcp",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.mem0.ai/mcp/"
+      },
+      "guidanceMd": "Use a customer-created Mem0 key. A Mem0 API key; the live server currently requires the slash-normalized endpoint.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Mem0 API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "m0sk_...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://docs.mem0.ai/platform/mem0-mcp",
+        "docs": "https://docs.mem0.ai/platform/mem0-mcp"
+      },
+      "warnings": [
+        "A Mem0 API key; the live server currently requires the slash-normalized endpoint."
+      ]
+    }
+  ]
+}

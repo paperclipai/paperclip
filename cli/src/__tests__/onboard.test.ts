@@ -1,9 +1,15 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onboard } from "../commands/onboard.js";
 import type { PaperclipConfig } from "../config/schema.js";
+
+const runCommandMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../commands/run.js", () => ({
+  runCommand: runCommandMock,
+}));
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
@@ -86,6 +92,7 @@ describe("onboard", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     delete process.env.PAPERCLIP_DB_BACKUP_DIR;
@@ -102,7 +109,10 @@ describe("onboard", () => {
     delete process.env.PAPERCLIP_BIND;
     delete process.env.PAPERCLIP_BIND_HOST;
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    delete process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    delete process.env.PAPERCLIP_NO_BROWSER;
     delete process.env.HOST;
+    runCommandMock.mockReset();
   });
 
   afterEach(() => {
@@ -129,6 +139,68 @@ describe("onboard", () => {
     expect(fs.readFileSync(fixture.configPath, "utf8")).toBe(fixture.configText);
     expect(fs.existsSync(`${fixture.configPath}.backup`)).toBe(false);
     expect(fs.existsSync(path.join(path.dirname(fixture.configPath), ".env"))).toBe(true);
+  });
+
+  it("does not opt into opening a browser for a non-interactive existing setup", async () => {
+    const fixture = createExistingConfigFixture();
+
+    await onboard({ config: fixture.configPath, yes: true });
+
+    expect(runCommandMock).toHaveBeenCalledWith({ config: fixture.configPath, repair: true, yes: true });
+    expect(process.env.PAPERCLIP_OPEN_ON_LISTEN).toBeUndefined();
+  });
+
+  it.each([
+    ["existing", () => createExistingConfigFixture().configPath],
+    ["fresh", () => createFreshConfigPath()],
+  ])("opens the browser once while an interactive %s setup starts", async (_label, configPathForTest) => {
+    const configPath = configPathForTest();
+    const stdinIsTTY = process.stdin.isTTY;
+    const stdoutIsTTY = process.stdout.isTTY;
+    let openOnListenDuringRun: string | undefined;
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    runCommandMock.mockImplementation(async () => {
+      openOnListenDuringRun = process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    });
+
+    try {
+      await onboard({ config: configPath, yes: true });
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+      Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+    }
+
+    expect(runCommandMock).toHaveBeenCalledWith({ config: configPath, repair: true, yes: true });
+    expect(openOnListenDuringRun).toBe("true");
+    expect(process.env.PAPERCLIP_OPEN_ON_LISTEN).toBeUndefined();
+  });
+
+  it.each([
+    ["PAPERCLIP_NO_BROWSER", "1"],
+    ["PAPERCLIP_OPEN_ON_LISTEN", "false"],
+  ])("respects the interactive browser opt-out %s", async (key, value) => {
+    const configPath = createFreshConfigPath();
+    const stdinIsTTY = process.stdin.isTTY;
+    const stdoutIsTTY = process.stdout.isTTY;
+    let openOnListenDuringRun: string | undefined;
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+    process.env[key] = value;
+    runCommandMock.mockImplementation(async () => {
+      openOnListenDuringRun = process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    });
+
+    try {
+      await onboard({ config: configPath, yes: true });
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdinIsTTY });
+      Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: stdoutIsTTY });
+    }
+
+    expect(runCommandMock).toHaveBeenCalledWith({ config: configPath, repair: true, yes: true });
+    expect(openOnListenDuringRun).not.toBe("true");
+    expect(process.env[key]).toBe(value);
   });
 
   it("backs up invalid config bytes and refuses --yes replacement", async () => {
@@ -177,6 +249,8 @@ describe("onboard", () => {
     expect(raw.storage.localDisk.baseDir).toBe(path.join(instanceRoot, "data", "storage"));
     expect(raw.secrets.localEncrypted.keyFilePath).toBe(path.join(instanceRoot, "secrets", "master.key"));
     expect(fs.existsSync(path.join(instanceRoot, ".env"))).toBe(true);
+    expect(fs.readFileSync(path.join(instanceRoot, ".env"), "utf8"))
+      .toContain("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=");
     expect(fs.existsSync(path.join(instanceRoot, "secrets", "master.key"))).toBe(true);
   });
 

@@ -10,6 +10,7 @@
     "providerSessionId": { "type": ["string", "null"], "maxLength": 240 },
     "providerRequestId": { "type": ["string", "null"], "maxLength": 240 },
     "cumulative": { "$ref": "#/$defs/measurement" },
+    "runDeltaAvailable": { "type": "boolean" },
     "runDelta": { "$ref": "#/$defs/measurement" }
   },
   "additionalProperties": false,

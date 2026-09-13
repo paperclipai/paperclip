@@ -91,6 +91,10 @@ repair_base_workspace_install() {
   # otherwise skip the dangling symlinks; --frozen-lockfile keeps the repair
   # from mutating the shared base workspace's lockfile.
   local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
+  # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+  # install. Node 24 reports that call as DEP0169. Remove this flag when the
+  # pinned pnpm no longer calls url.parse() in that path.
+  local repair_node_options="${NODE_OPTIONS:-} --disable-warning=DEP0169"
   # Resolve the real git dir so locking also covers base workspaces that are
   # linked worktrees, where "$base_cwd/.git" is a file rather than a directory.
   local repair_lock_dir=""
@@ -113,11 +117,11 @@ repair_base_workspace_install() {
         echo "Base workspace CLI became healthy while waiting for the repair lock; skipping reinstall." >&2
         exit 0
       fi
-      env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 || exit 1
+      env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 || exit 1
       base_cli_healthy
     )
   else
-    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 && base_cli_healthy)
+    (cd "$base_cwd" && env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 && base_cli_healthy)
   fi
 }
 
@@ -688,6 +692,14 @@ function walk(dir) {
 }
 
 walk(root);
+// package.json is the pnpm 9 patch manifest for this repository. Hash the
+// declared paths, including non-.patch filenames and patches outside patches/.
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+for (const patch of Object.values(manifest.pnpm?.patchedDependencies ?? {})) {
+  if (typeof patch !== "string") throw new Error("Invalid pnpm patch path");
+  const file = path.resolve(root, patch);
+  if (!files.includes(file)) files.push(file);
+}
 files.sort((left, right) => path.relative(root, left).localeCompare(path.relative(root, right)));
 
 const hash = crypto.createHash("sha256");
@@ -764,24 +776,28 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
     }
 
     run_pnpm_install() {
-      local stdout_path stderr_path
+      local stdout_path stderr_path exit_code
       stdout_path="$(mktemp)"
       stderr_path="$(mktemp)"
 
       if (
         cd "$worktree_cwd"
-        pnpm install --prod=false "$@"
+        # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+        # install. Node 24 reports that call as DEP0169. Remove this flag
+        # when the pinned pnpm no longer calls url.parse() in that path.
+        NODE_OPTIONS="${NODE_OPTIONS:-} --disable-warning=DEP0169" pnpm install --prod=false "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
         cat "$stderr_path" >&2
         rm -f "$stdout_path" "$stderr_path"
         return 0
+      else
+        exit_code=$?
       fi
 
-      local exit_code=$?
       cat "$stdout_path"
       cat "$stderr_path" >&2
-      if grep -q "ERR_PNPM_OUTDATED_LOCKFILE" "$stdout_path" "$stderr_path"; then
+      if grep -Eq "ERR_PNPM_(OUTDATED_LOCKFILE|LOCKFILE_CONFIG_MISMATCH)" "$stdout_path" "$stderr_path"; then
         rm -f "$stdout_path" "$stderr_path"
         return 90
       fi

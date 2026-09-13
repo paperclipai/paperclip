@@ -8,11 +8,11 @@ vi.mock("../services/environment-config.js", () => ({
   resolveEnvironmentDriverConfigForRuntime: mockResolveEnvironmentDriverConfigForRuntime,
 }));
 
-import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
+import type { EffectiveExecutionCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 
-const SNAPSHOT: EffectiveSandboxCapabilities = {
+const SNAPSHOT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: false,
@@ -23,11 +23,12 @@ const SNAPSHOT: EffectiveSandboxCapabilities = {
   // inbound sync, so the opt-in stays off.
   concurrentSyncOperations: false,
   duplexCommandStream: false,
+  runnerWebSocketIngress: false,
 };
 
 // A snapshot that grants every capability. A test overrides one flag to prove
 // that the removed capability alone changes the runtime decision.
-const FULL_GRANT: EffectiveSandboxCapabilities = {
+const FULL_GRANT: EffectiveExecutionCapabilities = {
   reusableLeases: true,
   nativeSyncIn: true,
   nativeSyncOut: true,
@@ -36,13 +37,14 @@ const FULL_GRANT: EffectiveSandboxCapabilities = {
   incrementalSessionOutput: true,
   concurrentSyncOperations: true,
   duplexCommandStream: true,
+  runnerWebSocketIngress: true,
 };
 
 // Build a sandbox execution target with a fixed snapshot and a fixed
 // `supportsSync` result. The helper returns the sandbox target so a test reads
 // the runner and the streaming flag the snapshot gates.
 async function buildSandboxTarget(input: {
-  snapshot: EffectiveSandboxCapabilities | null;
+  snapshot: EffectiveExecutionCapabilities | null;
   supportsSync: boolean;
   config?: Record<string, unknown>;
   // Reject the capability resolution to exercise the fail-closed error path.
@@ -128,7 +130,7 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
 
     // The snapshot is read-only: it is frozen, so a write does not change it.
     expect(Object.isFrozen(target.effectiveCapabilities)).toBe(true);
-    const snapshot = target.effectiveCapabilities as EffectiveSandboxCapabilities;
+    const snapshot = target.effectiveCapabilities as EffectiveExecutionCapabilities;
     try {
       (snapshot as { reusableLeases: boolean }).reusableLeases = false;
     } catch {
@@ -196,6 +198,62 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
 
     expect(target?.kind).toBe("remote");
     expect(resolveCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("carries the environment-owned warm runner lifecycle and reuse requirement", async () => {
+    const { target } = await buildSandboxTarget({
+      snapshot: FULL_GRANT,
+      supportsSync: false,
+      config: {
+        reuseLease: true,
+        runnerLifecycleMode: "warm",
+        runnerIdleTimeoutMs: 45_000,
+      },
+    });
+
+    expect(target.runnerLifecyclePolicy).toEqual({
+      mode: "warm",
+      idleTimeoutMs: 45_000,
+    });
+    expect(target.reusableLeaseConfigured).toBe(true);
+  });
+
+  it("carries host-owned sandbox acquisition provenance without persisting provider ids in metadata", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "daytona", reuseLease: true, timeoutMs: 30_000 },
+    });
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      // This substrate PR does not advertise remote paperclip_runner support
+      // until the Rust WSS transport lands. A supported direct adapter exercises
+      // the same host-owned acquisition contract without widening rollout here.
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
+      leaseId: "lease-row-1",
+      leaseMetadata: {
+        remoteCwd: "/work",
+        sandboxLeaseAcquisition: { outcome: "resumed" },
+      },
+      lease: {
+        id: "lease-row-1",
+        providerLeaseId: "daytona-sandbox-1",
+        leasePolicy: "reuse_by_environment",
+        metadata: { sandboxLeaseAcquisition: { outcome: "resumed" } },
+      } as never,
+      environmentRuntime: {
+        supportsSync: () => false,
+        resolveCapabilities: vi.fn(async () => ({ ...FULL_GRANT })),
+      } as unknown as EnvironmentRuntimeService,
+    });
+    if (target?.kind !== "remote" || target.transport !== "sandbox") {
+      throw new Error("expected a sandbox target");
+    }
+    expect(target.sandboxLeaseAcquisition).toEqual({
+      outcome: "resumed",
+      providerLeaseId: "daytona-sandbox-1",
+    });
   });
 });
 

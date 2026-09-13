@@ -8,12 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
 let issueWorkspaceDraftCalls = 0;
-let issueWorkspaceDraft = {
+let issueWorkspaceDraft: Record<string, unknown> | null = {
   executionWorkspaceId: null as string | null,
   executionWorkspacePreference: "shared_workspace",
   executionWorkspaceSettings: { mode: "shared_workspace" },
 };
 let issueWorkspaceBranchName: string | null = null;
+let issueWorkspaceCanSave = true;
 let latestWorkspaceIssue: Record<string, unknown> | null = null;
 
 vi.mock("../api/instanceSettings", () => ({
@@ -32,7 +33,7 @@ vi.mock("./IssueWorkspaceCard", async () => {
     }: {
       issue: Record<string, unknown>;
       onDraftChange?: (
-        data: Record<string, unknown>,
+        data: Record<string, unknown> | null,
         meta: { canSave: boolean; workspaceBranchName?: string | null },
       ) => void;
     }) => {
@@ -43,7 +44,7 @@ vi.mock("./IssueWorkspaceCard", async () => {
           throw new Error("IssueWorkspaceCard onDraftChange looped");
         }
         onDraftChange?.(issueWorkspaceDraft, {
-          canSave: true,
+          canSave: issueWorkspaceCanSave,
           workspaceBranchName: issueWorkspaceBranchName,
         });
       }, [onDraftChange]);
@@ -237,6 +238,7 @@ describe("RoutineRunVariablesDialog", () => {
       executionWorkspaceSettings: { mode: "shared_workspace" },
     };
     issueWorkspaceBranchName = null;
+    issueWorkspaceCanSave = true;
     latestWorkspaceIssue = null;
   });
 
@@ -278,6 +280,40 @@ describe("RoutineRunVariablesDialog", () => {
     expect(document.body.textContent).toContain("Run routine");
     expect(document.body.textContent).not.toContain("Search agents...");
     expect(document.body.textContent).not.toContain("Search projects...");
+
+    await flushUi(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the run disabled while a reusable workspace selection is incomplete", async () => {
+    issueWorkspaceDraft = null;
+    issueWorkspaceCanSave = false;
+    const root = createRoot(container);
+    const queryClient = createQueryClient();
+
+    await flushUi(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <RoutineRunVariablesDialog
+            open
+            onOpenChange={() => {}}
+            companyId="company-1"
+            projects={[createProject()]}
+            agents={[createAgent()]}
+            defaultProjectId="project-1"
+            defaultAssigneeAgentId="agent-1"
+            variables={[]}
+            isPending={false}
+            onSubmit={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushUi(() => {});
+
+    expect(document.body.textContent).toContain("Workspace card");
+    expect(findRunButton()?.disabled).toBe(true);
 
     await flushUi(() => {
       root.unmount();

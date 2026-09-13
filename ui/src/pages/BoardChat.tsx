@@ -658,9 +658,9 @@ export function BoardChat() {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center max-w-sm">
-          <h2 className="text-lg font-semibold">No company selected</h2>
+          <h2 className="text-lg font-semibold">No organization selected</h2>
           <p className="text-sm text-muted-foreground mt-2">
-            Select a company to start chatting with your board concierge.
+            Select an organization to start chatting with your board concierge.
           </p>
         </div>
       </div>
@@ -692,7 +692,7 @@ export function BoardChat() {
                 {ceoAgent?.name ?? "Conference Room"}
               </h3>
               <p className="text-xs text-muted-foreground">
-                {selectedCompany?.name ?? "Your company"}
+                {selectedCompany?.name ?? "Your organization"}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
@@ -756,8 +756,8 @@ export function BoardChat() {
 
                 const chips: Array<{ label: string; prompt: string }> = [
                   {
-                    label: "Draft a Company Brief",
-                    prompt: `Draft a one-page Company Brief for ${companyName} — include our mission, team roster, and first priorities.`,
+                    label: "Draft an Organization Brief",
+                    prompt: `Draft a one-page Organization Brief for ${companyName} — include our mission, team roster, and first priorities.`,
                   },
                   {
                     label: "Create a hiring plan",
@@ -967,7 +967,7 @@ export function BoardChat() {
               value={input}
               onChange={setInput}
               onSubmit={handleSend}
-              placeholder="Ask anything about your company..."
+              placeholder="Ask anything about your organization..."
               submitKey="enter"
               surface="translucent"
               submitting={sending}

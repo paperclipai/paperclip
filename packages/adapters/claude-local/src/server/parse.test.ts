@@ -199,6 +199,18 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("classifies the qualifier-less limit wording as provider quota and extracts the retry time", () => {
+    // Current Claude CLI phrasing: no "session"/"usage" qualifier before "limit".
+    const now = new Date("2026-08-28T22:30:00.000Z");
+    const errorMessage = "You've hit your limit · resets 2:30am (UTC)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-08-29T02:30:00.000Z",
+    );
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({

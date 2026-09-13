@@ -49,6 +49,26 @@ App only after a human accepts the exact research revision and connection set.
   briefs, catalog files, issue text, plans, fixtures, screenshots, logs, branch
   names, commits, or PRs.
 
+## Default Connection Experience
+
+- Request the broadest vendor permissions and scopes the connection can
+  support by default. Operators should not have to predict every future tool
+  they may need during setup. Enforce safe use after connection through
+  Paperclip's action catalog, resource boundaries, ask-first policies,
+  quarantine, and audit controls.
+- Keep the default wizard limited to the minimum information needed to create
+  a working connection: connection identity, authentication, and any
+  unavoidable tenant or resource boundary. Put optional scope reduction,
+  feature groups, individual tool filters, response modes, transport tuning,
+  and other expert controls behind one collapsed **Advanced** disclosure.
+- Give advanced controls working broad defaults so an operator can finish
+  setup without opening them. When a provider truly requires an explicit
+  advanced choice, document the exception and explain it in plain language
+  instead of exposing protocol details by default.
+- Treat vendor permission breadth and Paperclip execution governance as
+  separate layers. Do not reduce requested vendor permissions merely to stand
+  in for missing action review, approval, quarantine, or audit policy.
+
 ## Preflight
 
 1. Load the current Paperclip skill for checkout, comments, interactions,

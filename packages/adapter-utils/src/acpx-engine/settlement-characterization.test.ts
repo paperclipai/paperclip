@@ -334,6 +334,7 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
             // The lease is still held while the sync-back runs; it releases only
             // afterward, in the cleanupRemoteBridges finally.
             leaseSizeDuringSyncBack = stagingLocks.size;
+            return { ok: true };
           },
         };
       },
@@ -1046,6 +1047,7 @@ describe("ACP settlement — Layer C: per-adapter sync-back teardown fires once 
               stagedRuntime,
               teardown: async () => {
                 teardownCalls += 1;
+                return { ok: true };
               },
             };
           },

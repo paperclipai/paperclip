@@ -11,6 +11,7 @@
 // operations the host lane always did (host cwd, no staging failures, no
 // transport, no sync-back). A later phase routes the whole lane through the site.
 
+import type { ChildProcess } from "node:child_process";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import type { AcpRuntime, AcpRuntimeHandle } from "acpx/runtime";
 import type {
@@ -36,6 +37,7 @@ export type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
 export type AcpxProcessIdentitySink = {
   current: AdapterExecutionContext["onSpawn"];
   latest: AcpxAgentProcessIdentity | null;
+  localProcess?: ChildProcess;
 };
 
 /** The live-line buffer and log path a warm runtime's child stderr carries. */

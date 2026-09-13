@@ -46,6 +46,7 @@ function createMockSandbox(overrides: {
   recoverable?: boolean;
   workDir?: string;
   autoDestroyAt?: string | null;
+  updatedAt?: string;
 } = {}) {
   return {
     id: overrides.id ?? "sandbox-123",
@@ -57,6 +58,7 @@ function createMockSandbox(overrides: {
     // A configured provider TTL populates `autoDestroyAt` after `setTtl` +
     // `refreshData`. The default mock leaves it unset (no TTL configured).
     autoDestroyAt: overrides.autoDestroyAt ?? undefined,
+    updatedAt: overrides.updatedAt,
     getWorkDir: vi.fn().mockResolvedValue(overrides.workDir ?? "/home/daytona"),
     getUserHomeDir: vi.fn().mockResolvedValue("/home/daytona"),
     start: vi.fn().mockResolvedValue(undefined),
@@ -74,6 +76,10 @@ function createMockSandbox(overrides: {
     createSshAccess: vi.fn().mockResolvedValue({
       token: "ssh-token-secret",
       command: "ssh ssh-token-secret@ssh.app.daytona.io",
+    }),
+    getPreviewLink: vi.fn().mockResolvedValue({
+      url: "https://43127-sandbox-123.proxy.daytona.test",
+      token: "preview-token-secret",
     }),
     _experimental_createSnapshot: vi.fn().mockResolvedValue(undefined),
     fs: {
@@ -161,11 +167,90 @@ describe("Daytona sandbox provider plugin", () => {
     expect(plugin.definition.onDuplexChannelClose).toBeTypeOf("function");
   });
 
+  it("declares and returns private authenticated runner WebSocket ingress", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+    const base = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { image: "node:20", timeoutMs: 300_000, reuseLease: false },
+    };
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      ...base,
+      runId: "00000000-0000-4000-8000-000000000001",
+    });
+    const endpoint = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.({
+      ...base,
+      lease: lease!,
+      port: 43_127,
+      path: "/api/runner/v1/connect/00000000-0000-4000-8000-000000000001",
+    });
+
+    expect(manifest.environmentDrivers?.[0]?.sandboxCapabilities).toMatchObject({
+      runnerWebSocketIngress: true,
+    });
+    expect(endpoint).toMatchObject({
+      kind: "authenticated_websocket",
+      websocketUrl:
+        "wss://43127-sandbox-123.proxy.daytona.test/api/runner/v1/connect/00000000-0000-4000-8000-000000000001",
+      secretHeaders: [
+        { name: "X-Daytona-Preview-Token", value: "preview-token-secret" },
+      ],
+    });
+    expect(endpoint?.websocketUrl).not.toContain("preview-token-secret");
+    expect(endpoint?.websocketUrl).not.toContain("host-key");
+  });
+
+  it("keeps ingress generation independent of token rotation and changes it after a sandbox lifecycle revision", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ updatedAt: "2026-08-25T10:00:00.000Z" });
+    sandbox.getPreviewLink
+      .mockResolvedValueOnce({
+        url: "https://43127-sandbox-123.proxy.daytona.test",
+        token: "preview-token-1",
+      })
+      .mockResolvedValueOnce({
+        url: "https://43127-sandbox-123.proxy.daytona.test",
+        token: "preview-token-2",
+      })
+      .mockResolvedValueOnce({
+        url: "https://43127-sandbox-123.proxy.daytona.test",
+        token: "preview-token-3",
+      });
+    mockCreate.mockResolvedValue(sandbox);
+    const base = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { image: "node:20", timeoutMs: 300_000, reuseLease: false },
+    };
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      ...base,
+      runId: "00000000-0000-4000-8000-000000000001",
+    });
+    const request = {
+      ...base,
+      lease: lease!,
+      port: 43_127,
+      path: "/api/runner/v1/connect/00000000-0000-4000-8000-000000000001",
+    };
+    const first = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.(request);
+    const second = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.(request);
+    expect(second?.generation).toBe(first?.generation);
+    expect(second?.secretHeaders).not.toEqual(first?.secretHeaders);
+
+    sandbox.updatedAt = "2026-08-25T10:05:00.000Z";
+    const restarted = await plugin.definition.onEnvironmentRunnerIngressEndpoint?.(request);
+    expect(restarted?.generation).not.toBe(first?.generation);
+  });
+
   it("bumps the plugin version so the server reconciles the stored manifest", () => {
     // The bundled-plugin boot reconcile refreshes the stored manifest for an
     // existing install only when the version changes. The duplex capability needs
     // the bump to reach an existing install.
-    expect(manifest.version).toBe("0.1.5");
+    expect(manifest.version).toBe("0.1.7");
   });
 
   it("opens a duplex channel, forwards a host write, and closes it on lease release", async () => {
@@ -201,11 +286,13 @@ describe("Daytona sandbox provider plugin", () => {
     mockCreate.mockResolvedValue(sandbox);
 
     // Capture the data and the exit the worker forwards through `ctx.duplexChannel`.
+    // `ctx.duplexChannel.data` carries raw bytes; decode each chunk to text so the
+    // assertion below reads the plain-text payload.
     const dataChunks: Array<{ hostRouteId: string; workerSessionId: string; chunk: string }> = [];
     const restore = __setDaytonaPluginContextForTest({
       duplexChannel: {
-        data: (hostRouteId: string, workerSessionId: string, chunk: string) =>
-          dataChunks.push({ hostRouteId, workerSessionId, chunk }),
+        data: (hostRouteId: string, workerSessionId: string, chunk: Uint8Array) =>
+          dataChunks.push({ hostRouteId, workerSessionId, chunk: Buffer.from(chunk).toString("utf8") }),
         exit: () => {},
       },
     } as unknown as PluginContext);
@@ -242,10 +329,12 @@ describe("Daytona sandbox provider plugin", () => {
       expect(inputs[0]).toMatch(/2>'\/tmp\/paperclip-duplex-.+\.log'/);
 
       // A host write on the exact pair reaches the process on the same channel.
+      // `data` arrives in the wire-safe base64 form (see `ChannelBytesWireValue`
+      // in the plugin SDK's protocol.ts).
       await plugin.definition.onDuplexChannelWrite?.({
         hostRouteId: "route-1",
         workerSessionId,
-        data: '{"version":1,"type":"heartbeat"}\n',
+        data: Buffer.from('{"version":1,"type":"heartbeat"}\n', "utf8").toString("base64"),
       });
       expect(inputs[1]).toBe('{"version":1,"type":"heartbeat"}\n');
 
@@ -255,7 +344,7 @@ describe("Daytona sandbox provider plugin", () => {
       await plugin.definition.onDuplexChannelWrite?.({
         hostRouteId: "route-foreign",
         workerSessionId,
-        data: "foreign\n",
+        data: Buffer.from("foreign\n", "utf8").toString("base64"),
       });
       expect(inputs.length).toBe(inputsBeforeForeign);
       // A stop whose pair does not match the bound entry stops nothing.
@@ -297,7 +386,7 @@ describe("Daytona sandbox provider plugin", () => {
       await plugin.definition.onDuplexChannelWrite?.({
         hostRouteId: "route-1",
         workerSessionId,
-        data: "late\n",
+        data: Buffer.from("late\n", "utf8").toString("base64"),
       });
       expect(inputs.length).toBe(inputsBefore);
     } finally {
@@ -1070,7 +1159,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
-  it("deletes the sandbox if resume setup throws after the sandbox starts", async () => {
+  it("preserves the sandbox if resume setup throws after the sandbox starts", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox({ id: "sandbox-resume", state: "stopped" });
     sandbox.getWorkDir.mockRejectedValue(new Error("workdir lookup failed"));
@@ -1090,7 +1179,7 @@ describe("Daytona sandbox provider plugin", () => {
     ).rejects.toThrow("workdir lookup failed");
 
     expect(sandbox.start).toHaveBeenCalled();
-    expect(sandbox.delete).toHaveBeenCalledTimes(1);
+    expect(sandbox.delete).not.toHaveBeenCalled();
   });
 
   it("marks missing reusable leases as expired on resume", async () => {
@@ -1151,6 +1240,8 @@ describe("Daytona sandbox provider plugin", () => {
       providerLeaseId: "sandbox-reuse",
       metadata: {
         resumedLease: true,
+        resumedFromState: "stopped",
+        sandboxState: "started",
         workspaceSentinel: {
           result: "matched",
           token: "sentinel-token",
@@ -1200,13 +1291,38 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes a cached stopped handle before granting a termination receipt", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-resumed", state: "stopped" });
+    sandbox.refreshData.mockImplementation(async () => { sandbox.state = "started"; });
+    mockGet.mockResolvedValue(sandbox);
+    await expect(plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      providerLeaseId: sandbox.id, config: { reuseLease: true },
+    })).resolves.toEqual({ providerLeaseId: sandbox.id, state: "stopped" });
+    expect(sandbox.refreshData).toHaveBeenCalled();
+    expect(sandbox.stop).toHaveBeenCalled();
+  });
+
+  it("does not acknowledge termination when both provider stop and delete fail", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-failed-stop", state: "started" });
+    sandbox.stop.mockRejectedValueOnce(new Error("stop failed"));
+    sandbox.delete.mockRejectedValueOnce(new Error("delete failed"));
+    mockGet.mockResolvedValue(sandbox);
+    await expect(plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      providerLeaseId: sandbox.id, config: { reuseLease: true },
+    })).rejects.toThrow("delete failed");
+  });
+
   it("stops reusable leases and deletes ephemeral leases on release", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const reusable = createMockSandbox({ id: "sandbox-reusable" });
     const ephemeral = createMockSandbox({ id: "sandbox-ephemeral" });
     mockGet.mockResolvedValueOnce(reusable).mockResolvedValueOnce(ephemeral);
 
-    await plugin.definition.onEnvironmentReleaseLease?.({
+    const reusableReceipt = await plugin.definition.onEnvironmentReleaseLease?.({
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
@@ -1216,7 +1332,7 @@ describe("Daytona sandbox provider plugin", () => {
         reuseLease: true,
       },
     });
-    await plugin.definition.onEnvironmentReleaseLease?.({
+    const ephemeralReceipt = await plugin.definition.onEnvironmentReleaseLease?.({
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
@@ -1227,9 +1343,11 @@ describe("Daytona sandbox provider plugin", () => {
       },
     });
 
+    expect(reusableReceipt).toEqual({ providerLeaseId: "sandbox-reusable", state: "stopped" });
+    expect(ephemeralReceipt).toEqual({ providerLeaseId: "sandbox-ephemeral", state: "destroyed" });
     expect(reusable.stop).toHaveBeenCalledWith(300);
     expect(reusable.delete).not.toHaveBeenCalled();
-    expect(ephemeral.delete).toHaveBeenCalledWith(300);
+    expect(ephemeral.delete).toHaveBeenCalledWith(300, true);
   });
 
   it("archives instead of deleting when the lease was acquired with archiveOnRelease", async () => {
@@ -1276,7 +1394,7 @@ describe("Daytona sandbox provider plugin", () => {
 
     expect(sandbox.stop).not.toHaveBeenCalled();
     expect(sandbox.archive).toHaveBeenCalled();
-    expect(sandbox.delete).toHaveBeenCalledWith(300);
+    expect(sandbox.delete).toHaveBeenCalledWith(300, true);
     expect(warnSpy).toHaveBeenCalled();
   });
 
@@ -1298,7 +1416,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
 
     expect(errored.stop).toHaveBeenCalledWith(300);
-    expect(errored.delete).toHaveBeenCalledWith(300);
+    expect(errored.delete).toHaveBeenCalledWith(300, true);
   });
 
   it("falls back to delete when stopping a healthy reusable lease fails mid-call", async () => {
@@ -1320,7 +1438,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
 
     expect(sandbox.stop).toHaveBeenCalledWith(300);
-    expect(sandbox.delete).toHaveBeenCalledWith(300);
+    expect(sandbox.delete).toHaveBeenCalledWith(300, true);
     expect(warnSpy).toHaveBeenCalled();
   });
 
@@ -1537,7 +1655,24 @@ describe("Daytona sandbox provider plugin", () => {
 
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(sessionId));
       // The rest of teardown still ran: the ephemeral sandbox was deleted.
-      expect(sandbox.delete).toHaveBeenCalledWith(300);
+      expect(sandbox.delete).toHaveBeenCalledWith(300, true);
+    });
+
+    it("returns a destroy receipt only after the provider confirms deletion", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      let complete!: () => void;
+      sandbox.delete.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+      const release = plugin.definition.onEnvironmentDestroyLease!({ driverKey: "daytona",
+        companyId: "company-1", environmentId: "env-1", providerLeaseId: "sandbox-123",
+        config: { timeoutMs: 300000, reuseLease: false } });
+      let settled = false;
+      void Promise.resolve(release).then(() => { settled = true; });
+      await vi.waitFor(() => expect(sandbox.delete).toHaveBeenCalledWith(300, true));
+      expect(settled).toBe(false);
+      complete();
+      await expect(release).resolves.toEqual({ providerLeaseId: "sandbox-123", state: "destroyed" });
     });
 
     it("clears the session store after delete so no orphan id survives a second teardown", async () => {
@@ -2416,6 +2551,21 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(3);
     });
 
+    it("keeps account credentials and API endpoints isolated for the same sandbox ID", async () => {
+      mockGet.mockImplementation(async () => createMockSandbox({ id: "sandbox-account" }));
+      const params = execParams("sandbox-account");
+      for (const config of [
+        { apiKey: "account-a", apiUrl: "https://one.daytona.test/api" },
+        { apiKey: "account-b", apiUrl: "https://one.daytona.test/api" },
+        { apiKey: "account-a", apiUrl: "https://two.daytona.test/api" },
+      ]) {
+        await plugin.definition.onEnvironmentExecute!({
+          ...params, config: { ...params.config, ...config },
+        });
+      }
+      expect(mockGet).toHaveBeenCalledTimes(3);
+    });
+
     it("rejects a queued execute after release teardown closes the lease", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
@@ -2717,7 +2867,13 @@ describe("Daytona sandbox provider plugin", () => {
         ],
       });
       // Let syncIn register on the activity gate and reach the hung upload.
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The real `fs.stat` and `mkdir` round trip run before the upload call,
+      // so a fixed tick count can race ahead of them on a slower or busier
+      // host. Poll for the actual upload call instead of guessing a tick
+      // count, so this assertion never fires before syncIn reaches the hang.
+      await vi.waitFor(() => {
+        expect(sandbox.fs.uploadFiles).toHaveBeenCalled();
+      });
 
       const cancelPromise = plugin.definition.onEnvironmentCancelInteractiveSetup?.({
         driverKey: "daytona",
@@ -3132,6 +3288,55 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(2);
     });
 
+    it("realizes a resumed lease after the provider fills in an unspecified target", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-default-target" });
+      mockCreate.mockResolvedValue(sandbox);
+      mockGet.mockResolvedValue(sandbox);
+      const base = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1" };
+      const config = { image: "node:20", timeoutMs: 300000, reuseLease: true };
+      const lease = await plugin.definition.onEnvironmentAcquireLease!({
+        ...base, runId: "run-1", agentId: "agent-1", executionWorkspaceId: "workspace-1", config,
+      });
+      // The host materializes provider metadata into later operation config,
+      // but resumes with the environment's original, target-less config.
+      const realizedConfig = { ...config, ...lease.metadata };
+      expect(realizedConfig).toMatchObject({ target: "us" });
+      await plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config: realizedConfig, lease,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      });
+      expect(mockGet).not.toHaveBeenCalled();
+      await plugin.definition.onEnvironmentReleaseLease!({
+        ...base, config: realizedConfig, providerLeaseId: lease.providerLeaseId!,
+      });
+      await expect(plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config, lease,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      })).rejects.toThrow(/no longer active/);
+      await expect(plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config: realizedConfig, lease,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      })).rejects.toThrow(/no longer active/);
+
+      sandbox.state = "stopped";
+      const sentinel = lease.metadata!.workspaceSentinel as { token: string };
+      sandbox.process.executeCommand.mockResolvedValueOnce({
+        exitCode: 0, result: JSON.stringify({ token: sentinel.token }),
+        artifacts: { stdout: JSON.stringify({ token: sentinel.token }) },
+      });
+      const resumed = await plugin.definition.onEnvironmentResumeLease!({
+        ...base, config, providerLeaseId: lease.providerLeaseId!, leaseMetadata: lease.metadata,
+      });
+      expect(resumed.metadata).toMatchObject({
+        resumedLease: true, workspaceSentinel: { result: "matched" },
+      });
+      await expect(plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config: { ...config, ...resumed.metadata }, lease: resumed,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      })).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+    });
+
     it("realizes the workspace from the acquire-seeded handle without a client.get", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "sandbox-seed" });
@@ -3456,21 +3661,10 @@ describe("daytona native file-sync hooks", () => {
     const mvCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("mv -f"));
     expect(mvCall).toBeDefined();
     const mvCommand = String(mvCall?.[0]);
-    // TOCTOU-hardened rename: each promotion re-canonicalizes the target's parent
-    // dir, confirms it is still confined, OPENS that dir as fd 8, re-verifies the
-    // pinned inode is in-root, then `mv`s into `/proc/self/fd/8/<base>` — all in ONE
-    // sh invocation, so neither an ancestor swap before the open nor a path swap
-    // after it can redirect the rename. The rename is wrapped in `sh -c '...'`, so
-    // inner single-quotes are shell-escaped; assert on the un-escaped components.
-    expect(mvCommand).toContain("_pc_resolve");
-    // The parent dir is opened as fd 8 and its pinned inode re-verified in-root
-    // before the rename, which targets the inode via /proc/self/fd/8 rather than the
-    // literal (swappable) path string.
+    // Each promotion is one plain `mv -f <scratch> <target>` command, batched
+    // together in a single sandbox invocation.
     expect(mvCommand).toContain(secretTemp);
-    expect(mvCommand).toContain('exec 8<"$_pc_tgt_dir"');
-    expect(mvCommand).toContain("_pc_fd_dir=$(_pc_resolve /proc/self/fd/8)");
-    expect(mvCommand).toContain("/proc/self/fd/8/");
-    expect(mvCommand).toContain("auth.json");
+    expect(mvCommand).toContain(`${REMOTE_DIR}/.secret/auth.json`);
     // Both temps are promoted (one mv line per rename).
     expect(mvCommand.match(/mv -f /g)).toHaveLength(2);
 
@@ -3542,8 +3736,8 @@ describe("daytona native file-sync hooks", () => {
     const transfer = spans.find((span) => span.name === "transfer");
     expect(transfer).toBeDefined();
     expect(transfer!.ended).toBe(true);
-    // The two serial guard round trips before the transfer: mkdir + confinement.
-    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
+    // One serial guard round trip before the transfer: mkdir (with the zstd probe).
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(1);
     expect(transfer!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
     expect(typeof transfer!.attributes["paperclip.sandbox.startup.transfer.wall_ms"]).toBe("number");
     // A bulk file upload builds no host tarball, so it opens no pack span.
@@ -3647,10 +3841,11 @@ describe("daytona native file-sync hooks", () => {
 
     const transfer = spans.find((span) => span.name === "transfer");
     expect(transfer).toBeDefined();
-    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
+    // One serial guard round trip before the transfer: mkdir.
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(1);
   });
 
-  it("opens ensureDirectory, checkSymlinkEscape, transfer, promote spans in call order for a file-mapping sync", async () => {
+  it("opens ensureDirectory, transfer, promote spans in call order for a file-mapping sync", async () => {
     const hostDir = await makeHostDir();
     const source = path.join(hostDir, "config.txt");
     await fs.writeFile(source, "plain");
@@ -3679,7 +3874,6 @@ describe("daytona native file-sync hooks", () => {
 
     expect(spans.map((span) => span.name)).toEqual([
       "ensureDirectory",
-      "checkSymlinkEscape",
       "transfer",
       "promote",
     ]);
@@ -3691,12 +3885,11 @@ describe("daytona native file-sync hooks", () => {
       if (span.name !== "transfer") {
         expect(span.attributes["paperclip.sandbox.startup.ensureDirectory.wall_ms"]).toBeUndefined();
         expect(span.attributes["paperclip.sandbox.startup.promote.wall_ms"]).toBeUndefined();
-        expect(span.attributes["paperclip.sandbox.startup.checkSymlinkEscape.wall_ms"]).toBeUndefined();
       }
     }
   });
 
-  it("opens pack, ensureDirectory, checkSymlinkEscape, transfer, extractTarball spans in call order for a directory-mapping sync", async () => {
+  it("opens pack, ensureDirectory, transfer, extractTarball spans in call order for a directory-mapping sync", async () => {
     const hostDir = await makeHostDir();
     const sourceDir = path.join(hostDir, "assets");
     await fs.mkdir(sourceDir, { recursive: true });
@@ -3729,7 +3922,6 @@ describe("daytona native file-sync hooks", () => {
     expect(spans.map((span) => span.name)).toEqual([
       "pack",
       "ensureDirectory",
-      "checkSymlinkEscape",
       "transfer",
       "extractTarball",
     ]);
@@ -3774,7 +3966,7 @@ describe("daytona native file-sync hooks", () => {
     expect(pack!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
   });
 
-  it("opens a checkSymlinkEscape span and a postUploadCommand span in call order for a post-upload command with a working directory", async () => {
+  it("opens a postUploadCommand span for a post-upload command with a working directory", async () => {
     const hostDir = await makeHostDir();
     const source = path.join(hostDir, "config.txt");
     await fs.writeFile(source, "plain");
@@ -3802,15 +3994,12 @@ describe("daytona native file-sync hooks", () => {
       restore();
     }
 
-    // The full order: the file mapping opens ensureDirectory, checkSymlinkEscape,
-    // transfer, promote; the post-upload command then opens its own cwd
-    // checkSymlinkEscape and the postUploadCommand span.
+    // The full order: the file mapping opens ensureDirectory, transfer, promote;
+    // the post-upload command then opens the postUploadCommand span.
     expect(spans.map((span) => span.name)).toEqual([
       "ensureDirectory",
-      "checkSymlinkEscape",
       "transfer",
       "promote",
-      "checkSymlinkEscape",
       "postUploadCommand",
     ]);
     const provision = spans.find((span) => span.name === "postUploadCommand");
@@ -3869,8 +4058,7 @@ describe("daytona native file-sync hooks", () => {
     expect(capturedTarListing).not.toContain("skip.log");
     expect(capturedTarListing).toMatch(/link\.txt ->|link\.txt link to/);
 
-    // The target dir is created by its own mkdir command (so the realpath guard
-    // that follows resolves real components), no longer inside the extract chain.
+    // The target dir is created by its own mkdir command, before the upload.
     const mkdirCall = sandbox.process.executeCommand.mock.calls.find(
       ([cmd]) =>
         String(cmd).includes("mkdir -p") &&
@@ -3878,26 +4066,14 @@ describe("daytona native file-sync hooks", () => {
         !String(cmd).includes("tar -xf"),
     );
     expect(mkdirCall).toBeDefined();
-    // The realpath symlink-escape guard runs on the target before extraction.
-    const inboundGuardCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) =>
-      String(cmd).includes("_pc_resolve"),
-    );
-    expect(inboundGuardCall).toBeDefined();
 
     const extractCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("tar -xf"));
     expect(extractCall).toBeDefined();
     const extractCommand = String(extractCall?.[0]);
-    // The extract binds validation and extraction into one sandbox invocation: it
-    // re-canonicalizes the target, opens the resolved dir as fd 9, re-verifies the
-    // PINNED inode (`/proc/self/fd/9`) is still in-root — closing the ancestor-swap
-    // race in the `open()` itself — then extracts via /proc/self/fd/9, binding
-    // extraction to the directory inode rather than the path string.
-    expect(extractCommand).toContain("_pc_resolve");
+    // The extract is one plain `tar -xf <scratch-tar> -C <target>` command,
+    // followed by removing the scratch tar.
     expect(extractCommand).toContain(".paperclip-runtime/assets");
     expect(extractCommand).toContain("tar -xf");
-    expect(extractCommand).toContain('exec 9<"$_pc_real"');
-    expect(extractCommand).toContain("_pc_fd_real=$(_pc_resolve /proc/self/fd/9)");
-    expect(extractCommand).toContain("-C /proc/self/fd/9");
     expect(extractCommand).toMatch(/rm -f .*\.paperclip-upload-.*\.tar/);
   });
 
@@ -3994,6 +4170,35 @@ describe("daytona native file-sync hooks", () => {
     });
   });
 
+  it("classifies a deleted sandbox during syncOut with a stable unrecoverable code", async () => {
+    const hostDir = await makeHostDir();
+    mockGet.mockRejectedValue(
+      new MockDaytonaNotFoundError("provider detail must not escape"),
+    );
+
+    await expect(
+      plugin.definition.onEnvironmentSyncOut?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: true },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-missing-sandbox",
+            files: [
+              {
+                sourcePath: `${REMOTE_DIR}/out/result.txt`,
+                targetPath: path.join(hostDir, "result.txt"),
+                kind: "file",
+              },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow("daytona_sandbox_not_found");
+  });
+
   it("syncOut snapshot guard re-checks the resolved source is a non-symlink regular file immediately before copying (validation→copy TOCTOU)", async () => {
     const hostDir = await makeHostDir();
     const sandbox = createMockSandbox();
@@ -4077,32 +4282,6 @@ describe("daytona native file-sync hooks", () => {
     await expect(fs.stat(badTarget)).rejects.toThrow();
   });
 
-  it("rejects a sync target path that escapes the workspace remote dir (path confinement)", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "evil.txt");
-    await fs.writeFile(source, "x");
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-escape",
-            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/../../etc/passwd`, kind: "file" }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/escapes the workspace remote dir|not a confined absolute path/);
-
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-  });
-
   it("syncOut rejects an outbound source whose in-sandbox realpath escapes the workspace remote dir, before any download", async () => {
     const hostDir = await makeHostDir();
     const sandbox = createMockSandbox();
@@ -4171,81 +4350,6 @@ describe("daytona native file-sync hooks", () => {
 
     expect(sandbox.fs.downloadFiles).not.toHaveBeenCalled();
     await expect(fs.stat(target)).rejects.toThrow();
-  });
-
-  it("syncIn rejects a file mapping whose in-sandbox target parent resolves outside the remote dir (symlinked-parent escape), before uploading", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "auth.json");
-    await fs.writeFile(source, "credential-material");
-
-    const sandbox = createMockSandbox();
-    // The lexical path check passes (the target string is confined), but the
-    // realpath guard on the materialized parent dir resolves outside the root:
-    // report the escape exit (42) for the `_pc_resolve` probe, green otherwise.
-    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
-      if (command.includes("_pc_resolve")) {
-        return { exitCode: 42, result: `ESCAPE:${REMOTE_DIR}/.secret`, artifacts: { stdout: "" } };
-      }
-      return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
-    });
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-in-escape",
-            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/.secret/auth.json`, kind: "file", mode: 0o600 }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/inbound symlink-escape guard command failed \(exit 42\)/);
-
-    // Fail-closed: the guard trips after mkdir but before any bytes are uploaded.
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-    expect(sandbox.fs.setFilePermissions).not.toHaveBeenCalled();
-  });
-
-  it("syncIn rejects a directory mapping whose in-sandbox target resolves outside the remote dir (symlinked-dir extraction), before uploading the tarball", async () => {
-    const hostDir = await makeHostDir();
-    const sourceDir = path.join(hostDir, "assets");
-    await fs.mkdir(sourceDir, { recursive: true });
-    await fs.writeFile(path.join(sourceDir, "a.txt"), "alpha");
-
-    const sandbox = createMockSandbox();
-    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
-      if (command.includes("_pc_resolve")) {
-        return { exitCode: 42, result: `ESCAPE:${REMOTE_DIR}/assets`, artifacts: { stdout: "" } };
-      }
-      return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
-    });
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-in-dir-escape",
-            files: [{ sourcePath: sourceDir, targetPath: `${REMOTE_DIR}/assets`, kind: "directory" }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/inbound symlink-escape guard command failed \(exit 42\)/);
-
-    // Fail-closed: no tarball is uploaded and no in-sandbox extraction runs.
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-    const extractCall = sandbox.process.executeCommand.mock.calls.find(([cmd]) => String(cmd).includes("tar -xf"));
-    expect(extractCall).toBeUndefined();
   });
 
   it("syncIn sweeps staged temps when the batched rename fails mid-promotion", async () => {
@@ -4645,42 +4749,6 @@ describe("daytona native file-sync hooks", () => {
     });
   });
 
-  it("rejects a merged operation when either tar mapping target escapes the remote dir, before uploading", async () => {
-    const hostDir = await makeHostDir();
-    const gitTar = path.join(hostDir, "git-workspace.tar");
-    const overlayTar = path.join(hostDir, "workspace.tar");
-    await fs.writeFile(gitTar, "git-bytes");
-    await fs.writeFile(overlayTar, "overlay-bytes");
-    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
-
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "merged-escape",
-            files: [
-              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
-              // The overlay mapping target escapes the workspace remote dir.
-              { sourcePath: overlayTar, targetPath: `${REMOTE_DIR}/../../etc/workspace-upload.tar`, kind: "file" },
-            ],
-            postUploadCommands: [{ command: "git-history-extract" }, { command: "workspace-overlay-extract" }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/escapes the workspace remote dir|not a confined absolute path/);
-
-    // Neither tar uploaded: the confine check on the escaping mapping trips first.
-    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
-  });
-
   it("stops the overlay and remove-deleted commands when the git extract fails (merged operation fail-fast)", async () => {
     const hostDir = await makeHostDir();
     const gitTar = path.join(hostDir, "git-workspace.tar");
@@ -4730,75 +4798,6 @@ describe("daytona native file-sync hooks", () => {
     expect(ran("git-history-extract")).toBe(true);
     expect(ran("workspace-overlay-extract")).toBe(false);
     expect(ran("remove-deleted-paths")).toBe(false);
-  });
-
-  it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "config.txt");
-    await fs.writeFile(source, "plain");
-
-    for (const badCwd of [`${REMOTE_DIR}/../etc`, "/etc"]) {
-      const sandbox = createMockSandbox();
-      mockGet.mockResolvedValue(sandbox);
-      await expect(
-        plugin.definition.onEnvironmentSyncIn?.({
-          driverKey: "daytona",
-          companyId: "company-1",
-          environmentId: "env-1",
-          config: { timeoutMs: 300000, reuseLease: false },
-          lease: syncLease(),
-          operations: [
-            {
-              operationId: "op-escape",
-              files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
-              postUploadCommands: [{ command: "run-me", cwd: badCwd }],
-            },
-          ],
-        }),
-      ).rejects.toThrow(/not a confined absolute path|escapes the workspace remote dir/);
-      // The command never ran — lexical confinement rejected it before exec.
-      expect(sandbox.process.executeCommand.mock.calls.some(([c]) => c === "run-me")).toBe(
-        false,
-      );
-    }
-  });
-
-  it("rejects a post-upload command whose cwd resolves outside the root via a symlink (realpath guard, C2)", async () => {
-    const hostDir = await makeHostDir();
-    const source = path.join(hostDir, "config.txt");
-    await fs.writeFile(source, "plain");
-
-    const cwd = `${REMOTE_DIR}/link`;
-    const sandbox = createMockSandbox();
-    // The in-sandbox realpath symlink-escape guard for THIS cwd fails closed (exit
-    // 42), simulating a sandbox-planted symlink that resolves out of root.
-    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
-      if (command.includes("_pc_resolve") && command.includes(cwd)) {
-        return { exitCode: 42, result: "ESCAPE", artifacts: { stdout: "ESCAPE" } };
-      }
-      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
-    });
-    mockGet.mockResolvedValue(sandbox);
-
-    await expect(
-      plugin.definition.onEnvironmentSyncIn?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: false },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "op-symlink",
-            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
-            postUploadCommands: [{ command: "run-me", cwd }],
-          },
-        ],
-      }),
-    ).rejects.toThrow(/symlink-escape guard|command failed/i);
-    expect(sandbox.process.executeCommand.mock.calls.some(([c]) => c === "run-me")).toBe(
-      false,
-    );
   });
 
   it("issues no extra exec when an operation has no post-upload commands (backward-compat)", async () => {

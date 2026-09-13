@@ -92,7 +92,15 @@
       "required": ["reasonCode", "owner", "unblockAction", "scope"],
       "properties": {
         "reasonCode": { "type": "string", "minLength": 1 },
-        "owner": { "type": "object", "additionalProperties": true },
+        "owner": {
+          "type": "object",
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "enum": ["agent", "user", "system", "external"] },
+            "name": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
         "unblockAction": { "type": "string", "minLength": 1 },
         "scope": { "enum": ["current_track", "task_wide"] }
       },

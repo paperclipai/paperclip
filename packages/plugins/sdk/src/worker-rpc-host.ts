@@ -88,6 +88,7 @@ import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentRunnerIngressEndpointParams,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
   PluginEnvironmentRealizeWorkspaceParams,
@@ -133,6 +134,7 @@ import {
   isJsonRpcErrorResponse,
   JsonRpcParseError,
   JsonRpcCallError,
+  encodeChannelBytes,
 } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -1379,23 +1381,28 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       loginPty: {
-        output(workerSessionId: string, chunk: string): void {
+        output(hostRouteId: string, workerSessionId: string, chunk: string): void {
           // Forward one raw output chunk of a live login pseudo-terminal. The
-          // notification carries the worker session identifier, so the host binds
-          // the chunk to the open route by that identifier while the route is
-          // open. The host drops an unknown or a mismatched identifier and never
-          // logs the raw bytes. This notification carries no invocation id,
-          // because it fires after the open reply returns.
+          // notification echoes the host route identifier and the worker session
+          // identifier, so the host can hold more than one concurrent login
+          // pseudo-terminal per worker and binds the chunk to its own route
+          // while that route is open. The host drops an unknown, a stale, or a
+          // mismatched identifier and never logs the raw bytes. This
+          // notification carries no invocation id, because it fires after the
+          // open reply returns.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
           if (typeof chunk !== "string" || chunk.length === 0) return;
-          notifyHost(LOGIN_PTY_OUTPUT_NOTIFICATION, { workerSessionId, chunk });
+          notifyHost(LOGIN_PTY_OUTPUT_NOTIFICATION, { hostRouteId, workerSessionId, chunk });
         },
-        exit(workerSessionId: string, exitCode: number | null): void {
+        exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void {
           // Forward the child exit of a live login pseudo-terminal. The host
-          // resolves the open route's wait promise by the worker session
-          // identifier while the route is open.
+          // resolves its own route's wait promise by the host route identifier
+          // and the bound worker session identifier while that route is open.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
           notifyHost(LOGIN_PTY_EXIT_NOTIFICATION, {
+            hostRouteId,
             workerSessionId,
             exitCode: typeof exitCode === "number" ? exitCode : null,
           });
@@ -1403,17 +1410,25 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       duplexChannel: {
-        data(hostRouteId: string, workerSessionId: string, chunk: string): void {
+        data(hostRouteId: string, workerSessionId: string, chunk: Uint8Array): void {
           // Forward one raw data chunk of a persistent duplex channel. The
           // notification echoes the host route identifier and the worker session
           // identifier, so the host routes the chunk to the exact live pair while
           // the route is open. The host drops an unknown or a mismatched pair and
           // never logs the raw bytes. This notification carries no invocation id,
           // because it fires after the open reply returns.
+          //
+          // JSON-RPC travels as JSON text, which carries no binary type, so this
+          // is the one point where the chunk crosses from `Uint8Array` to the
+          // wire-safe base64 form. See `ChannelBytesWireValue` in protocol.ts.
           if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
-          if (typeof chunk !== "string" || chunk.length === 0) return;
-          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, { hostRouteId, workerSessionId, chunk });
+          if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) return;
+          notifyHost(DUPLEX_CHANNEL_DATA_NOTIFICATION, {
+            hostRouteId,
+            workerSessionId,
+            chunk: encodeChannelBytes(chunk),
+          });
         },
         exit(
           hostRouteId: string,
@@ -1631,6 +1646,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "environmentRunnerIngressEndpoint":
+        return handleEnvironmentRunnerIngressEndpoint(
+          params as PluginEnvironmentRunnerIngressEndpointParams,
+        );
+
       case "environmentSyncIn":
         return handleEnvironmentSyncIn(params as PluginEnvironmentSyncInParams);
 
@@ -1720,6 +1740,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      supportedMethods.push("environmentRunnerIngressEndpoint");
+    }
     if (plugin.definition.onEnvironmentSyncIn) supportedMethods.push("environmentSyncIn");
     if (plugin.definition.onEnvironmentSyncOut) supportedMethods.push("environmentSyncOut");
     if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
@@ -2032,6 +2055,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleEnvironmentRunnerIngressEndpoint(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ) {
+    if (!plugin.definition.onEnvironmentRunnerIngressEndpoint) {
+      throw methodNotImplemented("environmentRunnerIngressEndpoint");
+    }
+    return plugin.definition.onEnvironmentRunnerIngressEndpoint(params);
   }
 
   async function handleEnvironmentSyncIn(params: PluginEnvironmentSyncInParams) {

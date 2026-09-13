@@ -1,0 +1,12040 @@
+import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
+import { nativeCompletionFeedback } from "./native-completion-feedback.js";
+import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
+import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
+import { prepareVerifiedRemoteProviderPack } from "./remote-provider-pack.js";
+import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
+import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
+import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
+import {
+  boundedExecutionCleanup,
+  EXECUTION_CONTROL_DEADLINE_MS,
+} from "../execution-control-deadline.js";
+import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  opendirSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  readSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { basename, dirname, join, posix, resolve } from "node:path";
+import type {
+  AdapterExecutionResult,
+  AdapterRuntimeEvent,
+} from "../../adapters/index.js";
+import type { NativeFinalizationResult } from "@paperclipai/shared";
+import type {
+  HarnessRuntimeRequestResolution,
+  NativeExecutionInput,
+  NativeRuntimeContextSnapshot,
+  NativeSession,
+  NativeSessionBackend,
+  PaperclipQuestionSet,
+  PersistedNativeSession,
+  PrpEvent,
+  PrpStructuredRunResult,
+} from "../../vendor/paperclip-runner/index.js";
+import {
+  NativeProviderTerminalFailure,
+  NativeSessionCleanupQuarantinedError,
+  NativeSessionProtocolIntegrityError,
+  completeRetainedNativeSessionCleanup,
+  completeTerminatedLocalNativeSessionCleanup,
+  acpxRuntimeSessionDirectoryName,
+  createNativeSessionBackend,
+  createRunnerdCodexTransport,
+  defaultCapabilityRunnerdBinary,
+  executeNativeSession,
+  applyNativeSessionGoalControl,
+  inspectWarmRunTransition,
+  parseNativeExecutionInput,
+  parsePaperclipQuestionSet,
+  resolveSourceCodexHome,
+  readRunnerdArtifactBinding,
+  retainedRunnerdMaintenanceIsIdle,
+  settleRetainedRunnerdSession,
+  validatePrpEvent,
+  validatePrpStructuredRunResult,
+  type RunnerProcessHandle,
+  type RunnerProcessLaunchSpec,
+  type NativeSessionGoalControl,
+} from "../../vendor/paperclip-runner/index.js";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import {
+  resolvePaperclipRunnerTransport,
+  type PaperclipRunnerTransport,
+} from "@paperclipai/adapter-utils/runner-connectivity";
+import type { Db } from "@paperclipai/db";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  like,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
+import {
+  agentWakeupRequests,
+  documentRevisions,
+  environmentLeases,
+  heartbeatRunEvents,
+  heartbeatRuns,
+  issueDocuments,
+  issueThreadInteractions,
+  issues,
+  nativeRunFinalizations,
+  nativeRunResults,
+} from "@paperclipai/db";
+import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { nativeSha256 } from "./canonical.js";
+import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
+import {
+  assertCurrentWakeCommentsRead,
+  resolveCurrentWakeCommentsBinding,
+} from "./current-wake-comments.js";
+import {
+  renderNativeRunnerStagedAttachmentPrompt,
+  stageNativeRunnerWakeAttachments,
+} from "./native-runner-file-handoff.js";
+import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
+import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
+import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { persistActivity, publishActivity } from "../activity-log.js";
+import { commitNativeStatusDecision } from "./status-decision-committer.js";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
+import { documentService } from "../documents.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { issueService } from "../issues.js";
+import {
+  NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  type NativeAuthoritativeIssueStatus,
+  type NativeStatusDecision,
+} from "./status-arbiter.js";
+import { HttpError } from "../../errors.js";
+import { redactSensitiveText } from "../../redaction.js";
+import { resolvePaperclipRunnerBinary } from "./native-codex-runner.js";
+import {
+  createNativeRunTrace,
+  isNativeRunRootHistoricalSpan,
+  nativeRunPreparationStarts,
+  type NativeRunHistoricalSpan,
+  type NativeRunSpanScope,
+  type NativeRunTrace,
+} from "./native-run-trace.js";
+import { createNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.js";
+import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
+import { readProcessStartedAt } from "../hot-restart.js";
+import {
+  NativeRunnerOwnershipUnverifiedError,
+  isNativeRunnerOwnershipHeld,
+  NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
+  NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
+} from "./native-runner-ownership.js";
+import {
+  currentNativeControllerIdentity,
+  nextNativeProviderAttempt,
+  type NativeControllerIdentity,
+  type NativeRestartRecoveryClaim,
+} from "./native-restart-recovery.js";
+
+type ActiveNativeSession = {
+  session: NativeSession;
+  cancelRequested: boolean;
+};
+
+class NativeResultPendingFinalizationError extends Error {
+  constructor() {
+    super("native_result_pending_finalization");
+    this.name = "NativeResultPendingFinalizationError";
+  }
+}
+
+export class NativeCancellationPendingRecoveryError extends Error {
+  constructor() {
+    super("native_cancellation_pending_recovery");
+    this.name = "NativeCancellationPendingRecoveryError";
+  }
+}
+
+export class NativeControllerDetachedForRestartError extends Error {
+  constructor() {
+    super("native_controller_detached_for_restart");
+    this.name = "NativeControllerDetachedForRestartError";
+  }
+}
+
+const activeNativeSessions = new Map<string, ActiveNativeSession>();
+// Shutdown can race provider startup before onSession publishes its handle.
+// Retain the request for the remainder of this controller's lifetime so that
+// the late publication detaches before it can dispatch another turn.
+const nativeRunsDetachingForRestart = new Set<string>();
+
+export async function detachNativeSessionsForRestart(
+  runIds: readonly string[],
+): Promise<{
+  detachedRunIds: string[];
+  inactiveRunIds: string[];
+  unsupportedRunIds: string[];
+}> {
+  const detachedRunIds: string[] = [];
+  const inactiveRunIds: string[] = [];
+  const unsupportedRunIds: string[] = [];
+  for (const runId of new Set(runIds)) {
+    nativeRunsDetachingForRestart.add(runId);
+    const active = activeNativeSessions.get(runId);
+    if (!active) {
+      inactiveRunIds.push(runId);
+      continue;
+    }
+    if (active.session.detachControllerForRestart === undefined) {
+      unsupportedRunIds.push(runId);
+      continue;
+    }
+    await active.session.detachControllerForRestart();
+    detachedRunIds.push(runId);
+  }
+  return { detachedRunIds, inactiveRunIds, unsupportedRunIds };
+}
+const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
+const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
+const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
+const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
+const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
+const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
+  "tmp",
+  ".tmp",
+  "auth.json",
+  "config.toml",
+] as const;
+const RUNNERD_CONTROL_PLANE_STATE_SCHEMA =
+  "paperclip.runner.durable.control-plane-state.v1";
+const RUNNERD_STATE_SCHEMA = "paperclip.runner.durable.state.v1";
+const CODEX_PROVIDER_STATE_SCHEMA = "paperclip.runner.codex-provider-state.v1";
+const ACPX_PROVIDER_STATE_SCHEMA = "paperclip.runner.acpx-provider-state.v3";
+const MANAGED_PROVIDER_STATE_SCHEMA =
+  "paperclip.runner.managed-provider-state.v1";
+const RUNNERD_STATE_LIFECYCLES = new Set([
+  "connecting",
+  "ready",
+  "backpressure",
+  "recoverable_failure",
+  "unrecoverable",
+  "suspended",
+  "stopped",
+  "revoked",
+]);
+const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
+const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
+const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
+const NATIVE_SESSION_CANCELLATION_CLEANUP_GRACE_MS = 2_000;
+const NATIVE_RUNTIME_REQUEST_RESOLUTION_CACHE_MAX = 256;
+type NativeRuntimeRequestResolution = {
+  runId: string;
+  fingerprint: string;
+  commandId: string;
+  pending: Promise<void>;
+  completedAt: number | null;
+};
+const nativeRuntimeRequestResolutions = new Map<
+  string,
+  NativeRuntimeRequestResolution
+>();
+
+async function verifiedRecoveryProcessIsAlive(input: {
+  pid: number;
+  startedAt: string;
+}): Promise<boolean> {
+  try {
+    process.kill(input.pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EPERM")
+      return false;
+  }
+  try {
+    const observed = await readProcessStartedAt(input.pid);
+    return (
+      observed !== null &&
+      new Date(observed).getTime() === new Date(input.startedAt).getTime()
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function signalVerifiedRecoveryProcess(
+  input: { pid: number; startedAt: string },
+  signal: NodeJS.Signals,
+): Promise<boolean> {
+  if (!(await verifiedRecoveryProcessIsAlive(input))) return false;
+  try {
+    return process.kill(input.pid, signal);
+  } catch {
+    return false;
+  }
+}
+
+function pruneNativeRuntimeRequestResolutionCache(): void {
+  const completed = [...nativeRuntimeRequestResolutions.entries()]
+    .filter(([, resolution]) => resolution.completedAt !== null)
+    .sort(
+      ([, left], [, right]) =>
+        (left.completedAt ?? 0) - (right.completedAt ?? 0),
+    );
+  for (
+    let index = 0;
+    index < completed.length - NATIVE_RUNTIME_REQUEST_RESOLUTION_CACHE_MAX;
+    index += 1
+  ) {
+    nativeRuntimeRequestResolutions.delete(completed[index]![0]);
+  }
+}
+
+function clearNativeRuntimeRequestResolutions(runId: string): void {
+  for (const [key, resolution] of nativeRuntimeRequestResolutions) {
+    if (resolution.runId === runId) {
+      nativeRuntimeRequestResolutions.delete(key);
+    }
+  }
+}
+
+type WarmNativeSession = {
+  credentialRunId?: string;
+  githubAuthenticationMode?: string;
+  networkAccess: boolean;
+  session: NativeSession;
+  ownerToken: symbol;
+  configDigest: string;
+  companyId: string;
+  environmentId: string | null;
+  busy: boolean;
+  closeOnReleaseReason?: string;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+  lastActivityAt: string;
+};
+
+const warmNativeSessions = new Map<string, WarmNativeSession>();
+
+/**
+ * Close idle native sessions before an operator destroys their remote
+ * environment. A warm runner owns a long-lived sandbox command stream, so the
+ * provider cannot safely delete that sandbox until the session has closed the
+ * stream. Busy sessions are reported instead of interrupted; the environment
+ * delete guard can then fail closed while their heartbeat run is still live.
+ */
+export async function closeWarmNativeSessionsForEnvironment(input: {
+  environmentId: string;
+  reason: string;
+}): Promise<{ closed: number; busy: number; failed: number }> {
+  return closeIdleWarmNativeSessions(input);
+}
+
+/** Suspend idle owners and persist their remote backup before a controller
+ * exits. Active turns keep their separate authenticated restart handoff. */
+export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
+  closed: number; busy: number; failed: number;
+}> {
+  return closeIdleWarmNativeSessions({
+    reason: "controller restart",
+    closeBusyOnRelease: true,
+  });
+}
+
+async function closeIdleWarmNativeSessions(input: {
+  environmentId?: string;
+  reason: string;
+  closeBusyOnRelease?: boolean;
+}): Promise<{ closed: number; busy: number; failed: number }> {
+  let closed = 0;
+  let busy = 0;
+  let failed = 0;
+  for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
+      continue;
+    }
+    if (entry.busy) {
+      // A busy turn can complete while another idle session is checkpointing.
+      // Fence that entry now so its eventual release cannot leave a new idle
+      // owner behind after the shutdown sweep has already passed it.
+      if (input.closeBusyOnRelease) entry.closeOnReleaseReason = input.reason;
+      busy += 1;
+      continue;
+    }
+    if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+    // Remove ownership before awaiting close so a racing continuation cannot
+    // adopt a session whose transport is already shutting down.
+    warmNativeSessions.delete(sessionId);
+    try {
+      await entry.session.close({ reason: input.reason });
+      closed += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  return { closed, busy, failed };
+}
+
+function readBoundedNativeFile(
+  path: string,
+  maxBytes: number,
+  errorCode: string,
+): Buffer {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size > maxBytes) throw new Error(errorCode);
+    const output = Buffer.allocUnsafe(before.size);
+    let offset = 0;
+    while (offset < output.length) {
+      const bytesRead = readSync(
+        descriptor,
+        output,
+        offset,
+        output.length - offset,
+        offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const after = fstatSync(descriptor);
+    if (
+      offset !== before.size ||
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.ino !== before.ino
+    ) {
+      throw new Error("native_state_file_changed");
+    }
+    return output;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+const NATIVE_PROVIDER_HOST_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "CODEX_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "SystemRoot",
+  "PATHEXT",
+] as const;
+
+async function measureNativeRunnerSpan<T>(
+  trace: NativeRunTrace | undefined,
+  name: string,
+  fn: () => Promise<T>,
+  options:
+    | string
+    | {
+        parentName?: string;
+        attributes?: Record<string, string | number | boolean>;
+      } = {},
+): Promise<T> {
+  return trace
+    ? trace.measure(
+        name,
+        fn,
+        typeof options === "string" ? { parentName: options } : options,
+      )
+    : fn();
+}
+
+/**
+ * Provider bootstrap needs a small amount of host process context even when
+ * the agent has no configured env. In particular, an empty environment makes
+ * a bare `codex` command unresolvable. Agent-configured values remain
+ * authoritative and may intentionally override the host defaults, while the
+ * server-selected workspace remains an immutable containment boundary.
+ */
+export function buildNativeProviderEnvironment(
+  configured: NodeJS.ProcessEnv,
+  host: NodeJS.ProcessEnv = process.env,
+  assignedWorkspaceCwd?: string,
+): NodeJS.ProcessEnv {
+  const inherited = Object.fromEntries(
+    NATIVE_PROVIDER_HOST_ENV_KEYS.flatMap((key) => {
+      const value = host[key];
+      return typeof value === "string" && value.length > 0
+        ? [[key, value]]
+        : [];
+    }),
+  );
+  const environment = { ...inherited, ...configured };
+  if (assignedWorkspaceCwd?.trim()) {
+    environment.PAPERCLIP_WORKSPACE_CWD = assignedWorkspaceCwd;
+  }
+  return environment;
+}
+
+type PlanSynchronization = {
+  eventId: string;
+  planId: string;
+  providerRevision: number;
+  status:
+    | "synchronized"
+    | "already_synchronized"
+    | "conflict"
+    | "invalid"
+    | "approval_failed";
+  baseRevisionId: string | null;
+  digest: string;
+  documentRevision: number | null;
+  currentRevisionId: string | null;
+  confirmationId: string | null;
+};
+
+type RuntimeQuestionFallback = {
+  kind: "ask_user_questions";
+  idempotencyKey: string;
+  sourceRunId: string;
+  title: string | null;
+  summary: string | null;
+  continuationPolicy: "wake_assignee";
+  payload: {
+    version: 1;
+    title?: string;
+    submitLabel?: string;
+    supersedeOnUserComment: false;
+    runtimeRequestId: string;
+    questionSet: PaperclipQuestionSet;
+    questions: Array<{
+      id: string;
+      prompt: string;
+      helpText?: string;
+      selectionMode: "single" | "multi";
+      required: boolean;
+      options: Array<{
+        id: string;
+        label: string;
+        description?: string;
+        freeText?: boolean;
+      }>;
+    }>;
+  };
+};
+
+/** Translate non-replayable live-input expirations into one durable interaction. */
+export function runtimeQuestionFallbackFromEvent(
+  event: Pick<PrpEvent, "eventType" | "payload" | "runId">,
+): RuntimeQuestionFallback | null {
+  if (event.eventType !== "runtime_request.expired") return null;
+  const payload = record(event.payload);
+  if (
+    !["durable_handoff", "provider_process_lost"].includes(
+      String(payload.reason),
+    ) ||
+    payload.replayAllowed !== false
+  )
+    return null;
+  const request = record(payload.request);
+  if (
+    payload.requestKind !== "runtime" ||
+    payload.requestType !== "input" ||
+    request.schema !== "paperclip.runtime_request.v2" ||
+    request.requestKind !== "runtime" ||
+    request.type !== "input" ||
+    typeof request.requestId !== "string" ||
+    payload.requestId !== request.requestId ||
+    typeof request.turnId !== "string" ||
+    typeof request.itemId !== "string"
+  )
+    return null;
+  let questionSet: PaperclipQuestionSet;
+  try {
+    questionSet = parsePaperclipQuestionSet(request.input);
+  } catch {
+    return null;
+  }
+  const questions = questionSet.questions.map((question) => ({
+    id: question.id,
+    prompt: question.prompt,
+    ...(question.helpText ? { helpText: question.helpText } : {}),
+    selectionMode:
+      question.answerMode === "multi_select"
+        ? ("multi" as const)
+        : ("single" as const),
+    required: question.required,
+    options:
+      question.answerMode === "text"
+        ? [
+            {
+              id: "__paperclip_text__",
+              label:
+                question.textValidation?.inputType === "integer"
+                  ? "Enter an integer"
+                  : question.textValidation?.inputType === "number"
+                    ? "Enter a number"
+                    : "Enter your answer",
+              freeText: true,
+            },
+          ]
+        : (question.options ?? []).map((option) => ({
+            id: option.id,
+            label: option.label,
+            ...(option.description ? { description: option.description } : {}),
+          })),
+  }));
+  return {
+    kind: "ask_user_questions",
+    idempotencyKey: `runtime-input-durable:v1:${event.runId}:${request.requestId}`,
+    sourceRunId: event.runId,
+    title: questionSet.title?.slice(0, 240) ?? null,
+    summary: questionSet.description?.slice(0, 1000) ?? null,
+    continuationPolicy: "wake_assignee",
+    payload: {
+      version: 1,
+      ...(questionSet.title ? { title: questionSet.title.slice(0, 240) } : {}),
+      ...(questionSet.submitLabel
+        ? { submitLabel: questionSet.submitLabel.slice(0, 120) }
+        : {}),
+      supersedeOnUserComment: false,
+      runtimeRequestId: request.requestId,
+      questionSet,
+      questions,
+    },
+  };
+}
+
+/**
+ * Materialize the durable replacement for a non-replayable runtime question.
+ *
+ * The interaction service enforces the fallback's stable idempotency key, so
+ * this is safe both immediately after the event commit and while recovering an
+ * exact duplicate whose original post-commit callback did not finish.
+ */
+export async function materializeRuntimeQuestionFallback(input: {
+  db: Db;
+  binding: {
+    companyId: string;
+    issueId: string;
+    runId: string;
+    agentId: string;
+  };
+  event: Pick<PrpEvent, "eventType" | "payload" | "runId">;
+}): Promise<{
+  fallback: RuntimeQuestionFallback;
+  interaction: { id: string };
+} | null> {
+  const fallback = runtimeQuestionFallbackFromEvent(input.event);
+  if (!fallback) return null;
+  const interaction = await issueThreadInteractionService(input.db).create(
+    {
+      id: input.binding.issueId,
+      companyId: input.binding.companyId,
+    },
+    fallback as never,
+    {
+      agentId: input.binding.agentId,
+      runId: input.binding.runId,
+      systemId: "native-runtime-question-handoff",
+    },
+  );
+  return { fallback, interaction };
+}
+
+export function runtimeInputLifecycleMetric(
+  event: Pick<PrpEvent, "eventType" | "payload">,
+): {
+  outcome:
+    | "normalized"
+    | "rejected"
+    | "resolved"
+    | "expired"
+    | "durable_handoff"
+    | "provider_loss_handoff"
+    | "cancelled";
+  adapter: string;
+  requestId: string | null;
+} | null {
+  const payload = record(event.payload);
+  const request = record(payload.request);
+  if (
+    event.eventType === "runtime_request.created" &&
+    request.type === "input"
+  ) {
+    const origin = record(request.origin);
+    return {
+      outcome: "normalized",
+      adapter: typeof origin.adapter === "string" ? origin.adapter : "unknown",
+      requestId:
+        typeof request.requestId === "string" ? request.requestId : null,
+    };
+  }
+  if (
+    event.eventType === "harness.diagnostic" &&
+    payload.code === "runtime_input_rejected"
+  ) {
+    return {
+      outcome: "rejected",
+      adapter:
+        typeof payload.adapter === "string" ? payload.adapter : "unknown",
+      requestId: null,
+    };
+  }
+  const terminalOutcome =
+    event.eventType === "runtime_request.resolved"
+      ? "resolved"
+      : event.eventType === "runtime_request.expired" &&
+          payload.reason === "durable_handoff"
+        ? "durable_handoff"
+        : event.eventType === "runtime_request.expired" &&
+            payload.reason === "provider_process_lost"
+          ? "provider_loss_handoff"
+          : event.eventType === "runtime_request.expired"
+            ? "expired"
+            : event.eventType === "runtime_request.cancelled"
+              ? "cancelled"
+              : null;
+  const requestType = payload.requestType ?? request.type;
+  if (!terminalOutcome || requestType !== "input") return null;
+  const origin = record(request.origin);
+  return {
+    outcome: terminalOutcome,
+    adapter:
+      typeof payload.adapter === "string"
+        ? payload.adapter
+        : typeof origin.adapter === "string"
+          ? origin.adapter
+          : "unknown",
+    requestId:
+      typeof payload.requestId === "string"
+        ? payload.requestId
+        : typeof request.requestId === "string"
+          ? request.requestId
+          : null,
+  };
+}
+
+export function providerPlanMarkdown(payload: Record<string, unknown>): string {
+  const completedMarkdown =
+    typeof payload.markdown === "string" ? payload.markdown.trim() : "";
+  if (completedMarkdown) return completedMarkdown.slice(0, 256_000);
+  const explanation =
+    typeof payload.explanation === "string" ? payload.explanation.trim() : "";
+  const steps = Array.isArray(payload.steps) ? payload.steps : [];
+  const lines = steps.slice(0, 256).flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const step = value as Record<string, unknown>;
+    const body =
+      typeof step.body === "string" ? step.body.trim().slice(0, 4_000) : "";
+    if (!body) return [];
+    const status = step.status === "completed" ? "x" : " ";
+    const suffix =
+      step.status === "blocked"
+        ? " _(blocked)_"
+        : step.status === "in_progress"
+          ? " _(in progress)_"
+          : "";
+    return [`- [${status}] ${body}${suffix}`];
+  });
+  return [explanation, lines.join("\n")]
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 256_000);
+}
+
+export function semanticProviderPlanMarkdown(
+  result: Record<string, unknown>,
+): string | null {
+  const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
+  for (const value of artifacts) {
+    const artifact = record(value);
+    if (
+      artifact.kind !== "native_provider_plan" ||
+      typeof artifact.ref !== "string"
+    )
+      continue;
+    const match = artifact.ref.match(
+      /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i,
+    );
+    const completedMarkdown = match?.[1]?.trim();
+    if (completedMarkdown) return completedMarkdown.slice(0, 256_000);
+
+    const embedded = artifact.ref.match(
+      /^native-provider-plan:([^\n]+)\n([\s\S]+)$/i,
+    );
+    if (embedded) {
+      const title = embedded[1]!
+        .replace(/^(?:DOT-\d+-)?/i, "")
+        .replace(/-v\d+$/i, "")
+        .replace(/-/g, " ")
+        .trim();
+      const body = embedded[2]!.trim();
+      if (title && body) {
+        return [`# ${title.charAt(0).toUpperCase()}${title.slice(1)}`, "", body]
+          .join("\n")
+          .slice(0, 256_000);
+      }
+    }
+
+    if (/^\s*1\.\s+/.test(artifact.ref)) {
+      const numberedPlan = artifact.ref
+        .split(/\s+\|\s+(?=\d+\.\s+)/)
+        .join("\n")
+        .trim();
+      if (numberedPlan) return `# Plan\n\n${numberedPlan}`.slice(0, 256_000);
+    }
+
+    // Some qualified Codex builds use the artifact reference itself as a
+    // compact, human-readable plan. Accept only an explicitly numbered form;
+    // arbitrary opaque artifact references must never become plan documents.
+    const inlineNumbered = artifact.ref.trim();
+    if (/\(1\)\s+.+\(2\)\s+/s.test(inlineNumbered)) {
+      const body = inlineNumbered
+        .replace(/^DOT-\d+\s+plan:\s*/i, "")
+        .replace(/^\(1\)\s*/, "1. ")
+        .replace(/;\s*\((\d+)\)\s*/g, "\n$1. ")
+        .trim();
+      if (body) return `# Plan\n\n${body}`.slice(0, 256_000);
+    }
+
+    const compact =
+      artifact.ref.match(/^native-provider-plan:([^#]+)#(.+)$/i) ??
+      artifact.ref.match(/^native-plan:\/\/[^/]+\/([^#]+)#(.+)$/i);
+    if (!compact) continue;
+    const humanize = (slug: string) =>
+      slug
+        .replace(
+          /\b(GET|POST|PUT|PATCH|DELETE)-([a-z0-9][a-z0-9-]*)/gi,
+          (_whole, method: string, path: string) =>
+            `${method.toUpperCase()} /${path}`,
+        )
+        .replace(/-/g, " ")
+        .replace(/\bjson\b/gi, "JSON")
+        .replace(/\bapi\b/gi, "API")
+        .replace(/\s+/g, " ")
+        .trim();
+    const title = humanize(compact[1]!.replace(/-v\d+$/i, ""));
+    const steps = compact[2]!.split(";").flatMap((encoded) => {
+      const parsed = encoded.match(/^\d+-(.+)$/);
+      const sentence = humanize(parsed?.[1] ?? encoded);
+      return sentence
+        ? [sentence.charAt(0).toUpperCase() + sentence.slice(1)]
+        : [];
+    });
+    if (!title || steps.length === 0) continue;
+    return [
+      `# ${title.charAt(0).toUpperCase()}${title.slice(1)}`,
+      "",
+      ...steps.map((step, index) => `${index + 1}. ${step}`),
+    ]
+      .join("\n")
+      .slice(0, 256_000);
+  }
+  const hasNativePlanArtifact = artifacts.some(
+    (value) => record(value).kind === "native_provider_plan",
+  );
+  const summary =
+    typeof result.summary === "string" ? result.summary.trim() : "";
+  const summaryPlan = hasNativePlanArtifact
+    ? summary.match(
+        /(?:^|:\s*)(1\)\s+[\s\S]+;\s*2\)\s+[\s\S]+;\s*3\)\s+[\s\S]+)$/,
+      )
+    : null;
+  if (summaryPlan) {
+    const body = summaryPlan[1]!
+      .replace(/^1\)\s*/, "1. ")
+      .replace(/;\s*(\d+)\)\s*/g, "\n$1. ")
+      .trim();
+    if (body) return `# Plan\n\n${body}`.slice(0, 256_000);
+  }
+  return null;
+}
+
+/**
+ * Convert a server-owned pending interaction into the semantic wait that a
+ * provider omitted. This is not a fabricated final response: it records that
+ * the current turn intentionally yielded to a durable governance surface.
+ */
+export function nativeGovernedWaitResult(input: {
+  interaction: { id: string; title: string | null; summary: string | null };
+  completionContract: NativeExecutionInput["completionContract"]["contract"];
+}): PrpStructuredRunResult {
+  const interactionRef = `interaction:${input.interaction.id}`;
+  const label =
+    input.interaction.title?.trim() ||
+    input.interaction.summary?.trim() ||
+    "the requested response";
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "yielded",
+    summary: `Waiting for ${label}.`,
+    completionClaim: {
+      contractRevision: input.completionContract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: "unknown",
+        evidenceRefs: [interactionRef],
+      })),
+      remainingWork: [
+        {
+          description: "Resume after the durable interaction is resolved.",
+          blocksCompletion: true,
+        },
+      ],
+    },
+    evidence: [{ ref: interactionRef }],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [{ kind: "issue_thread_interaction", ref: interactionRef }],
+    continuation: {
+      kind: "response_wake",
+      summary:
+        "Resume from the resolved interaction response without repeating prior work.",
+      idempotencyKey: `interaction-response:${input.interaction.id}`,
+    },
+  };
+}
+
+/** A completed chat reply yields to the next message without claiming task completion. */
+export function nativeConversationReplyResult(input: {
+  conversation: boolean;
+  terminalEvent: PrpEvent;
+  replyEvent: PrpEvent | null;
+  completionContract: NativeExecutionInput["completionContract"]["contract"];
+}): PrpStructuredRunResult | null {
+  const reply = input.replyEvent;
+  const payload = record(reply?.payload);
+  const text = typeof payload.text === "string" ? payload.text.trim() : "";
+  if (!input.conversation || input.terminalEvent.eventType !== "turn.completed" ||
+      !reply || reply.eventType !== "item.completed" || payload.kind !== "agentMessage" ||
+      payload.channel !== "final" || !text || reply.runId !== input.terminalEvent.runId ||
+      reply.turnId !== input.terminalEvent.turnId ||
+      reply.normalizedSessionId !== input.terminalEvent.normalizedSessionId) return null;
+  const ref = `run-event:${reply.sourceEventId}`;
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "yielded",
+    summary: text.slice(0, 12_000),
+    completionClaim: {
+      contractRevision: input.completionContract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.criteria.map((criterion) => ({
+        criterionId: criterion.id, status: "unknown", evidenceRefs: [ref],
+      })),
+      remainingWork: [],
+    },
+    evidence: [{ ref }],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+    continuation: {
+      kind: "response_wake",
+      summary: "Wait for the next user message in this conversation.",
+      idempotencyKey: `conversation-reply:${reply.sourceEventId}`,
+    },
+  };
+}
+
+/**
+ * Bridge an asynchronous durable-interaction lookup to the runner package's
+ * synchronous governed-wait boundary. Observations are single-use and bound
+ * to one exact source event so a delayed or replayed lookup cannot leak into a
+ * later provider event.
+ */
+export function createGovernedWaitEventObservation(
+  resolvePending: () => Promise<PrpStructuredRunResult | null>,
+) {
+  let generation = 0;
+  let observation: {
+    sourceInstanceId: string;
+    sourceEventId: string;
+    sourceSeq: number;
+    result: PrpStructuredRunResult;
+  } | null = null;
+
+  return {
+    async observe(event: PrpEvent, eligible: boolean): Promise<void> {
+      const currentGeneration = ++generation;
+      observation = null;
+      if (!eligible) return;
+      const result = await resolvePending();
+      if (generation !== currentGeneration || result === null) return;
+      // If the interaction is answered after this read, parking remains the
+      // fail-closed outcome: the durable answer owns the response-wake path.
+      // Continuing provider work on a possibly stale authorization does not.
+      observation = {
+        sourceInstanceId: event.sourceInstanceId,
+        sourceEventId: event.sourceEventId,
+        sourceSeq: event.sourceSeq,
+        result,
+      };
+    },
+    consume(event: PrpEvent): PrpStructuredRunResult | null {
+      generation += 1;
+      const current = observation;
+      observation = null;
+      if (
+        current === null ||
+        current.sourceInstanceId !== event.sourceInstanceId ||
+        current.sourceEventId !== event.sourceEventId ||
+        current.sourceSeq !== event.sourceSeq
+      ) {
+        return null;
+      }
+      return current.result;
+    },
+  };
+}
+
+export function nativeToolsRefreshWaitResult(input: {
+  wakeId: string;
+  key: string;
+  completionContract: NativeExecutionInput["completionContract"]["contract"];
+}): PrpStructuredRunResult {
+  const ref = `wakeup:${input.wakeId}`;
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "yielded",
+    summary: "Continuing with the newly installed connection tools.",
+    completionClaim: {
+      contractRevision: input.completionContract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: "unknown",
+        evidenceRefs: [ref],
+      })),
+      remainingWork: [
+        {
+          description: "Continue in the queued session with updated tools.",
+          blocksCompletion: true,
+        },
+      ],
+    },
+    evidence: [{ ref }],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+    continuation: {
+      kind: "same_agent",
+      summary: "Use the updated connection tools in a fresh session.",
+      idempotencyKey: input.key,
+    },
+  };
+}
+
+/**
+ * Partial item-verdict responses deliberately leave their original durable
+ * interaction pending. They are already authority-checked before entering the
+ * closed native envelope, so that exact interaction may park the continuation
+ * run without requiring the model to recreate a second request.
+ */
+export function continuingPendingInteractionIds(
+  execution: NativeExecutionInput,
+): string[] {
+  return execution.interactionResponses
+    .filter(
+      (response) =>
+        response.kind === "request_item_verdicts" &&
+        response.response.status === "pending",
+    )
+    .map((response) => response.interactionId);
+}
+
+export async function synchronizeCompletedProviderPlan(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  event: {
+    sourceEventId: string;
+    turnId?: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+  };
+}): Promise<PlanSynchronization | null> {
+  if (
+    input.event.eventType !== "plan.updated" ||
+    input.event.payload.complete !== true
+  )
+    return null;
+  if (
+    !("executionMode" in input.execution) ||
+    input.execution.executionMode !== "plan"
+  )
+    return null;
+  const planningContext = input.execution.planningContext;
+  if (!planningContext) return null;
+  const planId =
+    typeof input.event.payload.planId === "string"
+      ? input.event.payload.planId
+      : "";
+  const providerRevision = Number.isSafeInteger(input.event.payload.revision)
+    ? Number(input.event.payload.revision)
+    : 0;
+  const body = providerPlanMarkdown(input.event.payload);
+  const digest = createHash("sha256").update(body).digest("hex");
+  if (!planId || providerRevision < 1 || !body) {
+    return {
+      eventId: input.event.sourceEventId,
+      planId,
+      providerRevision,
+      status: "invalid",
+      baseRevisionId: planningContext.baseRevisionId,
+      digest,
+      documentRevision: null,
+      currentRevisionId: null,
+      confirmationId: null,
+    };
+  }
+  const provenance = `runner-plan-sync:v2 run=${input.execution.binding.runId} turn=${input.event.turnId ?? "unknown"} provider=${input.execution.provider.kind} plan=${planId} revision=${providerRevision} digest=${digest}`;
+  const existingRevision = await input.db
+    .select({
+      revisionNumber: documentRevisions.revisionNumber,
+      id: documentRevisions.id,
+    })
+    .from(documentRevisions)
+    .innerJoin(
+      issueDocuments,
+      eq(issueDocuments.documentId, documentRevisions.documentId),
+    )
+    .where(
+      and(
+        eq(issueDocuments.issueId, input.execution.binding.issueId),
+        eq(issueDocuments.key, "plan"),
+        eq(documentRevisions.changeSummary, provenance),
+      ),
+    )
+    .orderBy(desc(documentRevisions.revisionNumber))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  const documents = documentService(input.db);
+  let revision = existingRevision;
+  let status: PlanSynchronization["status"] = existingRevision
+    ? "already_synchronized"
+    : "synchronized";
+  if (!revision) {
+    const latest = await documents.getIssueDocumentByKey(
+      input.execution.binding.issueId,
+      "plan",
+    );
+    if (latest?.latestRevisionId && latest.body === body) {
+      const sameRunRevision = await input.db
+        .select({
+          id: documentRevisions.id,
+          revisionNumber: documentRevisions.revisionNumber,
+          createdByRunId: documentRevisions.createdByRunId,
+        })
+        .from(documentRevisions)
+        .where(eq(documentRevisions.id, latest.latestRevisionId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (sameRunRevision?.createdByRunId === input.execution.binding.runId) {
+        revision = sameRunRevision;
+        status = "already_synchronized";
+      }
+    }
+  }
+  try {
+    if (!revision) {
+      const write = await documents.upsertIssueDocument({
+        issueId: input.execution.binding.issueId,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body,
+        baseRevisionId: planningContext.baseRevisionId,
+        changeSummary: provenance,
+        createdByAgentId: input.execution.binding.agentId,
+        createdByRunId: input.execution.binding.runId,
+      });
+      revision = {
+        revisionNumber: write.document.latestRevisionNumber,
+        id: write.document.latestRevisionId!,
+      };
+    }
+  } catch (error) {
+    if (!(error instanceof HttpError) || error.status !== 409) throw error;
+    const latest = await documents.getIssueDocumentByKey(
+      input.execution.binding.issueId,
+      "plan",
+    );
+    return {
+      eventId: input.event.sourceEventId,
+      planId,
+      providerRevision,
+      status: "conflict",
+      baseRevisionId: planningContext.baseRevisionId,
+      digest,
+      documentRevision: latest?.latestRevisionNumber ?? null,
+      currentRevisionId: latest?.latestRevisionId ?? null,
+      confirmationId: null,
+    };
+  }
+  const current = await documents.getIssueDocumentByKey(
+    input.execution.binding.issueId,
+    "plan",
+  );
+  if (!current || !revision?.id || current.latestRevisionId !== revision.id) {
+    return {
+      eventId: input.event.sourceEventId,
+      planId,
+      providerRevision,
+      status: "conflict",
+      baseRevisionId: planningContext.baseRevisionId,
+      digest,
+      documentRevision: current?.latestRevisionNumber ?? null,
+      currentRevisionId: current?.latestRevisionId ?? null,
+      confirmationId: null,
+    };
+  }
+  let confirmationId: string;
+  let confirmationPending = false;
+  try {
+    const confirmation = await issueThreadInteractionService(input.db).create(
+      {
+        id: input.execution.binding.issueId,
+        companyId: input.execution.binding.companyId,
+      },
+      {
+        kind: "request_confirmation",
+        idempotencyKey: `runner-plan-approval:v1:${input.execution.binding.runId}:${planId}:${providerRevision}:${digest}`,
+        sourceRunId: input.execution.binding.runId,
+        title: `Review plan revision ${revision.revisionNumber}`,
+        summary: "Review the synchronized Paperclip plan.",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: `Approve plan revision ${revision.revisionNumber}?`,
+          detailsMarkdown:
+            "The completed provider plan has been synchronized to the canonical Plan document.",
+          acceptLabel: "Approve plan",
+          rejectLabel: "Request changes",
+          rejectRequiresReason: true,
+          supersedeOnUserComment: false,
+          target: {
+            type: "issue_document",
+            issueId: input.execution.binding.issueId,
+            documentId: current.id,
+            key: "plan",
+            revisionId: revision.id,
+            revisionNumber: revision.revisionNumber,
+            label: `Plan v${revision.revisionNumber}`,
+          },
+        },
+      } as never,
+      {
+        agentId: input.execution.binding.agentId,
+        runId: input.execution.binding.runId,
+      },
+    );
+    confirmationId = confirmation.id;
+    confirmationPending = confirmation.status === "pending";
+  } catch {
+    return {
+      eventId: input.event.sourceEventId,
+      planId,
+      providerRevision,
+      status: "approval_failed",
+      baseRevisionId: planningContext.baseRevisionId,
+      digest,
+      documentRevision: revision.revisionNumber,
+      currentRevisionId: revision.id,
+      confirmationId: null,
+    };
+  }
+  if (confirmationPending) {
+    try {
+      const currentIssue = await input.db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, input.execution.binding.issueId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (currentIssue && currentIssue.status !== "in_review") {
+        await issueService(input.db).update(input.execution.binding.issueId, {
+          status: "in_review",
+          actorAgentId: input.execution.binding.agentId,
+        });
+      }
+    } catch {
+      const settledIssue = await input.db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, input.execution.binding.issueId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (settledIssue?.status !== "in_review") {
+        return {
+          eventId: input.event.sourceEventId,
+          planId,
+          providerRevision,
+          status: "approval_failed",
+          baseRevisionId: planningContext.baseRevisionId,
+          digest,
+          documentRevision: revision.revisionNumber,
+          currentRevisionId: revision.id,
+          confirmationId,
+        };
+      }
+    }
+  }
+  return {
+    eventId: input.event.sourceEventId,
+    planId,
+    providerRevision,
+    status,
+    baseRevisionId: planningContext.baseRevisionId,
+    digest,
+    documentRevision: revision.revisionNumber,
+    currentRevisionId: revision.id,
+    confirmationId,
+  };
+}
+
+class SessionToolAuthorityEpoch {
+  readonly runId: string;
+  #authority: PaperclipRunnerToolAuthority;
+  #revoked = false;
+
+  constructor(runId: string, authority: PaperclipRunnerToolAuthority) {
+    this.runId = runId;
+    this.#authority = authority;
+  }
+
+  revoke(): void {
+    this.#revoked = true;
+  }
+
+  #assertCurrent(): void {
+    if (this.#revoked) {
+      throw new Error("native_tool_authority_epoch_revoked");
+    }
+  }
+
+  definitions() {
+    this.#assertCurrent();
+    return this.#authority.definitions();
+  }
+
+  async execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
+    this.#assertCurrent();
+    return await this.#authority.execute(call);
+  }
+}
+
+const sessionToolAuthorityEpochs = new Map<string, SessionToolAuthorityEpoch>();
+const initializingSessionToolAuthorities = new Set<string>();
+const executingRunnerdSessionScopes = new Map<string, string>();
+
+function nativeSessionKey(execution: NativeExecutionInput): string {
+  return (
+    execution.session.normalizedSessionId ??
+    `session-${execution.binding.runId}`
+  );
+}
+
+function nativeSessionWorkspaceScope(execution: NativeExecutionInput) {
+  // Projectless local runs use the heartbeat run id as a durable placeholder
+  // rather than fabricating an execution_workspaces row. Do not let that
+  // per-run placeholder break continuity for the same provider session; the
+  // immutable workspace descriptor is the stable identity in that case.
+  const transientWorkspace =
+    execution.binding.executionWorkspaceId === execution.binding.runId;
+  return transientWorkspace
+    ? {
+        kind: "transient" as const,
+        cwd: execution.workspace.cwd,
+        repoUrl: execution.workspace.repoUrl,
+        repoRef: execution.workspace.repoRef,
+        branchName: execution.workspace.branchName,
+      }
+    : {
+        kind: "managed" as const,
+        executionWorkspaceId: execution.binding.executionWorkspaceId,
+      };
+}
+
+function nativeProviderSessionScope(execution: NativeExecutionInput) {
+  switch (execution.provider.kind) {
+    case "claude_managed":
+      return {
+        kind: execution.provider.kind,
+        profileId: execution.provider.managedProfile.profileId,
+      };
+    case "aws_agentcore":
+      return {
+        kind: execution.provider.kind,
+        profileId: execution.provider.agentCoreProfile.profileId,
+      };
+    case "acpx":
+      return {
+        kind: execution.provider.kind,
+        agent: execution.provider.agent,
+        profile: execution.provider.profile,
+      };
+    case "codex":
+    case "opencode":
+      // These local providers have no separate persisted profile id. Company,
+      // agent, and workspace bind their credential/session context; mutable
+      // model and permission settings remain in nativeSessionConfigDigest so
+      // they rotate an incompatible warm session within the same scope.
+      return { kind: execution.provider.kind };
+  }
+}
+
+function nativeSessionScopeKey(execution: NativeExecutionInput): string {
+  return canonicalJson({
+    schema: "paperclip.native-session-scope.v2",
+    companyId: execution.binding.companyId,
+    agentId: execution.binding.agentId,
+    workspace: nativeSessionWorkspaceScope(execution),
+    provider: {
+      driverKind: execution.session.driverKind,
+      identity: nativeProviderSessionScope(execution),
+    },
+    normalizedSessionId: nativeSessionKey(execution),
+  });
+}
+
+function legacyCompanyNativeSessionScopeKey(
+  execution: NativeExecutionInput,
+): string {
+  return JSON.stringify([
+    execution.binding.companyId,
+    nativeSessionKey(execution),
+  ]);
+}
+
+function runnerdStateBase(): string {
+  return (
+    process.env.PAPERCLIP_RUNNER_STATE_DIR ??
+    resolve(
+      resolvePaperclipInstanceRoot(),
+      "runtime",
+      "paperclip-runner",
+      "durable-sessions",
+    )
+  );
+}
+
+function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
+  return resolve(
+    runnerdStateBase(),
+    createHash("sha256").update(nativeSessionScopeKey(execution)).digest("hex"),
+  );
+}
+
+function scrubRunnerdQuarantineLaunchState(root: string): void {
+  const codexHome = resolve(root, "codex-home");
+  const codexHomeStats = lstatSync(codexHome, { throwIfNoEntry: false });
+  if (!codexHomeStats) return;
+  if (!codexHomeStats.isDirectory() || codexHomeStats.isSymbolicLink()) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  for (const name of CODEX_HOME_NON_PERSISTENT_ENTRIES) {
+    const entry = resolve(codexHome, name);
+    const stats = lstatSync(entry, { throwIfNoEntry: false });
+    if (!stats) continue;
+    // Remove symlinks themselves, never their targets. Real temporary
+    // directories are safe to remove recursively inside the verified home.
+    rmSync(entry, {
+      recursive: stats.isDirectory() && !stats.isSymbolicLink(),
+      force: true,
+    });
+  }
+}
+
+function quarantineRunnerdStateRoot(
+  root: string,
+  reason: "identity_indeterminate" | "identity_mismatch",
+): string {
+  const stateBase = resolve(runnerdStateBase());
+  const resolvedRoot = resolve(root);
+  const stateKey = basename(resolvedRoot);
+  // Callers pass only roots derived by this module. Keep that boundary explicit
+  // so a future call site cannot turn quarantine into an arbitrary filesystem
+  // move, and never follow or move a symlink in place of the state directory.
+  if (
+    dirname(resolvedRoot) !== stateBase ||
+    !/^[a-f0-9]{64}$/.test(stateKey) ||
+    !isSafeNativeStateDirectory(resolvedRoot)
+  ) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  // Quarantine retains durable session history for diagnosis and recovery, but
+  // launch credentials and transient files are re-materializable and must not
+  // survive after this state loses authority.
+  scrubRunnerdQuarantineLaunchState(resolvedRoot);
+  const quarantineRoot = resolve(stateBase, "quarantine");
+  mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+  if (!isSafeNativeStateDirectory(quarantineRoot)) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  const destination = resolve(
+    quarantineRoot,
+    `${stateKey}.${reason}.${Date.now()}.${process.pid}.${randomUUID()}`,
+  );
+  renameSync(resolvedRoot, destination);
+  return destination;
+}
+
+function legacyCompanyRunnerdStateRoot(
+  execution: NativeExecutionInput,
+): string {
+  return resolve(
+    runnerdStateBase(),
+    createHash("sha256")
+      .update(legacyCompanyNativeSessionScopeKey(execution))
+      .digest("hex"),
+  );
+}
+
+function legacyRunnerdStateRoot(execution: NativeExecutionInput): string {
+  return resolve(
+    runnerdStateBase(),
+    createHash("sha256").update(nativeSessionKey(execution)).digest("hex"),
+  );
+}
+
+function migrateLegacyRunnerdStateRoot(input: {
+  legacy: string;
+  scoped: string;
+  execution: NativeExecutionInput;
+  verifiedPriorRunId?: string;
+}): string | null {
+  if (!existsSync(input.legacy)) return null;
+  if (!isSafeNativeStateDirectory(input.legacy)) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  const legacyIdentity = readRunnerdDurableIdentity(input.legacy);
+  const exactRun = durableIdentityMatchesExecution(
+    legacyIdentity,
+    input.execution,
+  );
+  const verifiedSettledPriorRun = Boolean(
+    input.verifiedPriorRunId &&
+    legacyIdentity?.runId === input.verifiedPriorRunId &&
+    durableIdentityMatchesSession(legacyIdentity, input.execution),
+  );
+  if (!exactRun && !verifiedSettledPriorRun) {
+    // A legacy path does not encode the full session scope. A mismatch may be
+    // valid live state owned by another agent/workspace, so refusing the claim
+    // is safe but moving that ambiguous directory is not.
+    throw new Error("runner_state_identity_mismatch");
+  }
+  if (
+    exactRun &&
+    legacyIdentity &&
+    ["absent", "indeterminate"].includes(
+      runnerdAuthorityLifecycle(
+        input.legacy,
+        legacyIdentity as RunnerdDurableIdentity,
+      ),
+    )
+  ) {
+    quarantineRunnerdStateRoot(input.legacy, "identity_indeterminate");
+    throw new Error("runner_state_identity_mismatch");
+  }
+  try {
+    renameSync(input.legacy, input.scoped);
+  } catch (error) {
+    // Another in-process recovery may have won the atomic rename. The scoped
+    // directory is authoritative once it exists; otherwise preserve the
+    // original migration failure rather than silently starting empty state.
+    if (!isSafeNativeStateDirectory(input.scoped)) throw error;
+    const scopedIdentity = readRunnerdDurableIdentity(input.scoped);
+    const exactScopedRun = durableIdentityMatchesExecution(
+      scopedIdentity,
+      input.execution,
+    );
+    const sameVerifiedPriorRun = Boolean(
+      input.verifiedPriorRunId &&
+      scopedIdentity &&
+      scopedIdentity.runId === input.verifiedPriorRunId &&
+      scopedIdentity.runnerInstanceId === legacyIdentity?.runnerInstanceId &&
+      scopedIdentity.environmentLeaseId ===
+        legacyIdentity?.environmentLeaseId &&
+      durableIdentityMatchesSession(scopedIdentity, input.execution),
+    );
+    if (!exactScopedRun && !sameVerifiedPriorRun) {
+      throw new Error("runner_state_identity_mismatch");
+    }
+  }
+  return input.scoped;
+}
+
+function runnerdAuthorityLifecycle(
+  root: string,
+  identity: RunnerdDurableIdentity,
+): "absent" | "suspended" | "not_suspended" | "indeterminate" {
+  const runnerRoot = resolve(root, "runner");
+  if (!existsSync(runnerRoot)) return "absent";
+  if (!isSafeNativeStateDirectory(runnerRoot)) return "indeterminate";
+  const statePath = resolve(runnerRoot, "runner-state.json");
+  if (!existsSync(statePath)) {
+    try {
+      // Older remote transports created this controller-side placeholder even
+      // though runner state was owned by the sandbox. It carries no authority,
+      // so a verified failover backup may be consulted. Any non-empty direct
+      // directory remains indeterminate and therefore blocks fallback.
+      return readdirSync(runnerRoot).length === 0 ? "absent" : "indeterminate";
+    } catch {
+      return "indeterminate";
+    }
+  }
+  try {
+    const state = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          statePath,
+          NATIVE_RUNNER_STATE_MAX_BYTES,
+          "runner_state_too_large",
+        ).toString("utf8"),
+      ),
+    );
+    if (
+      state.schema !== RUNNERD_STATE_SCHEMA ||
+      typeof state.lifecycle !== "string" ||
+      !RUNNERD_STATE_LIFECYCLES.has(state.lifecycle)
+    ) {
+      return "indeterminate";
+    }
+    if (
+      state.runnerInstanceId === identity.runnerInstanceId &&
+      state.environmentLeaseId === identity.environmentLeaseId &&
+      state.runId === identity.runId &&
+      state.normalizedSessionId === identity.normalizedSessionId
+    ) {
+      if (state.lifecycle === "suspended") return "suspended";
+      return "not_suspended";
+    }
+    return "indeterminate";
+  } catch {
+    return "indeterminate";
+  }
+}
+
+function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
+  root: string;
+  identity: RunnerdDurableIdentity;
+  execution: NativeExecutionInput;
+  allowVerifiedBackup: boolean;
+}): "suspended" | "not_suspended" | "indeterminate" {
+  const direct = runnerdAuthorityLifecycle(input.root, input.identity);
+  if (direct !== "absent") return direct;
+  if (!input.allowVerifiedBackup) return "indeterminate";
+  const backup = verifyNativeHarnessBackup({
+    root: input.root,
+    execution: input.execution,
+    runnerInstanceId: input.identity.runnerInstanceId,
+  });
+  if (!backup) return "indeterminate";
+  const backupLifecycle = runnerdAuthorityLifecycle(
+    backup.root,
+    input.identity,
+  );
+  return backupLifecycle === "absent" ? "indeterminate" : backupLifecycle;
+}
+
+type PriorRunnerdStateVerification =
+  | "verified"
+  | "retained_warm_runner"
+  | "active"
+  | "authority_indeterminate"
+  | "scope_mismatch"
+  | "terminal_state_indeterminate"
+  | "unavailable";
+
+const CLEANUP_CANONICAL_FILES = [
+  "control-plane/control-plane-state.json",
+  "runner/runner-state.json",
+  "runner/codex-provider-state.json",
+] as const;
+const CLEANUP_ACTIVATION_FILE = "cleanup-activation.json";
+
+function cleanupStateSnapshot(root: string) {
+  if (
+    ![root, resolve(root, "runner"), resolve(root, "control-plane")].every(
+      isSafeNativeStateDirectory,
+    )
+  ) {
+    throw new Error("native_cleanup_maintenance_unproven");
+  }
+  const bytes = CLEANUP_CANONICAL_FILES.map((file) =>
+    readBoundedNativeFile(
+      resolve(root, file),
+      NATIVE_RUNNER_STATE_MAX_BYTES,
+      "native_cleanup_maintenance_unproven",
+    ),
+  );
+  const [control, runner, provider] = bytes.map((value) =>
+    record(JSON.parse(value.toString("utf8"))),
+  );
+  const fileSha256 = bytes.map((value) =>
+    createHash("sha256").update(value).digest("hex"),
+  ) as [string, string, string];
+  return {
+    control: control!,
+    runner: runner!,
+    provider: provider!,
+    fileSha256,
+    fingerprint: createHash("sha256")
+      .update(JSON.stringify(fileSha256))
+      .digest("hex"),
+  };
+}
+
+function cleanupProcessAbsent(pid: unknown): pid is number {
+  if (
+    process.platform === "win32" ||
+    !Number.isSafeInteger(pid) ||
+    Number(pid) <= 0
+  )
+    return false;
+  return [Number(pid), -Number(pid)].every((target) => {
+    try {
+      process.kill(target, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  });
+}
+
+function cleanupCanonicalVacancy(root: string) {
+  const stat = lstatSync(root, { throwIfNoEntry: false });
+  if (!stat) return null;
+  if (!isSafeNativeStateDirectory(root) || readdirSync(root).length !== 0) {
+    throw new Error("native_cleanup_maintenance_unproven");
+  }
+  return {
+    device: stat.dev,
+    inode: stat.ino,
+    mode: stat.mode,
+    modifiedAt: stat.mtimeMs,
+  };
+}
+
+function cleanupArchiveRootIdentity(root: string) {
+  if (!isSafeNativeStateDirectory(root))
+    throw new Error("native_cleanup_maintenance_unproven");
+  const stat = lstatSync(root);
+  return { device: stat.dev, inode: stat.ino, mode: stat.mode };
+}
+
+/** Raw runner events and normalized driver events are distinct streams. Bind
+ * the retained raw journal to the server-accepted result, not a guessed shared
+ * event identifier. This is read-only and never interprets a tool as a request. */
+export function retainedNativeCleanupJournalMatches(input: {
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    | "id"
+    | "companyId"
+    | "agentId"
+    | "nativeIssueId"
+    | "nativeSessionId"
+    | "runnerInstanceId"
+    | "completionContractId"
+    | "completionContractSha256"
+  >;
+  execution: NativeExecutionInput;
+  accepted: Pick<
+    typeof nativeRunResults.$inferSelect,
+    | "schemaStatus"
+    | "resultJson"
+    | "turnId"
+    | "canonicalSha256"
+    | "serverFingerprint"
+  >;
+  control: Record<string, unknown>;
+  providerSessionId: string;
+  providerAccountSessionId?: string | null;
+  persistedEvents: Array<
+    Pick<
+      typeof heartbeatRunEvents.$inferSelect,
+      | "eventType"
+      | "payload"
+      | "sourceInstanceId"
+      | "sourceEventId"
+      | "sourceSeq"
+      | "sourcePayloadSha256"
+    >
+  >;
+}): boolean {
+  const { run, accepted, control } = input;
+  const envelope = record(accepted.resultJson);
+  const terminal = record(envelope.terminal);
+  if (
+    accepted.schemaStatus !== "accepted" ||
+    !accepted.turnId ||
+    terminal.turnTerminalState !== "completed" ||
+    terminal.runTerminalState !== "succeeded" ||
+    !Array.isArray(control.committedEvents) ||
+    !Array.isArray(control.commands)
+  )
+    return false;
+  const canonical = {
+    result: envelope.result,
+    terminal: envelope.terminal,
+    turnId: accepted.turnId,
+  };
+  const fingerprint = nativeSha256({
+    runId: run.id,
+    completionContractSha256: run.completionContractSha256,
+    canonicalSha256: accepted.canonicalSha256,
+  });
+  const validPersisted = input.persistedEvents.filter((row) => {
+    const parsed = validatePrpEvent(record(row.payload).prpEvent);
+    return (
+      parsed.ok &&
+      parsed.event.runId === run.id &&
+      parsed.event.normalizedSessionId === run.nativeSessionId &&
+      parsed.event.sourceInstanceId === row.sourceInstanceId &&
+      parsed.event.sourceEventId === row.sourceEventId &&
+      parsed.event.sourceSeq === row.sourceSeq &&
+      row.sourcePayloadSha256 === nativeSha256(parsed.event)
+    );
+  });
+  const identities = validPersisted.filter(
+    (row) =>
+      ["session.started", "session.resumed"].includes(row.eventType) &&
+      row.sourceInstanceId === run.runnerInstanceId,
+  );
+  if (identities.length !== 1) return false;
+  const identityEvent = record(record(identities[0]!.payload).prpEvent);
+  const identityPayload = record(identityEvent.payload);
+  if (
+    identityPayload.providerSessionId !==
+      (input.providerAccountSessionId ?? input.providerSessionId) ||
+    identityPayload.driverSessionId !== input.providerSessionId ||
+    identityEvent.sourceKind !== "runner" ||
+    identityEvent.eventType !== identities[0]!.eventType ||
+    identityEvent.sourceEventId !==
+      `${run.runnerInstanceId}:${run.id}:${identityEvent.sourceSeq}`
+  )
+    return false;
+  const boundDigest = validPersisted.some((row) => {
+    const event = record(record(row.payload).prpEvent);
+    return (
+      event.sourceKind === "control_plane" &&
+      nativeSha256({
+        binding: {
+          companyId: run.companyId,
+          issueId: run.nativeIssueId,
+          agentId: run.agentId,
+          runId: run.id,
+          sessionId: run.nativeSessionId,
+          sourceInstanceId: run.runnerInstanceId,
+          controlPlaneSourceInstanceId: row.sourceInstanceId,
+          completionContractId: run.completionContractId,
+          completionContractSha256: run.completionContractSha256,
+        },
+        ...canonical,
+      }) === accepted.canonicalSha256
+    );
+  });
+  if (!(
+    (accepted.canonicalSha256 === `sha256:${nativeSha256(canonical)}` &&
+      accepted.serverFingerprint === `sha256:${fingerprint}`) ||
+    (accepted.serverFingerprint === fingerprint && boundDigest)
+  ))
+    return false;
+  const events = control.committedEvents.map((entry) =>
+    record(record(record(entry).envelope).payload),
+  );
+  const durableIdentity = record(control.identity);
+  const boundRaw = (event: Record<string, unknown>) =>
+    validatePrpEvent(event).ok &&
+    event.runId === run.id &&
+    event.sourceInstanceId === run.runnerInstanceId &&
+    event.sourceKind === "runner" &&
+    event.normalizedSessionId === run.nativeSessionId &&
+    event.turnId === durableIdentity.turnId &&
+    event.itemId === durableIdentity.itemId;
+  const commands = control.commands.map(record);
+  const contract = input.execution.completionContract.contract;
+  if (
+    !commands.some(
+      (command) =>
+        ["run.prepare", "run.attach"].includes(String(command.type)) &&
+        command.status === "completed" &&
+        canonicalJson(record(command.payload).completionContract) ===
+          canonicalJson({
+            revision: contract.revision,
+            criterionIds: contract.criteria.map((criterion) => criterion.id),
+          }),
+    )
+  )
+    return false;
+  if (
+    !commands.some(
+      (command) =>
+        command.type === "turn.start" &&
+        command.status === "completed" &&
+        record(record(command.result).result).providerTurnId ===
+          accepted.turnId,
+    )
+  )
+    return false;
+  if (
+    !events.some(
+      (event) =>
+        event.eventType === "turn.accepted" &&
+        boundRaw(event) &&
+        record(event.payload).providerTurnId === accepted.turnId &&
+        record(event.payload).providerSessionId === input.providerSessionId,
+    )
+  )
+    return false;
+  const submissions = events.filter(
+    (event) =>
+      event.eventType === "semantic_tool.input" &&
+      record(event.payload).semantic_tool &&
+      record(record(event.payload).semantic_tool).operationId ===
+        "paperclip_finish",
+  );
+  if (submissions.length !== 1) return false;
+  const event = submissions[0]!;
+  const semantic = record(record(event.payload).semantic_tool);
+  const correlation = record(semantic.correlation);
+  const result = validatePrpStructuredRunResult(semantic.input);
+  if (
+    !boundRaw(event) ||
+    !result.ok ||
+    canonicalJson(result.result) !== canonicalJson(envelope.result) ||
+    semantic.schema !== "paperclip.prp.semantic_tool.v1" ||
+    semantic.schemaVersion !== 1 ||
+    semantic.phase !== "input" ||
+    typeof semantic.callId !== "string" ||
+    !semantic.callId ||
+    record(semantic.content).digest !==
+      `sha256:${nativeSha256(semantic.input)}` ||
+    event.runId !== run.id ||
+    event.sourceInstanceId !== run.runnerInstanceId ||
+    event.normalizedSessionId !== run.nativeSessionId ||
+    correlation.runId !== run.id ||
+    correlation.normalizedSessionId !== run.nativeSessionId ||
+    correlation.turnId !== event.turnId ||
+    correlation.itemId !== event.itemId
+  )
+    return false;
+  return (
+    events.some((candidate) => {
+      const outcome = record(record(candidate.payload).semantic_tool);
+      return (
+        candidate.eventType === "semantic_tool.result" &&
+        boundRaw(candidate) &&
+        candidate.runId === run.id &&
+        candidate.sourceInstanceId === run.runnerInstanceId &&
+        candidate.normalizedSessionId === run.nativeSessionId &&
+        outcome.schema === semantic.schema &&
+        outcome.schemaVersion === 1 &&
+        outcome.phase === "result" &&
+        outcome.operationId === semantic.operationId &&
+        outcome.callId === semantic.callId &&
+        outcome.outcome === "succeeded" &&
+        outcome.code === "semantic_tool_succeeded" &&
+        outcome.operationReceiptId === `operation_${semantic.callId}` &&
+        canonicalJson(outcome.correlation) ===
+          canonicalJson(semantic.correlation)
+      );
+    }) &&
+    commands.some((command) => {
+      const payload = record(command.payload);
+      return (
+        command.type === "semantic_tool.result" &&
+        command.status === "completed" &&
+        payload.callId === semantic.callId &&
+        payload.operationId === semantic.operationId &&
+        payload.isError === false &&
+        payload.sourceEventId === event.sourceEventId &&
+        payload.sourceEventType === event.eventType &&
+        canonicalJson(payload.input) === canonicalJson(semantic.input) &&
+        canonicalJson(payload.correlation) ===
+          canonicalJson(semantic.correlation) &&
+        record(record(command.result).result).callId === semantic.callId
+      );
+    })
+  );
+}
+
+/** Durable, content-free evidence for an authenticated maintenance event.
+ * Never feed raw cleanup output into the normal driver/progress namespace. */
+export async function appendRetainedNativeCleanupEvent(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    nativeSessionId: string;
+    runnerInstanceId: string;
+    requestId: string;
+    event: PrpEvent;
+  },
+): Promise<void> {
+  const parsed = validatePrpEvent(input.event);
+  if (
+    !parsed.ok ||
+    parsed.event.runId !== input.runId ||
+    parsed.event.normalizedSessionId !== input.nativeSessionId ||
+    parsed.event.sourceInstanceId !== input.runnerInstanceId ||
+    parsed.event.sourceKind !== "runner" ||
+    !input.requestId
+  ) {
+    throw new Error("native_cleanup_maintenance_unproven");
+  }
+  const event = parsed.event;
+  const receipt = {
+    schema: "paperclip.native_cleanup_event.v1",
+    requestId: input.requestId,
+    rawSourceInstanceId: event.sourceInstanceId,
+    rawSourceEventId: event.sourceEventId,
+    rawSourceSeq: event.sourceSeq,
+    rawEventType: event.eventType,
+    rawCanonicalSha256: nativeSha256(event),
+  };
+  await appendHeartbeatRunEvent(db, {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    runId: input.runId,
+    eventType: "native.cleanup.event",
+    stream: "system",
+    level: "info",
+    payload: { nativeCleanupEvent: receipt },
+    nativeSource: {
+      sourceInstanceId: `${input.runnerInstanceId}:cleanup:${input.requestId}`,
+      sourceEventId: `cleanup:${input.requestId}:${event.sourceEventId}`,
+      sourceSeq: event.sourceSeq,
+      protocolSchemaVersion: 1,
+      canonicalPayload: receipt,
+    },
+  });
+}
+
+function cleanupProviderHomeSnapshot(home: string, content: boolean) {
+  const entries: Array<{
+    path: string;
+    directory: boolean;
+    dev: number;
+    ino: number;
+    size: number;
+    mtimeMs: number;
+    ctimeMs: number;
+    sha256?: string;
+  }> = [];
+  let bytes = 0;
+  const visit = (relative: string, depth: number) => {
+    if (depth > 32 || entries.length >= MAX_REMOTE_CHECKPOINT_ENTRIES)
+      throw new Error("native_cleanup_maintenance_unproven");
+    const path = resolve(home, relative);
+    const metadata = lstatSync(path);
+    if (
+      metadata.isSymbolicLink() ||
+      (!metadata.isFile() && !metadata.isDirectory())
+    )
+      throw new Error("native_cleanup_maintenance_unproven");
+    const entry = {
+      path: relative,
+      directory: metadata.isDirectory(),
+      dev: metadata.dev,
+      ino: metadata.ino,
+      size: metadata.isDirectory() ? 0 : metadata.size,
+      mtimeMs: metadata.mtimeMs,
+      ctimeMs: metadata.ctimeMs,
+    };
+    entries.push(entry);
+    if (entry.directory) {
+      const directory = opendirSync(path);
+      const children: string[] = [];
+      try {
+        for (
+          let child = directory.readSync();
+          child !== null;
+          child = directory.readSync()
+        ) {
+          if (
+            !relative &&
+            (CODEX_HOME_NON_PERSISTENT_ENTRIES as readonly string[]).includes(
+              child.name,
+            )
+          )
+            continue;
+          if (children.length + entries.length >= MAX_REMOTE_CHECKPOINT_ENTRIES)
+            throw new Error("native_cleanup_maintenance_unproven");
+          children.push(child.name);
+        }
+      } finally {
+        directory.closeSync();
+      }
+      for (const name of children.sort())
+        visit(relative ? `${relative}/${name}` : name, depth + 1);
+    } else {
+      bytes += metadata.size;
+      if (bytes > MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES)
+        throw new Error("native_cleanup_maintenance_unproven");
+      if (content) {
+        const value = readBoundedNativeFile(
+          path,
+          metadata.size,
+          "native_cleanup_maintenance_unproven",
+        );
+        (entry as (typeof entries)[number]).sha256 = createHash("sha256")
+          .update(value)
+          .digest("hex");
+      }
+    }
+    const after = lstatSync(path);
+    if (
+      after.dev !== metadata.dev ||
+      after.ino !== metadata.ino ||
+      after.mtimeMs !== metadata.mtimeMs ||
+      after.ctimeMs !== metadata.ctimeMs ||
+      after.size !== metadata.size
+    )
+      throw new Error("native_cleanup_maintenance_unproven");
+  };
+  visit("", 0);
+  return {
+    entries,
+    bytes,
+    metadataFingerprint: nativeSha256(
+      entries.map(({ sha256: _sha, ...entry }) => entry),
+    ),
+    fingerprint: content
+      ? nativeSha256(
+          entries.map(({ path, directory, size, sha256 }) => ({
+            path,
+            directory,
+            size,
+            ...(sha256 ? { sha256 } : {}),
+          })),
+        )
+      : null,
+  };
+}
+
+function copyCleanupProviderHome(
+  source: string,
+  destination: string,
+  snapshot: ReturnType<typeof cleanupProviderHomeSnapshot>,
+) {
+  for (const entry of snapshot.entries) {
+    const target = resolve(destination, entry.path);
+    if (entry.directory) mkdirSync(target, { mode: 0o700 });
+    else {
+      const value = readBoundedNativeFile(
+        resolve(source, entry.path),
+        entry.size,
+        "native_cleanup_maintenance_unproven",
+      );
+      if (createHash("sha256").update(value).digest("hex") !== entry.sha256)
+        throw new Error("native_cleanup_maintenance_unproven");
+      writeFileSync(target, value, { flag: "wx", mode: 0o600 });
+    }
+  }
+  if (
+    cleanupProviderHomeSnapshot(source, false).metadataFingerprint !==
+      snapshot.metadataFingerprint ||
+    cleanupProviderHomeSnapshot(destination, true).fingerprint !==
+      snapshot.fingerprint
+  )
+    throw new Error("native_cleanup_maintenance_unproven");
+}
+
+export function rebaseRetainedNativeCleanupProviderHome(
+  home: string,
+  canonicalHome: string,
+  threadId: string,
+  destination: "staging" | "canonical",
+) {
+  if (resolve(home) === resolve(canonicalHome))
+    throw new Error("native_cleanup_maintenance_unproven");
+  const snapshot = cleanupProviderHomeSnapshot(home, true);
+  const rollouts = snapshot.entries.filter(
+    (entry) =>
+      !entry.directory &&
+      entry.path.startsWith("sessions/") &&
+      entry.path.endsWith(`-${threadId}.jsonl`),
+  );
+  if (rollouts.length !== 1)
+    throw new Error("native_cleanup_maintenance_unproven");
+  const rollout = rollouts[0]!;
+  const bytes = readBoundedNativeFile(
+    resolve(home, rollout.path),
+    rollout.size,
+    "native_cleanup_maintenance_unproven",
+  );
+  const newline = bytes.indexOf(10);
+  if (newline < 0 || newline > 64 * 1024)
+    throw new Error("native_cleanup_maintenance_unproven");
+  const first = record(JSON.parse(bytes.subarray(0, newline).toString("utf8")));
+  if (first.type !== "session_meta" || record(first.payload).id !== threadId)
+    throw new Error("native_cleanup_maintenance_unproven");
+  // Only open the NEW private copy. Codex 0.153.4 deliberately does not fall
+  // back to a filesystem scan for paginated threads: SQLite selects the exact
+  // immutable rollout, which can differ after thread/revert. Relocate only
+  // that already-proven path, never choose another rollout or change its mode.
+  const sqlite = resolve(home, "state_5.sqlite");
+  if (
+    snapshot.entries.some(
+      (entry) =>
+        /^state_\d+\.sqlite$/.test(entry.path) &&
+        entry.path !== "state_5.sqlite",
+    )
+  )
+    throw new Error("native_cleanup_maintenance_unproven");
+  if (!existsSync(sqlite)) return;
+  const database = new DatabaseSync(sqlite);
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    // The pinned schema has insert and timestamp-only triggers. None fire
+    // for this column-only update; unknown/general update triggers deny it.
+    if (
+      database
+        .prepare(
+          "SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name COLLATE NOCASE = 'threads'",
+        )
+        .all()
+        .some(
+          (trigger) =>
+            typeof trigger.sql !== "string" ||
+            !/^CREATE\s+TRIGGER\s+[a-z_][a-z0-9_]*\s+AFTER\s+(?:INSERT|UPDATE\s+OF\s+(?:created_at|updated_at))\s+ON\s+threads\s/i.test(
+              trigger.sql,
+            ),
+        )
+    )
+      throw new Error("native_cleanup_maintenance_unproven");
+    // Foreign-key actions can also mutate other tables without an explicit
+    // trigger. Unknown cascading topology is not an exact path relocation.
+    if (
+      database
+        .prepare(
+          `SELECT 1 FROM sqlite_schema AS s
+           JOIN pragma_foreign_key_list(s.name) AS f
+           WHERE s.type = 'table' AND f."table" COLLATE NOCASE = 'threads'
+             AND f.on_update NOT IN ('NO ACTION', 'RESTRICT') LIMIT 1`,
+        )
+        .get()
+    )
+      throw new Error("native_cleanup_maintenance_unproven");
+    const row = database
+      .prepare("SELECT * FROM threads WHERE id = ?")
+      .get(threadId);
+    if (
+      !row ||
+      typeof row.rollout_path !== "string" ||
+      ![
+        resolve(home, rollout.path),
+        resolve(canonicalHome, rollout.path),
+      ].includes(row.rollout_path) ||
+      !["legacy", "paginated"].includes(String(row.history_mode)) ||
+      (record(first.payload).history_mode ?? "legacy") !== row.history_mode
+    )
+      throw new Error("native_cleanup_maintenance_unproven");
+    const target = resolve(
+      destination === "staging" ? home : canonicalHome,
+      rollout.path,
+    );
+    if (row.rollout_path !== target) {
+      const changed = database
+        .prepare(
+          "UPDATE threads SET rollout_path = ? WHERE id = ? AND rollout_path = ? AND history_mode = ?",
+        )
+        .run(target, threadId, row.rollout_path, row.history_mode);
+      if (changed.changes !== 1)
+        throw new Error("native_cleanup_maintenance_unproven");
+    }
+    const after = database
+      .prepare("SELECT * FROM threads WHERE id = ?")
+      .get(threadId);
+    if (nativeSha256(after) !== nativeSha256({ ...row, rollout_path: target }))
+      throw new Error("native_cleanup_maintenance_unproven");
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
+/** Prove that a crashed local Codex turn ended without external effects. No provider
+ * is launched and no retained state is rewritten. The successor must use a fresh
+ * normalized session; the old directory remains available for investigation. */
+export async function verifyStoppedNativeSessionForReplacement(
+  db: Db,
+  run: typeof heartbeatRuns.$inferSelect,
+): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
+  try {
+    if (run.runtimeMode !== "native" || run.status !== "failed" || !run.finishedAt ||
+        !run.nativeIssueId || !run.nativeSessionId || !run.runnerInstanceId) return null;
+    const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+    if (execution.provider.kind !== "codex" || execution.session.driverKind !== "codex_app_server" ||
+        execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
+        execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
+        nativeSessionKey(execution) !== run.nativeSessionId ||
+        record(run.runnerProfileJson).nativeToolContractFingerprint !== nativeToolContractFingerprintForTarget("local")) return null;
+    const scope = nativeSessionScopeKey(execution);
+    const idle = () => !activeNativeSessions.has(run.id) && !executingRunnerdSessionScopes.has(scope) &&
+      !initializingSessionToolAuthorities.has(scope) && !warmNativeSessions.has(scope);
+    if (!idle()) return null;
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+    if (leases.some(lease => lease.provider !== "local" || !lease.releasedAt)) return null;
+    const stopped = await readNativeLocalProcessStop(db, run.companyId, run.id);
+    if (!stopped) return null;
+    const root = scopedRunnerdStateRoot(execution);
+    const snapshot = cleanupStateSnapshot(root);
+    const identity = record(snapshot.control.identity);
+    if (!durableIdentityMatchesExecution(identity, execution) || identity.runnerInstanceId !== run.runnerInstanceId ||
+        !["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"].every(key =>
+          typeof identity[key] === "string" && identity[key] && snapshot.runner[key] === identity[key]) ||
+        snapshot.runner.lifecycle !== "ready" || snapshot.provider.lifecycle !== "turn_active" ||
+        record(snapshot.provider.config).provider !== "codex" || record(snapshot.provider.config).cwd !== execution.workspace.cwd ||
+        !Array.isArray(snapshot.control.committedEvents) || !Array.isArray(snapshot.control.commands)) return null;
+    const events = snapshot.control.committedEvents.map(entry => record(record(record(entry).envelope).payload));
+    const providerEvent = events.filter(event => ["session.started", "session.resumed"].includes(String(event.eventType))).at(-1);
+    const provider = record(providerEvent?.payload);
+    const bound = (event: Record<string, unknown>) => validatePrpEvent(event).ok && event.sourceKind === "runner" &&
+      event.sourceInstanceId === run.runnerInstanceId && event.runId === run.id &&
+      event.normalizedSessionId === run.nativeSessionId && event.turnId === identity.turnId && event.itemId === identity.itemId;
+    if (!providerEvent || !bound(providerEvent) || !cleanupProcessAbsent(provider.processId) ||
+        provider.processId === stopped.processPid || typeof provider.providerSessionId !== "string" ||
+        snapshot.provider.threadId !== provider.providerSessionId ||
+        typeof snapshot.provider.activeProviderTurnId !== "string") return null;
+    const receipts = await db.select().from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.sourceInstanceId, run.runnerInstanceId),
+      inArray(heartbeatRunEvents.eventType, ["session.started", "session.resumed"]))).limit(2);
+    const receipt = receipts.length === 1 ? receipts[0] : undefined;
+    const durableEvent = record(record(receipt?.payload).prpEvent);
+    // The persisted adapter enriches identity payloads with driverSessionId. Bind
+    // the normalized and provider identities explicitly instead of comparing raw JSON.
+    const durableProvider = record(durableEvent.payload);
+    if (!receipt || !validatePrpEvent(durableEvent).ok || durableEvent.runId !== run.id ||
+        durableEvent.sourceInstanceId !== run.runnerInstanceId || durableEvent.normalizedSessionId !== run.nativeSessionId ||
+        receipt.sourceEventId !== `${run.runnerInstanceId}:${run.id}:${durableEvent.sourceSeq}` ||
+        receipt.sourcePayloadSha256 !== nativeSha256(durableEvent) ||
+        (durableProvider.processId !== undefined && durableProvider.processId !== provider.processId) ||
+        (durableProvider.driverSessionId ?? durableProvider.providerSessionId) !== provider.providerSessionId) return null;
+    const turnId = snapshot.provider.activeProviderTurnId;
+    if (!snapshot.control.commands.map(record).some(command => command.type === "turn.start" && command.status === "completed" &&
+        record(record(command.result).result).providerTurnId === turnId) ||
+        !events.some(event => bound(event) && event.eventType === "turn.accepted" &&
+          record(event.payload).providerTurnId === turnId && record(event.payload).providerSessionId === provider.providerSessionId)) return null;
+    // Completion bookkeeping may precede the final answer. Its exact accepted
+    // receipt is safe to preserve; arbitrary provider tools still prevent replay.
+    const completedTaskControlCalls: Array<{ callId: string; input: unknown }> = [];
+    for (const event of events.filter(event => event.eventType === "semantic_tool.input")) {
+      const semantic = record(record(event.payload).semantic_tool);
+      const correlation = record(semantic.correlation);
+      if (!bound(event) || semantic.operationId !== "paperclip_finish" || semantic.phase !== "input" ||
+          typeof semantic.callId !== "string" || !validatePrpStructuredRunResult(semantic.input).ok ||
+          correlation.runId !== run.id || correlation.normalizedSessionId !== run.nativeSessionId ||
+          correlation.turnId !== identity.turnId || correlation.itemId !== identity.itemId ||
+          record(semantic.content).digest !== `sha256:${nativeSha256(semantic.input)}` ||
+          !events.some(resultEvent => {
+            const result = record(record(resultEvent.payload).semantic_tool);
+            return bound(resultEvent) && resultEvent.eventType === "semantic_tool.result" &&
+              result.operationId === semantic.operationId && result.callId === semantic.callId &&
+              result.outcome === "succeeded" && result.operationReceiptId === `operation_${semantic.callId}` &&
+              canonicalJson(result.correlation) === canonicalJson(semantic.correlation);
+          }) || !snapshot.control.commands.map(record).some(command => {
+            const payload = record(command.payload);
+            return command.type === "semantic_tool.result" && command.status === "completed" &&
+              payload.callId === semantic.callId && payload.operationId === semantic.operationId &&
+              payload.sourceEventId === event.sourceEventId && payload.isError === false &&
+              record(payload.result).success === true && canonicalJson(payload.input) === canonicalJson(semantic.input) &&
+              canonicalJson(payload.correlation) === canonicalJson(semantic.correlation);
+          })) return null;
+      completedTaskControlCalls.push({ callId: semantic.callId, input: semantic.input });
+    }
+    if (completedTaskControlCalls.length > 1) return null;
+    const pendingInventory = JSON.stringify([snapshot.runner.outbox, snapshot.provider.pendingEvents, snapshot.provider.queuedEvents]);
+    if (/semantic_tool\.input|mcp_app\.tool_input|runtime\.input\.requested|runtime_request\.created/.test(pendingInventory) ||
+        events.some(event => ["mcp_app.tool_input", "runtime.input.requested", "runtime_request.created"].includes(String(event.eventType)))) return null;
+    if (snapshot.control.commands.map(record).some(command => command.status === "pending" &&
+        !["turn.stop", "runner.drain", "runner.suspend"].includes(String(command.type)))) return null;
+    const home = cleanupProviderHomeSnapshot(resolve(root, "codex-home"), false);
+    const rollouts = home.entries.filter(entry => !entry.directory && entry.path.startsWith("sessions/") &&
+      basename(entry.path).endsWith(`-${provider.providerSessionId}.jsonl`));
+    if (rollouts.length !== 1 || rollouts[0]!.size > 32 * 1024 * 1024) return null;
+    const rolloutPath = resolve(root, "codex-home", rollouts[0]!.path);
+    const bytes = readBoundedNativeFile(rolloutPath, 32 * 1024 * 1024, "native_crash_inventory_unproven");
+    // A partial final write is not a closed transcript.
+    if (!bytes.toString("utf8").endsWith("\n")) return null;
+    const rows = bytes.toString("utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+    if (!stoppedCodexTurnIsTextOnly({ rows, threadId: provider.providerSessionId, turnId, cwd: execution.workspace.cwd, completedTaskControlCalls })) return null;
+    const rolloutSha256 = nativeSha256(bytes.toString("utf8"));
+    const evidence = { schema: "paperclip.stopped_text_turn.v1", runId: run.id, nativeSessionId: run.nativeSessionId,
+      runnerInstanceId: run.runnerInstanceId, processPid: stopped.processPid, providerPid: provider.processId,
+      providerSessionId: provider.providerSessionId, providerTurnId: turnId,
+      stateFingerprint: snapshot.fingerprint, rolloutSha256,
+      completedTaskControlCallIds: completedTaskControlCalls.map(call => call.callId) };
+    return {
+      evidence,
+      retire: () => idle() && cleanupProcessAbsent(stopped.processPid) && cleanupProcessAbsent(provider.processId) &&
+        cleanupStateSnapshot(root).fingerprint === snapshot.fingerprint &&
+        nativeSha256(readBoundedNativeFile(rolloutPath, 32 * 1024 * 1024, "native_crash_inventory_unproven").toString("utf8")) === rolloutSha256 &&
+        completeTerminatedLocalNativeSessionCleanup({ companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId! }),
+    };
+  } catch { return null; }
+}
+
+/** Exact local cleanup only: the accepted result and original quarantine are
+ * never rewritten. A failed/interrupted maintenance attempt is retained for
+ * inspection, not retried from an older snapshot with unknown process owners. */
+export async function reconcileRetainedNativeSessionCleanup(
+  db: Db,
+  input: {
+    companyId: string;
+    runId: string;
+  },
+): Promise<{
+  status: "settled" | "not_eligible" | "operator_required";
+  runId: string;
+}> {
+  const denied = () => new Error("native_cleanup_maintenance_unproven");
+  const leaseOwner = `native-cleanup:${randomUUID()}`;
+  let reservedScope: string | null = null;
+  const releaseScope = () => {
+    if (
+      reservedScope &&
+      executingRunnerdSessionScopes.get(reservedScope) === leaseOwner
+    ) {
+      executingRunnerdSessionScopes.delete(reservedScope);
+    }
+  };
+  let claim: {
+    execution: NativeExecutionInput;
+    run: typeof heartbeatRuns.$inferSelect;
+    quarantine: string;
+    root: string;
+    emptyRoot: ReturnType<typeof cleanupCanonicalVacancy>;
+    source: ReturnType<typeof cleanupStateSnapshot>;
+    providerHome: ReturnType<typeof cleanupProviderHomeSnapshot>;
+    sourceArchive: {
+      intent: Record<string, unknown>;
+      fromCanonical: boolean;
+      completed: boolean;
+    } | null;
+    copySource: {
+      directory: string;
+      snapshot: ReturnType<typeof cleanupStateSnapshot>;
+      requestId: string;
+    } | null;
+    providerPid: number;
+    providerSessionId: string;
+    identity: {
+      runnerInstanceId: string;
+      environmentLeaseId: string;
+      runId: string;
+      normalizedSessionId: string;
+      turnId: string;
+      itemId: string;
+    };
+    history: Array<Record<string, unknown>>;
+  } | null = null;
+  try {
+    claim = await db.transaction(async (tx) => {
+      const run = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.runId),
+            eq(heartbeatRuns.companyId, input.companyId),
+          ),
+        )
+        .for("update", { noWait: true })
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (
+        !run ||
+        run.runtimeMode !== "native" ||
+        !run.nativeIssueId ||
+        !run.nativeSessionId ||
+        !run.runnerInstanceId ||
+        !["succeeded", "failed"].includes(run.status) ||
+        !run.finishedAt ||
+        !cleanupProcessAbsent(run.processPid) ||
+        run.processGroupId !== run.processPid
+      )
+        return null;
+      const execution = parseNativeExecutionInput(
+        record(run.runnerProfileJson).nativeExecutionInput,
+      );
+      const failure = record(record(run.resultJson).recoveredExecutionFailure);
+      const errorCode = run.errorCode ?? failure.errorCode;
+      const error = run.error ?? failure.error;
+      if (
+        errorCode !== "adapter_failed" ||
+        error !==
+          "provider_transport_failed: runner did not durably suspend before checkpoint" ||
+        execution.binding.companyId !== run.companyId ||
+        execution.binding.agentId !== run.agentId ||
+        execution.binding.issueId !== run.nativeIssueId ||
+        execution.binding.runId !== run.id ||
+        nativeSessionKey(execution) !== run.nativeSessionId ||
+        execution.provider.kind !== "codex" ||
+        execution.session.driverKind !== "codex_app_server" ||
+        record(run.runnerProfileJson).nativeToolContractFingerprint !==
+          nativeToolContractFingerprintForTarget("local")
+      )
+        return null;
+      const scope = nativeSessionScopeKey(execution);
+      if (
+        activeNativeSessions.has(run.id) ||
+        executingRunnerdSessionScopes.has(scope) ||
+        initializingSessionToolAuthorities.has(scope) ||
+        warmNativeSessions.has(scope)
+      )
+        return null;
+      executingRunnerdSessionScopes.set(scope, leaseOwner);
+      reservedScope = scope;
+      const coordinator = await tx
+        .select()
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, run.id),
+            eq(nativeRunFinalizations.companyId, run.companyId),
+            eq(nativeRunFinalizations.issueId, run.nativeIssueId),
+          ),
+        )
+        .for("update", { noWait: true })
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (
+        !coordinator ||
+        coordinator.phase !== "committed" ||
+        !coordinator.resultId ||
+        !coordinator.assessmentId ||
+        !coordinator.decisionId ||
+        coordinator.nextAttemptAt ||
+        (coordinator.leaseOwner &&
+          coordinator.leaseExpiresAt &&
+          coordinator.leaseExpiresAt > new Date()) ||
+        coordinator.recoveryHistory.some(
+          (event) => event.kind === "native_cleanup_runner_epoch",
+        )
+      )
+        return null;
+      const result = await tx
+        .select()
+        .from(nativeRunResults)
+        .where(
+          and(
+            eq(nativeRunResults.id, coordinator.resultId),
+            eq(nativeRunResults.runId, run.id),
+            eq(nativeRunResults.companyId, run.companyId),
+            eq(nativeRunResults.issueId, run.nativeIssueId),
+          ),
+        )
+        .for("share", { noWait: true })
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (!result || result.schemaStatus !== "accepted") return null;
+      const environment = await tx
+        .select({ id: environmentLeases.id })
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.companyId, run.companyId),
+            eq(environmentLeases.heartbeatRunId, run.id),
+            inArray(environmentLeases.status, ["active", "pending_cleanup"]),
+          ),
+        )
+        .limit(1);
+      if (environment.length) return null;
+      const root = scopedRunnerdStateRoot(execution);
+      const maintenanceHistory = coordinator.recoveryHistory.filter(
+        (event) => event.kind === "native_cleanup_maintenance",
+      );
+      const archiveHistory = coordinator.recoveryHistory.filter(
+        (event) => event.kind === "native_cleanup_source_archive",
+      );
+      const parent = resolve(runnerdStateBase(), "quarantine");
+      if (existsSync(parent) && !isSafeNativeStateDirectory(parent))
+        return null;
+      const entries = existsSync(parent) ? readdirSync(parent) : [];
+      if (entries.length > 4096) return null;
+      const candidates = entries.filter((name) =>
+        name.startsWith(`${basename(root)}.identity_indeterminate.`),
+      );
+      let emptyRoot: ReturnType<typeof cleanupCanonicalVacancy> = null;
+      let sourceDirectory: string;
+      let quarantine: string;
+      let sourceArchive: NonNullable<typeof claim>["sourceArchive"] = null;
+      const rootExists = !!lstatSync(root, { throwIfNoEntry: false });
+      if (rootExists && !isSafeNativeStateDirectory(root)) return null;
+      if (archiveHistory.length) {
+        const prepared = archiveHistory[0]!;
+        const archived = archiveHistory[1];
+        if (
+          maintenanceHistory.length ||
+          archiveHistory.length > 2 ||
+          prepared.version !== 1 ||
+          prepared.phase !== "prepared" ||
+          prepared.companyId !== run.companyId ||
+          prepared.agentId !== run.agentId ||
+          prepared.runId !== run.id ||
+          prepared.nativeSessionId !== run.nativeSessionId ||
+          prepared.runnerInstanceId !== run.runnerInstanceId ||
+          prepared.stateKey !== basename(root) ||
+          typeof prepared.requestId !== "string" ||
+          !prepared.requestId.startsWith("native-cleanup:") ||
+          typeof prepared.archiveName !== "string" ||
+          prepared.archiveName.length > 192 ||
+          basename(prepared.archiveName) !== prepared.archiveName ||
+          !prepared.archiveName.startsWith(
+            `${basename(root)}.identity_indeterminate.cleanup.`,
+          ) ||
+          typeof prepared.sourceFingerprint !== "string" ||
+          !/^[0-9a-f]{64}$/.test(prepared.sourceFingerprint) ||
+          typeof prepared.providerHomeFingerprint !== "string" ||
+          !/^[0-9a-f]{64}$/.test(prepared.providerHomeFingerprint) ||
+          (archived &&
+            (archived.phase !== "archived" ||
+              Object.entries(prepared).some(
+                ([key, value]) =>
+                  key !== "phase" &&
+                  canonicalJson(archived[key]) !== canonicalJson(value),
+              )))
+        )
+          return null;
+        quarantine = resolve(parent, prepared.archiveName);
+        if (rootExists) {
+          if (archived || candidates.length || existsSync(quarantine))
+            return null;
+          sourceDirectory = root;
+        } else {
+          if (candidates.length !== 1 || candidates[0] !== prepared.archiveName)
+            return null;
+          sourceDirectory = quarantine;
+        }
+        sourceArchive = {
+          intent: prepared,
+          fromCanonical: rootExists,
+          completed: !!archived,
+        };
+      } else if (rootExists && readdirSync(root).length) {
+        if (maintenanceHistory.length || candidates.length) return null;
+        sourceDirectory = root;
+        quarantine = resolve(
+          parent,
+          `${basename(root)}.identity_indeterminate.cleanup.${randomUUID()}`,
+        );
+        sourceArchive = {
+          intent: {},
+          fromCanonical: true,
+          completed: false,
+        };
+      } else {
+        // A refused successor may create only the directory before admission
+        // fails. Inventory that exact empty inode, never replace another owner.
+        emptyRoot = cleanupCanonicalVacancy(root);
+        if (candidates.length !== 1) return null;
+        quarantine = resolve(parent, candidates[0]!);
+        sourceDirectory = quarantine;
+      }
+      const archiveRootIdentity = sourceArchive
+        ? cleanupArchiveRootIdentity(sourceDirectory)
+        : null;
+      if (sourceArchive) {
+        const scopeEntries = readdirSync(runnerdStateBase());
+        if (
+          scopeEntries.length > 4096 ||
+          scopeEntries.some((name) =>
+            name.startsWith(`${basename(root)}.cleanup-`),
+          )
+        )
+          return null;
+      }
+      const source = cleanupStateSnapshot(sourceDirectory);
+      const identity = record(source.control.identity);
+      if (
+        !durableIdentityMatchesExecution(identity, execution) ||
+        identity.runnerInstanceId !== run.runnerInstanceId ||
+        ![
+          "runnerInstanceId",
+          "environmentLeaseId",
+          "runId",
+          "normalizedSessionId",
+          "turnId",
+          "itemId",
+        ].every(
+          (key) =>
+            typeof identity[key] === "string" &&
+            identity[key] &&
+            source.runner[key] === identity[key],
+        ) ||
+        source.runner.lifecycle !== "ready" ||
+        source.provider.lifecycle !== "turn_active" ||
+        record(source.provider.config).provider !== "codex" ||
+        record(source.provider.config).command !== "codex" ||
+        record(source.provider.config).cwd !== execution.workspace.cwd ||
+        !Array.isArray(source.control.committedEvents)
+      )
+        return null;
+      const providerEvents = source.control.committedEvents
+        .map((entry) => record(record(record(entry).envelope).payload))
+        .filter((event) =>
+          ["session.started", "session.resumed"].includes(
+            String(event.eventType),
+          ),
+        );
+      const providerEvent = providerEvents.at(-1);
+      const provider = record(providerEvent?.payload);
+      if (
+        !providerEvent ||
+        !validatePrpEvent(providerEvent).ok ||
+        providerEvent.sourceKind !== "runner" ||
+        providerEvent.turnId !== identity.turnId ||
+        providerEvent.itemId !== identity.itemId ||
+        !cleanupProcessAbsent(provider.processId) ||
+        typeof provider.providerSessionId !== "string" ||
+        source.provider.threadId !== provider.providerSessionId ||
+        providerEvent.runId !== run.id ||
+        providerEvent.sourceInstanceId !== run.runnerInstanceId ||
+        providerEvent.normalizedSessionId !== run.nativeSessionId ||
+        typeof providerEvent.sourceEventId !== "string"
+      )
+        return null;
+      const persisted = await tx
+        .select()
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            eq(heartbeatRunEvents.runId, run.id),
+            eq(heartbeatRunEvents.companyId, run.companyId),
+            or(
+              and(
+                eq(heartbeatRunEvents.sourceInstanceId, run.runnerInstanceId),
+                inArray(heartbeatRunEvents.eventType, [
+                  "session.started",
+                  "session.resumed",
+                ]),
+              ),
+              sql`${heartbeatRunEvents.payload}->'prpEvent'->>'sourceKind' = 'control_plane'`,
+            ),
+          ),
+        )
+        .limit(20);
+      if (
+        persisted.length >= 20 ||
+        !retainedNativeCleanupJournalMatches({
+          run,
+          execution,
+          accepted: result,
+          control: source.control,
+          providerSessionId: provider.providerSessionId,
+          providerAccountSessionId:
+            typeof provider.providerAccountSessionId === "string"
+              ? provider.providerAccountSessionId
+              : null,
+          persistedEvents: persisted,
+        })
+      )
+        return null;
+      let copySource: {
+        directory: string;
+        snapshot: ReturnType<typeof cleanupStateSnapshot>;
+        requestId: string;
+      } | null = null;
+      const providerHome = cleanupProviderHomeSnapshot(
+        resolve(sourceDirectory, "codex-home"),
+        true,
+      );
+      if (sourceArchive) {
+        if (archiveHistory.length) {
+          if (
+            sourceArchive.intent.sourceFingerprint !== source.fingerprint ||
+            sourceArchive.intent.providerHomeFingerprint !==
+              providerHome.fingerprint ||
+            canonicalJson(sourceArchive.intent.rootIdentity) !==
+              canonicalJson(archiveRootIdentity)
+          )
+            return null;
+        } else {
+          sourceArchive.intent = {
+            kind: "native_cleanup_source_archive",
+            version: 1,
+            phase: "prepared",
+            requestId: leaseOwner,
+            companyId: run.companyId,
+            agentId: run.agentId,
+            runId: run.id,
+            nativeSessionId: run.nativeSessionId,
+            runnerInstanceId: run.runnerInstanceId,
+            stateKey: basename(root),
+            archiveName: basename(quarantine),
+            rootIdentity: archiveRootIdentity,
+            sourceFingerprint: source.fingerprint,
+            providerHomeFingerprint: providerHome.fingerprint,
+          };
+        }
+      }
+      if (maintenanceHistory.length) {
+        if (
+          maintenanceHistory.length !== 2 ||
+          typeof maintenanceHistory[0]?.requestId !== "string"
+        )
+          return null;
+        const priorRequestId = maintenanceHistory[0].requestId;
+        const scopeEntries = readdirSync(runnerdStateBase());
+        if (scopeEntries.length > 4096) return null;
+        const attemptedNames = scopeEntries.filter((name) =>
+          name.startsWith(`${basename(root)}.cleanup-`),
+        );
+        if (attemptedNames.length !== 1) return null;
+        const directory = resolve(runnerdStateBase(), attemptedNames[0]!);
+        if (
+          !retainedRunnerdMaintenanceIsIdle(directory) ||
+          lstatSync(resolve(directory, CLEANUP_ACTIVATION_FILE), {
+            throwIfNoEntry: false,
+          })
+        )
+          return null;
+        const attempted = cleanupStateSnapshot(directory);
+        const receipts = await tx
+          .select()
+          .from(heartbeatRunEvents)
+          .where(
+            and(
+              eq(heartbeatRunEvents.companyId, run.companyId),
+              eq(heartbeatRunEvents.runId, run.id),
+              eq(heartbeatRunEvents.eventType, "native.cleanup.event"),
+              eq(
+                heartbeatRunEvents.sourceInstanceId,
+                `${run.runnerInstanceId}:cleanup:${priorRequestId}`,
+              ),
+            ),
+          )
+          .limit(513);
+        if (
+          receipts.length > 512 ||
+          !verifyRetainedMaintenanceNoLaunch({
+            companyId: run.companyId,
+            agentId: run.agentId,
+            identity: identity as {
+              runnerInstanceId: string;
+              environmentLeaseId: string;
+              runId: string;
+              normalizedSessionId: string;
+              turnId: string;
+              itemId: string;
+            },
+            original: source,
+            attempted,
+            requestId: priorRequestId,
+            requestHistory: coordinator.recoveryHistory,
+            receipts,
+            now: new Date(),
+          })
+        )
+          return null;
+        copySource = {
+          directory,
+          snapshot: attempted,
+          requestId: priorRequestId,
+        };
+      }
+      const history = [
+        ...coordinator.recoveryHistory,
+        ...(sourceArchive
+          ? archiveHistory.length
+            ? []
+            : [sourceArchive.intent]
+          : [
+              {
+                kind: "native_cleanup_maintenance",
+                version: 1,
+                phase: "started",
+                requestId: leaseOwner,
+                sourceFingerprint:
+                  copySource?.snapshot.fingerprint ?? source.fingerprint,
+                ...(copySource
+                  ? {
+                      originalFingerprint: source.fingerprint,
+                      copiedFromRequestId: copySource.requestId,
+                      copiedFromStagingName: basename(copySource.directory),
+                    }
+                  : {}),
+                startedAt: new Date().toISOString(),
+              },
+            ]),
+      ];
+      await tx
+        .update(nativeRunFinalizations)
+        .set({
+          leaseOwner,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+          recoveryHistory: history,
+          updatedAt: new Date(),
+        })
+        .where(eq(nativeRunFinalizations.runId, run.id));
+      return {
+        execution,
+        run,
+        quarantine,
+        root,
+        emptyRoot,
+        source,
+        providerHome,
+        sourceArchive,
+        copySource,
+        providerPid: provider.processId,
+        providerSessionId: provider.providerSessionId,
+        identity: identity as {
+          runnerInstanceId: string;
+          environmentLeaseId: string;
+          runId: string;
+          normalizedSessionId: string;
+          turnId: string;
+          itemId: string;
+        },
+        history,
+      };
+    });
+  } catch {
+    releaseScope();
+    return { status: "not_eligible", runId: input.runId };
+  }
+  if (!claim) {
+    releaseScope();
+    return { status: "not_eligible", runId: input.runId };
+  }
+  const owned = claim;
+  let stagingDirectory: string | null = null;
+  let maintenanceStarted = !owned.sourceArchive;
+  const archiveReference = owned.sourceArchive
+    ? { sourceArchiveRequestId: owned.sourceArchive.intent.requestId }
+    : {};
+  const assertLease = async () => {
+    const lease = await db
+      .select({ runId: nativeRunFinalizations.runId })
+      .from(nativeRunFinalizations)
+      .where(
+        and(
+          eq(nativeRunFinalizations.runId, owned.run.id),
+          eq(nativeRunFinalizations.companyId, owned.run.companyId),
+          eq(nativeRunFinalizations.phase, "committed"),
+          eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+          gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+        ),
+      )
+      .limit(1);
+    if (
+      !lease.length ||
+      !reservedScope ||
+      executingRunnerdSessionScopes.get(reservedScope) !== leaseOwner ||
+      !cleanupProcessAbsent(owned.run.processPid) ||
+      !cleanupProcessAbsent(owned.providerPid)
+    )
+      throw denied();
+  };
+  const authorize = async () => {
+    await assertLease();
+    if (
+      cleanupStateSnapshot(owned.quarantine).fingerprint !==
+        owned.source.fingerprint ||
+      cleanupProviderHomeSnapshot(
+        resolve(owned.quarantine, "codex-home"),
+        false,
+      ).metadataFingerprint !== owned.providerHome.metadataFingerprint ||
+      (owned.copySource &&
+        (!retainedRunnerdMaintenanceIsIdle(owned.copySource.directory) ||
+          cleanupStateSnapshot(owned.copySource.directory).fingerprint !==
+            owned.copySource.snapshot.fingerprint ||
+          lstatSync(
+            resolve(owned.copySource.directory, CLEANUP_ACTIVATION_FILE),
+            { throwIfNoEntry: false },
+          ))) ||
+      canonicalJson(cleanupCanonicalVacancy(owned.root)) !==
+        canonicalJson(owned.emptyRoot)
+    )
+      throw denied();
+  };
+  const appendMaintenanceHistory = async (entry: Record<string, unknown>) => {
+    const history = await db.transaction(async (tx) => {
+      const current = await tx
+        .select()
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, owned.run.id),
+            eq(nativeRunFinalizations.companyId, owned.run.companyId),
+            eq(nativeRunFinalizations.phase, "committed"),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+            gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+          ),
+        )
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (!current || current.leaseOwner !== leaseOwner) throw denied();
+      const next = [
+        ...current.recoveryHistory,
+        {
+          ...entry,
+          ...(entry.kind === "native_cleanup_source_archive"
+            ? {}
+            : archiveReference),
+        },
+      ];
+      await tx
+        .update(nativeRunFinalizations)
+        .set({ recoveryHistory: next, updatedAt: new Date() })
+        .where(eq(nativeRunFinalizations.runId, owned.run.id));
+      return next;
+    });
+    owned.history = history;
+  };
+  try {
+    if (owned.sourceArchive) {
+      const archive = owned.sourceArchive;
+      await assertLease();
+      const sourceDirectory = archive.fromCanonical
+        ? owned.root
+        : owned.quarantine;
+      if (
+        canonicalJson(cleanupArchiveRootIdentity(sourceDirectory)) !==
+          canonicalJson(archive.intent.rootIdentity) ||
+        cleanupStateSnapshot(sourceDirectory).fingerprint !==
+          owned.source.fingerprint ||
+        cleanupProviderHomeSnapshot(
+          resolve(sourceDirectory, "codex-home"),
+          true,
+        ).fingerprint !== owned.providerHome.fingerprint ||
+        (archive.fromCanonical
+          ? existsSync(owned.quarantine)
+          : existsSync(owned.root))
+      )
+        throw denied();
+      if (archive.fromCanonical) {
+        const parent = dirname(owned.quarantine);
+        mkdirSync(parent, { recursive: true, mode: 0o700 });
+        if (!isSafeNativeStateDirectory(parent)) throw denied();
+        // Preserve the original inode and every byte. In particular, do not
+        // invoke ordinary quarantine scrubbing on this evidence-only archive.
+        renameSync(owned.root, owned.quarantine);
+        archive.fromCanonical = false;
+      }
+      const archivedHome = cleanupProviderHomeSnapshot(
+        resolve(owned.quarantine, "codex-home"),
+        true,
+      );
+      if (
+        cleanupStateSnapshot(owned.quarantine).fingerprint !==
+          owned.source.fingerprint ||
+        archivedHome.fingerprint !== owned.providerHome.fingerprint ||
+        canonicalJson(cleanupArchiveRootIdentity(owned.quarantine)) !==
+          canonicalJson(archive.intent.rootIdentity) ||
+        existsSync(owned.root)
+      )
+        throw denied();
+      owned.providerHome = archivedHome;
+      if (!archive.completed) {
+        await appendMaintenanceHistory({
+          ...archive.intent,
+          phase: "archived",
+        });
+        archive.completed = true;
+      }
+      await authorize();
+      await appendMaintenanceHistory({
+        kind: "native_cleanup_maintenance",
+        version: 1,
+        phase: "started",
+        requestId: leaseOwner,
+        sourceFingerprint: owned.source.fingerprint,
+        startedAt: new Date().toISOString(),
+      });
+      maintenanceStarted = true;
+    }
+    await authorize();
+    const copy = mkdtempSync(
+      resolve(runnerdStateBase(), `${basename(owned.root)}.cleanup-`),
+    );
+    stagingDirectory = copy;
+    chmodSync(copy, 0o700);
+    for (const folder of ["runner", "control-plane"])
+      mkdirSync(resolve(copy, folder), { mode: 0o700 });
+    for (const file of CLEANUP_CANONICAL_FILES) {
+      copyFileSync(
+        resolve(owned.copySource?.directory ?? owned.quarantine, file),
+        resolve(copy, file),
+        constants.COPYFILE_EXCL,
+      );
+      chmodSync(resolve(copy, file), 0o600);
+    }
+    copyCleanupProviderHome(
+      resolve(owned.quarantine, "codex-home"),
+      resolve(copy, "codex-home"),
+      owned.providerHome,
+    );
+    rebaseRetainedNativeCleanupProviderHome(
+      resolve(copy, "codex-home"),
+      resolve(owned.root, "codex-home"),
+      owned.providerSessionId,
+      "staging",
+    );
+    await authorize();
+    await appendMaintenanceHistory({
+      kind: "native_cleanup_maintenance",
+      version: 1,
+      phase: "staged",
+      requestId: leaseOwner,
+      sourceFingerprint:
+        owned.copySource?.snapshot.fingerprint ?? owned.source.fingerprint,
+      stagingName: basename(copy),
+      providerHomeFingerprint: owned.providerHome.fingerprint,
+      providerHomeBytes: owned.providerHome.bytes,
+      stagedProviderHomeFingerprint: cleanupProviderHomeSnapshot(
+        resolve(copy, "codex-home"),
+        true,
+      ).fingerprint,
+    });
+    const proof = await settleRetainedRunnerdSession({
+      requestId: leaseOwner,
+      binding: {
+        companyId: owned.run.companyId,
+        issueId: owned.run.nativeIssueId!,
+        agentId: owned.run.agentId,
+        runId: owned.run.id,
+        sessionId: owned.run.nativeSessionId!,
+      },
+      identity: owned.identity,
+      backend: { kind: "runner", name: "codex_app_server" },
+      stateDirectory: copy,
+      activationDirectory: owned.root,
+      sourceFingerprint:
+        owned.copySource?.snapshot.fingerprint ?? owned.source.fingerprint,
+      providerSessionId: owned.providerSessionId,
+      originalRunnerPid: owned.run.processPid!,
+      originalProviderPid: owned.providerPid,
+      // The control-only provider resume still needs normal host discovery
+      // and auth-file lookup. Inherit only the existing host allowlist.
+      environment: buildNativeProviderEnvironment(
+        {},
+        process.env,
+        owned.execution.workspace.cwd,
+      ),
+      authorize,
+      recordEpoch: async (receipt) => {
+        if (receipt.requestId !== leaseOwner || receipt.stateDirectory !== copy)
+          throw denied();
+        await appendMaintenanceHistory({
+          kind: "native_cleanup_runner_epoch",
+          version: 1,
+          ...receipt,
+        });
+      },
+      appendEvent: async (event) => {
+        await appendRetainedNativeCleanupEvent(db, {
+          companyId: owned.run.companyId,
+          agentId: owned.run.agentId,
+          runId: owned.run.id,
+          nativeSessionId: owned.run.nativeSessionId!,
+          runnerInstanceId: owned.run.runnerInstanceId!,
+          requestId: leaseOwner,
+          event,
+        });
+      },
+    });
+    // Commit intent before the filesystem handoff. A crash can then be
+    // distinguished from an unattempted quarantine; never replay its source.
+    if (
+      cleanupProviderHomeSnapshot(resolve(owned.quarantine, "codex-home"), true)
+        .fingerprint !== owned.providerHome.fingerprint
+    )
+      throw denied();
+    rebaseRetainedNativeCleanupProviderHome(
+      resolve(copy, "codex-home"),
+      resolve(owned.root, "codex-home"),
+      owned.providerSessionId,
+      "canonical",
+    );
+    const settledHome = cleanupProviderHomeSnapshot(
+      resolve(copy, "codex-home"),
+      true,
+    );
+    const emptyRootArchive = owned.emptyRoot
+      ? `${basename(owned.root)}.empty-before-cleanup.${leaseOwner}`
+      : null;
+    const preparedHistory = [
+      ...owned.history,
+      {
+        kind: "native_cleanup_maintenance",
+        version: 1,
+        phase: "activation_prepared",
+        ...archiveReference,
+        requestId: leaseOwner,
+        sourceFingerprint: proof.sourceFingerprint,
+        settledFingerprint: proof.settledFingerprint,
+        settledProviderHomeFingerprint: settledHome.fingerprint,
+        stagingName: basename(copy),
+        ...(emptyRootArchive
+          ? { emptyRootArchive, emptyRoot: owned.emptyRoot }
+          : {}),
+        nativeSessionId: owned.run.nativeSessionId,
+        runnerInstanceId: owned.run.runnerInstanceId,
+        providerSessionId: owned.providerSessionId,
+      },
+    ];
+    writeFileSync(
+      resolve(copy, CLEANUP_ACTIVATION_FILE),
+      JSON.stringify({
+        schema: "paperclip.native_cleanup_activation.v1",
+        companyId: owned.run.companyId,
+        issueId: owned.run.nativeIssueId,
+        runId: owned.run.id,
+        requestId: leaseOwner,
+        sourceFingerprint: proof.sourceFingerprint,
+        settledFingerprint: proof.settledFingerprint,
+        settledProviderHomeFingerprint: settledHome.fingerprint,
+      }),
+      { flag: "wx", mode: 0o600 },
+    );
+    const prepared = await db
+      .update(nativeRunFinalizations)
+      .set({ recoveryHistory: preparedHistory, updatedAt: new Date() })
+      .where(
+        and(
+          eq(nativeRunFinalizations.runId, owned.run.id),
+          eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+          gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+        ),
+      )
+      .returning({ runId: nativeRunFinalizations.runId });
+    if (!prepared.length) throw denied();
+    owned.history = preparedHistory;
+    await db.transaction(async (tx) => {
+      const current = await tx
+        .select()
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, owned.run.id),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+            gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+          ),
+        )
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (!current || current.phase !== "committed") throw denied();
+      await authorize();
+      if (
+        cleanupProviderHomeSnapshot(resolve(copy, "codex-home"), false)
+          .metadataFingerprint !== settledHome.metadataFingerprint
+      )
+        throw denied();
+      if (emptyRootArchive) {
+        const archive = resolve(runnerdStateBase(), emptyRootArchive);
+        if (lstatSync(archive, { throwIfNoEntry: false })) throw denied();
+        // Preserve even an empty predecessor directory as evidence. The
+        // scope reservation and durable prepared intent cover this handoff.
+        renameSync(owned.root, archive);
+      }
+      renameSync(copy, owned.root);
+      await tx
+        .update(nativeRunFinalizations)
+        .set({
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          recoveryHistory: [
+            ...owned.history,
+            {
+              kind: "native_cleanup_maintenance",
+              version: 1,
+              phase: "settled",
+              ...archiveReference,
+              requestId: leaseOwner,
+              sourceFingerprint: proof.sourceFingerprint,
+              settledFingerprint: proof.settledFingerprint,
+              settledProviderHomeFingerprint: settledHome.fingerprint,
+              nativeSessionId: owned.run.nativeSessionId,
+              runnerInstanceId: owned.run.runnerInstanceId,
+              providerSessionId: owned.providerSessionId,
+              settledAt: new Date().toISOString(),
+            },
+          ],
+          updatedAt: new Date(),
+        })
+        .where(eq(nativeRunFinalizations.runId, owned.run.id));
+    });
+    if (
+      cleanupProviderHomeSnapshot(resolve(owned.root, "codex-home"), true)
+        .fingerprint !== settledHome.fingerprint
+    )
+      throw denied();
+    completeRetainedNativeSessionCleanup(proof);
+    rmSync(resolve(owned.root, CLEANUP_ACTIVATION_FILE));
+    return { status: "settled", runId: input.runId };
+  } catch {
+    if (stagingDirectory && existsSync(stagingDirectory)) {
+      // Keep the failed journal, not transient copied provider credentials.
+      try {
+        scrubRunnerdQuarantineLaunchState(stagingDirectory);
+      } catch {
+        /* retain fail-closed ownership */
+      }
+    }
+    await db.transaction(async (tx) => {
+      const current = await tx
+        .select()
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, owned.run.id),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+          ),
+        )
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (!current || current.leaseOwner !== leaseOwner) return;
+      await tx
+        .update(nativeRunFinalizations)
+        .set({
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          // A timed-out epoch callback may have committed before this lock.
+          // Preserve its evidence rather than replacing it from a stale copy.
+          recoveryHistory: [
+            ...current.recoveryHistory,
+            {
+              kind: maintenanceStarted
+                ? "native_cleanup_maintenance"
+                : "native_cleanup_source_archive",
+              version: 1,
+              phase: "operator_required",
+              requestId: leaseOwner,
+              ...archiveReference,
+              code: "native_cleanup_maintenance_unproven",
+            },
+          ],
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, owned.run.id),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+          ),
+        );
+    });
+    return { status: "operator_required", runId: input.runId };
+  } finally {
+    releaseScope();
+  }
+}
+
+/** Read-only scoped admission fence; never grants provider or recovery authority. */
+export async function assertRetainedNativeSourceArchiveSettled(
+  db: Db,
+  input: { companyId: string; issueId: string; stateKey: string },
+): Promise<void> {
+  if (!/^[a-f0-9]{64}$/.test(input.stateKey))
+    throw new NativeSessionCleanupQuarantinedError();
+  const owners = await db
+    .select()
+    .from(nativeRunFinalizations)
+    .where(
+      and(
+        eq(nativeRunFinalizations.companyId, input.companyId),
+        eq(nativeRunFinalizations.issueId, input.issueId),
+        sql`exists (
+      select 1 from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory}) prepared
+      where prepared->>'kind' = 'native_cleanup_source_archive'
+        and prepared->>'phase' = 'prepared'
+        and jsonb_typeof(prepared->'stateKey') = 'string'
+        and prepared->>'stateKey' = ${input.stateKey}
+        and not coalesce(${nativeRunFinalizations.phase} = 'committed'
+          and (select count(*) from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory}) duplicate
+            where duplicate->>'kind' = 'native_cleanup_source_archive'
+              and duplicate->>'phase' = 'prepared'
+              and duplicate->'stateKey' = prepared->'stateKey') = 1
+          and prepared->'version' = '1'::jsonb
+          and jsonb_typeof(prepared->'requestId') = 'string'
+          and prepared->>'requestId' like 'native-cleanup:%'
+          and jsonb_typeof(prepared->'sourceFingerprint') = 'string'
+          and prepared->>'sourceFingerprint' ~ '^[a-f0-9]{64}$'
+          and (
+          select settled.value->>'phase' = 'settled'
+            and jsonb_typeof(settled.value->'sourceArchiveRequestId') = 'string'
+            and jsonb_typeof(settled.value->'sourceFingerprint') = 'string'
+            and settled.value->>'sourceFingerprint' = prepared->>'sourceFingerprint'
+          from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory})
+            with ordinality as settled(value, position)
+          where settled.value->>'kind' = 'native_cleanup_maintenance'
+            and settled.value->>'sourceArchiveRequestId' = prepared->>'requestId'
+          order by settled.position desc limit 1
+        ), false)
+    )`,
+      ),
+    )
+    .limit(1);
+  for (const owner of owners) {
+    const history = Array.isArray(owner.recoveryHistory)
+      ? owner.recoveryHistory
+      : [];
+    const intents = history.filter(
+      (entry) =>
+        entry.kind === "native_cleanup_source_archive" &&
+        entry.phase === "prepared" &&
+        entry.stateKey === input.stateKey,
+    );
+    if (!intents.length) continue;
+    const intent = intents[0]!;
+    const settlement = history.findLast(
+      (entry) =>
+        entry.kind === "native_cleanup_maintenance" &&
+        entry.sourceArchiveRequestId === intent.requestId,
+    );
+    if (
+      intents.length !== 1 ||
+      owner.phase !== "committed" ||
+      intent.version !== 1 ||
+      typeof intent.requestId !== "string" ||
+      !intent.requestId.startsWith("native-cleanup:") ||
+      typeof intent.sourceFingerprint !== "string" ||
+      !/^[a-f0-9]{64}$/.test(intent.sourceFingerprint) ||
+      settlement?.phase !== "settled" ||
+      settlement.sourceFingerprint !== intent.sourceFingerprint
+    )
+      throw new NativeSessionCleanupQuarantinedError();
+  }
+}
+async function assertCleanupActivationCommitted(
+  db: Db,
+  root: string,
+  execution: NativeExecutionInput,
+): Promise<void> {
+  const path = resolve(root, CLEANUP_ACTIVATION_FILE);
+  if (!lstatSync(path, { throwIfNoEntry: false })) return;
+  const marker = record(
+    JSON.parse(
+      readBoundedNativeFile(
+        path,
+        4096,
+        "native_cleanup_maintenance_unproven",
+      ).toString("utf8"),
+    ),
+  );
+  if (
+    marker.schema !== "paperclip.native_cleanup_activation.v1" ||
+    marker.companyId !== execution.binding.companyId ||
+    marker.issueId !== execution.binding.issueId ||
+    typeof marker.runId !== "string" ||
+    typeof marker.requestId !== "string"
+  ) {
+    throw new NativeSessionCleanupQuarantinedError();
+  }
+  const coordinator = await db
+    .select()
+    .from(nativeRunFinalizations)
+    .where(
+      and(
+        eq(nativeRunFinalizations.runId, marker.runId),
+        eq(nativeRunFinalizations.companyId, execution.binding.companyId),
+        eq(nativeRunFinalizations.issueId, execution.binding.issueId),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0]);
+  const receipt = coordinator?.recoveryHistory.findLast(
+    (entry) =>
+      entry.kind === "native_cleanup_maintenance" &&
+      entry.requestId === marker.requestId,
+  );
+  const snapshot = cleanupStateSnapshot(root);
+  if (
+    marker.settledProviderHomeFingerprint !== undefined ||
+    receipt?.settledProviderHomeFingerprint !== undefined
+  ) {
+    if (
+      typeof marker.settledProviderHomeFingerprint !== "string" ||
+      !/^[0-9a-f]{64}$/.test(marker.settledProviderHomeFingerprint) ||
+      receipt?.settledProviderHomeFingerprint !==
+        marker.settledProviderHomeFingerprint ||
+      cleanupProviderHomeSnapshot(resolve(root, "codex-home"), true)
+        .fingerprint !== marker.settledProviderHomeFingerprint
+    )
+      throw new NativeSessionCleanupQuarantinedError();
+  }
+  if (
+    coordinator?.phase !== "committed" ||
+    receipt?.phase !== "settled" ||
+    receipt.sourceFingerprint !== marker.sourceFingerprint ||
+    receipt.settledFingerprint !== marker.settledFingerprint ||
+    snapshot.fingerprint !== marker.settledFingerprint ||
+    snapshot.runner.runId !== marker.runId ||
+    snapshot.runner.lifecycle !== "suspended" ||
+    snapshot.provider.lifecycle !== "prepared" ||
+    !Array.isArray(snapshot.control.committedEvents)
+  )
+    throw new NativeSessionCleanupQuarantinedError();
+  const owners = snapshot.control.committedEvents
+    .map((entry) => record(record(record(entry).envelope).payload))
+    .filter((event) =>
+      ["session.started", "session.resumed"].includes(String(event.eventType)),
+    )
+    .map((event) => record(event.payload).processId);
+  if (!owners.length || !owners.every(cleanupProcessAbsent))
+    throw new NativeSessionCleanupQuarantinedError();
+  // A committed receipt survived a crash after rename. Normal admission now
+  // applies its existing exact old-owner/session fences; no process is started here.
+  rmSync(path);
+}
+
+/** Read-only admission evidence for an explicit retry of a terminal failed
+ * run. Never migrate/archive state, release an owner, or contact a provider.
+ * Normal executor admission independently verifies the state again. */
+export function nativeFailedRunRetryStateIsSafe(input: {
+  execution: unknown;
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  runId: string;
+  nativeSessionId: string;
+  runnerInstanceId: string;
+  providerSessionId: string | null;
+  providerBackendSessionId: string | null;
+  processPid: number | null;
+  processGroupId: number | null;
+  recoveryMode: "bootstrap_retry" | "exact_checkpoint_resume";
+  allowVerifiedBackup: boolean;
+}): boolean {
+  try {
+    const execution = parseNativeExecutionInput(input.execution);
+    if (
+      execution.binding.companyId !== input.companyId ||
+      execution.binding.issueId !== input.issueId ||
+      execution.binding.agentId !== input.agentId ||
+      execution.binding.runId !== input.runId ||
+      nativeSessionKey(execution) !== input.nativeSessionId ||
+      !input.runnerInstanceId
+    )
+      return false;
+    const scope = nativeSessionScopeKey(execution);
+    if (
+      executingRunnerdSessionScopes.has(scope) ||
+      initializingSessionToolAuthorities.has(scope) ||
+      warmNativeSessions.has(scope)
+    )
+      return false;
+    for (const [id, group] of [
+      [input.processPid, false],
+      [input.processGroupId, true],
+    ] as const) {
+      if (id === null) continue;
+      if (!Number.isSafeInteger(id) || id <= 0) return false;
+      try {
+        process.kill(group ? -id : id, 0);
+        return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
+      }
+    }
+    const root = scopedRunnerdStateRoot(execution);
+    if (!lstatSync(root, { throwIfNoEntry: false })) {
+      if (
+        input.recoveryMode !== "bootstrap_retry" ||
+        lstatSync(legacyRunnerdStateRoot(execution), {
+          throwIfNoEntry: false,
+        }) ||
+        lstatSync(legacyCompanyRunnerdStateRoot(execution), {
+          throwIfNoEntry: false,
+        })
+      )
+        return false;
+      // A missing root after quarantine is not proof of a clean bootstrap.
+      const quarantine = resolve(runnerdStateBase(), "quarantine");
+      if (lstatSync(quarantine, { throwIfNoEntry: false })) {
+        if (!isSafeNativeStateDirectory(quarantine)) return false;
+        const directory = opendirSync(quarantine);
+        try {
+          const prefixes = [
+            root,
+            legacyRunnerdStateRoot(execution),
+            legacyCompanyRunnerdStateRoot(execution),
+          ].map((path) => `${basename(path)}.`);
+          for (let count = 0; ; count++) {
+            const entry = directory.readSync();
+            if (!entry) break;
+            if (
+              count >= 4096 ||
+              prefixes.some((prefix) => entry.name.startsWith(prefix))
+            )
+              return false;
+          }
+        } finally {
+          directory.closeSync();
+        }
+      }
+      return true;
+    }
+    const identity = readRunnerdDurableIdentity(root);
+    if (
+      !durableIdentityMatchesSession(identity, execution) ||
+      !durableIdentityMatchesExecution(identity, execution) ||
+      identity.runnerInstanceId !== input.runnerInstanceId
+    )
+      return false;
+    let stateRoot = root;
+    const direct = runnerdAuthorityLifecycle(root, identity);
+    if (direct === "absent" && input.allowVerifiedBackup) {
+      const backup = verifyNativeHarnessBackup({
+        root,
+        execution,
+        runnerInstanceId: input.runnerInstanceId,
+      });
+      if (!backup) return false;
+      stateRoot = backup.root;
+    }
+    if (runnerdAuthorityLifecycle(stateRoot, identity) !== "suspended")
+      return false;
+    const runnerState = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          resolve(stateRoot, "runner", "runner-state.json"),
+          NATIVE_RUNNER_STATE_MAX_BYTES,
+          "runner_state_too_large",
+        ).toString("utf8"),
+      ),
+    );
+    if (
+      runnerState.schema !== RUNNERD_STATE_SCHEMA ||
+      runnerState.lifecycle !== "suspended" ||
+      runnerState.runId !== identity.runId ||
+      runnerState.runnerInstanceId !== identity.runnerInstanceId ||
+      runnerState.normalizedSessionId !== identity.normalizedSessionId ||
+      runnerState.environmentLeaseId !== identity.environmentLeaseId ||
+      !Array.isArray(runnerState.outbox) ||
+      runnerState.outbox.length !== 0
+    )
+      return false;
+    const providerFile = resolve(
+      stateRoot,
+      "runner",
+      runnerProviderStateFilename(execution),
+    );
+    if (input.recoveryMode === "bootstrap_retry") return false;
+    const providerState = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          providerFile,
+          NATIVE_RUNNER_STATE_MAX_BYTES,
+          "runner_provider_state_too_large",
+        ).toString("utf8"),
+      ),
+    );
+    if (
+      !Array.isArray(providerState.pendingEvents) ||
+      providerState.pendingEvents.length !== 0 ||
+      !Array.isArray(providerState.queuedEvents) ||
+      providerState.queuedEvents.length !== 0 ||
+      Object.keys(record(record(providerState.toolBridge).pending)).length !==
+        0 ||
+      providerState.activeProviderResultFingerprint != null
+    )
+      return false;
+    const providerIdentity = providerSessionIdentityFromDurableProviderState({
+      execution,
+      providerState,
+    });
+    return (
+      !!input.providerSessionId &&
+      providerIdentity.providerSessionId === input.providerSessionId &&
+      providerIdentity.providerBackendSessionId ===
+        input.providerBackendSessionId
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Physical half of retrying a request rejected before provider admission.
+ * The caller separately proves the failed receipt/coordinator has no native
+ * events or result and selects exactly one committed cleanup owner. */
+export function nativePreProviderRetryAfterCleanupStateIsSafe(input: {
+  failedExecution: unknown;
+  retiredExecution: unknown;
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  failedRunId: string;
+  retiredRunId: string;
+  nativeSessionId: string;
+  runnerInstanceId: string;
+  providerSessionId: string;
+  providerBackendSessionId: string | null;
+  processPid: number;
+  processGroupId: number;
+  receipt: Record<string, unknown>;
+}): boolean {
+  try {
+    const failed = parseNativeExecutionInput(input.failedExecution);
+    const retired = parseNativeExecutionInput(input.retiredExecution);
+    if (
+      input.failedRunId === input.retiredRunId ||
+      failed.binding.runId !== input.failedRunId ||
+      retired.binding.runId !== input.retiredRunId ||
+      failed.binding.companyId !== input.companyId ||
+      failed.binding.issueId !== input.issueId ||
+      failed.binding.agentId !== input.agentId ||
+      nativeSessionScopeKey(failed) !== nativeSessionScopeKey(retired) ||
+      input.receipt.kind !== "native_cleanup_maintenance" ||
+      input.receipt.version !== 1 ||
+      input.receipt.phase !== "settled" ||
+      input.receipt.nativeSessionId !== input.nativeSessionId ||
+      input.receipt.runnerInstanceId !== input.runnerInstanceId ||
+      input.receipt.providerSessionId !== input.providerSessionId ||
+      typeof input.receipt.requestId !== "string" ||
+      input.receipt.requestId.length === 0 ||
+      typeof input.receipt.sourceFingerprint !== "string" ||
+      !/^[a-f0-9]{64}$/.test(input.receipt.sourceFingerprint) ||
+      typeof input.receipt.settledFingerprint !== "string" ||
+      !/^[a-f0-9]{64}$/.test(input.receipt.settledFingerprint) ||
+      !nativeFailedRunRetryStateIsSafe({
+        execution: retired,
+        companyId: input.companyId,
+        issueId: input.issueId,
+        agentId: input.agentId,
+        runId: input.retiredRunId,
+        nativeSessionId: input.nativeSessionId,
+        runnerInstanceId: input.runnerInstanceId,
+        providerSessionId: input.providerSessionId,
+        processPid: input.processPid,
+        processGroupId: input.processGroupId,
+        providerBackendSessionId: input.providerBackendSessionId,
+        recoveryMode: "exact_checkpoint_resume",
+        allowVerifiedBackup: false,
+      })
+    )
+      return false;
+    const root = scopedRunnerdStateRoot(retired);
+    const markerPath = resolve(root, CLEANUP_ACTIVATION_FILE);
+    if (lstatSync(markerPath, { throwIfNoEntry: false })) {
+      // A crash after receipt commit may leave the activation marker. This
+      // read-only proof accepts only that exact committed handoff; normal
+      // executor admission independently reconciles the marker before launch.
+      const marker = record(
+        JSON.parse(
+          readBoundedNativeFile(
+            markerPath,
+            4096,
+            "native_cleanup_maintenance_unproven",
+          ).toString("utf8"),
+        ),
+      );
+      if (
+        marker.schema !== "paperclip.native_cleanup_activation.v1" ||
+        marker.companyId !== input.companyId ||
+        marker.issueId !== input.issueId ||
+        marker.runId !== input.retiredRunId ||
+        marker.requestId !== input.receipt.requestId ||
+        marker.sourceFingerprint !== input.receipt.sourceFingerprint ||
+        marker.settledFingerprint !== input.receipt.settledFingerprint
+      )
+        return false;
+    }
+    return (
+      cleanupStateSnapshot(root).fingerprint ===
+      input.receipt.settledFingerprint
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function verifyPriorRunnerdStateForSessionScope(input: {
+  db: Db;
+  root: string;
+  identity: RunnerdDurableIdentity;
+  execution: NativeExecutionInput;
+  allowVerifiedBackup: boolean;
+  allowRetainedWarmRunner: boolean;
+}): Promise<PriorRunnerdStateVerification> {
+  let priorRun: {
+    status: string;
+    runnerProfileJson: unknown;
+  } | null;
+  try {
+    priorRun = await input.db
+      .select({
+        status: heartbeatRuns.status,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.identity.runId),
+          eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+          eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  } catch {
+    return "unavailable";
+  }
+  if (!priorRun) return "authority_indeterminate";
+  if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(priorRun.status)) {
+    return "active";
+  }
+  const persistedInput = record(
+    priorRun.runnerProfileJson,
+  ).nativeExecutionInput;
+  if (persistedInput === undefined) return "authority_indeterminate";
+  try {
+    const priorExecution = parseNativeExecutionInput(persistedInput);
+    const sameScope =
+      priorExecution.binding.runId === input.identity.runId &&
+      nativeSessionScopeKey(priorExecution) ===
+        nativeSessionScopeKey(input.execution);
+    if (!sameScope) return "scope_mismatch";
+    const lifecycle = runnerdAuthorityLifecycleWithVerifiedBackup(input);
+    if (lifecycle === "suspended") return "verified";
+    const directLifecycle = runnerdAuthorityLifecycle(
+      input.root,
+      input.identity,
+    );
+    if (
+      input.allowRetainedWarmRunner &&
+      (lifecycle === "not_suspended" ||
+        // A remote runner keeps runner-state.json in the sandbox rather than
+        // beside the controller's PRP journal. During a genuinely warm handoff
+        // there is intentionally no suspended failover backup yet. The exact
+        // idle in-memory session owner is the authority for this one case;
+        // after a restart that owner is absent and this remains fail-closed.
+        (input.allowVerifiedBackup && directLifecycle === "absent"))
+    ) {
+      return "retained_warm_runner";
+    }
+    return "terminal_state_indeterminate";
+  } catch {
+    return "authority_indeterminate";
+  }
+}
+
+function hasRetainedWarmTransitionEvidence(root: string): boolean {
+  for (const [directory, filename, maximum] of [
+    [
+      "control-plane",
+      "control-plane-state.json",
+      NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+    ],
+    ["runner", "runner-state.json", NATIVE_RUNNER_STATE_MAX_BYTES],
+  ] as const) {
+    const path = resolve(root, directory, filename);
+    if (!lstatSync(path, { throwIfNoEntry: false })) continue;
+    let bytes: string;
+    try {
+      bytes = readBoundedNativeFile(
+        path,
+        maximum,
+        "runner_state_too_large",
+      ).toString("utf8");
+    } catch {
+      // The ordinary verifier still owns unreadable legacy state. Inspect the
+      // other file before deciding whether this is a forward-protocol fence.
+      continue;
+    }
+    try {
+      const state = record(JSON.parse(bytes));
+      if (
+        Object.prototype.hasOwnProperty.call(state, "warmTransition") ||
+        state.schema ===
+          "paperclip.runner.durable.control-plane-state.warm-transition.v1" ||
+        state.schema === "paperclip.runner.durable.state.warm-transition.v1"
+      )
+        return true;
+    } catch {
+      // This is detection only, never admission. A damaged forward receipt
+      // must remain available to its owner rather than become legacy state.
+      if (
+        bytes.includes("warm-transition.v1") ||
+        bytes.includes('"warmTransition"')
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
+type VerifiedWarmTransitionBinding = {
+  runnerInstanceId: string;
+  environmentLeaseId: string;
+  transitionId: string;
+  stateFingerprint: string;
+};
+
+function readWarmTransitionSnapshot(root: string) {
+  if (
+    ![root, resolve(root, "control-plane"), resolve(root, "runner")].every(
+      isSafeNativeStateDirectory,
+    )
+  ) {
+    throw new Error("native_runner_warm_transition_recovery_unproven");
+  }
+  const core = readBoundedNativeFile(
+    resolve(root, "control-plane", "control-plane-state.json"),
+    NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+    "native_runner_warm_transition_recovery_unproven",
+  );
+  const runner = readBoundedNativeFile(
+    resolve(root, "runner", "runner-state.json"),
+    NATIVE_RUNNER_STATE_MAX_BYTES,
+    "native_runner_warm_transition_recovery_unproven",
+  );
+  try {
+    return {
+      controlPlaneState: JSON.parse(core.toString("utf8")) as unknown,
+      runnerState: JSON.parse(runner.toString("utf8")) as unknown,
+      stateFingerprint: nativeSha256([
+        core.toString("base64"),
+        runner.toString("base64"),
+      ]),
+    };
+  } catch {
+    throw new Error("native_runner_warm_transition_recovery_unproven");
+  }
+}
+
+/** Forward receipts select a protocol boundary, never a process owner. */
+async function verifyWarmTransitionRestart(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  restartRecovery?: NativeRestartRecoveryClaim;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+}): Promise<VerifiedWarmTransitionBinding> {
+  const deny = (): never => {
+    throw new Error("native_runner_warm_transition_recovery_unproven");
+  };
+  const claim = input.restartRecovery;
+  // A surviving runner needs its own authenticated reattach path. Do not
+  // reinterpret that claim, remote evidence, or an incomplete bootstrap as
+  // permission to launch another process against a retained transition.
+  if (
+    claim?.kind !== "resume_dead_runner" ||
+    input.runnerExecutionTarget?.kind === "remote" ||
+    input.execution.provider.kind !== "codex" ||
+    input.execution.session.driverKind !== "codex_app_server" ||
+    claim.runId !== input.execution.binding.runId
+  )
+    return deny();
+  const root = scopedRunnerdStateRoot(input.execution);
+  const snapshot = readWarmTransitionSnapshot(root);
+  const artifact = readRunnerdArtifactBinding(resolvePaperclipRunnerBinary());
+  const controller = await currentNativeControllerIdentity();
+  const binding = input.execution.binding;
+  let finalAuthorityCheck: (() => boolean) | undefined;
+  const verified = await input.db.transaction(async (tx) => {
+    const current = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, binding.runId),
+          eq(heartbeatRuns.companyId, binding.companyId),
+        ),
+      )
+      .for("update")
+      .limit(1)
+      .then((rows) => rows[0]);
+    const coordinator = await tx
+      .select()
+      .from(nativeRunFinalizations)
+      .where(
+        and(
+          eq(nativeRunFinalizations.runId, binding.runId),
+          eq(nativeRunFinalizations.companyId, binding.companyId),
+        ),
+      )
+      .for("update")
+      .limit(1)
+      .then((rows) => rows[0]);
+    const issue = await tx
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.id, binding.issueId),
+          eq(issues.companyId, binding.companyId),
+        ),
+      )
+      .for("update")
+      .limit(1)
+      .then((rows) => rows[0]);
+    const now = new Date();
+    if (
+      !current ||
+      !coordinator ||
+      !issue ||
+      issue.executionRunId !== binding.runId ||
+      current.agentId !== binding.agentId ||
+      current.nativeIssueId !== binding.issueId ||
+      current.runtimeMode !== "native" ||
+      current.status !== "running" ||
+      current.finishedAt !== null ||
+      current.nativeSessionId !== nativeSessionKey(input.execution) ||
+      !current.runnerInstanceId ||
+      isNativeRunnerOwnershipHeld(current) ||
+      coordinator.issueId !== binding.issueId ||
+      coordinator.phase !== "observed" ||
+      coordinator.resultId !== null ||
+      coordinator.leaseOwner !== claim.leaseOwner ||
+      !coordinator.leaseExpiresAt ||
+      coordinator.leaseExpiresAt <= now ||
+      coordinator.controllerBootId !== controller.bootId ||
+      coordinator.controllerPid !== controller.pid ||
+      coordinator.controllerProcessStartedAt?.getTime() !==
+        controller.processStartedAt.getTime() ||
+      coordinator.controllerGeneration !== claim.controllerGeneration
+    )
+      return deny();
+    const profile = record(current.runnerProfileJson);
+    let frozen: NativeExecutionInput;
+    try {
+      frozen = parseNativeExecutionInput(profile.nativeExecutionInput);
+    } catch {
+      return deny();
+    }
+    if (nativeSha256(frozen) !== nativeSha256(input.execution)) return deny();
+    const cancellation = record(record(current.resultJson).nativeCancellation);
+    if (
+      cancellation.scope === "run" &&
+      ["pending", "acknowledged"].includes(String(cancellation.dispatchState))
+    )
+      return deny();
+    let expectedEnvironmentLeaseId = binding.executionWorkspaceId;
+    if (binding.executionWorkspaceId === binding.runId) {
+      // Projectless runs retain the first run's lease while their workspace
+      // placeholder changes. The receipt only SELECTS that origin: its frozen
+      // DB execution, full scope and terminal ownership independently prove it.
+      const selectedLease = record(
+        record(record(snapshot.runnerState).warmTransition).receipt,
+      ).newIdentity;
+      const originId = record(selectedLease).environmentLeaseId;
+      if (
+        typeof originId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          originId,
+        )
+      )
+        return deny();
+      const origin = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, originId),
+            eq(heartbeatRuns.companyId, binding.companyId),
+          ),
+        )
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (
+        !origin ||
+        origin.agentId !== binding.agentId ||
+        origin.nativeIssueId !== binding.issueId ||
+        origin.runtimeMode !== "native" ||
+        !["succeeded", "failed", "cancelled", "timed_out"].includes(
+          origin.status,
+        ) ||
+        origin.finishedAt === null ||
+        isNativeRunnerOwnershipHeld(origin) ||
+        origin.runnerInstanceId !== current.runnerInstanceId ||
+        origin.nativeSessionId !== current.nativeSessionId
+      )
+        return deny();
+      let originExecution: NativeExecutionInput;
+      try {
+        originExecution = parseNativeExecutionInput(
+          record(origin.runnerProfileJson).nativeExecutionInput,
+        );
+      } catch {
+        return deny();
+      }
+      if (
+        originExecution.binding.runId !== origin.id ||
+        originExecution.binding.executionWorkspaceId !== origin.id ||
+        originExecution.binding.companyId !== binding.companyId ||
+        originExecution.binding.agentId !== binding.agentId ||
+        originExecution.binding.issueId !== binding.issueId ||
+        nativeSessionScopeKey(originExecution) !==
+          nativeSessionScopeKey(input.execution)
+      )
+        return deny();
+      expectedEnvironmentLeaseId = origin.id;
+    }
+    const inspectionInput = {
+      ...snapshot,
+      expectedNewIdentity: {
+        runnerInstanceId: current.runnerInstanceId,
+        environmentLeaseId: expectedEnvironmentLeaseId,
+        runId: binding.runId,
+        normalizedSessionId: nativeSessionKey(input.execution),
+        turnId: `turn-${binding.runId}`,
+        itemId: `item-${binding.runId}`,
+      },
+      expectedRunnerVersion: artifact.version,
+      expectedRunnerDigest: artifact.digest,
+    };
+    const proof = inspectWarmRunTransition({
+      ...inspectionInput,
+      now: Date.now(),
+    });
+    if (!proof) return deny();
+    const prior = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, proof.receipt.oldIdentity.runId),
+          eq(heartbeatRuns.companyId, binding.companyId),
+        ),
+      )
+      .for("update")
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (
+      !prior ||
+      prior.agentId !== binding.agentId ||
+      prior.nativeIssueId !== binding.issueId ||
+      prior.runtimeMode !== "native" ||
+      !["succeeded", "failed", "cancelled", "timed_out"].includes(
+        prior.status,
+      ) ||
+      prior.finishedAt === null ||
+      isNativeRunnerOwnershipHeld(prior) ||
+      prior.runnerInstanceId !== current.runnerInstanceId ||
+      prior.nativeSessionId !== current.nativeSessionId ||
+      proof.receipt.oldIdentity.runnerInstanceId !== prior.runnerInstanceId ||
+      proof.receipt.oldIdentity.normalizedSessionId !== prior.nativeSessionId ||
+      proof.receipt.oldIdentity.environmentLeaseId !==
+        expectedEnvironmentLeaseId ||
+      proof.receipt.oldIdentity.turnId !== `turn-${prior.id}` ||
+      proof.receipt.oldIdentity.itemId !== `item-${prior.id}`
+    )
+      return deny();
+    let previousExecution: NativeExecutionInput;
+    try {
+      previousExecution = parseNativeExecutionInput(
+        record(prior.runnerProfileJson).nativeExecutionInput,
+      );
+    } catch {
+      return deny();
+    }
+    if (
+      previousExecution.binding.runId !== prior.id ||
+      previousExecution.binding.companyId !== binding.companyId ||
+      previousExecution.binding.agentId !== binding.agentId ||
+      previousExecution.binding.issueId !== binding.issueId ||
+      nativeSessionScopeKey(previousExecution) !==
+        nativeSessionScopeKey(input.execution)
+    )
+      return deny();
+    const history = coordinator.recoveryHistory.at(-1);
+    const checkpoint = record(profile.sessionCheckpoint);
+    const checkpointIdentity = record(checkpoint.identity);
+    const processEvidence = record(checkpoint.process);
+    if (
+      !history ||
+      history.disposition !== claim.kind ||
+      history.controllerBootId !== controller.bootId ||
+      history.controllerPid !== controller.pid ||
+      history.controllerGeneration !== claim.controllerGeneration ||
+      history.recoveryRequestId !== claim.recoveryRequestId ||
+      history.providerAttempt !== claim.providerAttempt ||
+      history.stateRootAction !== "reuse_exact_root" ||
+      history.hasCheckpoint !== true ||
+      history.checkpointIdentityMatches !== true ||
+      history.hasProviderEvidence !== true ||
+      checkpointIdentity.runId !== binding.runId ||
+      checkpointIdentity.companyId !== binding.companyId ||
+      checkpointIdentity.issueId !== binding.issueId ||
+      checkpointIdentity.agentId !== binding.agentId ||
+      checkpointIdentity.sessionId !== current.nativeSessionId ||
+      history.processPid !== prior.processPid ||
+      history.processStartedAt !== prior.processStartedAt?.toISOString() ||
+      processEvidence.runnerPid !== prior.processPid ||
+      processEvidence.runnerProcessGroupId !== prior.processGroupId ||
+      prior.processGroupId !== prior.processPid ||
+      !cleanupProcessAbsent(prior.processPid)
+    )
+      return deny();
+    // Recheck every independently retained provider owner, including process
+    // groups. These are DB/checkpoint facts, not claims in a copied journal.
+    const known = history.knownProviderPids;
+    if (
+      !Array.isArray(known) ||
+      known.length === 0 ||
+      known.length > 16 ||
+      ![
+        history.liveProviderPids,
+        history.ambiguousProviderPids,
+        history.recycledProviderPids,
+      ].every((pids) => Array.isArray(pids) && pids.length === 0)
+    )
+      return deny();
+    const checkpointPids = new Set<number>();
+    for (const [pidKey, startedKey] of [
+      ["providerPid", "providerProcessStartedAt"],
+      ["codexPid", "codexProcessStartedAt"],
+      ["sidecarPid", "sidecarProcessStartedAt"],
+      ["agentPid", "agentProcessStartedAt"],
+    ] as const) {
+      const pid = processEvidence[pidKey];
+      if (pid === null || pid === undefined) continue;
+      if (
+        typeof processEvidence[startedKey] !== "string" ||
+        !Number.isFinite(Date.parse(processEvidence[startedKey] as string)) ||
+        !cleanupProcessAbsent(pid)
+      )
+        return deny();
+      checkpointPids.add(pid);
+    }
+    if (
+      checkpointPids.size === 0 ||
+      new Set(known).size !== checkpointPids.size ||
+      known.some(
+        (pid) =>
+          typeof pid !== "number" ||
+          !checkpointPids.has(pid) ||
+          !cleanupProcessAbsent(pid),
+      )
+    )
+      return deny();
+    // These fences remain relevant if maintenance evidence appears after
+    // initial construction. Every later registration/launch/auth gate repeats
+    // them; no settled receipt or pending transition bypasses quarantine.
+    await assertRetainedNativeSourceArchiveSettled(tx as unknown as Db, {
+      companyId: binding.companyId,
+      issueId: binding.issueId,
+      stateKey: basename(root),
+    });
+    await assertCleanupActivationCommitted(
+      tx as unknown as Db,
+      root,
+      input.execution,
+    );
+    finalAuthorityCheck = () => {
+      if (
+        readWarmTransitionSnapshot(root).stateFingerprint !==
+        snapshot.stateFingerprint
+      )
+        return false;
+      const selected = readRunnerdArtifactBinding(
+        resolvePaperclipRunnerBinary(),
+      );
+      if (
+        selected.version !== artifact.version ||
+        selected.digest !== artifact.digest
+      )
+        return false;
+      const finalProof = inspectWarmRunTransition({
+        ...inspectionInput,
+        now: Date.now(),
+      });
+      return (
+        coordinator.leaseExpiresAt!.getTime() > Date.now() &&
+        finalProof?.receipt.transitionId === proof.receipt.transitionId &&
+        finalProof.receipt.leaseExpiresAtUnixMs > Date.now()
+      );
+    };
+    if (!finalAuthorityCheck()) return deny();
+    return {
+      runnerInstanceId: current.runnerInstanceId,
+      environmentLeaseId: expectedEnvironmentLeaseId,
+      transitionId: proof.receipt.transitionId,
+      stateFingerprint: snapshot.stateFingerprint,
+    };
+  });
+  // A lock wait or the transaction completion itself can outlive a lease.
+  // Never carry a timestamp sampled before those awaits into admission.
+  if (!finalAuthorityCheck?.()) return deny();
+  return verified;
+}
+
+async function migrateRunnerdStateRootForExecution(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  allowVerifiedBackup: boolean;
+  allowRetainedWarmRunner: boolean;
+  allowLocalRecovery: boolean;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  restartRecovery?: NativeRestartRecoveryClaim;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+}): Promise<VerifiedWarmTransitionBinding | undefined> {
+  const scoped = scopedRunnerdStateRoot(input.execution);
+  // A crash can leave a source archive intent before/after its rename. Until
+  // that exact maintenance is settled, absence of a canonical root is not
+  // permission to bootstrap a replacement provider session.
+  await assertRetainedNativeSourceArchiveSettled(input.db, {
+    companyId: input.execution.binding.companyId,
+    issueId: input.execution.binding.issueId,
+    stateKey: basename(scoped),
+  });
+  if (
+    input.allowLocalRecovery &&
+    !input.allowRetainedWarmRunner &&
+    !input.restartRecovery
+  ) {
+    await recoverQuiescentRunnerdState({ ...input, scoped });
+  }
+  if (existsSync(scoped)) {
+    if (!isSafeNativeStateDirectory(scoped)) {
+      throw new Error("runner_state_directory_unsafe");
+    }
+    if (hasRetainedWarmTransitionEvidence(scoped)) {
+      // A copied receipt is not restart/process authority. Keep both valid
+      // unsupported and invalid forward evidence out of destructive legacy
+      // migration until the exact transition admission path proves its owner.
+      const verified = await verifyWarmTransitionRestart(input);
+      return verified;
+    }
+    await assertCleanupActivationCommitted(input.db, scoped, input.execution);
+    const identity = readRunnerdDurableIdentity(scoped);
+    if (!identity) {
+      if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+        quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+      }
+      throw new Error("runner_state_identity_mismatch");
+    }
+    if (!durableIdentityMatchesSession(identity, input.execution)) {
+      if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+        quarantineRunnerdStateRoot(scoped, "identity_mismatch");
+      }
+      throw new Error("runner_state_identity_mismatch");
+    }
+    if (input.restartRecovery?.kind === "bootstrap_incomplete") {
+      if (runnerdStateProvesIncompleteBootstrap(scoped)) {
+        quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+        return;
+      }
+      // Database evidence alone cannot distinguish a never-connected runner
+      // from a partially-persisted provider bootstrap. Only the durable PRP
+      // root can authorize a fresh bootstrap; anything else stays fail-closed.
+      throw new Error("runner_state_identity_mismatch");
+    }
+    if (durableIdentityMatchesExecution(identity, input.execution)) {
+      if (
+        runnerdAuthorityLifecycleWithVerifiedBackup({
+          root: scoped,
+          identity,
+          execution: input.execution,
+          allowVerifiedBackup: input.allowVerifiedBackup,
+        }) === "indeterminate"
+      ) {
+        if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+          quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+        }
+        throw new Error("runner_state_identity_mismatch");
+      }
+    } else {
+      const verification = await verifyPriorRunnerdStateForSessionScope({
+        db: input.db,
+        root: scoped,
+        identity,
+        execution: input.execution,
+        allowVerifiedBackup: input.allowVerifiedBackup,
+        allowRetainedWarmRunner: input.allowRetainedWarmRunner,
+      });
+      if (
+        verification !== "verified" &&
+        verification !== "retained_warm_runner"
+      ) {
+        if (verification !== "active" && verification !== "unavailable") {
+          quarantineRunnerdStateRoot(
+            scoped,
+            verification === "scope_mismatch"
+              ? "identity_mismatch"
+              : "identity_indeterminate",
+          );
+        }
+        throw new Error("runner_state_identity_mismatch");
+      }
+    }
+    return;
+  }
+  for (const legacy of [
+    legacyCompanyRunnerdStateRoot(input.execution),
+    legacyRunnerdStateRoot(input.execution),
+  ]) {
+    if (!existsSync(legacy)) continue;
+    const identity = readRunnerdDurableIdentity(legacy);
+    if (
+      !identity ||
+      !durableIdentityMatchesSession(identity, input.execution)
+    ) {
+      // Unlike the full-scope target above, this legacy name can legitimately
+      // belong to another scope. Leave it in place for its owner and fail the
+      // attempted migration visibly.
+      throw new Error("runner_state_identity_mismatch");
+    }
+    let verifiedPriorRunId: string | undefined;
+    if (!durableIdentityMatchesExecution(identity, input.execution)) {
+      const verification = await verifyPriorRunnerdStateForSessionScope({
+        db: input.db,
+        root: legacy,
+        identity,
+        execution: input.execution,
+        allowVerifiedBackup: input.allowVerifiedBackup,
+        allowRetainedWarmRunner: input.allowRetainedWarmRunner,
+      });
+      if (
+        verification !== "verified" &&
+        verification !== "retained_warm_runner"
+      ) {
+        if (verification === "terminal_state_indeterminate") {
+          // The database proves this ambiguous legacy path belongs to the same
+          // full session scope and its owner is terminal, so it is now safe to
+          // move aside. Scope mismatches and active/unavailable owners remain
+          // untouched because the legacy name may still belong to them.
+          quarantineRunnerdStateRoot(legacy, "identity_indeterminate");
+        }
+        throw new Error("runner_state_identity_mismatch");
+      }
+      verifiedPriorRunId = identity.runId;
+    }
+    migrateLegacyRunnerdStateRoot({
+      legacy,
+      scoped,
+      execution: input.execution,
+      ...(verifiedPriorRunId ? { verifiedPriorRunId } : {}),
+    });
+    return;
+  }
+}
+
+// A terminal warm run can lose its controller before session.suspend. Older
+// controllers quarantined even fully settled state in that case. Recover the
+// exact provider thread, never bootstrap a replacement from an ambiguous root.
+async function recoverQuiescentRunnerdState(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  scoped: string;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<void> {
+  if (input.execution.provider.kind !== "codex") return;
+  const quarantine = resolve(runnerdStateBase(), "quarantine");
+  const scopedExists = existsSync(input.scoped);
+  if (scopedExists && !isSafeNativeStateDirectory(input.scoped)) return;
+  // Never hide corrupt or contradictory current authority behind an older
+  // checkpoint. Only an absent/empty root may recover from quarantine.
+  const currentEmpty = !scopedExists || readdirSync(input.scoped).length === 0;
+  const candidates = currentEmpty
+    ? isSafeNativeStateDirectory(quarantine)
+      ? readdirSync(quarantine)
+          .filter((name) =>
+            name.startsWith(
+              `${basename(input.scoped)}.identity_indeterminate.`,
+            ),
+          )
+          .map((name) => resolve(quarantine, name))
+      : []
+    : [input.scoped];
+  if (
+    currentEmpty &&
+    candidates.filter(
+      (root) =>
+        isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
+    ).length > 1
+  ) {
+    // Do not roll back to an older valid checkpoint when a newer quarantined
+    // root contains unconfirmed work, even if the newer root is unreadable.
+    throw new Error("runner_state_identity_mismatch");
+  }
+  const verified: Array<{
+    root: string;
+    runnerBytes: string;
+    controlBytes: string;
+    providerBytes: string;
+    runner: Record<string, unknown>;
+    runId: string;
+    processPid: number;
+    processGroupId: number;
+  }> = [];
+  for (const root of candidates) {
+    if (!isSafeNativeStateDirectory(root)) continue;
+    const identity = readRunnerdDurableIdentity(root);
+    if (!durableIdentityMatchesSession(identity, input.execution)) continue;
+    if (identity.runId === input.execution.binding.runId) continue;
+    try {
+      const readState = (directory: string, name: string) => {
+        if (!isSafeNativeStateDirectory(resolve(root, directory)))
+          throw new Error("unsafe_recovery_state");
+        return readBoundedNativeFile(
+          resolve(root, directory, name),
+          NATIVE_RUNNER_STATE_MAX_BYTES,
+          "recovery_state_too_large",
+        ).toString("utf8");
+      };
+      const runnerBytes = readState("runner", "runner-state.json");
+      const controlBytes = readState(
+        "control-plane",
+        "control-plane-state.json",
+      );
+      const providerBytes = readState("runner", "codex-provider-state.json");
+      const runner = record(JSON.parse(runnerBytes));
+      const control = record(JSON.parse(controlBytes));
+      const provider = record(JSON.parse(providerBytes));
+      const commands = control.commands;
+      const events = control.committedEvents;
+      const terminalEnvelope = record(
+        record(Array.isArray(events) ? events.at(-1) : null).envelope,
+      );
+      if (
+        runner.schema !== RUNNERD_STATE_SCHEMA ||
+        !["ready", "suspended"].includes(String(runner.lifecycle)) ||
+        (!currentEmpty && runner.lifecycle === "suspended") ||
+        [
+          "runId",
+          "normalizedSessionId",
+          "runnerInstanceId",
+          "environmentLeaseId",
+          "turnId",
+          "itemId",
+        ].some((key) => runner[key] !== identity[key]) ||
+        !Array.isArray(runner.outbox) ||
+        runner.outbox.length !== 0 ||
+        runner.pendingTerminalDelivery !== null ||
+        !Array.isArray(commands) ||
+        commands.some((command) => record(command).status !== "completed") ||
+        !Array.isArray(events) ||
+        record(events.at(-1)).eventType !== "run.terminal" ||
+        terminalEnvelope.runId !== identity.runId ||
+        terminalEnvelope.normalizedSessionId !== identity.normalizedSessionId ||
+        provider.completedTurnAuthoritative !== true
+      )
+        continue;
+      const providerIdentity = providerSessionIdentityFromDurableProviderState({
+        execution: input.execution,
+        providerState: provider,
+      });
+      if (!providerIdentity.providerSessionId) continue;
+      const prior = await input.db
+        .select({
+          status: heartbeatRuns.status,
+          runnerProfileJson: heartbeatRuns.runnerProfileJson,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, identity.runId),
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!prior || !TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.status))
+        continue;
+      const profile = record(prior.runnerProfileJson);
+      const previous = parseNativeExecutionInput(profile.nativeExecutionInput);
+      const checkpoint = record(profile.sessionCheckpoint);
+      const checkpointIdentity = record(checkpoint.identity);
+      const current = await input.db
+        .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.execution.binding.runId),
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const latestCheckpoint = record(
+        record(current?.runnerProfileJson).sessionCheckpoint,
+      );
+      const latestIdentity = record(latestCheckpoint.identity);
+      if (
+        previous.binding.runId !== identity.runId ||
+        previous.binding.issueId !== input.execution.binding.issueId ||
+        nativeSessionScopeKey(previous) !==
+          nativeSessionScopeKey(input.execution) ||
+        nativeSessionConfigDigest(previous) !==
+          nativeSessionConfigDigest(input.execution) ||
+        record(record(prior.contextSnapshot).paperclipEnvironment).driver !==
+          "local" ||
+        checkpointIdentity.runId !== identity.runId ||
+        checkpointIdentity.sessionId !== identity.normalizedSessionId ||
+        checkpointIdentity.companyId !== previous.binding.companyId ||
+        checkpointIdentity.agentId !== previous.binding.agentId ||
+        checkpointIdentity.issueId !== previous.binding.issueId ||
+        checkpoint.driverKind !== previous.session.driverKind ||
+        checkpoint.providerSessionId !== providerIdentity.providerSessionId ||
+        latestCheckpoint.providerSessionId !==
+          providerIdentity.providerSessionId ||
+        latestIdentity.sessionId !== identity.normalizedSessionId ||
+        latestIdentity.companyId !== previous.binding.companyId ||
+        latestIdentity.agentId !== previous.binding.agentId ||
+        latestIdentity.issueId !== previous.binding.issueId ||
+        checkpoint.activeTurnId !== null ||
+        !Array.isArray(checkpoint.pendingRuntimeRequests) ||
+        checkpoint.pendingRuntimeRequests.length !== 0 ||
+        !localProcessDefinitelyGone(prior.processPid) ||
+        !localProcessDefinitelyGone(prior.processGroupId, true)
+      )
+        continue;
+      // Provider processes are normally inside the runner group. Check any
+      // independently recorded child identities too, including detached ones.
+      const processIds = [
+        ...Object.entries(record(checkpoint.process))
+          .filter(([key]) => /^(provider|codex|sidecar|agent)Pid$/.test(key))
+          .map(([, value]) => value),
+        ...events
+          .map(
+            (event) => record(record(record(event).envelope).payload).payload,
+          )
+          .map((payload) => record(payload).processId)
+          .filter((pid) => pid !== undefined),
+      ];
+      if (processIds.some((pid) => !localProcessDefinitelyGone(pid))) continue;
+      // No mutation if any evidence changed while the database was read.
+      if (
+        runnerBytes !== readState("runner", "runner-state.json") ||
+        controlBytes !==
+          readState("control-plane", "control-plane-state.json") ||
+        providerBytes !== readState("runner", "codex-provider-state.json")
+      )
+        continue;
+      verified.push({
+        root,
+        runnerBytes,
+        controlBytes,
+        providerBytes,
+        runner,
+        runId: identity.runId,
+        processPid: prior.processPid!,
+        processGroupId: prior.processGroupId!,
+      });
+    } catch {
+      // Unreadable, unsafe, unscoped, or unprovable state stays quarantined.
+    }
+  }
+  if (verified.length !== 1) {
+    if (
+      currentEmpty &&
+      candidates.some(
+        (root) =>
+          isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
+      )
+    ) {
+      // Known provider history is not permission to start a replacement when
+      // recovery cannot prove a unique, settled owner.
+      throw new Error("runner_state_identity_mismatch");
+    }
+    return;
+  }
+  const candidate = verified[0]!;
+  // Candidate enumeration can await other database reads. Revalidate the
+  // selected evidence and dead owner immediately before the atomic moves.
+  for (const [relativePath, expected] of [
+    ["runner/runner-state.json", candidate.runnerBytes],
+    ["runner/codex-provider-state.json", candidate.providerBytes],
+    ["control-plane/control-plane-state.json", candidate.controlBytes],
+  ]) {
+    if (
+      readBoundedNativeFile(
+        resolve(candidate.root, relativePath!),
+        NATIVE_RUNNER_STATE_MAX_BYTES,
+        "recovery_state_too_large",
+      ).toString("utf8") !== expected
+    ) {
+      throw new Error("runner_state_identity_mismatch");
+    }
+  }
+  if (
+    !localProcessDefinitelyGone(candidate.processPid) ||
+    !localProcessDefinitelyGone(candidate.processGroupId, true)
+  ) {
+    throw new Error("runner_state_identity_mismatch");
+  }
+  if (candidate.root !== input.scoped) {
+    if (existsSync(input.scoped)) {
+      if (
+        !isSafeNativeStateDirectory(input.scoped) ||
+        readdirSync(input.scoped).length !== 0
+      )
+        return;
+      quarantineRunnerdStateRoot(input.scoped, "identity_indeterminate");
+    }
+    renameSync(candidate.root, input.scoped);
+  }
+  // The provider and its process group are gone and all work is settled. Seal
+  // this old authority so the standard epoch rotation archives it before the
+  // next run, retaining the provider's history and exact thread identity.
+  const statePath = resolve(input.scoped, "runner", "runner-state.json");
+  const temporary = `${statePath}.${randomUUID()}.tmp`;
+  writeFileSync(
+    temporary,
+    JSON.stringify({ ...candidate.runner, lifecycle: "suspended" }),
+    { encoding: "utf8", mode: 0o600, flag: "wx" },
+  );
+  renameSync(temporary, statePath);
+  await input.onLog?.(
+    "stdout",
+    `[paperclip-runner] Automatically recovered settled session from run ${candidate.runId}; preserving the existing provider thread.\n`,
+  );
+}
+
+function localProcessDefinitelyGone(value: unknown, group = false): boolean {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 1)
+    return false;
+  try {
+    process.kill(group ? -value : value, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+export function runnerdStateProvesIncompleteBootstrap(root: string): boolean {
+  try {
+    const statePath = resolve(
+      root,
+      "control-plane",
+      "control-plane-state.json",
+    );
+    const state = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          statePath,
+          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          "runner_durable_identity_too_large",
+        ).toString("utf8"),
+      ),
+    );
+    const commands = Array.isArray(state.commands)
+      ? state.commands.map(record)
+      : [];
+    const committedEvents = Array.isArray(state.committedEvents)
+      ? state.committedEvents
+      : [];
+    const onlyUnconsumedBootstrapCommands = commands.every(
+      (command) =>
+        command.status === "pending" &&
+        (command.type === "run.prepare" || command.type === "session.open"),
+    );
+    return (
+      state.schema === RUNNERD_CONTROL_PLANE_STATE_SCHEMA &&
+      state.connectionCount === 0 &&
+      committedEvents.length === 0 &&
+      onlyUnconsumedBootstrapCommands
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isSafeNativeStateDirectory(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const stats = lstatSync(path);
+  return stats.isDirectory() && !stats.isSymbolicLink();
+}
+
+type RunnerdDurableIdentity = Record<string, unknown> & {
+  runId: string;
+  normalizedSessionId: string;
+  runnerInstanceId: string;
+  environmentLeaseId: string;
+};
+
+function readRunnerdDurableIdentity(
+  root: string,
+): Record<string, unknown> | null {
+  if (!isSafeNativeStateDirectory(root)) return null;
+  const controlPlaneRoot = resolve(root, "control-plane");
+  if (!isSafeNativeStateDirectory(controlPlaneRoot)) return null;
+  const statePath = resolve(controlPlaneRoot, "control-plane-state.json");
+  if (!existsSync(statePath)) return null;
+  try {
+    const state = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          statePath,
+          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          "runner_durable_identity_too_large",
+        ).toString("utf8"),
+      ),
+    );
+    if (state.schema !== RUNNERD_CONTROL_PLANE_STATE_SCHEMA) return null;
+    return record(state.identity);
+  } catch {
+    return null;
+  }
+}
+
+function durableIdentityMatchesExecution(
+  identity: Record<string, unknown> | null,
+  execution: NativeExecutionInput,
+): boolean {
+  return Boolean(
+    identity &&
+    identity.runId === execution.binding.runId &&
+    durableIdentityMatchesSession(identity, execution),
+  );
+}
+
+function durableIdentityMatchesSession(
+  identity: Record<string, unknown> | null,
+  execution: NativeExecutionInput,
+): identity is RunnerdDurableIdentity {
+  return Boolean(
+    identity &&
+    identity.normalizedSessionId === nativeSessionKey(execution) &&
+    typeof identity.runId === "string" &&
+    identity.runId.length > 0 &&
+    typeof identity.runnerInstanceId === "string" &&
+    identity.runnerInstanceId.length > 0 &&
+    typeof identity.environmentLeaseId === "string" &&
+    identity.environmentLeaseId.length > 0,
+  );
+}
+
+/**
+ * Pre-v2 state is migrated for an exact active run, or for a suspended prior
+ * run whose persisted, validated execution input proves the same full native
+ * session scope. Ambiguous company/session-only state can never be claimed by
+ * another agent, workspace, or provider profile.
+ */
+function runnerdStateRoot(execution: NativeExecutionInput): string {
+  const scoped = scopedRunnerdStateRoot(execution);
+  if (existsSync(scoped)) {
+    if (!isSafeNativeStateDirectory(scoped)) {
+      throw new Error("runner_state_directory_unsafe");
+    }
+    return scoped;
+  }
+  for (const legacy of [
+    legacyCompanyRunnerdStateRoot(execution),
+    legacyRunnerdStateRoot(execution),
+  ]) {
+    const migrated = migrateLegacyRunnerdStateRoot({
+      legacy,
+      scoped,
+      execution,
+    });
+    if (migrated) return migrated;
+  }
+  return scoped;
+}
+
+function loadRunnerdDurableBinding(
+  execution: NativeExecutionInput,
+  transition?: VerifiedWarmTransitionBinding,
+): {
+  runnerInstanceId: string;
+  environmentLeaseId: string;
+} | null {
+  if (transition) {
+    if (
+      readWarmTransitionSnapshot(runnerdStateRoot(execution))
+        .stateFingerprint !== transition.stateFingerprint
+    ) {
+      throw new Error("native_runner_warm_transition_recovery_unproven");
+    }
+    return transition;
+  }
+  const identity = readRunnerdDurableIdentity(runnerdStateRoot(execution));
+  // The run id is intentionally different during a continuation. Reuse only
+  // the verified runner/lease binding from the same company-scoped durable
+  // session root; rotateLocalAuthorityEpoch then requires that exact binding
+  // before it can archive the prior per-run authority.
+  if (!durableIdentityMatchesSession(identity, execution)) return null;
+  return {
+    runnerInstanceId: identity.runnerInstanceId,
+    environmentLeaseId: identity.environmentLeaseId,
+  };
+}
+
+function nativeSessionConfigDigest(
+  execution: NativeExecutionInput,
+  executionTargetKind: "local" | "remote" = "local",
+  legacyProjectlessRunId?: string,
+): string {
+  const executionLocation = {
+    executionKind: "local_process",
+    // Use the same workspace identity as the durable session scope. For a
+    // projectless task, executionWorkspaceId is a per-run placeholder, not a
+    // workspace change. Real workspace/provider/policy changes still fence
+    // retained processes and checkpoints through the rest of this digest.
+    workspaceId:
+      execution.binding.executionWorkspaceId === execution.binding.runId
+        ? (legacyProjectlessRunId ?? nativeSessionWorkspaceScope(execution))
+        : execution.binding.executionWorkspaceId,
+    cwd: execution.workspace.cwd,
+  };
+  return `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        companyId: execution.binding.companyId,
+        normalizedSessionId: nativeSessionKey(execution),
+        executionLocation,
+        provider: execution.provider,
+        driverKind: execution.session.driverKind,
+        lifecyclePolicy: execution.session.lifecyclePolicy,
+        executionMode:
+          "executionMode" in execution ? execution.executionMode : "default",
+        runtimeContextDigest:
+          "runtimeContext" in execution
+            ? execution.runtimeContext.aggregateDigest
+            : null,
+        // Provider threads retain their tool declarations across resume. Bump
+        // this revision whenever the server-authorized native tool surface
+        // changes so an older thread is rotated instead of falsely resuming
+        // without newly required tools.
+        nativeToolContractFingerprint:
+          nativeToolContractFingerprintForTarget(executionTargetKind),
+      }),
+    )
+    .digest("hex")}`;
+}
+
+function hasIdleWarmNativeSessionOwner(input: {
+  execution: NativeExecutionInput;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+}): boolean {
+  if (input.execution.session.lifecyclePolicy.mode !== "warm") return false;
+  const entry = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
+  if (!entry || entry.busy) return false;
+  // A verified idle owner proves the checkpoint belongs to this session even
+  // when its process must later rotate to a new run-scoped broker capability.
+  // Local environments also have an id. Compare the same environment binding
+  // stored at acquisition instead of treating every local target as unbound.
+  const environmentId = input.runnerExecutionTarget?.environmentId ?? null;
+  return (
+    entry.companyId === input.execution.binding.companyId &&
+    entry.environmentId === environmentId &&
+    entry.configDigest ===
+      nativeSessionConfigDigest(
+        input.execution,
+        input.runnerExecutionTarget?.kind ?? "local",
+      )
+  );
+}
+
+function nativeHarnessEnvironmentFingerprint(
+  execution: NativeExecutionInput,
+): string {
+  return `sha256:${createHash("sha256")
+    .update(
+      canonicalJson({
+        companyId: execution.binding.companyId,
+        agentId: execution.binding.agentId,
+        issueId: execution.binding.issueId,
+        normalizedSessionId: nativeSessionKey(execution),
+        workspace: {
+          cwd: execution.workspace.cwd,
+          repoUrl: execution.workspace.repoUrl,
+          repoRef: execution.workspace.repoRef,
+          branchName: execution.workspace.branchName,
+        },
+        provider: execution.provider,
+        driverKind: execution.session.driverKind,
+      }),
+    )
+    .digest("hex")}`;
+}
+
+type NativeProviderKind = NativeExecutionInput["provider"]["kind"];
+type NativeDriverKind = NativeExecutionInput["session"]["driverKind"];
+
+export interface NativeHarnessPersistenceDirectory {
+  name: "runner" | "codex-home" | "opencode" | "acpx";
+  location: "runner" | "filesystem";
+  excludeEntries: readonly string[];
+}
+
+export interface NativeHarnessPersistenceProfile {
+  providerKind: NativeProviderKind;
+  driverKind: NativeDriverKind;
+  directories: readonly NativeHarnessPersistenceDirectory[];
+}
+
+export interface NativeHarnessBackupManifest {
+  schema: "paperclip.native-harness-backup.v1";
+  normalizedSessionId: string;
+  runnerInstanceId: string;
+  providerKind: NativeProviderKind;
+  driverKind: NativeDriverKind;
+  providerSessionIdentity: unknown;
+  sourceProviderLeaseId: string;
+  environmentFingerprint: string;
+  runnerContractVersion: number;
+  directories: Array<{
+    name: string;
+    sha256: string;
+    bytes: number;
+  }>;
+  completedAt: string;
+}
+
+export function resolveNativeHarnessPersistenceProfile(
+  execution: NativeExecutionInput,
+): NativeHarnessPersistenceProfile {
+  const providerDirectory: NativeHarnessPersistenceDirectory | null =
+    execution.provider.kind === "codex"
+      ? {
+          name: "codex-home",
+          location: "filesystem",
+          // Codex session history lives below this home, but these files are
+          // launch-time material: auth.json is copied from the configured
+          // credential source and config.toml can contain the native MCP
+          // bearer token. Re-materialize both for a replacement sandbox
+          // instead of putting credentials into the disaster-recovery copy.
+          excludeEntries: CODEX_HOME_NON_PERSISTENT_ENTRIES,
+        }
+      : execution.provider.kind === "opencode"
+        ? {
+            name: "opencode",
+            location: "filesystem",
+            excludeEntries: [],
+          }
+        : execution.provider.kind === "acpx"
+          ? {
+              name: "acpx",
+              location: "filesystem",
+              // ACPX stores each provider beneath a stable session directory.
+              // Codex creates process-local executable aliases in tmp/arg0;
+              // they may point outside the runtime tree and are neither safe
+              // nor necessary to restore. Credentials and launch-time config
+              // are also re-materialized in the replacement sandbox.
+              excludeEntries:
+                execution.provider.agent === "codex"
+                  ? CODEX_HOME_NON_PERSISTENT_ENTRIES.map(
+                      (entry) =>
+                        `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/codex-home/${entry}`,
+                    )
+                  : [],
+            }
+          : null;
+  return {
+    providerKind: execution.provider.kind,
+    driverKind: execution.session.driverKind,
+    directories: [
+      { name: "runner", location: "runner", excludeEntries: [] },
+      ...(providerDirectory ? [providerDirectory] : []),
+    ],
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([left], [right]) => left.localeCompare(right),
+    );
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function runnerProviderStateFilename(execution: NativeExecutionInput): string {
+  switch (execution.provider.kind) {
+    case "codex":
+    case "opencode":
+      return "codex-provider-state.json";
+    case "acpx":
+      return "acpx-provider-state.json";
+    case "claude_managed":
+    case "aws_agentcore":
+      return "managed-provider-state.json";
+  }
+}
+
+/**
+ * The v2 runner owns PRP identity/lifecycle in runner-state.json and keeps
+ * provider recovery identity in a sibling provider state file. Never infer a
+ * resumable provider from the outer PRP journal alone.
+ */
+export function providerSessionIdentityFromDurableProviderState(input: {
+  execution: NativeExecutionInput;
+  providerState: unknown;
+}): Record<string, unknown> {
+  const state = record(input.providerState);
+  const expectedSessionId = nativeSessionKey(input.execution);
+  const nonEmptyString = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0;
+  const sha256 = (value: unknown): value is string =>
+    typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+  const emptyIdentity = () => ({
+    providerSessionId: null,
+    providerBackendSessionId: null,
+    providerSessionIdentity: null,
+  });
+  switch (input.execution.provider.kind) {
+    case "acpx": {
+      const descriptor = record(state.descriptor);
+      const identity = record(state.identity);
+      const expectedModel = input.execution.provider.model;
+      const requiredIdentityFields = [
+        "kind",
+        "normalizedSessionId",
+        "acpxRecordId",
+        "backendSessionId",
+        "agentSessionId",
+        "profileDigest",
+        "workspaceDigest",
+        "requestedModel",
+        "effectiveModel",
+      ] as const;
+      if (
+        state.schema !== ACPX_PROVIDER_STATE_SCHEMA ||
+        state.lifecycle !== "suspended" ||
+        state.providerExitUnconfirmed !== false ||
+        state.activeTurnId !== null ||
+        descriptor.kind !== "acpx" ||
+        descriptor.provider !== "acpx" ||
+        descriptor.driver !== "acpx_runtime" ||
+        descriptor.agent !== input.execution.provider.agent ||
+        descriptor.model !== expectedModel ||
+        descriptor.normalizedSessionId !== expectedSessionId ||
+        identity.kind !== "acpx" ||
+        identity.normalizedSessionId !== expectedSessionId ||
+        requiredIdentityFields.some(
+          (field) => !nonEmptyString(identity[field]),
+        ) ||
+        !sha256(identity.profileDigest) ||
+        !sha256(identity.workspaceDigest) ||
+        identity.profileDigest !== descriptor.commandDigest ||
+        identity.requestedModel !== expectedModel ||
+        identity.effectiveModel !== expectedModel ||
+        identity.permissionMode !== input.execution.provider.permissionMode ||
+        !["approve-all", "approve-reads", "deny-all"].includes(
+          String(identity.permissionMode),
+        ) ||
+        !Array.isArray(identity.providerLifetimeFenceCandidates) ||
+        identity.providerLifetimeFenceCandidates.length !== 3 ||
+        new Set(identity.providerLifetimeFenceCandidates).size !== 3 ||
+        identity.providerLifetimeFenceCandidates.some(
+          (port) =>
+            !Number.isInteger(port) ||
+            Number(port) < 49_152 ||
+            Number(port) > 65_535,
+        )
+      ) {
+        return emptyIdentity();
+      }
+      return {
+        providerSessionId: identity.acpxRecordId ?? null,
+        providerBackendSessionId: identity.backendSessionId ?? null,
+        providerSessionIdentity: structuredClone(identity),
+      };
+    }
+    case "codex":
+    case "opencode": {
+      const config = record(state.config);
+      const expectedDriver =
+        input.execution.provider.kind === "codex"
+          ? "codex_app_server"
+          : "opencode_server";
+      if (
+        state.schema !== CODEX_PROVIDER_STATE_SCHEMA ||
+        !["prepared", "session_open", "provider_exited"].includes(
+          String(state.lifecycle),
+        ) ||
+        !nonEmptyString(state.threadId) ||
+        (state.providerSessionId !== null &&
+          state.providerSessionId !== undefined &&
+          !nonEmptyString(state.providerSessionId)) ||
+        state.activeProviderTurnId !== null ||
+        state.ambiguousTurnStartPending === true ||
+        config.provider !== input.execution.provider.kind ||
+        config.driver !== expectedDriver
+      ) {
+        return emptyIdentity();
+      }
+      return {
+        providerSessionId: state.threadId ?? null,
+        providerBackendSessionId: state.providerSessionId ?? null,
+        providerSessionIdentity: null,
+      };
+    }
+    case "claude_managed":
+    case "aws_agentcore": {
+      const descriptor = record(state.descriptor);
+      if (
+        state.schema !== MANAGED_PROVIDER_STATE_SCHEMA ||
+        state.lifecycle !== "suspended" ||
+        state.normalizedSessionId !== expectedSessionId ||
+        descriptor.kind !== input.execution.provider.kind ||
+        !nonEmptyString(state.providerSessionId) ||
+        state.activeTurnId !== null
+      ) {
+        return emptyIdentity();
+      }
+      return {
+        providerSessionId: state.providerSessionId ?? null,
+        providerBackendSessionId: state.providerSessionId ?? null,
+        providerSessionIdentity: null,
+      };
+    }
+  }
+}
+
+function providerSessionIdentityIsPresent(value: unknown): boolean {
+  const identity = record(value);
+  return (
+    (identity.providerSessionId !== null &&
+      identity.providerSessionId !== undefined) ||
+    (identity.providerBackendSessionId !== null &&
+      identity.providerBackendSessionId !== undefined) ||
+    (identity.providerSessionIdentity !== null &&
+      identity.providerSessionIdentity !== undefined)
+  );
+}
+
+export function providerSessionIdentityTransitionIsAllowed(input: {
+  execution: NativeExecutionInput;
+  previous: unknown;
+  current: unknown;
+}): boolean {
+  if (canonicalJson(input.previous) === canonicalJson(input.current)) {
+    return true;
+  }
+  if (
+    input.execution.provider.kind !== "acpx" ||
+    input.execution.interactionResponses.length === 0
+  ) {
+    return false;
+  }
+
+  const previousOuter = record(input.previous);
+  const currentOuter = record(input.current);
+  const previous = record(previousOuter.providerSessionIdentity);
+  const current = record(currentOuter.providerSessionIdentity);
+  if (previous.kind !== "acpx" || current.kind !== "acpx") return false;
+
+  const stableFields = [
+    "normalizedSessionId",
+    "profileDigest",
+    "workspaceDigest",
+    "requestedModel",
+    "effectiveModel",
+    "permissionMode",
+  ] as const;
+  if (
+    current.normalizedSessionId !== nativeSessionKey(input.execution) ||
+    stableFields.some(
+      (field) =>
+        typeof previous[field] !== "string" ||
+        previous[field] !== current[field],
+    )
+  ) {
+    return false;
+  }
+
+  return (
+    typeof previous.acpxRecordId === "string" &&
+    typeof previous.backendSessionId === "string" &&
+    typeof previous.agentSessionId === "string" &&
+    typeof current.acpxRecordId === "string" &&
+    typeof current.backendSessionId === "string" &&
+    typeof current.agentSessionId === "string" &&
+    previousOuter.providerSessionId === previous.acpxRecordId &&
+    previousOuter.providerBackendSessionId === previous.backendSessionId &&
+    currentOuter.providerSessionId === current.acpxRecordId &&
+    currentOuter.providerBackendSessionId === current.backendSessionId
+  );
+}
+
+function digestBackupDirectory(directory: string): {
+  sha256: string;
+  bytes: number;
+} {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  const visit = (current: string, relative: string) => {
+    const entries = readdirSync(current, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    if (entries.length === 0) hash.update(`directory:${relative}\0`);
+    for (const entry of entries) {
+      const entryPath = resolve(current, entry.name);
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      const stats = lstatSync(entryPath);
+      if (entry.isDirectory()) {
+        hash.update(`directory:${entryRelative}:${stats.mode & 0o777}\0`);
+        visit(entryPath, entryRelative);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`symlink:${entryRelative}:${readlinkSync(entryPath)}\0`);
+      } else if (entry.isFile()) {
+        const contents = readFileSync(entryPath);
+        bytes += contents.byteLength;
+        hash.update(
+          `file:${entryRelative}:${stats.mode & 0o777}:${contents.byteLength}\0`,
+        );
+        hash.update(contents);
+      } else {
+        throw new Error(
+          `runner_harness_backup_unsupported_entry:${entryRelative}`,
+        );
+      }
+    }
+  };
+  visit(directory, "");
+  return { sha256: `sha256:${hash.digest("hex")}`, bytes };
+}
+
+function harnessBackupRoot(root: string): string {
+  return resolve(root, "failover-backups");
+}
+
+function harnessBackupCandidates(root: string): string[] {
+  const backupRoot = harnessBackupRoot(root);
+  return [resolve(backupRoot, "current"), resolve(backupRoot, "previous")];
+}
+
+type VerifiedHarnessBackup = {
+  root: string;
+  manifest: NativeHarnessBackupManifest;
+  bytes: number;
+};
+
+export function shouldRestoreNativeHarnessBackupIntoSandbox(input: {
+  acquisitionOutcome: "created" | "resumed" | "replacement" | null;
+  reusableLeaseConfigured: boolean | null | undefined;
+  backupAvailable: boolean;
+}): boolean {
+  return (
+    input.acquisitionOutcome === "created" &&
+    input.reusableLeaseConfigured === false &&
+    input.backupAvailable
+  );
+}
+
+function compatibleNativeHarnessBackupManifests(input: {
+  root: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+}): Array<{ root: string; manifest: NativeHarnessBackupManifest }> {
+  const profile = resolveNativeHarnessPersistenceProfile(input.execution);
+  const expectedNames = profile.directories
+    .map((directory) => directory.name)
+    .sort();
+  const compatible: Array<{
+    root: string;
+    manifest: NativeHarnessBackupManifest;
+  }> = [];
+  for (const candidateRoot of harnessBackupCandidates(input.root)) {
+    const manifestPath = resolve(candidateRoot, "manifest.json");
+    if (!existsSync(manifestPath)) continue;
+    let manifest: NativeHarnessBackupManifest;
+    try {
+      manifest = JSON.parse(
+        readFileSync(manifestPath, "utf8"),
+      ) as NativeHarnessBackupManifest;
+    } catch {
+      continue;
+    }
+    if (
+      manifest.schema !== "paperclip.native-harness-backup.v1" ||
+      manifest.normalizedSessionId !== nativeSessionKey(input.execution) ||
+      manifest.runnerInstanceId !== input.runnerInstanceId ||
+      manifest.providerKind !== profile.providerKind ||
+      manifest.driverKind !== profile.driverKind ||
+      manifest.environmentFingerprint !==
+        nativeHarnessEnvironmentFingerprint(input.execution) ||
+      manifest.runnerContractVersion !== RUNNERD_BINARY_CONTRACT_VERSION ||
+      !providerSessionIdentityIsPresent(manifest.providerSessionIdentity) ||
+      !Array.isArray(manifest.directories)
+    )
+      continue;
+    const manifestNames = manifest.directories
+      .map((directory) => directory.name)
+      .sort();
+    if (canonicalJson(expectedNames) !== canonicalJson(manifestNames)) continue;
+    compatible.push({ root: candidateRoot, manifest });
+  }
+  return compatible;
+}
+
+export function buildNativeHarnessBackupManifest(input: {
+  backupRoot: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+  providerSessionIdentity: unknown;
+  sourceProviderLeaseId: string;
+  completedAt?: string;
+}): NativeHarnessBackupManifest {
+  if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
+    throw new Error("runner_harness_state_mismatch");
+  }
+  const profile = resolveNativeHarnessPersistenceProfile(input.execution);
+  const directories = profile.directories.map((directory) => {
+    const path = resolve(input.backupRoot, directory.name);
+    if (!existsSync(path)) throw new Error("runner_harness_state_mismatch");
+    return { name: directory.name, ...digestBackupDirectory(path) };
+  });
+  return {
+    schema: "paperclip.native-harness-backup.v1",
+    normalizedSessionId: nativeSessionKey(input.execution),
+    runnerInstanceId: input.runnerInstanceId,
+    providerKind: profile.providerKind,
+    driverKind: profile.driverKind,
+    providerSessionIdentity: input.providerSessionIdentity,
+    sourceProviderLeaseId: input.sourceProviderLeaseId,
+    environmentFingerprint: nativeHarnessEnvironmentFingerprint(
+      input.execution,
+    ),
+    runnerContractVersion: RUNNERD_BINARY_CONTRACT_VERSION,
+    directories,
+    completedAt: input.completedAt ?? new Date().toISOString(),
+  };
+}
+
+export function verifyNativeHarnessBackup(input: {
+  root: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+}): VerifiedHarnessBackup | null {
+  for (const {
+    root: candidateRoot,
+    manifest,
+  } of compatibleNativeHarnessBackupManifests(input)) {
+    let bytes = 0;
+    let valid = true;
+    for (const declared of manifest.directories) {
+      const directoryPath = resolve(candidateRoot, declared.name);
+      if (!existsSync(directoryPath)) {
+        valid = false;
+        break;
+      }
+      try {
+        const digest = digestBackupDirectory(directoryPath);
+        if (
+          digest.sha256 !== declared.sha256 ||
+          digest.bytes !== declared.bytes
+        ) {
+          valid = false;
+          break;
+        }
+        bytes += digest.bytes;
+      } catch {
+        valid = false;
+        break;
+      }
+    }
+    if (valid) return { root: candidateRoot, manifest, bytes };
+  }
+  return null;
+}
+
+function nativeSessionCheckpointDirectory(): string {
+  const directory = resolve(
+    resolvePaperclipInstanceRoot(),
+    "runtime",
+    "paperclip-runner",
+    "sessions",
+  );
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  return directory;
+}
+
+function nativeSessionCheckpointPath(execution: NativeExecutionInput): string {
+  return resolve(
+    nativeSessionCheckpointDirectory(),
+    `${createHash("sha256")
+      .update(nativeSessionScopeKey(execution))
+      .digest("hex")}.json`,
+  );
+}
+
+function legacyCompanyNativeSessionCheckpointPath(
+  execution: NativeExecutionInput,
+): string {
+  return resolve(
+    nativeSessionCheckpointDirectory(),
+    `${createHash("sha256")
+      .update(legacyCompanyNativeSessionScopeKey(execution))
+      .digest("hex")}.json`,
+  );
+}
+
+function legacyNativeSessionCheckpointPath(
+  execution: NativeExecutionInput,
+): string {
+  return resolve(
+    nativeSessionCheckpointDirectory(),
+    `${createHash("sha256")
+      .update(nativeSessionKey(execution))
+      .digest("hex")}.json`,
+  );
+}
+
+function persistWarmNativeCheckpoint(
+  execution: NativeExecutionInput,
+  configDigest: string,
+  snapshot: PersistedNativeSession,
+): void {
+  const path = nativeSessionCheckpointPath(execution);
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(
+    temporary,
+    JSON.stringify({
+      schema: "paperclip.native-session-supervisor.v1",
+      configDigest,
+      updatedAt: new Date().toISOString(),
+      snapshot,
+    }),
+    { encoding: "utf8", mode: 0o600 },
+  );
+  renameSync(temporary, path);
+  chmodSync(path, 0o600);
+}
+
+function loadWarmNativeCheckpoint(
+  execution: NativeExecutionInput,
+  configDigest: string,
+  executionTargetKind: "local" | "remote" = "local",
+): PersistedNativeSession | null {
+  const scopedPath = nativeSessionCheckpointPath(execution);
+  const path = [
+    scopedPath,
+    legacyCompanyNativeSessionCheckpointPath(execution),
+    legacyNativeSessionCheckpointPath(execution),
+  ].find((candidate) => existsSync(candidate));
+  if (!path) return null;
+  const envelope = JSON.parse(
+    readBoundedNativeFile(
+      path,
+      NATIVE_WARM_CHECKPOINT_MAX_BYTES,
+      "native_session_supervisor_checkpoint_too_large",
+    ).toString("utf8"),
+  ) as {
+    schema?: string;
+    configDigest?: string;
+    snapshot?: PersistedNativeSession;
+  };
+  if (
+    envelope.schema !== "paperclip.native-session-supervisor.v1" ||
+    !envelope.snapshot
+  ) {
+    throw new Error("native_session_supervisor_checkpoint_mismatch");
+  }
+  const persistedIdentity = record(envelope.snapshot.identity);
+  if (
+    persistedIdentity.sessionId !== nativeSessionKey(execution) ||
+    persistedIdentity.companyId !== execution.binding.companyId ||
+    persistedIdentity.agentId !== execution.binding.agentId
+  ) {
+    throw new Error("native_session_supervisor_checkpoint_mismatch");
+  }
+  // Upgrade old projectless checkpoints using their validated prior run id.
+  // Every provider/model/runtime-context/permission field must still match;
+  // only the old per-run workspace placeholder is normalized away.
+  const legacyDigest =
+    execution.binding.executionWorkspaceId === execution.binding.runId &&
+    typeof persistedIdentity.runId === "string"
+      ? nativeSessionConfigDigest(
+          execution,
+          executionTargetKind,
+          persistedIdentity.runId,
+        )
+      : null;
+  if (
+    envelope.configDigest !== configDigest &&
+    envelope.configDigest !== legacyDigest
+  ) {
+    return null;
+  }
+  const sameRunRecovery =
+    persistedIdentity.runId === execution.binding.runId &&
+    persistedIdentity.issueId === execution.binding.issueId;
+  const resumed = sameRunRecovery
+    ? structuredClone(envelope.snapshot)
+    : {
+        ...envelope.snapshot,
+        identity: {
+          runId: execution.binding.runId,
+          sessionId: nativeSessionKey(execution),
+          companyId: execution.binding.companyId,
+          issueId: execution.binding.issueId,
+          agentId: execution.binding.agentId,
+        },
+        // A warm provider can be rebound only after the previous run settled.
+        // Its provider identity survives, but run-scoped turn, result, and
+        // request authority must not cross into the new heartbeat run.
+        semanticResult: null,
+        terminal: null,
+        activeTurnId: null,
+        terminalTurns: [],
+        pendingRuntimeRequests: [],
+      };
+  if (path !== scopedPath || envelope.configDigest !== configDigest) {
+    // Upgrade the validated checkpoint atomically. When moving from a legacy
+    // path, retain that file so an interrupted migration remains replayable.
+    persistWarmNativeCheckpoint(execution, configDigest, resumed);
+  }
+  return resumed;
+}
+
+async function releaseWarmNativeSession(
+  sessionId: string,
+  ownerToken: symbol,
+  idleTimeoutMs: number,
+  failed: boolean,
+): Promise<void> {
+  const entry = warmNativeSessions.get(sessionId);
+  // A late completion or cleanup callback from an older execution must never
+  // release a replacement that has since claimed the same logical session.
+  if (!entry || entry.ownerToken !== ownerToken) return;
+  entry.busy = false;
+  entry.lastActivityAt = new Date().toISOString();
+  if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+  if (failed || entry.closeOnReleaseReason !== undefined) {
+    warmNativeSessions.delete(sessionId);
+    const closing = entry.session.close({
+      reason: entry.closeOnReleaseReason ?? "warm native session failed",
+    });
+    // Restart checkpointing is required to restore this successful session.
+    // Surface failure instead of reporting a clean release without authority.
+    if (entry.closeOnReleaseReason !== undefined) await closing;
+    else await closing.catch(() => undefined);
+    return;
+  }
+  entry.idleTimer = setTimeout(() => {
+    const current = warmNativeSessions.get(sessionId);
+    // clearTimeout cannot revoke an already-queued callback. The entry object
+    // is the idle timer's ownership fence across a later warm acquisition.
+    if (current !== entry || current.busy) return;
+    warmNativeSessions.delete(sessionId);
+    void current.session
+      .close({ reason: "warm native session idle timeout" })
+      .catch(() => undefined);
+  }, idleTimeoutMs);
+  entry.idleTimer.unref();
+}
+
+/** Classify only a committed provider terminal, never model prose or tool output. */
+export function nativeProviderUsageLimitFromEvent(
+  event: Pick<PrpEvent, "sourceKind" | "eventType" | "payload">,
+): boolean {
+  const payload = record(event.payload);
+  return (
+    event.sourceKind === "runner" &&
+    event.eventType === "turn.failed" &&
+    payload.status === "failed" &&
+    record(payload.error).codexErrorInfo === "usageLimitExceeded"
+  );
+}
+
+export function nativeSessionFailureDisposition(
+  attempt: number,
+  now = new Date(),
+  sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
+) {
+  const permanentFailure =
+    sourceFailureCode === "native_provider_model_rejected" ||
+    sourceFailureCode === "native_event_replay_conflict" ||
+    sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
+    sourceFailureCode === "native_provider_terminal_failed" ||
+    sourceFailureCode === "native_current_wake_comments_unread" ||
+    sourceFailureCode === "native_current_wake_comments_changed_after_read" ||
+    sourceFailureCode === "native_session_cleanup_quarantined" ||
+    sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
+    sourceFailureCode === "native_provider_usage_limit";
+  const exhausted = permanentFailure || attempt >= 3;
+  return {
+    phase: exhausted
+      ? ("terminal_failure" as const)
+      : ("retryable_failure" as const),
+    failureCode: permanentFailure
+      ? sourceFailureCode!
+      : exhausted
+        ? ("native_session_retry_exhausted" as const)
+        : ("native_session_interrupted" as const),
+    nextAttemptAt: exhausted ? null : new Date(now.getTime() + 30_000),
+  };
+}
+
+export function nativeSessionRecoveryProjection(input: {
+  phase: "retryable_failure" | "terminal_failure";
+  failureCode: string;
+  agentId: string;
+}) {
+  const exhausted = input.phase === "terminal_failure";
+  return {
+    exhausted,
+    issueStatus:
+      exhausted &&
+      input.failureCode !== NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT
+        ? ("blocked" as const)
+        : null,
+    recoveryOwner: exhausted
+      ? { kind: "board" as const }
+      : { kind: "agent" as const, agentId: input.agentId },
+    recoveryActionOwnerType: exhausted
+      ? ("board" as const)
+      : ("agent" as const),
+    recoveryActionOwnerAgentId: exhausted ? null : input.agentId,
+    recoveryActionCause: input.failureCode,
+    supersedeOnIdentityChange: true as const,
+  };
+}
+
+export function nativeSessionFailureSourceCode(
+  error: unknown,
+):
+  | "native_provider_terminal_failed"
+  | "native_provider_usage_limit"
+  | "native_session_cleanup_quarantined"
+  | "native_adopted_runner_authentication_timeout"
+  | "runner_remote_provider_artifact_incompatible"
+  | "provider_process_exited"
+  | "provider_stdout_closed"
+  | "provider_process_output_closed"
+  | "provider_process_status_failed"
+  | "provider_initialize_timeout"
+  | "provider_initialize_protocol_error"
+  | "provider_request_timeout"
+  | "provider_request_protocol_error"
+  | "provider_frame_too_large"
+  | "provider_transport_failed"
+  | "native_runner_process_exited"
+  | "planning_mode_unsupported"
+  | "native_event_replay_conflict"
+  | "native_provider_model_rejected"
+  | "native_current_wake_comments_unread"
+  | "native_current_wake_comments_changed_after_read"
+  | "native_session_interrupted" {
+  if (error instanceof NativeProviderTerminalFailure) {
+    // Failed terminals retain their security meaning across the provider facade.
+    // A stopped process is insufficient evidence to recover an integrity breach.
+    if (
+      /(?:binding_mismatch|start_mismatch|replay_conflict|digest_mismatch|invalid_semantic_result|conflicting_semantic_result|provider_event_type_invalid)/.test(
+        error.providerCode,
+      )
+    )
+      return "native_event_replay_conflict";
+    return "native_provider_terminal_failed";
+  }
+  if (error instanceof NativeSessionProtocolIntegrityError)
+    return "native_event_replay_conflict";
+  if (error instanceof NativeSessionCleanupQuarantinedError)
+    return "native_session_cleanup_quarantined";
+  const message = error instanceof Error ? error.message : String(error);
+  if (/native_provider_model_rejected/i.test(message))
+    return "native_provider_model_rejected";
+  if (/native_adopted_runner_authentication_timeout/i.test(message)) {
+    return "native_adopted_runner_authentication_timeout";
+  }
+  if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
+    return "runner_remote_provider_artifact_incompatible";
+  }
+  if (/provider_process_exited/i.test(message)) {
+    return "provider_process_exited";
+  }
+  if (/provider_stdout_closed/i.test(message)) {
+    return "provider_stdout_closed";
+  }
+  if (/provider_process_output_closed/i.test(message)) {
+    return "provider_process_output_closed";
+  }
+  if (/provider_process_status_failed/i.test(message)) {
+    return "provider_process_status_failed";
+  }
+  if (/provider_initialize_timeout/i.test(message)) {
+    return "provider_initialize_timeout";
+  }
+  if (/provider_initialize_protocol_error/i.test(message)) {
+    return "provider_initialize_protocol_error";
+  }
+  if (/provider_request_timeout/i.test(message)) {
+    return "provider_request_timeout";
+  }
+  if (/provider_request_protocol_error/i.test(message)) {
+    return "provider_request_protocol_error";
+  }
+  if (/provider_frame_too_large|stdout frame exceeded/i.test(message)) {
+    return "provider_frame_too_large";
+  }
+  if (
+    /provider_transport_failed|invalid JSON-RPC|provider failed/i.test(message)
+  ) {
+    return "provider_transport_failed";
+  }
+  if (
+    /native_runner_process_exited|runnerd exited|runner process failed/i.test(
+      message,
+    )
+  ) {
+    return "native_runner_process_exited";
+  }
+  if (/planning_mode_unsupported/i.test(message)) {
+    return "planning_mode_unsupported";
+  }
+  if (/native_event_replay_conflict/i.test(message)) {
+    return "native_event_replay_conflict";
+  }
+  if (/native_current_wake_comments_changed_after_read/i.test(message)) {
+    return "native_current_wake_comments_changed_after_read";
+  }
+  if (/native_current_wake_comments_unread/i.test(message)) {
+    return "native_current_wake_comments_unread";
+  }
+  return "native_session_interrupted";
+}
+
+const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
+  "Verify the prior session's retained process ownership and checkpoint before a controlled server restart and explicit task retry. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
+
+const PROVIDER_DURABLE_EVENT_TYPES = new Set([
+  "harness.ready",
+  "session.started",
+  "session.resumed",
+  "session.updated",
+  "turn.started",
+  "provider.event",
+  "provider.rpc_result",
+]);
+
+type NativeRecoveryMode =
+  "bootstrap_retry" | "exact_checkpoint_resume" | "ambiguous_state";
+
+export async function nativeProviderRecoveryEvidence(input: {
+  db: Db;
+  runId: string;
+  sourceFailureCode: ReturnType<typeof nativeSessionFailureSourceCode>;
+}): Promise<{
+  recoveryMode: NativeRecoveryMode;
+  providerSessionEstablished: boolean;
+  providerEventsExist: boolean;
+  checkpointExists: boolean;
+}> {
+  const run = await input.db
+    .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.runId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  const checkpoint = record(run?.runnerProfileJson).sessionCheckpoint;
+  const checkpointRecord = record(checkpoint);
+  const checkpointExists = Object.keys(checkpointRecord).length > 0;
+  const providerSessionEstablished =
+    (typeof checkpointRecord.providerSessionId === "string" &&
+      checkpointRecord.providerSessionId.length > 0) ||
+    Object.keys(record(checkpointRecord.providerIdentity)).length > 0;
+  const durableEvents = await input.db
+    .select({ eventType: heartbeatRunEvents.eventType })
+    .from(heartbeatRunEvents)
+    .where(
+      and(
+        eq(heartbeatRunEvents.runId, input.runId),
+        inArray(heartbeatRunEvents.eventType, [
+          ...PROVIDER_DURABLE_EVENT_TYPES,
+        ]),
+      ),
+    )
+    .limit(1);
+  const providerEventsExist = durableEvents.some((event) =>
+    PROVIDER_DURABLE_EVENT_TYPES.has(event.eventType),
+  );
+  if (
+    checkpointExists &&
+    providerSessionEstablished &&
+    record(checkpointRecord.terminal).runTerminalState !== "failed"
+  ) {
+    return {
+      recoveryMode: "exact_checkpoint_resume",
+      providerSessionEstablished: true,
+      providerEventsExist,
+      checkpointExists,
+    };
+  }
+  const definitelyPreSession = new Set<
+    ReturnType<typeof nativeSessionFailureSourceCode>
+  >([
+    "runner_remote_provider_artifact_incompatible",
+    "provider_process_exited",
+    "provider_stdout_closed",
+    "provider_process_output_closed",
+    "provider_process_status_failed",
+    "provider_initialize_timeout",
+    "provider_initialize_protocol_error",
+    "provider_request_timeout",
+    "provider_request_protocol_error",
+    "native_runner_process_exited",
+  ]).has(input.sourceFailureCode);
+  if (!checkpointExists && !providerEventsExist && definitelyPreSession) {
+    return {
+      recoveryMode: "bootstrap_retry",
+      providerSessionEstablished: false,
+      providerEventsExist: false,
+      checkpointExists: false,
+    };
+  }
+  return {
+    recoveryMode: "ambiguous_state",
+    providerSessionEstablished:
+      providerSessionEstablished || providerEventsExist,
+    providerEventsExist,
+    checkpointExists,
+  };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export type NativeSessionSteeringState = {
+  disposition: "available" | "unsupported" | "temporarily_unavailable";
+  activeTurnId: string | null;
+};
+
+export class NativeSessionSteeringError extends Error {
+  constructor(
+    readonly code:
+      | "steering_unsupported"
+      | "steering_temporarily_unavailable"
+      | "steering_stale_turn"
+      | "steering_timeout"
+      | "steering_rejected",
+    message: string,
+  ) {
+    super(message);
+    this.name = "NativeSessionSteeringError";
+  }
+}
+
+export class NativeRuntimeRequestResolutionError extends Error {
+  constructor(
+    readonly code:
+      | "native_session_not_active"
+      | "runtime_request_resolution_unsupported"
+      | "runtime_request_stale_turn"
+      | "runtime_request_resolution_conflict",
+    message: string,
+  ) {
+    super(message);
+    this.name = "NativeRuntimeRequestResolutionError";
+  }
+}
+
+/** Resolve a provider runtime request on an in-process native backend. */
+export async function resolveNativeRuntimeRequest(input: {
+  runId: string;
+  requestId: string;
+  turnId: string;
+  resolution: HarnessRuntimeRequestResolution;
+  /**
+   * Revalidate the caller's durable lifecycle and authorization immediately
+   * before the provider mutation. Capability and snapshot reads above this
+   * edge are asynchronous, so route-level checks performed before entering
+   * this helper are not sufficient to authorize the eventual dispatch.
+   */
+  authorizeBeforeDispatch: () => Promise<void>;
+}): Promise<{ commandId: string }> {
+  const active = activeNativeSessions.get(input.runId);
+  if (!active) {
+    throw new NativeRuntimeRequestResolutionError(
+      "native_session_not_active",
+      "The active native session is not attached.",
+    );
+  }
+  const capabilities = await active.session.capabilities();
+  if (
+    !capabilities.runtimeRequestResolution ||
+    active.session.resolveRuntimeRequest === undefined
+  ) {
+    throw new NativeRuntimeRequestResolutionError(
+      "runtime_request_resolution_unsupported",
+      "This native session does not resolve runtime requests in-process.",
+    );
+  }
+  const snapshot = await active.session.snapshot();
+  if (snapshot.activeTurnId !== input.turnId) {
+    throw new NativeRuntimeRequestResolutionError(
+      "runtime_request_stale_turn",
+      "The runtime request belongs to a turn that is no longer active.",
+    );
+  }
+
+  const key = `${input.runId}:${input.requestId}`;
+  const fingerprint = JSON.stringify({
+    turnId: input.turnId,
+    resolution: input.resolution,
+  });
+  const prior = nativeRuntimeRequestResolutions.get(key);
+  if (prior) {
+    if (prior.fingerprint !== fingerprint) {
+      throw new NativeRuntimeRequestResolutionError(
+        "runtime_request_resolution_conflict",
+        "A different response was already submitted for this runtime request.",
+      );
+    }
+    await prior.pending;
+    return { commandId: prior.commandId };
+  }
+
+  const commandId = `native-runtime-response:${randomUUID()}`;
+  // Reserve the request key before yielding to authorization or provider I/O.
+  // This makes duplicate retries join one dispatch and makes a conflicting
+  // response fail closed even while the first authorization check is pending.
+  const pending = Promise.resolve().then(async () => {
+    await input.authorizeBeforeDispatch();
+    if (activeNativeSessions.get(input.runId) !== active) {
+      throw new NativeRuntimeRequestResolutionError(
+        "native_session_not_active",
+        "The active native session changed before the response was dispatched.",
+      );
+    }
+    await active.session.resolveRuntimeRequest!({
+      requestId: input.requestId,
+      turnId: input.turnId,
+      resolution: input.resolution,
+    });
+  });
+  const resolution: NativeRuntimeRequestResolution = {
+    runId: input.runId,
+    fingerprint,
+    commandId,
+    pending,
+    completedAt: null,
+  };
+  nativeRuntimeRequestResolutions.set(key, resolution);
+  try {
+    await pending;
+    resolution.completedAt = Date.now();
+    pruneNativeRuntimeRequestResolutionCache();
+    return { commandId };
+  } catch (error) {
+    if (nativeRuntimeRequestResolutions.get(key) === resolution) {
+      nativeRuntimeRequestResolutions.delete(key);
+    }
+    throw error;
+  }
+}
+
+export async function getNativeSessionSteeringState(
+  runId: string,
+): Promise<NativeSessionSteeringState> {
+  const active = activeNativeSessions.get(runId);
+  if (!active)
+    return { disposition: "temporarily_unavailable", activeTurnId: null };
+  const capabilities = await active.session.capabilities();
+  if (!capabilities.steering || !active.session.steer) {
+    return { disposition: "unsupported", activeTurnId: null };
+  }
+  const snapshot = await active.session.snapshot();
+  return {
+    disposition: snapshot.activeTurnId
+      ? "available"
+      : "temporarily_unavailable",
+    activeTurnId: snapshot.activeTurnId ?? null,
+  };
+}
+
+// Receipts live as long as this controller process. Durable identity reservations
+// hold credential acquisition after a restart until a provider receipt is known.
+const steeringDeliveries = new Map<string, Promise<{ turnId: string }>>();
+function clearSteeringDeliveries(runId: string) {
+  for (const key of steeringDeliveries.keys())
+    if (key.startsWith(`${runId}:`)) steeringDeliveries.delete(key);
+}
+
+/** Dispatches a true same-turn steering message and resolves only after ack. */
+export async function steerNativeSession(input: {
+  runId: string;
+  message: string;
+  correlationId: string;
+  timeoutMs?: number;
+  onAcknowledged?: () => Promise<void>;
+}): Promise<{ turnId: string }> {
+  const active = activeNativeSessions.get(input.runId);
+  if (!active) {
+    throw new NativeSessionSteeringError(
+      "steering_temporarily_unavailable",
+      "The active native session is not attached.",
+    );
+  }
+  const capabilities = await active.session.capabilities();
+  if (!capabilities.steering || !active.session.steer) {
+    throw new NativeSessionSteeringError(
+      "steering_unsupported",
+      "This provider does not support same-turn steering.",
+    );
+  }
+  const snapshot = await active.session.snapshot();
+  const turnId = snapshot.activeTurnId ?? null;
+  if (!turnId) {
+    throw new NativeSessionSteeringError(
+      "steering_stale_turn",
+      "The target turn is no longer active.",
+    );
+  }
+
+  const deliveryKey = `${input.runId}:${input.correlationId}`;
+  let delivery = steeringDeliveries.get(deliveryKey);
+  if (!delivery) {
+    delivery = active.session
+      .steer({
+        turnId,
+        message: { role: "user", text: input.message },
+        correlationId: input.correlationId,
+      })
+      .then(() => ({ turnId }));
+    steeringDeliveries.set(deliveryKey, delivery);
+    void delivery.catch(() => {
+      steeringDeliveries.delete(deliveryKey);
+    });
+  }
+  // Do not await the persistence callback here: the route holds the run lock
+  // until acknowledgement. After a timeout this callback can acquire that lock.
+  if (input.onAcknowledged)
+    void delivery.then(input.onAcknowledged).catch(() => undefined);
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const acknowledged = await Promise.race([
+      delivery,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new NativeSessionSteeringError(
+                "steering_timeout",
+                "The provider did not acknowledge steering in time.",
+              ),
+            ),
+          input.timeoutMs ?? 10_000,
+        );
+      }),
+    ]);
+    return acknowledged;
+  } catch (error) {
+    if (error instanceof NativeSessionSteeringError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    if (/stale|terminal|active turn/i.test(message)) {
+      throw new NativeSessionSteeringError(
+        "steering_stale_turn",
+        "The target turn is no longer active.",
+      );
+    }
+    if (/unsupported|unavailable|capability/i.test(message)) {
+      throw new NativeSessionSteeringError(
+        "steering_unsupported",
+        "This provider does not support same-turn steering.",
+      );
+    }
+    throw new NativeSessionSteeringError(
+      "steering_rejected",
+      "The provider rejected the steering message.",
+    );
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+export function cancelNativeSession(
+  runId: string,
+  reason: string,
+): Promise<boolean>;
+export function cancelNativeSession(
+  runId: string,
+  reason: string,
+  options: {
+    db: Db;
+    scope?: "turn" | "run" | "issue";
+    replacementAccepted?: boolean;
+  },
+): Promise<{
+  dispatched: boolean;
+  decision: NativeStatusDecision | null;
+  decisionId: string | null;
+  auditId: string | null;
+}>;
+export async function cancelNativeSession(
+  runId: string,
+  reason: string,
+  options?: {
+    db: Db;
+    scope?: "turn" | "run" | "issue";
+    replacementAccepted?: boolean;
+  },
+): Promise<
+  | boolean
+  | {
+      dispatched: boolean;
+      decision: NativeStatusDecision | null;
+      decisionId: string | null;
+      auditId: string | null;
+    }
+> {
+  let decision: NativeStatusDecision | null = null;
+  let decisionContext: {
+    companyId: string;
+    issueId: string;
+    assessmentId: string | null;
+    priorStatus: string;
+    priorStatusVersion: number;
+    priorDecisionId: string | null;
+    coordinatorDecisionId: string | null;
+    agentId: string;
+  } | null = null;
+  if (options) {
+    const run = await options.db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        companyId: heartbeatRuns.companyId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
+        runtimeMode: heartbeatRuns.runtimeMode,
+        status: heartbeatRuns.status,
+        nativePhase: heartbeatRuns.nativePhase,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (run?.runtimeMode === "native") {
+      if (isNativeRunnerOwnershipHeld(run))
+        throw new NativeRunnerOwnershipUnverifiedError();
+      const issueId = run.nativeIssueId;
+      if (!issueId) throw new Error("native_cancellation_binding_missing");
+      const issue = await options.db
+        .select({
+          status: issues.status,
+          statusVersion: issues.statusVersion,
+          lastStatusDecisionId: issues.lastStatusDecisionId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw new Error("native_cancellation_binding_missing");
+      const coordinator = await options.db
+        .select({
+          assessmentId: nativeRunFinalizations.assessmentId,
+          decisionId: nativeRunFinalizations.decisionId,
+        })
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, run.companyId),
+            eq(nativeRunFinalizations.issueId, issueId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!coordinator)
+        throw new Error("native_cancellation_coordinator_missing");
+      decision = resolveNativeCancellationStatus({
+        scope: options.scope ?? "run",
+        priorIssueStatus: issue.status as NativeAuthoritativeIssueStatus,
+        agentId: run.agentId,
+        replacementAccepted: options.replacementAccepted,
+      });
+      decisionContext = {
+        companyId: run.companyId,
+        issueId,
+        assessmentId: coordinator.assessmentId ?? null,
+        priorStatus: issue.status,
+        priorStatusVersion: Number(issue.statusVersion),
+        priorDecisionId: issue.lastStatusDecisionId,
+        coordinatorDecisionId: coordinator.decisionId ?? null,
+        agentId: run.agentId,
+      };
+    }
+  }
+  let decisionId: string | null = null;
+  let auditId: string | null = null;
+  let cancellationIntentId: string | null = null;
+  let recoveringCancellationIntent = false;
+  let priorCoordinatorDecisionIdAtIntent: string | null = null;
+  if (options && decision && decisionContext) {
+    const cancellationDecision = decision;
+    const cancellationContext = decisionContext;
+    const effects = cancellationDecision.effects.map((effect) => effect.kind);
+    let intentPublication: Parameters<typeof publishActivity>[0] | null = null;
+    const intent = await options.db.transaction(async (tx) => {
+      const lockedRun = await tx
+        .select({
+          agentId: heartbeatRuns.agentId,
+          companyId: heartbeatRuns.companyId,
+          nativeIssueId: heartbeatRuns.nativeIssueId,
+          resultJson: heartbeatRuns.resultJson,
+          runtimeMode: heartbeatRuns.runtimeMode,
+          status: heartbeatRuns.status,
+          nativePhase: heartbeatRuns.nativePhase,
+          errorCode: heartbeatRuns.errorCode,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedRun ||
+        lockedRun.runtimeMode !== "native" ||
+        lockedRun.companyId !== cancellationContext.companyId ||
+        lockedRun.agentId !== cancellationContext.agentId ||
+        lockedRun.nativeIssueId !== cancellationContext.issueId
+      ) {
+        throw new Error("native_cancellation_binding_changed");
+      }
+      if (isNativeRunnerOwnershipHeld(lockedRun))
+        throw new NativeRunnerOwnershipUnverifiedError();
+      const coordinator = await tx
+        .select({ runId: nativeRunFinalizations.runId })
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
+            eq(nativeRunFinalizations.issueId, cancellationContext.issueId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!coordinator)
+        throw new Error("native_cancellation_coordinator_missing");
+
+      const resultJson = record(lockedRun.resultJson);
+      const existing = record(resultJson.nativeCancellation);
+      const existingIntentId =
+        typeof existing.intentId === "string" && existing.intentId.length > 0
+          ? existing.intentId
+          : null;
+      if (existingIntentId) {
+        const matchingIntent =
+          existing.schema === "paperclip.native-cancellation.v1" &&
+          existing.companyId === cancellationContext.companyId &&
+          existing.runId === runId &&
+          existing.issueId === cancellationContext.issueId &&
+          existing.scope === (options.scope ?? "run") &&
+          existing.reasonCode === cancellationDecision.reasonCode &&
+          JSON.stringify(existing.effects) === JSON.stringify(effects);
+        if (!matchingIntent)
+          throw new Error("native_cancellation_intent_conflict");
+        const existingAuditId =
+          typeof existing.intentAuditId === "string" &&
+          existing.intentAuditId.length > 0
+            ? existing.intentAuditId
+            : null;
+        if (!existingAuditId)
+          throw new Error("native_cancellation_intent_audit_missing");
+        return {
+          intentId: existingIntentId,
+          auditId: existingAuditId,
+          acknowledged: existing.dispatchState === "acknowledged",
+          dispatched: existing.dispatched === true,
+          decisionId:
+            typeof existing.decisionId === "string"
+              ? existing.decisionId
+              : null,
+          priorCoordinatorDecisionId:
+            typeof existing.priorCoordinatorDecisionId === "string"
+              ? existing.priorCoordinatorDecisionId
+              : null,
+          existing: true,
+        };
+      }
+
+      const intentId = `native-cancellation:${randomUUID()}`;
+      const activity = await persistActivity(tx as unknown as Db, {
+        companyId: cancellationContext.companyId,
+        actorType: "system",
+        actorId: "native-session-cancellation",
+        action: "native.cancellation_intent_recorded",
+        entityType: "heartbeat_run",
+        entityId: runId,
+        agentId: cancellationContext.agentId,
+        runId,
+        issueId: cancellationContext.issueId,
+        details: {
+          intentId,
+          scope: options.scope ?? "run",
+          reasonCode: cancellationDecision.reasonCode,
+          effects,
+        },
+      });
+      const intentAuditId = activity.activity?.id ?? null;
+      if (!intentAuditId)
+        throw new Error("native_cancellation_intent_audit_missing");
+      const written = await tx
+        .update(heartbeatRuns)
+        .set({
+          resultJson: {
+            ...resultJson,
+            nativeCancellation: {
+              schema: "paperclip.native-cancellation.v1",
+              intentId,
+              intentAuditId,
+              companyId: cancellationContext.companyId,
+              runId,
+              issueId: cancellationContext.issueId,
+              scope: options.scope ?? "run",
+              reasonCode: cancellationDecision.reasonCode,
+              effects,
+              dispatchState: "pending",
+              dispatched: false,
+              decisionId: null,
+              priorCoordinatorDecisionId:
+                cancellationContext.coordinatorDecisionId,
+              recordedAt: new Date().toISOString(),
+            },
+          },
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, runId),
+            eq(heartbeatRuns.companyId, cancellationContext.companyId),
+            eq(heartbeatRuns.agentId, cancellationContext.agentId),
+            eq(heartbeatRuns.nativeIssueId, cancellationContext.issueId),
+          ),
+        )
+        .returning({ id: heartbeatRuns.id })
+        .then((rows) => rows[0] ?? null);
+      if (!written) throw new Error("native_cancellation_binding_changed");
+      // Cancellation is also an authority fence for a durable retry whose
+      // preceding provider has already failed. No in-memory session is needed.
+      await tx
+        .update(nativeRunFinalizations)
+        .set({
+          phase: "terminal_failure",
+          nextAttemptAt: null,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          recoveryState: "blocked",
+          failureCode: "native_retry_cancelled",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
+            eq(nativeRunFinalizations.phase, "retryable_failure"),
+          ),
+        );
+      intentPublication = activity.publication;
+      return {
+        intentId,
+        auditId: intentAuditId,
+        acknowledged: false,
+        dispatched: false,
+        decisionId: null,
+        priorCoordinatorDecisionId: cancellationContext.coordinatorDecisionId,
+        existing: false,
+      };
+    });
+    if (intentPublication) publishActivity(intentPublication);
+    cancellationIntentId = intent.intentId;
+    auditId = intent.auditId;
+    decisionId = intent.decisionId;
+    recoveringCancellationIntent = intent.existing;
+    priorCoordinatorDecisionIdAtIntent = intent.priorCoordinatorDecisionId;
+    if (intent.acknowledged) {
+      return {
+        dispatched: intent.dispatched,
+        decision,
+        decisionId,
+        auditId,
+      };
+    }
+  }
+  const active = activeNativeSessions.get(runId);
+  let dispatched = false;
+  if (active) {
+    dispatched = true;
+    if (!active.cancelRequested) {
+      active.cancelRequested = true;
+      try {
+        if (active.session.cancel) {
+          const cancellationAbort = new AbortController();
+          const cleanup = active.session.cancel({
+            reason,
+            signal: cancellationAbort.signal,
+          }).cleanup;
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          const settled = await Promise.race([
+            cleanup.then(
+              () => true,
+              () => true,
+            ),
+            new Promise<false>((resolve) => {
+              cleanupTimer = setTimeout(
+                () => resolve(false),
+                NATIVE_SESSION_CANCELLATION_CLEANUP_GRACE_MS,
+              );
+            }),
+          ]);
+          if (cleanupTimer) clearTimeout(cleanupTimer);
+          if (!settled) {
+            cancellationAbort.abort(
+              new Error("native session cancellation cleanup timed out"),
+            );
+            void cleanup.catch(() => undefined);
+          }
+        } else if (active.session.interrupt)
+          await active.session.interrupt({ reason });
+      } catch (error) {
+        active.cancelRequested = false;
+        throw error;
+      }
+    }
+  }
+  if (!options) return dispatched;
+
+  if (decision && decisionContext) {
+    const cancellationDecision = decision;
+    const cancellationContext = decisionContext;
+    if (!cancellationIntentId || !auditId)
+      throw new Error("native_cancellation_intent_audit_missing");
+    if (
+      recoveringCancellationIntent &&
+      cancellationContext.coordinatorDecisionId !==
+        priorCoordinatorDecisionIdAtIntent
+    ) {
+      decisionId ??= cancellationContext.coordinatorDecisionId;
+    }
+    if (
+      cancellationContext.assessmentId &&
+      cancellationDecision.reasonCode !== null &&
+      !decisionId
+    ) {
+      const committed = await commitNativeStatusDecision({
+        db: options.db,
+        companyId: cancellationContext.companyId,
+        issueId: cancellationContext.issueId,
+        runId,
+        assessmentId: cancellationContext.assessmentId,
+        priorStatus: cancellationContext.priorStatus,
+        priorStatusVersion: cancellationContext.priorStatusVersion,
+        priorDecisionId: cancellationContext.priorDecisionId,
+        decision: cancellationDecision,
+      });
+      decisionId = committed.decision.id;
+    }
+    const acknowledgement = await options.db.transaction(async (tx) => {
+      const lockedRun = await tx
+        .select({
+          agentId: heartbeatRuns.agentId,
+          companyId: heartbeatRuns.companyId,
+          nativeIssueId: heartbeatRuns.nativeIssueId,
+          resultJson: heartbeatRuns.resultJson,
+          runtimeMode: heartbeatRuns.runtimeMode,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedRun ||
+        lockedRun.runtimeMode !== "native" ||
+        lockedRun.companyId !== cancellationContext.companyId ||
+        lockedRun.agentId !== cancellationContext.agentId ||
+        lockedRun.nativeIssueId !== cancellationContext.issueId
+      ) {
+        throw new Error("native_cancellation_binding_changed");
+      }
+      const coordinator = await tx
+        .select({ runId: nativeRunFinalizations.runId })
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
+            eq(nativeRunFinalizations.issueId, cancellationContext.issueId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!coordinator)
+        throw new Error("native_cancellation_coordinator_missing");
+
+      const resultJson = record(lockedRun.resultJson);
+      const intent = record(resultJson.nativeCancellation);
+      const matchingIntent =
+        intent.schema === "paperclip.native-cancellation.v1" &&
+        intent.intentId === cancellationIntentId &&
+        intent.intentAuditId === auditId &&
+        intent.companyId === cancellationContext.companyId &&
+        intent.runId === runId &&
+        intent.issueId === cancellationContext.issueId;
+      if (!matchingIntent)
+        throw new Error("native_cancellation_intent_conflict");
+      if (intent.dispatchState === "acknowledged") {
+        return {
+          publication: null,
+          decisionId:
+            typeof intent.decisionId === "string"
+              ? intent.decisionId
+              : decisionId,
+        };
+      }
+
+      if (
+        options.replacementAccepted &&
+        cancellationDecision.effects.some(
+          (effect) => effect.kind === "accept_replacement_turn",
+        )
+      ) {
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "running",
+            continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
+            nextAction: "Accept a replacement native turn on the existing run.",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.id, runId),
+              eq(heartbeatRuns.companyId, cancellationContext.companyId),
+              eq(heartbeatRuns.agentId, cancellationContext.agentId),
+              eq(heartbeatRuns.nativeIssueId, cancellationContext.issueId),
+            ),
+          );
+      }
+      const activity = await persistActivity(tx as unknown as Db, {
+        companyId: cancellationContext.companyId,
+        actorType: "system",
+        actorId: "native-session-cancellation",
+        action: "native.cancellation_dispatch_acknowledged",
+        entityType: "heartbeat_run",
+        entityId: runId,
+        agentId: cancellationContext.agentId,
+        runId,
+        issueId: cancellationContext.issueId,
+        details: {
+          intentId: cancellationIntentId,
+          intentAuditId: auditId,
+          scope: options.scope ?? "run",
+          reasonCode: cancellationDecision.reasonCode,
+          effects: cancellationDecision.effects.map((effect) => effect.kind),
+          dispatched,
+          decisionId,
+        },
+      });
+      const acknowledgementAuditId = activity.activity?.id ?? null;
+      if (!acknowledgementAuditId)
+        throw new Error("native_cancellation_ack_audit_missing");
+      const cancellationWrite = await tx
+        .update(heartbeatRuns)
+        .set({
+          resultJson: {
+            ...resultJson,
+            nativeCancellation: {
+              ...intent,
+              dispatchState: "acknowledged",
+              dispatched,
+              decisionId,
+              acknowledgementAuditId,
+              acknowledgedAt: new Date().toISOString(),
+            },
+          },
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, runId),
+            eq(heartbeatRuns.companyId, cancellationContext.companyId),
+            eq(heartbeatRuns.agentId, cancellationContext.agentId),
+            eq(heartbeatRuns.nativeIssueId, cancellationContext.issueId),
+          ),
+        )
+        .returning({ id: heartbeatRuns.id })
+        .then((rows) => rows[0] ?? null);
+      if (!cancellationWrite)
+        throw new Error("native_cancellation_binding_changed");
+      return { publication: activity.publication, decisionId };
+    });
+    decisionId = acknowledgement.decisionId;
+    if (acknowledgement.publication)
+      publishActivity(acknowledgement.publication);
+  }
+  return { dispatched, decision, decisionId, auditId };
+}
+
+/** Authenticated cancellation scope projected through the shared arbiter. */
+export function resolveNativeCancellationStatus(input: {
+  scope: "turn" | "run" | "issue";
+  priorIssueStatus: NativeAuthoritativeIssueStatus;
+  agentId: string;
+  replacementAccepted?: boolean;
+}): NativeStatusDecision {
+  if (input.scope === "turn") {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve",
+      toStatus: input.priorIssueStatus,
+      reasonCode: input.replacementAccepted ? null : "cancellation_turn_only",
+      unblockDescriptor: null,
+      effects: [{ kind: "accept_replacement_turn" }],
+    };
+  }
+  if (input.scope === "run") {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve",
+      toStatus: input.priorIssueStatus,
+      reasonCode: "cancellation_run_only",
+      unblockDescriptor: null,
+      effects: [{ kind: "release_run_resources" }],
+    };
+  }
+  return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "cancelled",
+    toStatus: "cancelled",
+    reasonCode: "cancellation_issue_authorized",
+    unblockDescriptor: null,
+    effects: [{ kind: "release_checkout" }, { kind: "cancel_continuations" }],
+  };
+}
+
+export async function renewNativeSessionExecutionLease(input: {
+  db: Db;
+  runId: string;
+  companyId: string;
+  issueId: string;
+  leaseOwner: string;
+  attempt: number;
+  controller?: NativeControllerIdentity;
+  leaseTtlMs?: number;
+}): Promise<void> {
+  const controller =
+    input.controller ?? (await currentNativeControllerIdentity());
+  const leaseTtlMs = input.leaseTtlMs ?? NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
+  if (
+    !Number.isInteger(leaseTtlMs) ||
+    leaseTtlMs < 1_000 ||
+    leaseTtlMs > NATIVE_SESSION_EXECUTION_LEASE_TTL_MS
+  ) {
+    throw new Error("native_session_lease_ttl_invalid");
+  }
+  const [updated] = await input.db
+    .update(nativeRunFinalizations)
+    .set({
+      leaseExpiresAt: sql`now() + (${leaseTtlMs} * interval '1 millisecond')`,
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(nativeRunFinalizations.runId, input.runId),
+        eq(nativeRunFinalizations.companyId, input.companyId),
+        eq(nativeRunFinalizations.issueId, input.issueId),
+        eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+        eq(nativeRunFinalizations.attempt, input.attempt),
+        eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+        eq(nativeRunFinalizations.controllerPid, controller.pid),
+        eq(
+          nativeRunFinalizations.controllerProcessStartedAt,
+          controller.processStartedAt,
+        ),
+        gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+      ),
+    )
+    .returning({ runId: nativeRunFinalizations.runId });
+  if (!updated) throw new Error("native_session_lease_lost");
+}
+
+function startNativeSessionExecutionLeaseRenewal(input: {
+  db: Db;
+  runId: string;
+  companyId: string;
+  issueId: string;
+  leaseOwner: string;
+  attempt: number;
+  controller: NativeControllerIdentity;
+}): { stop: () => Promise<void> } {
+  let leaseLost: Error | null = null;
+  let renewal = Promise.resolve();
+  const renew = () => {
+    if (leaseLost) return;
+    renewal = renewal
+      .then(() => renewNativeSessionExecutionLease(input))
+      .then(() => undefined)
+      .catch(async (error: unknown) => {
+        leaseLost =
+          error instanceof Error
+            ? error
+            : new Error("native_session_lease_lost");
+        await cancelNativeSession(
+          input.runId,
+          "native session execution lease lost",
+        ).catch(() => undefined);
+      });
+  };
+  const timer = setInterval(
+    renew,
+    NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS,
+  );
+  timer.unref?.();
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      await renewal;
+      if (leaseLost) throw leaseLost;
+    },
+  };
+}
+
+export async function executePaperclipNativeSession(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+  /** Trusted task identity from the heartbeat orchestration. */
+  conversationMode?: boolean;
+  /** Configured total turn bound; zero/unset is unlimited. */
+  turnTimeoutMs?: number;
+  leaseOwner?: string;
+  restartRecovery?: NativeRestartRecoveryClaim;
+  onSpawn?: (meta: {
+    pid: number;
+    processGroupId: number | null;
+    startedAt: string;
+  }) => Promise<void>;
+  /** Test seam at the provider boundary; production uses a qualified package backend. */
+  backend?: NativeSessionBackend;
+  useRunnerd?: boolean;
+  /** Paperclip adapter identity used to scope the durable goal projection. */
+  adapterType?: string;
+  /** Internal, run-owned file inspection lifetime; never supplied by tool arguments. */
+  chatAttachmentReadScope?: NativeChatAttachmentReadScope;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  /** Persist task-level continuity before a durable goal can outlive this run. */
+  onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
+  sessionGoalControl?: NativeSessionGoalControl | null;
+  resumeSessionGoalHeartbeat?: boolean;
+  preparationSpans?: NativeRunHistoricalSpan[];
+  /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
+  runnerEnvironment?: NodeJS.ProcessEnv;
+  /** Private grant materialization; never a user-configured host path. */
+  managedAiCredentialHome?: string;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  /** Resolved per-run authorization; not an independent instance setting. */
+  runnerIngressAuthorized?: boolean;
+  runnerPublicUrl?: string | null;
+  runnerCaBundlePath?: string | null;
+  runnerRemoteBinaryPath?: string | null;
+  runnerRemoteCodexPath?: string | null;
+  runnerRemoteCodexNpmSpec?: string | null;
+  runnerRemoteProviderPackPath?: string | null;
+  enqueueWakeup?: (
+    agentId: string,
+    options: {
+      source: "assignment";
+      triggerDetail: "system";
+      reason: "issue_assigned";
+      payload: Record<string, unknown>;
+      idempotencyKey: string;
+      requestedByActorType: "agent";
+      requestedByActorId: string;
+      contextSnapshot: Record<string, unknown>;
+    },
+  ) => Promise<unknown>;
+}): Promise<AdapterExecutionResult> {
+  if (!input.useRunnerd) {
+    return executePaperclipNativeSessionWithinScope(input);
+  }
+  let preparedInput: typeof input = input;
+  let cleanupStagedAttachments: () => Promise<void> = async () => undefined;
+  let sessionScopeId: string | null = null;
+  let ownsSessionScope = false;
+  let executionFailure: unknown;
+  try {
+    // The session scope is unaffected by appending server-staged attachment
+    // descriptors. Claim it before any workspace scrub/write so a duplicate
+    // execution cannot truncate or replace the active turn's staging inode.
+    sessionScopeId = nativeSessionScopeKey(input.execution);
+    if (executingRunnerdSessionScopes.has(sessionScopeId)) {
+      throw new Error("native_session_supervisor_busy");
+    }
+    executingRunnerdSessionScopes.set(
+      sessionScopeId,
+      input.execution.binding.runId,
+    );
+    ownsSessionScope = true;
+
+    const targetKind = input.runnerExecutionTarget?.kind ?? "local";
+    const chatAttachmentReadScope = new NativeChatAttachmentReadScope({
+      db: input.db,
+      binding: input.execution.binding,
+      workspaceRoot: input.execution.workspace.cwd,
+      executionTargetKind: targetKind,
+    });
+    preparedInput = { ...input, chatAttachmentReadScope };
+    cleanupStagedAttachments = () => chatAttachmentReadScope.close();
+    const attachmentStage = await stageNativeRunnerWakeAttachments({
+      db: input.db,
+      binding: {
+        companyId: input.execution.binding.companyId,
+        issueId: input.execution.binding.issueId,
+        runId: input.execution.binding.runId,
+        agentId: input.execution.binding.agentId,
+        workspaceRoot: input.execution.workspace.cwd,
+        executionTargetKind: targetKind,
+      },
+    });
+    cleanupStagedAttachments = async () => {
+      const cleanupResults = await Promise.allSettled([
+        chatAttachmentReadScope.close(),
+        attachmentStage.cleanup(),
+      ]);
+      if (cleanupResults.some((result) => result.status === "rejected")) {
+        throw new Error("paperclip_runner_attachment_staging_cleanup_failed");
+      }
+    };
+    const stagedPrompt = renderNativeRunnerStagedAttachmentPrompt(
+      attachmentStage.attachments,
+    );
+    if (stagedPrompt) {
+      preparedInput = {
+        ...preparedInput,
+        execution: parseNativeExecutionInput({
+          ...input.execution,
+          task: {
+            ...input.execution.task,
+            prompt: `${input.execution.task.prompt}\n\n${stagedPrompt}`,
+          },
+        }),
+      };
+    }
+    return await executePaperclipNativeSessionWithinScope(preparedInput);
+  } catch (error) {
+    executionFailure = error;
+    throw error;
+  } finally {
+    if (
+      ownsSessionScope &&
+      sessionScopeId !== null &&
+      executingRunnerdSessionScopes.get(sessionScopeId) ===
+        input.execution.binding.runId
+    ) {
+      executingRunnerdSessionScopes.delete(sessionScopeId);
+    }
+    try {
+      await cleanupStagedAttachments();
+    } catch (cleanupError) {
+      // Cleanup is a confidentiality incident, but it occurs after the native
+      // provider may already have completed the turn. Reclassifying that turn
+      // as failed could replay provider side effects. Emit a private runtime
+      // health event while preserving the provider result/error disposition.
+      await input
+        .onEvent?.({
+          eventType: "native.attachment_staging_cleanup_failed",
+          level: "error",
+          message: "Native inbound attachment staging cleanup failed.",
+          payload: {
+            runId: input.execution.binding.runId,
+            issueId: input.execution.binding.issueId,
+            executionAlreadyFailed: executionFailure !== undefined,
+          },
+        })
+        .catch(() => undefined);
+    }
+  }
+}
+
+async function executePaperclipNativeSessionWithinScope(
+  input: Parameters<typeof executePaperclipNativeSession>[0],
+): Promise<AdapterExecutionResult> {
+  if (
+    input.execution.provider.kind !== "codex" &&
+    input.execution.provider.kind !== "opencode" &&
+    input.execution.provider.kind !== "claude_managed" &&
+    input.execution.provider.kind !== "aws_agentcore" &&
+    input.execution.provider.kind !== "acpx"
+  ) {
+    throw new Error("paperclip_runner_provider_unsupported");
+  }
+  if (
+    input.execution.provider.kind === "acpx" &&
+    input.execution.provider.agent === "pi"
+  ) {
+    throw new Error(
+      "paperclip_runner_provider_unsupported: ACPX Pi is unavailable until descriptor-confined verified launch is implemented",
+    );
+  }
+  const preparationSpans = input.preparationSpans ?? [];
+  const preparationStarts = nativeRunPreparationStarts(
+    preparationSpans,
+    Date.now(),
+  );
+  const trace = createNativeRunTrace({
+    runId: input.execution.binding.runId,
+    startedAtMs: preparationStarts.runStartedAtMs,
+    onEvent: input.onEvent,
+  });
+  const taskPrepareScope = trace.start("task.prepare", {
+    parentName: "task.run",
+    startedAtMs: preparationStarts.preparationStartedAtMs,
+  });
+  const environmentSpans = preparationSpans.filter(
+    (span) =>
+      span.name === "environment.acquire" ||
+      span.name === "environment.workspace.realize",
+  );
+  const environmentStartedAtMs = environmentSpans.reduce(
+    (earliest, span) => Math.min(earliest, span.startedAtMs),
+    Date.now(),
+  );
+  const environmentEndedAtMs = environmentSpans.reduce(
+    (latest, span) => Math.max(latest, span.endedAtMs),
+    environmentStartedAtMs,
+  );
+  const environmentScope =
+    environmentSpans.length > 0
+      ? trace.start("environment.startup", {
+          parentName: "task.prepare",
+          startedAtMs: environmentStartedAtMs,
+        })
+      : null;
+  for (const span of preparationSpans) {
+    const rootMilestone = isNativeRunRootHistoricalSpan(span.name);
+    await trace.record({
+      ...span,
+      parentName: rootMilestone
+        ? "task.run"
+        : environmentSpans.includes(span)
+          ? "environment.startup"
+          : "task.prepare",
+    });
+  }
+  if (environmentScope) {
+    await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs });
+  }
+  let retainedTransition: VerifiedWarmTransitionBinding | undefined;
+  if (input.useRunnerd) {
+    retainedTransition = await migrateRunnerdStateRootForExecution({
+      db: input.db,
+      execution: input.execution,
+      allowVerifiedBackup:
+        input.runnerExecutionTarget?.kind === "remote" &&
+        input.runnerExecutionTarget.transport === "sandbox",
+      // A retained warm runner is deliberately still ready rather than
+      // suspended. Only the exact idle in-process owner may rotate that
+      // prior-run authority; after a hard restart the map is empty and the
+      // durable-state verifier continues to require a suspended runner.
+      allowRetainedWarmRunner: hasIdleWarmNativeSessionOwner(input),
+      allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
+      onLog: input.onLog,
+      restartRecovery: input.restartRecovery,
+      runnerExecutionTarget: input.runnerExecutionTarget,
+    });
+  }
+  const durableRunnerBinding = input.useRunnerd
+    ? loadRunnerdDurableBinding(input.execution, retainedTransition)
+    : null;
+  const effectiveRunnerInstanceId =
+    durableRunnerBinding?.runnerInstanceId ?? input.runnerInstanceId;
+  if (effectiveRunnerInstanceId !== input.runnerInstanceId) {
+    await input.db
+      .update(heartbeatRuns)
+      .set({
+        runnerInstanceId: effectiveRunnerInstanceId,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.execution.binding.runId),
+          eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+          eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+        ),
+      );
+  }
+  const leaseOwner =
+    input.leaseOwner ?? `${effectiveRunnerInstanceId}:${randomUUID()}`;
+  const controller = await currentNativeControllerIdentity();
+  const leaseNow = new Date();
+  const leaseExpiresAt = new Date(leaseNow.getTime() + 20 * 60_000);
+  let attempt: number;
+  try {
+    attempt = await trace.measure(
+      "native.coordinator.claim",
+      () =>
+        input.db.transaction(async (tx) => {
+          const coordinator = await tx
+            .select()
+            .from(nativeRunFinalizations)
+            .where(
+              and(
+                eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+                eq(
+                  nativeRunFinalizations.companyId,
+                  input.execution.binding.companyId,
+                ),
+                eq(
+                  nativeRunFinalizations.issueId,
+                  input.execution.binding.issueId,
+                ),
+              ),
+            )
+            .for("update")
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!coordinator)
+            throw new Error("native_finalization_coordinator_missing");
+          const leaseNow = new Date();
+          const leaseExpiresAt = new Date(
+            leaseNow.getTime() + NATIVE_SESSION_EXECUTION_LEASE_TTL_MS,
+          );
+          // A durable result means provider execution already completed. The
+          // recovery/finalization path must reconcile it; never reacquire a
+          // provider session and execute the turn a second time.
+          if (coordinator.resultId)
+            throw new NativeResultPendingFinalizationError();
+          const boundRun = await tx
+            .select({
+              retryOfRunId: heartbeatRuns.retryOfRunId,
+              scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+              agentId: heartbeatRuns.agentId,
+              companyId: heartbeatRuns.companyId,
+              nativeIssueId: heartbeatRuns.nativeIssueId,
+              resultJson: heartbeatRuns.resultJson,
+              runtimeMode: heartbeatRuns.runtimeMode,
+              status: heartbeatRuns.status,
+            })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, input.execution.binding.runId))
+            .for("update")
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (
+            !boundRun ||
+            boundRun.runtimeMode !== "native" ||
+            boundRun.companyId !== input.execution.binding.companyId ||
+            boundRun.agentId !== input.execution.binding.agentId ||
+            boundRun.nativeIssueId !== input.execution.binding.issueId
+          ) {
+            throw new Error("native_execution_binding_changed");
+          }
+          // A cancellation can win after heartbeat dispatch admission but
+          // before this claim. Never revive a terminal run or a settled startup.
+          if (boundRun.status !== "running" || boundRun.resultJson?.startupCancellation ||
+              coordinator.phase === "terminal_failure") {
+            throw new NativeCancellationPendingRecoveryError();
+          }
+          const cancellationIntent = record(
+            record(boundRun.resultJson).nativeCancellation,
+          );
+          if (
+            cancellationIntent.scope === "run" &&
+            (cancellationIntent.dispatchState === "pending" ||
+              cancellationIntent.dispatchState === "acknowledged")
+          ) {
+            const intentMatchesBinding =
+              cancellationIntent.schema ===
+                "paperclip.native-cancellation.v1" &&
+              cancellationIntent.companyId ===
+                input.execution.binding.companyId &&
+              cancellationIntent.runId === input.execution.binding.runId &&
+              cancellationIntent.issueId === input.execution.binding.issueId;
+            if (!intentMatchesBinding)
+              throw new Error("native_cancellation_intent_conflict");
+            // Run cancellation remains a claim fence after dispatch ack until
+            // the heartbeat cancellation path terminalizes the run.
+            throw new NativeCancellationPendingRecoveryError();
+          }
+          if (["committed", "applied"].includes(coordinator.phase))
+            throw new Error("native_run_already_committed");
+          if (
+            coordinator.leaseOwner &&
+            coordinator.leaseOwner !== leaseOwner &&
+            coordinator.leaseExpiresAt &&
+            coordinator.leaseExpiresAt > leaseNow
+          )
+            throw new Error("native_finalization_lease_busy");
+          const recovering = input.restartRecovery;
+          if (
+            recovering &&
+            (recovering.runId !== coordinator.runId ||
+              recovering.leaseOwner !== leaseOwner ||
+              coordinator.leaseOwner !== leaseOwner ||
+              coordinator.controllerBootId !== controller.bootId ||
+              coordinator.controllerPid !== controller.pid ||
+              coordinator.controllerGeneration !==
+                recovering.controllerGeneration)
+          ) {
+            throw new Error("native_restart_recovery_claim_changed");
+          }
+          let incidentAttempts = coordinator.attempt;
+          if (
+            boundRun.retryOfRunId &&
+            boundRun.scheduledRetryReason === "native_safe_replacement"
+          ) {
+            const [predecessor] = await tx
+              .select()
+              .from(nativeRunFinalizations)
+              .where(
+                and(
+                  eq(nativeRunFinalizations.runId, boundRun.retryOfRunId),
+                  eq(
+                    nativeRunFinalizations.companyId,
+                    input.execution.binding.companyId,
+                  ),
+                  eq(
+                    nativeRunFinalizations.issueId,
+                    input.execution.binding.issueId,
+                  ),
+                ),
+              );
+            if (
+              !predecessor ||
+              predecessor.failureDetail?.successorRunId !==
+                input.execution.binding.runId ||
+              predecessor.phase !== "terminal_failure"
+            )
+              throw new Error("native_replacement_lineage_invalid");
+            incidentAttempts = Math.max(incidentAttempts, predecessor.attempt);
+          }
+          const nextAttempt = nextNativeProviderAttempt(
+            incidentAttempts,
+            recovering?.kind,
+          );
+          if (nextAttempt > 3)
+            throw new Error("native_session_retry_exhausted");
+          const nextControllerGeneration = recovering
+            ? recovering.controllerGeneration
+            : coordinator.controllerBootId === controller.bootId
+              ? Math.max(1, coordinator.controllerGeneration)
+              : coordinator.controllerGeneration + 1;
+          const claimed = await tx
+            .update(nativeRunFinalizations)
+            .set({
+              phase: "observed",
+              attempt: nextAttempt,
+              leaseOwner,
+              leaseExpiresAt,
+              controllerBootId: controller.bootId,
+              controllerPid: controller.pid,
+              controllerProcessStartedAt: controller.processStartedAt,
+              controllerGeneration: nextControllerGeneration,
+              failureCode: null,
+              failureDetail: null,
+              nextAttemptAt: null,
+              updatedAt: leaseNow,
+            })
+            .where(
+              and(
+                eq(nativeRunFinalizations.runId, coordinator.runId),
+                eq(
+                  nativeRunFinalizations.companyId,
+                  input.execution.binding.companyId,
+                ),
+                eq(
+                  nativeRunFinalizations.issueId,
+                  input.execution.binding.issueId,
+                ),
+                eq(nativeRunFinalizations.attempt, coordinator.attempt),
+                eq(nativeRunFinalizations.phase, coordinator.phase),
+              ),
+            )
+            .returning({ runId: nativeRunFinalizations.runId })
+            .then((rows) => rows[0] ?? null);
+          if (!claimed) throw new Error("native_session_lease_lost");
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              nativePhase: "observed",
+              nativePhaseUpdatedAt: leaseNow,
+              updatedAt: leaseNow,
+            })
+            .where(eq(heartbeatRuns.id, coordinator.runId));
+          return nextAttempt;
+        }),
+      { parentName: "task.prepare" },
+    );
+    await trace.end(taskPrepareScope);
+  } catch (error) {
+    await trace.end(taskPrepareScope, { outcome: "failed" });
+    await trace.finish("failed");
+    throw error;
+  }
+  const controlPlaneInstanceId = `${effectiveRunnerInstanceId}:control`;
+  const planSynchronizations: PlanSynchronization[] = [];
+  const upsertPlanSynchronization = (
+    synchronization: PlanSynchronization,
+  ): void => {
+    const existingIndex = planSynchronizations.findIndex(
+      (candidate) => candidate.eventId === synchronization.eventId,
+    );
+    if (existingIndex >= 0) {
+      planSynchronizations[existingIndex] = synchronization;
+      return;
+    }
+    planSynchronizations.push(synchronization);
+  };
+  const recordPlanSynchronization = async (event: {
+    sourceEventId: string;
+    turnId?: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+  }) => {
+    const synchronization = await synchronizeCompletedProviderPlan({
+      db: input.db,
+      execution: input.execution,
+      event,
+    });
+    if (!synchronization) return;
+    upsertPlanSynchronization(synchronization);
+    const activity = await persistActivity(input.db, {
+      companyId: input.execution.binding.companyId,
+      actorType: "agent",
+      actorId: input.execution.binding.agentId,
+      agentId: input.execution.binding.agentId,
+      runId: input.execution.binding.runId,
+      issueId: input.execution.binding.issueId,
+      action: "issue.document_updated",
+      entityType: "issue",
+      entityId: input.execution.binding.issueId,
+      details: {
+        key: "plan",
+        source: "native_plan_synchronization",
+        synchronization,
+      },
+    });
+    publishActivity(activity.publication);
+    if (input.onLog)
+      await input.onLog(
+        "stdout",
+        `${JSON.stringify({ type: "paperclip.plan.synchronization", synchronization })}\n`,
+      );
+  };
+  let nativeSessionExecuteStartedAtMs = Date.now();
+  let sessionStartedAtMs: number | null = null;
+  let sessionStartupMode: "bootstrap" | "resume" | null = null;
+  let turnSubmittedAtMs: number | null = null;
+  let turnStartedAtMs: number | null = null;
+  let firstAgentEventRecorded = false;
+  let providerUsageLimitObserved = false;
+  let turnCompletedAtMs: number | null = null;
+  let runnerSessionStartupScope: NativeRunSpanScope | null = null;
+  let agentTurnScope: NativeRunSpanScope | null = null;
+  let taskSettleScope: NativeRunSpanScope | null = null;
+  const governedWaitObservation = createGovernedWaitEventObservation(
+    resolvePendingGovernedWait,
+  );
+  const projectSessionGoalEvent = (event: PrpEvent) =>
+    applyRunnerGoalPrpEvent(
+      input.db,
+      {
+        companyId: input.execution.binding.companyId,
+        issueId: input.execution.binding.issueId,
+        agentId: input.execution.binding.agentId,
+        adapterType:
+          input.adapterType ??
+          (input.useRunnerd ? "paperclip_runner" : "codex_local"),
+      },
+      {
+        eventType: event.eventType,
+        sourceInstanceId: event.sourceInstanceId,
+        sourceRunId: event.runId,
+        sourceSeq: event.sourceSeq,
+        payload: event.payload,
+      },
+    );
+  let completedConversationReply: PrpEvent | null = null;
+  const controlPlane = new PaperclipControlPlanePort(
+    input.db,
+    {
+      companyId: input.execution.binding.companyId,
+      issueId: input.execution.binding.issueId,
+      runId: input.execution.binding.runId,
+      agentId: input.execution.binding.agentId,
+      sessionId: nativeSessionKey(input.execution),
+      completionContractId: input.execution.completionContract.id,
+      completionContractSha256: input.execution.completionContract.sha256,
+      sourceInstanceId: effectiveRunnerInstanceId,
+      controlPlaneSourceInstanceId: controlPlaneInstanceId,
+    },
+    {
+      onCommittedEvent: async (event) => {
+        if (event.eventType === "item.completed" &&
+            record(event.payload).kind === "agentMessage" &&
+            record(event.payload).channel === "final") {
+          completedConversationReply = event;
+        }
+        await projectSessionGoalEvent(event);
+        providerUsageLimitObserved ||= nativeProviderUsageLimitFromEvent(event);
+        const eventAtMs = Date.parse(event.emittedAt);
+        const milestoneAtMs = Number.isFinite(eventAtMs)
+          ? eventAtMs
+          : Date.now();
+        if (
+          event.eventType === "session.started" &&
+          sessionStartedAtMs === null
+        ) {
+          sessionStartedAtMs = milestoneAtMs;
+          sessionStartupMode = "bootstrap";
+          await trace.record({
+            name: "runner.session.bootstrap",
+            parentName: "runner.session.startup",
+            startedAtMs: nativeSessionExecuteStartedAtMs,
+            endedAtMs: milestoneAtMs,
+          });
+        }
+        if (
+          event.eventType === "turn.submitted" &&
+          turnSubmittedAtMs === null
+        ) {
+          turnSubmittedAtMs = milestoneAtMs;
+          // A recovered provider session does not emit session.started again. In
+          // that case the first durable turn.submitted event is the earliest
+          // transport-neutral proof that runnerd reattached to the exact
+          // provider session and is ready for work. Keep that startup time out of
+          // runner.turn.submit so cold-resume latency is visible as its own span.
+          if (sessionStartedAtMs === null) {
+            await trace.record({
+              name: "runner.session.resume",
+              parentName: "runner.session.startup",
+              startedAtMs: nativeSessionExecuteStartedAtMs,
+              endedAtMs: milestoneAtMs,
+              attributes: {
+                provider: input.execution.provider.kind,
+                strategy: "exact_provider_session",
+              },
+            });
+            sessionStartedAtMs = milestoneAtMs;
+            sessionStartupMode = "resume";
+          }
+          await trace.record({
+            name: "runner.turn.submit",
+            parentName: "runner.session.startup",
+            startedAtMs: sessionStartedAtMs,
+            endedAtMs: milestoneAtMs,
+          });
+          if (runnerSessionStartupScope) {
+            trace.annotate(runnerSessionStartupScope, {
+              mode: sessionStartupMode ?? "bootstrap",
+            });
+            await trace.end(runnerSessionStartupScope, {
+              endedAtMs: milestoneAtMs,
+            });
+          }
+          agentTurnScope = trace.start("agent.turn", {
+            parentName: "native.session.execute",
+            startedAtMs: milestoneAtMs,
+            attributes: { provider: input.execution.provider.kind },
+          });
+          trace.activate(agentTurnScope);
+        }
+        if (event.eventType === "turn.started" && turnStartedAtMs === null) {
+          turnStartedAtMs = milestoneAtMs;
+          await trace.record({
+            name: "provider.turn.queue",
+            parentName: "agent.turn",
+            startedAtMs: turnSubmittedAtMs ?? milestoneAtMs,
+            endedAtMs: milestoneAtMs,
+          });
+        }
+        if (
+          !firstAgentEventRecorded &&
+          turnStartedAtMs !== null &&
+          (event.eventType === "item.started" ||
+            event.eventType === "item.completed")
+        ) {
+          const payload = record(event.payload);
+          const kind =
+            typeof payload.kind === "string" ? payload.kind : "unknown";
+          if (
+            [
+              "reasoning",
+              "agentMessage",
+              "toolCall",
+              "dynamicToolCall",
+            ].includes(kind)
+          ) {
+            firstAgentEventRecorded = true;
+            await trace.record({
+              name: "provider.time_to_first_agent_event",
+              parentName: "agent.turn",
+              startedAtMs: turnStartedAtMs,
+              endedAtMs: milestoneAtMs,
+              attributes: { eventKind: kind },
+            });
+          }
+        }
+        if (
+          [
+            "turn.completed",
+            "turn.failed",
+            "turn.interrupted",
+            "turn.cancelled",
+          ].includes(event.eventType) &&
+          turnCompletedAtMs === null
+        ) {
+          turnCompletedAtMs = milestoneAtMs;
+          if (!agentTurnScope) {
+            agentTurnScope = trace.start("agent.turn", {
+              parentName: "native.session.execute",
+              startedAtMs:
+                turnSubmittedAtMs ??
+                turnStartedAtMs ??
+                nativeSessionExecuteStartedAtMs,
+              attributes: { provider: input.execution.provider.kind },
+            });
+            trace.activate(agentTurnScope);
+          }
+          const outcome =
+            event.eventType === "turn.completed" ? "ok" : "failed";
+          await trace.end(agentTurnScope, {
+            endedAtMs: milestoneAtMs,
+            outcome,
+          });
+          taskSettleScope = trace.start("task.settle", {
+            parentName: "task.run",
+            startedAtMs: milestoneAtMs,
+          });
+          trace.activate(taskSettleScope);
+        }
+        if (input.onLog)
+          await input.onLog(
+            "stdout",
+            `${JSON.stringify({ type: "paperclip.prp.event", event })}\n`,
+          );
+        if (
+          input.onEvent &&
+          [
+            "session.capabilities.updated",
+            "session.goal.snapshot",
+            "session.goal.updated",
+            "session.goal.cleared",
+            "turn.started",
+            "turn.completed",
+            "turn.failed",
+            "turn.interrupted",
+            "turn.cancelled",
+          ].includes(event.eventType)
+        ) {
+          await input.onEvent({
+            eventType: event.eventType,
+            stream: "system",
+            level: event.eventType.includes("failed") ? "error" : "info",
+            payload: {
+              ...(event.payload as Record<string, unknown>),
+              prpSourceSeq: event.sourceSeq,
+              prpSourceInstanceId: event.sourceInstanceId,
+            },
+          });
+        }
+        const inputMetric = runtimeInputLifecycleMetric(event);
+        if (inputMetric && input.onLog) {
+          await input.onLog(
+            "stdout",
+            `${JSON.stringify({
+              type: "paperclip.runtime_input.metric",
+              ...inputMetric,
+            })}\n`,
+          );
+        }
+        const questionFallback = await materializeRuntimeQuestionFallback({
+          db: input.db,
+          binding: input.execution.binding,
+          event,
+        });
+        if (questionFallback) {
+          if (input.onLog) {
+            const origin = record(record(record(event.payload).request).origin);
+            await input.onLog(
+              "stdout",
+              `${JSON.stringify({
+                type: "paperclip.runtime_input.metric",
+                outcome:
+                  record(event.payload).reason === "durable_handoff"
+                    ? "durable_handoff_materialized"
+                    : "provider_loss_materialized",
+                requestId: record(event.payload).requestId,
+                interactionId: questionFallback.interaction.id,
+                adapter:
+                  typeof origin.adapter === "string"
+                    ? origin.adapter
+                    : "unknown",
+              })}\n`,
+            );
+          }
+        }
+        await governedWaitObservation.observe(
+          event,
+          event.eventType === "item.completed" || questionFallback !== null,
+        );
+        await recordPlanSynchronization(
+          event as {
+            sourceEventId: string;
+            turnId?: string;
+            eventType: string;
+            payload: Record<string, unknown>;
+          },
+        );
+      },
+      onDuplicateEvent: async (event) => {
+        // A crash can happen after the event commit but before its callback
+        // finishes. Recover only idempotent durable projections here; activity,
+        // publication, logging, trace, and metric effects remain committed-only.
+        await projectSessionGoalEvent(event);
+        providerUsageLimitObserved ||= nativeProviderUsageLimitFromEvent(event);
+        const questionFallback = await materializeRuntimeQuestionFallback({
+          db: input.db,
+          binding: input.execution.binding,
+          event,
+        });
+        await governedWaitObservation.observe(
+          event,
+          event.eventType === "item.completed" || questionFallback !== null,
+        );
+        const planSynchronization = await synchronizeCompletedProviderPlan({
+          db: input.db,
+          execution: input.execution,
+          event: event as {
+            sourceEventId: string;
+            turnId?: string;
+            eventType: string;
+            payload: Record<string, unknown>;
+          },
+        });
+        if (planSynchronization) {
+          upsertPlanSynchronization(planSynchronization);
+        }
+      },
+    },
+  );
+  let native: Awaited<ReturnType<typeof executeNativeSession>>;
+  let releaseGoalController: (() => void) | null = null;
+  const releaseRegisteredGoalController = () => {
+    // The controller is assigned from the asynchronous onSession callback.
+    // Keep release idempotent without relying on TypeScript's synchronous
+    // control-flow model for that callback assignment.
+    const release: unknown = releaseGoalController;
+    if (typeof release === "function") release();
+    releaseGoalController = null;
+  };
+  const lifecyclePolicy = input.execution.session?.lifecyclePolicy ?? {
+    mode: "per_turn" as const,
+    idleTimeoutMs: null,
+  };
+  const warmSessionId =
+    lifecyclePolicy.mode === "warm"
+      ? nativeSessionScopeKey(input.execution)
+      : null;
+  const warmConfigDigest =
+    lifecyclePolicy.mode === "warm"
+      ? nativeSessionConfigDigest(
+          input.execution,
+          input.runnerExecutionTarget?.kind ?? "local",
+        )
+      : null;
+  const warmSessionOwnerToken = Symbol(
+    `native-warm-session:${input.execution.binding.runId}`,
+  );
+  let existingWarmSession: NativeSession | undefined;
+  let persistedWarmSession: PersistedNativeSession | null | undefined;
+  if (warmSessionId !== null && warmConfigDigest !== null) {
+    const entry = warmNativeSessions.get(warmSessionId);
+    if (entry) {
+      // Run-scoped broker capabilities must rotate with the process, while the
+      // settled provider checkpoint retains the conversation across runs.
+      const hasBrokerCapability = Boolean(
+        input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN,
+      );
+      const credentialRunChanged =
+        Boolean(entry.credentialRunId) !== hasBrokerCapability ||
+        (hasBrokerCapability &&
+          entry.credentialRunId !== input.execution.binding.runId);
+      if (
+        entry.configDigest !== warmConfigDigest ||
+        credentialRunChanged ||
+        entry.githubAuthenticationMode !==
+          input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE ||
+        entry.networkAccess !==
+          (input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS ===
+            "enabled")
+      ) {
+        if (entry.busy) throw new Error("native_session_supervisor_busy");
+        if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+        warmNativeSessions.delete(warmSessionId);
+        await entry.session.close({
+          reason: "warm native session configuration changed",
+        });
+        persistedWarmSession = loadWarmNativeCheckpoint(
+          input.execution,
+          warmConfigDigest,
+          input.runnerExecutionTarget?.kind ?? "local",
+        );
+      } else {
+        if (entry.busy) throw new Error("native_session_supervisor_busy");
+        entry.busy = true;
+        entry.ownerToken = warmSessionOwnerToken;
+        entry.environmentId =
+          input.runnerExecutionTarget?.environmentId ?? null;
+        if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+        entry.idleTimer = null;
+        existingWarmSession = entry.session;
+      }
+    } else {
+      persistedWarmSession = loadWarmNativeCheckpoint(
+        input.execution,
+        warmConfigDigest,
+        input.runnerExecutionTarget?.kind ?? "local",
+      );
+    }
+  }
+  async function resolvePendingGovernedWait() {
+    const continuingInteractionIds = continuingPendingInteractionIds(
+      input.execution,
+    );
+    const interaction = await input.db
+      .select({
+        id: issueThreadInteractions.id,
+        title: issueThreadInteractions.title,
+        summary: issueThreadInteractions.summary,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(
+            issueThreadInteractions.companyId,
+            input.execution.binding.companyId,
+          ),
+          eq(issueThreadInteractions.issueId, input.execution.binding.issueId),
+          or(
+            eq(
+              issueThreadInteractions.sourceRunId,
+              input.execution.binding.runId,
+            ),
+            and(
+              eq(issueThreadInteractions.kind, "connection_intent"),
+              eq(
+                issueThreadInteractions.createdByAgentId,
+                input.execution.binding.agentId,
+              ),
+            ),
+            ...(continuingInteractionIds.length > 0
+              ? [inArray(issueThreadInteractions.id, continuingInteractionIds)]
+              : []),
+          ),
+          eq(issueThreadInteractions.status, "pending"),
+        ),
+      )
+      .orderBy(
+        desc(issueThreadInteractions.createdAt),
+        desc(issueThreadInteractions.id),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (interaction)
+      return nativeGovernedWaitResult({
+        interaction,
+        completionContract: input.execution.completionContract.contract,
+      });
+    // A ready connection can become installed after the provider snapshot was
+    // pinned. Its already-durable wake is also a valid reason to end this turn.
+    const [refresh] = await input.db
+      .select({
+        id: agentWakeupRequests.id,
+        key: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.execution.binding.companyId),
+          eq(agentWakeupRequests.agentId, input.execution.binding.agentId),
+          like(
+            agentWakeupRequests.idempotencyKey,
+            `connection-intent:tools:${input.execution.binding.runId}:%`,
+          ),
+          notInArray(agentWakeupRequests.status, [
+            "skipped",
+            "failed",
+            "cancelled",
+          ]),
+        ),
+      )
+      .limit(1);
+    return refresh?.key
+      ? nativeToolsRefreshWaitResult({
+          wakeId: refresh.id,
+          key: refresh.key,
+          completionContract: input.execution.completionContract.contract,
+        })
+      : null;
+  }
+  const runnerExecution =
+    input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
+      ? {
+          ...input.execution,
+          workspace: {
+            ...input.execution.workspace,
+            cwd: input.runnerExecutionTarget.remoteCwd,
+          },
+        }
+      : input.execution;
+  const leaseRenewal = startNativeSessionExecutionLeaseRenewal({
+    db: input.db,
+    runId: input.execution.binding.runId,
+    companyId: input.execution.binding.companyId,
+    issueId: input.execution.binding.issueId,
+    leaseOwner,
+    attempt,
+    controller,
+  });
+  try {
+    const expectedCurrentWakeComments = await resolveCurrentWakeCommentsBinding(
+      input.db,
+      input.execution.binding,
+    );
+    const runnerdBackend =
+      input.useRunnerd && input.backend === undefined
+        ? await createRunnerdBackend({
+            ...input,
+            // Durable scope and prior-run verification use the controller's
+            // canonical workspace identity. createRunnerdBackend separately
+            // projects remoteCwd into the provider execution boundary.
+            execution: input.execution,
+            runnerInstanceId: effectiveRunnerInstanceId,
+            durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
+            trace,
+          })
+        : null;
+    const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
+        input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
+      ? await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
+          .from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, input.execution.binding.companyId),
+            eq(environmentLeases.id, input.runnerExecutionTarget.leaseId),
+          )).then(rows => rows[0])
+      : null;
+    nativeSessionExecuteStartedAtMs = Date.now();
+    native = await trace.measure(
+      "native.session.execute",
+      async () => {
+        runnerSessionStartupScope = trace.start("runner.session.startup", {
+          parentName: "native.session.execute",
+          startedAtMs: nativeSessionExecuteStartedAtMs,
+        });
+        trace.activate(runnerSessionStartupScope);
+        const result = await trace.run(runnerSessionStartupScope, () =>
+          executeNativeSession({
+            onSessionAdmission: async () => {
+              // Invalidate prior stop evidence before a backend can spawn.
+              await appendHeartbeatRunEvent(input.db, {
+                companyId: input.execution.binding.companyId,
+                runId: input.execution.binding.runId,
+                agentId: input.execution.binding.agentId,
+                eventType: PROCESS_START_REQUESTED,
+                stream: "system",
+                level: "info",
+                message: "Native execution requested; prior local stop evidence no longer applies.",
+              });
+            },
+            input: runnerExecution,
+            remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
+            turnTimeoutMs: input.turnTimeoutMs,
+            backend:
+              input.backend ??
+              runnerdBackend ??
+              createNativeSessionBackend(input.execution, {
+                runnerInstanceId: input.runnerInstanceId,
+                onSpawn: input.onSpawn,
+                opencodeEnvironment: input.runnerEnvironment ?? process.env,
+                acpxEnvironment: input.runnerEnvironment ?? process.env,
+                opencodeRuntimeDirectory: resolve(
+                  resolvePaperclipInstanceRoot(),
+                  "runtime",
+                  "paperclip-runner",
+                  "opencode",
+                ),
+                acpxRuntimeDirectory: resolve(
+                  resolvePaperclipInstanceRoot(),
+                  "runtime",
+                  "paperclip-runner",
+                  "acpx",
+                ),
+              }),
+            controlPlane,
+            runnerInstanceId: effectiveRunnerInstanceId,
+            controlPlaneInstanceId,
+            resolveGovernedWait: ({ event }) =>
+              governedWaitObservation.consume(event),
+            resolveMissingResult: async ({ terminalEvent }) => {
+              // Governed waits take precedence over an ordinary chat reply.
+              // Execution tasks still require their normal semantic finish.
+              if (terminalEvent.eventType !== "turn.completed") return null;
+              const governedWait = await resolvePendingGovernedWait();
+              if (governedWait) return governedWait;
+              const [conversation] = await input.db
+                .select({ agentId: issues.conversationAgentId })
+                .from(issues)
+                .where(and(
+                  eq(issues.id, input.execution.binding.issueId),
+                  eq(issues.companyId, input.execution.binding.companyId),
+                ))
+                .limit(1);
+              return nativeConversationReplyResult({
+                conversation: conversation?.agentId === input.execution.binding.agentId,
+                terminalEvent,
+                replyEvent: completedConversationReply,
+                completionContract: input.execution.completionContract.contract,
+              });
+            },
+            existingSession: existingWarmSession,
+            persistedSession: persistedWarmSession,
+            keepSessionOpen: warmSessionId !== null,
+            sessionGoalControl: input.sessionGoalControl,
+            resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
+            // Every durable runner must finish its bounded suspension before
+            // the next run verifies and rotates the saved authority.
+            requireSessionCloseBeforeReturn: runnerdBackend !== null,
+            onCheckpoint: async (snapshot) => {
+              if (warmSessionId !== null && warmConfigDigest !== null) {
+                await persistWarmNativeCheckpoint(
+                  input.execution,
+                  warmConfigDigest,
+                  snapshot,
+                );
+              }
+              if (
+                snapshot.goal ||
+                input.sessionGoalControl ||
+                input.resumeSessionGoalHeartbeat
+              ) {
+                await input.onGoalCheckpoint?.(snapshot);
+              }
+            },
+            onPostCompletionEnrichmentFailure: async ({ stage, error }) => {
+              const detail = redactSensitiveText(
+                error instanceof Error ? error.message : String(error),
+              ).slice(-4_096);
+              await input.onLog?.(
+                "stderr",
+                `[paperclip-runner] post-completion ${stage} enrichment failed: ${detail}\n`,
+              );
+            },
+            onSessionQuarantined: async (reason) => {
+              await input.onLog?.(
+                "stderr",
+                `[paperclip-runner] warm native session quarantined: ${redactSensitiveText(reason).slice(-1_000)}\n`,
+              );
+            },
+            onContinuityBreak: async (continuity) => {
+              const atMs = Date.now();
+              await trace.record({
+                name: "provider.session.continuity_break",
+                parentName: "native.session.execute",
+                startedAtMs: atMs,
+                endedAtMs: atMs,
+                outcome: "failed",
+                attributes: {
+                  reason: continuity.reason,
+                  previousDriverSessionId: continuity.previousDriverSessionId,
+                  previousProviderSessionId:
+                    continuity.previousProviderSessionId ?? "unavailable",
+                  replacementDriverSessionId:
+                    continuity.replacementDriverSessionId,
+                  replacementProviderSessionId:
+                    continuity.replacementProviderSessionId ?? "unavailable",
+                },
+              });
+              await input.onLog?.(
+                "stderr",
+                `[paperclip-runner] provider session continuity break: exact resume failed (${continuity.reason}); old driver session=${continuity.previousDriverSessionId}, old provider session=${continuity.previousProviderSessionId ?? "unavailable"}, replacement driver session=${continuity.replacementDriverSessionId}, replacement provider session=${continuity.replacementProviderSessionId ?? "unavailable"}\n`,
+              );
+            },
+            onSession: async (session) => {
+              releaseRegisteredGoalController();
+              if (session?.goal) {
+                releaseGoalController = registerLiveRunnerGoalController(
+                  {
+                    companyId: input.execution.binding.companyId,
+                    issueId: input.execution.binding.issueId,
+                    agentId: input.execution.binding.agentId,
+                    runId: input.execution.binding.runId,
+                  },
+                  {
+                    control: async (control) => {
+                      await applyNativeSessionGoalControl(session, control);
+                    },
+                  },
+                );
+              }
+              if (
+                session &&
+                warmSessionId !== null &&
+                warmConfigDigest !== null
+              ) {
+                const existing = warmNativeSessions.get(warmSessionId);
+                if (existing) {
+                  if (existing.ownerToken !== warmSessionOwnerToken) {
+                    throw new Error("native_session_supervisor_busy");
+                  }
+                  existing.session = session;
+                } else
+                  warmNativeSessions.set(warmSessionId, {
+                    githubAuthenticationMode:
+                      input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE,
+                    networkAccess:
+                      input.runnerEnvironment
+                        ?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
+                    credentialRunId: input.runnerEnvironment
+                      ?.PAPERCLIP_GITHUB_BROKER_TOKEN
+                      ? input.execution.binding.runId
+                      : undefined,
+                    session,
+                    ownerToken: warmSessionOwnerToken,
+                    configDigest: warmConfigDigest,
+                    companyId: input.execution.binding.companyId,
+                    environmentId:
+                      input.runnerExecutionTarget?.environmentId ?? null,
+                    busy: true,
+                    idleTimer: null,
+                    lastActivityAt: new Date().toISOString(),
+                  });
+              } else if (!session && warmSessionId !== null) {
+                const existing = warmNativeSessions.get(warmSessionId);
+                // onSession(null) quarantines a transport that can no longer
+                // be reused. Remove only this execution's generation so a
+                // late failure cannot evict a successor session.
+                if (existing?.ownerToken === warmSessionOwnerToken) {
+                  if (existing.idleTimer !== null) {
+                    clearTimeout(existing.idleTimer);
+                  }
+                  warmNativeSessions.delete(warmSessionId);
+                }
+              }
+              if (session) {
+                activeNativeSessions.set(input.execution.binding.runId, {
+                  session,
+                  cancelRequested: false,
+                });
+                if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+                  await session.detachControllerForRestart?.();
+                }
+              } else {
+                activeNativeSessions.delete(input.execution.binding.runId);
+                clearSteeringDeliveries(input.execution.binding.runId);
+                clearNativeRuntimeRequestResolutions(
+                  input.execution.binding.runId,
+                );
+              }
+            },
+          }),
+        );
+        await trace.end(runnerSessionStartupScope, {
+          outcome:
+            result.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
+        });
+        return result;
+      },
+      { parentName: "task.run" },
+    );
+    if (native.terminal.runTerminalState === "succeeded") {
+      // A truncated, verified external-chat wake cannot settle from the
+      // provider's partial inline prompt. The run-scoped reader records a
+      // durable complete-page receipt; this fence revalidates that exact
+      // current snapshot before any native finalization can become authoritative.
+      await assertCurrentWakeCommentsRead(
+        input.db,
+        input.execution.binding,
+        expectedCurrentWakeComments,
+      );
+    }
+    await leaseRenewal.stop();
+    await trace.record({
+      name: "native.result.finalize",
+      parentName: "task.settle",
+      startedAtMs: turnCompletedAtMs ?? nativeSessionExecuteStartedAtMs,
+      endedAtMs: Date.now(),
+    });
+    activeNativeSessions.delete(input.execution.binding.runId);
+    clearSteeringDeliveries(input.execution.binding.runId);
+    clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
+  } catch (error) {
+    if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+      await leaseRenewal.stop().catch(() => undefined);
+      activeNativeSessions.delete(input.execution.binding.runId);
+      // Disconnecting deliberately ends the old event consumer. It is not a
+      // provider failure and must not overwrite the shutdown adoption record
+      // with a retry or release the still-live runner's lease.
+      throw new NativeControllerDetachedForRestartError();
+    }
+    const protocolIntegrityFailure =
+      error instanceof NativeSessionProtocolIntegrityError ? error : null;
+    const ownershipUnverified =
+      nativeSessionFailureSourceCode(error) ===
+      NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT;
+    const attemptFailureStep = async (operation: () => unknown) => {
+      try {
+        await operation();
+      } catch (secondaryError) {
+        if (protocolIntegrityFailure === null) throw secondaryError;
+      }
+    };
+    const stoppedLeaseRenewal = leaseRenewal.stop().catch(() => undefined);
+    try {
+      await input.db
+        .update(nativeRunFinalizations)
+        .set({
+          controlDeadlineAt: new Date(
+            Date.now() + EXECUTION_CONTROL_DEADLINE_MS,
+          ),
+        })
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+          ),
+        );
+
+      const failedAtMs = Date.now();
+      const executionFailureMessage = redactSensitiveText(
+        error instanceof Error ? error.message : String(error),
+      ).slice(-4_096);
+      if (!taskSettleScope) {
+        taskSettleScope = trace.start("task.settle", {
+          parentName: "task.run",
+          startedAtMs: failedAtMs,
+        });
+      }
+      trace.activate(taskSettleScope);
+      activeNativeSessions.delete(input.execution.binding.runId);
+      clearSteeringDeliveries(input.execution.binding.runId);
+      clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
+      // Stop before paperclip_finish is normal. Bounded provider teardown has
+      // finished; a missing result must not overwrite cancellation or trigger
+      // another turn to perform completion bookkeeping.
+      if (protocolIntegrityFailure === null && error instanceof Error && error.message === "native_finalization_missing: session returned no semantic result") {
+        const [stoppedRun] = await input.db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, input.execution.binding.runId),
+          eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+          eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+          eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId),
+        )).limit(1);
+        if (stoppedRun && hasAcknowledgedNativeStopIntent(stoppedRun)) {
+          const [settled] = await input.db.update(nativeRunFinalizations).set({
+            phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null,
+            leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, recoveryState: null,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+            eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+            eq(nativeRunFinalizations.attempt, attempt),
+            isNull(nativeRunFinalizations.resultId),
+          )).returning({ runId: nativeRunFinalizations.runId });
+          if (settled) {
+            await stoppedLeaseRenewal;
+            if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
+              await releaseWarmNativeSession(warmSessionId, warmSessionOwnerToken, lifecyclePolicy.idleTimeoutMs, true);
+            }
+            error = new NativeCancellationPendingRecoveryError();
+          }
+        }
+      }
+      if (
+        error instanceof NativeResultPendingFinalizationError ||
+        error instanceof NativeCancellationPendingRecoveryError
+      ) {
+        // This is not a provider failure and must not overwrite the durable
+        // result/coordinator state. The heartbeat boundary will either hand an
+        // already-materialized result to the finalizer or retain the durable
+        // cancellation intent for cancellation recovery.
+        if (taskSettleScope) {
+          await trace.end(taskSettleScope, { outcome: "ok" });
+        }
+        await trace.finish("ok");
+        throw error;
+      }
+      const now = new Date();
+      const classifiedFailureCode = nativeSessionFailureSourceCode(error);
+      const sourceFailureCode =
+        classifiedFailureCode === "native_event_replay_conflict"
+          ? classifiedFailureCode
+          : providerUsageLimitObserved
+            ? "native_provider_usage_limit"
+            : classifiedFailureCode;
+      const recoveryEvidence = await nativeProviderRecoveryEvidence({
+        db: input.db,
+        runId: input.execution.binding.runId,
+        sourceFailureCode,
+      });
+      const disposition = nativeSessionFailureDisposition(
+        attempt,
+        now,
+        sourceFailureCode,
+      );
+      const phase =
+        recoveryEvidence.recoveryMode === "ambiguous_state"
+          ? ("terminal_failure" as const)
+          : disposition.phase;
+      const failureCode =
+        recoveryEvidence.recoveryMode === "ambiguous_state"
+          ? sourceFailureCode
+          : disposition.failureCode;
+      const nextAttemptAt =
+        recoveryEvidence.recoveryMode === "ambiguous_state"
+          ? null
+          : disposition.nextAttemptAt;
+      const recoveryProjection = nativeSessionRecoveryProjection({
+        phase,
+        failureCode,
+        agentId: input.execution.binding.agentId,
+      });
+      const { exhausted } = recoveryProjection;
+      const integrityFailure =
+        sourceFailureCode === "native_event_replay_conflict";
+      const message =
+        error instanceof Error
+          ? error.message.slice(0, 2_000)
+          : String(error).slice(0, 2_000);
+      const sanitizedStderrTail = redactSensitiveText(message).slice(-4_096);
+      await input.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
+        );
+        // Use the same issue-before-run lock order as admission. A late failure
+        // can terminalize its own run, but cannot change a reassigned task.
+        const [failureTask] = await tx
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.id, input.execution.binding.issueId),
+              eq(issues.companyId, input.execution.binding.companyId),
+            ),
+          )
+          .for("update");
+        const updated = await tx
+          .update(nativeRunFinalizations)
+          .set({
+            phase,
+            controlDeadlineAt: null,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            recoveryState:
+              phase === "retryable_failure" ? "resuming_session" : "blocked",
+            failureCode,
+            failureDetail: {
+              message,
+              originalFailureCode:
+                error instanceof NativeProviderTerminalFailure
+                  ? error.providerCode
+                  : sourceFailureCode,
+              recoverable:
+                error instanceof NativeProviderTerminalFailure
+                  ? error.recoverable
+                  : phase === "retryable_failure",
+              recoveryMode: recoveryEvidence.recoveryMode,
+              providerSessionEstablished:
+                recoveryEvidence.providerSessionEstablished,
+              providerEventsExist: recoveryEvidence.providerEventsExist,
+              checkpointExists: recoveryEvidence.checkpointExists,
+              recoveryOwner: recoveryProjection.recoveryOwner,
+              nextAction:
+                sourceFailureCode === "native_session_cleanup_quarantined"
+                  ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+                  : sourceFailureCode === "native_provider_terminal_failed"
+                    ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
+                    : recoveryEvidence.recoveryMode === "ambiguous_state"
+                      ? "Inspect the original provider failure and durable events; state is ambiguous and a replacement provider session is forbidden."
+                      : integrityFailure
+                        ? "Inspect the persisted runner events and checkpoint for a source-sequence integrity conflict; automatic recovery is stopped."
+                        : sourceFailureCode === "native_provider_usage_limit"
+                          ? "Restore model provider usage capacity, then explicitly retry the task. Automatic retries cannot resolve an exhausted provider allowance."
+                          : ownershipUnverified
+                            ? "Inspect the retained runner's executable and authenticated connection. Do not replace its provider until ownership is safely resolved."
+                            : exhausted
+                              ? "Inspect the persisted native session after its bounded resume budget was exhausted."
+                              : recoveryEvidence.recoveryMode ===
+                                  "bootstrap_retry"
+                                ? "Retry provider bootstrap on this same run; durable evidence proves no provider session or provider event was created."
+                                : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
+            },
+            nextAttemptAt,
+            recoveryHistory: sql`(
+              select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
+              from jsonb_array_elements(
+                coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+                || jsonb_build_array(${JSON.stringify({
+                  at: now.toISOString(),
+                  disposition: phase,
+                  reason: sourceFailureCode,
+                  controllerBootId: controller.bootId,
+                  controllerGeneration:
+                    input.restartRecovery?.controllerGeneration ?? null,
+                  providerAttempt: attempt,
+                  stderrTail: sanitizedStderrTail,
+                  providerSessionEstablished:
+                    recoveryEvidence.providerSessionEstablished,
+                  checkpointExists: recoveryEvidence.checkpointExists,
+                })}::jsonb)
+              ) with ordinality as history(item, ordinal)
+              where ordinal > greatest(
+                jsonb_array_length(
+                  coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+                  || jsonb_build_array(${JSON.stringify({
+                    at: now.toISOString(),
+                    disposition: phase,
+                    reason: sourceFailureCode,
+                    controllerBootId: controller.bootId,
+                    controllerGeneration:
+                      input.restartRecovery?.controllerGeneration ?? null,
+                    providerAttempt: attempt,
+                    stderrTail: sanitizedStderrTail,
+                    providerSessionEstablished:
+                      recoveryEvidence.providerSessionEstablished,
+                    checkpointExists: recoveryEvidence.checkpointExists,
+                  })}::jsonb)
+                ) - 20,
+                0
+              )
+            )`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+              eq(
+                nativeRunFinalizations.companyId,
+                input.execution.binding.companyId,
+              ),
+              eq(
+                nativeRunFinalizations.issueId,
+                input.execution.binding.issueId,
+              ),
+              eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+              eq(nativeRunFinalizations.attempt, attempt),
+              eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+              eq(nativeRunFinalizations.controllerPid, controller.pid),
+              eq(
+                nativeRunFinalizations.controllerProcessStartedAt,
+                controller.processStartedAt,
+              ),
+              gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+            ),
+          )
+          .returning({ runId: nativeRunFinalizations.runId })
+          .then((rows) => rows[0] ?? null);
+        if (!updated) throw new Error("native_session_lease_lost");
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            // An authentication timeout does not prove the retained runner or
+            // its provider stopped. Preserve physical ownership until verified.
+            ...(!ownershipUnverified
+              ? {
+                  status: "failed",
+                  executionStatusDeliveryId: randomUUID(),
+                  finishedAt: now,
+                }
+              : {}),
+            nativePhase: phase,
+            nativePhaseUpdatedAt: now,
+            error: message,
+            errorCode: ownershipUnverified
+              ? NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE
+              : sourceFailureCode,
+            updatedAt: now,
+          })
+          .where(eq(heartbeatRuns.id, input.execution.binding.runId));
+        const stillOwnsTask =
+          failureTask?.assigneeAgentId === input.execution.binding.agentId &&
+          ["in_progress", "in_review"].includes(failureTask.status) &&
+          (!failureTask.executionRunId ||
+            failureTask.executionRunId === input.execution.binding.runId) &&
+          (!failureTask.checkoutRunId ||
+            failureTask.checkoutRunId === input.execution.binding.runId);
+        let failureBlockStatusVersion: number | undefined;
+        if (stillOwnsTask && recoveryProjection.issueStatus) {
+          const projected = await issueService(tx as unknown as Db).update(
+            input.execution.binding.issueId,
+            { status: recoveryProjection.issueStatus },
+            tx,
+          );
+          if (projected?.status === "blocked") failureBlockStatusVersion = projected.statusVersion;
+        }
+        if (
+          !ownershipUnverified &&
+          stillOwnsTask &&
+          phase === "terminal_failure"
+        ) {
+          await tx
+            .update(issues)
+            .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })
+            .where(eq(issues.id, input.execution.binding.issueId));
+        }
+        if (!stillOwnsTask) return;
+        await issueRecoveryActionService(
+          tx as unknown as Db,
+        ).upsertSourceScoped({
+          companyId: input.execution.binding.companyId,
+          sourceIssueId: input.execution.binding.issueId,
+          kind: "active_run_watchdog",
+          ownerType: recoveryProjection.recoveryActionOwnerType,
+          ownerAgentId: recoveryProjection.recoveryActionOwnerAgentId,
+          returnOwnerAgentId: input.execution.binding.agentId,
+          cause: recoveryProjection.recoveryActionCause,
+          fingerprint: createHash("sha256")
+            .update(`${input.execution.binding.runId}:${failureCode}`)
+            .digest("hex"),
+          evidence: {
+            runId: input.execution.binding.runId,
+            ...(failureBlockStatusVersion !== undefined ? { nativeFailureBlock: {
+              runId: input.execution.binding.runId,
+              statusVersion: failureBlockStatusVersion,
+            } } : {}),
+            coordinatorAttempt: attempt,
+            sourceFailureCode,
+            recoveryDisposition: failureCode,
+            recoveryMode: recoveryEvidence.recoveryMode,
+            providerSessionEstablished:
+              recoveryEvidence.providerSessionEstablished,
+          },
+          nextAction:
+            sourceFailureCode === "native_session_cleanup_quarantined"
+              ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+              : sourceFailureCode === "native_provider_terminal_failed"
+                ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
+                : recoveryEvidence.recoveryMode === "ambiguous_state"
+                  ? "Inspect the original provider failure and explicitly resolve the ambiguous session state; do not open a replacement provider session."
+                  : integrityFailure
+                    ? "Inspect the persisted runner event collision and explicitly repair or replace the run; automatic retries are disabled."
+                    : sourceFailureCode === "native_provider_usage_limit"
+                      ? "Restore model provider usage capacity, then explicitly retry the task; automatic retries are stopped."
+                      : ownershipUnverified
+                        ? "Resolve the retained runner's authentication or executable compatibility before an explicit recovery; do not blindly restart, cancel, or replace its provider session."
+                        : exhausted
+                          ? "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped."
+                          : recoveryEvidence.recoveryMode === "bootstrap_retry"
+                            ? "Retry bootstrap on the same run without manufacturing a provider checkpoint."
+                            : "Resume the exact persisted native session on the same heartbeat run.",
+          wakePolicy: nextAttemptAt
+            ? {
+                kind: "resume_native_run",
+                runId: input.execution.binding.runId,
+                notBefore: nextAttemptAt.toISOString(),
+              }
+            : null,
+          maxAttempts: 3,
+          supersedeOnIdentityChange:
+            recoveryProjection.supersedeOnIdentityChange,
+        });
+      });
+      await boundedExecutionCleanup(async () => {
+        await stoppedLeaseRenewal;
+        await attemptFailureStep(() =>
+          input.onLog?.(
+            "stderr",
+            `[paperclip-runner] native session execution failed: ${executionFailureMessage}\n`,
+          ),
+        );
+        if (runnerSessionStartupScope) {
+          await attemptFailureStep(() =>
+            trace.end(runnerSessionStartupScope!, {
+              endedAtMs: failedAtMs,
+              outcome: "failed",
+            }),
+          );
+        }
+        if (agentTurnScope) {
+          await attemptFailureStep(() =>
+            trace.end(agentTurnScope!, {
+              endedAtMs: failedAtMs,
+              outcome: "failed",
+            }),
+          );
+        }
+        if (
+          !ownershipUnverified &&
+          warmSessionId !== null &&
+          lifecyclePolicy.mode === "warm"
+        ) {
+          await attemptFailureStep(() =>
+            releaseWarmNativeSession(
+              warmSessionId!,
+              warmSessionOwnerToken,
+              lifecyclePolicy.idleTimeoutMs,
+              true,
+            ),
+          );
+        }
+        if (taskSettleScope)
+          await trace.end(taskSettleScope, { outcome: "failed" });
+        await trace.finish("failed");
+      });
+      throw error;
+    } finally {
+      // Even a secondary logging/recovery-write failure cannot authorize
+      // heartbeat to release the retained process or its task ownership.
+      if (ownershipUnverified) throw new NativeRunnerOwnershipUnverifiedError();
+      if (protocolIntegrityFailure !== null) throw protocolIntegrityFailure;
+    }
+  }
+  if (
+    planSynchronizations.length === 0 &&
+    "executionMode" in input.execution &&
+    input.execution.executionMode === "plan"
+  ) {
+    const markdown = semanticProviderPlanMarkdown(
+      native.result as unknown as Record<string, unknown>,
+    );
+    if (markdown) {
+      const digest = createHash("sha256").update(markdown).digest("hex");
+      await recordPlanSynchronization({
+        sourceEventId: `semantic-plan:${input.execution.binding.runId}:${digest}`,
+        ...(native.turnId ? { turnId: native.turnId } : {}),
+        eventType: "plan.updated",
+        payload: {
+          schema: "paperclip.plan.updated.v1",
+          planId: `semantic:${native.turnId ?? input.execution.binding.runId}`,
+          revision: 1,
+          complete: true,
+          markdown,
+          source: "semantic_result_artifact",
+        },
+      });
+    }
+  }
+  const releaseNow = new Date();
+  const released = await input.db
+    .update(nativeRunFinalizations)
+    .set({
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      recoveryState: null,
+      recoveryRequestId: null,
+      updatedAt: releaseNow,
+    })
+    .where(
+      and(
+        eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+        eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+        eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+        eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+        eq(nativeRunFinalizations.attempt, attempt),
+        eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+        eq(nativeRunFinalizations.controllerPid, controller.pid),
+        eq(
+          nativeRunFinalizations.controllerProcessStartedAt,
+          controller.processStartedAt,
+        ),
+        gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+      ),
+    )
+    .returning({ runId: nativeRunFinalizations.runId })
+    .then((rows) => rows[0] ?? null);
+  if (!released) throw new Error("native_session_lease_lost");
+  const finalization: NativeFinalizationResult = {
+    schema: "paperclip.native-finalization.v1",
+    runtimeMode: "native",
+    runId: input.execution.binding.runId,
+    issueId: input.execution.binding.issueId,
+    companyId: input.execution.binding.companyId,
+    result: native.result as unknown as Record<string, unknown>,
+    terminal: native.terminal,
+    turnId: native.turnId,
+    sourceInstanceId: effectiveRunnerInstanceId,
+    normalizedSessionId: native.normalizedSessionId,
+    providerSessionId: native.providerSessionId,
+    driverKind: native.driverKind,
+    driverVersion: native.driverVersion,
+    nativeEventCount: native.nativeEventCount,
+    highestContiguousSourceSeq: native.highestContiguousSourceSeq,
+    workspaceFinalizeStatus: "pending",
+  };
+  // A following run cannot attach until the prior run's durable finalization
+  // is committed. Provider completion alone is not an authority boundary.
+  if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
+    await releaseWarmNativeSession(
+      warmSessionId,
+      warmSessionOwnerToken,
+      lifecyclePolicy.idleTimeoutMs,
+      false,
+    );
+  }
+  const adapterResult: AdapterExecutionResult = {
+    exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
+    signal: null,
+    timedOut: false,
+    errorMessage:
+      native.terminal.runTerminalState === "succeeded"
+        ? null
+        : `Native session ${native.terminal.runTerminalState}`,
+    resultJson: {
+      nativeResult: native.result as unknown as Record<string, unknown>,
+      nativeTerminal: native.terminal as unknown as Record<string, unknown>,
+      ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
+      planSynchronizations,
+    },
+    summary: native.result.summary,
+    sessionId: native.normalizedSessionId,
+    sessionDisplayId: native.providerSessionId ?? native.normalizedSessionId,
+    provider: "openai",
+    model: input.execution.provider.model,
+    usage: normalizeNativeUsage(native.usage),
+    costUsd: nativeUsageCostUsd(native.usage),
+    usageBasis: "per_run",
+    nativeFinalization: finalization,
+  };
+  if (taskSettleScope) {
+    await trace.end(taskSettleScope, {
+      outcome:
+        native.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
+    });
+  }
+  await trace.finish(
+    native.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
+  );
+  return adapterResult;
+}
+
+function numericUsageField(
+  usage: Record<string, unknown> | null,
+  keys: string[],
+): number | undefined {
+  if (!usage) return undefined;
+  for (const key of keys) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+      return value;
+  }
+  return undefined;
+}
+
+function nativeUsageMeasurement(usage: Record<string, unknown>) {
+  const nestedUsage = record(usage.usage);
+  const candidates = [
+    record(usage.runDelta),
+    record(nestedUsage.runDelta),
+    record(usage.total),
+    record(nestedUsage.total),
+    record(usage.cumulative),
+    record(nestedUsage.cumulative),
+    nestedUsage,
+    usage,
+  ];
+  return (
+    candidates.find(
+      (candidate) =>
+        numericUsageField(candidate, [
+          "inputTokens",
+          "input",
+          "promptTokens",
+          "outputTokens",
+          "output",
+          "completionTokens",
+        ]) !== undefined,
+    ) ?? usage
+  );
+}
+
+export function nativeUsageCostUsd(usage: Record<string, unknown> | null) {
+  if (!usage) return undefined;
+  const measurement = nativeUsageMeasurement(usage);
+  const direct =
+    numericUsageField(usage, [
+      "providerCostUsd",
+      "cacheAdjustedCostUsd",
+      "costUsd",
+    ]) ??
+    numericUsageField(measurement, [
+      "providerCostUsd",
+      "cacheAdjustedCostUsd",
+      "costUsd",
+    ]);
+  if (direct !== undefined) return direct;
+  const cost = record(usage.cost);
+  const currency =
+    typeof cost.currency === "string" ? cost.currency.toUpperCase() : "USD";
+  if (currency !== "USD") return undefined;
+  return numericUsageField(cost, ["amount", "total"]);
+}
+
+export function normalizeNativeUsage(usage: Record<string, unknown> | null) {
+  if (!usage) return undefined;
+  const measurement = nativeUsageMeasurement(usage);
+  const cache = record(measurement.cache);
+  const cachedInputTokens =
+    numericUsageField(measurement, [
+      "cachedInputTokens",
+      "cacheReadInputTokens",
+      "cacheReadTokens",
+      "cachedReadTokens",
+    ]) ?? numericUsageField(cache, ["read"]);
+  return {
+    inputTokens:
+      numericUsageField(measurement, [
+        "inputTokens",
+        "input",
+        "promptTokens",
+      ]) ?? 0,
+    outputTokens:
+      numericUsageField(measurement, [
+        "outputTokens",
+        "output",
+        "completionTokens",
+      ]) ?? 0,
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+  };
+}
+
+function processEnvironment(
+  environment: NodeJS.ProcessEnv,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+/** Preserve package-manager shims that resolve dependencies relative to argv[0]. */
+export function buildRemoteCodexLauncherCommand(
+  sourcePath: string,
+  targetPath: string,
+): string {
+  if (sourcePath === targetPath)
+    throw new Error("runner_remote_preinstalled_source_conflict");
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const launcher = `#!/bin/sh\nexec ${quote(sourcePath)} "$@"\n`;
+  // Replace atomically: writing through an existing symlink would corrupt the
+  // image's shared CLI, and another run may be executing this launcher already.
+  return (
+    `umask 077; mkdir -p ${quote(posix.dirname(targetPath))} && ` +
+    `[ ! -d ${quote(targetPath)} ] && ` +
+    `paperclip_codex_launcher_tmp=$(mktemp ${quote(targetPath + ".tmp.XXXXXX")}) && ` +
+    `trap 'rm -f "$paperclip_codex_launcher_tmp"' 0 && ` +
+    `printf '%s' ${quote(launcher)} > "$paperclip_codex_launcher_tmp" && ` +
+    `chmod 700 "$paperclip_codex_launcher_tmp" && ` +
+    `mv -f "$paperclip_codex_launcher_tmp" ${quote(targetPath)}`
+  );
+}
+
+export function parseRemoteExecutableCandidate(stdout: string): string | null {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length !== 1) return null;
+  const candidate = lines[0]!;
+  if (
+    !candidate.startsWith("/") ||
+    candidate.length > 4_096 ||
+    !/^\/[A-Za-z0-9_./+@-]+$/.test(candidate)
+  ) {
+    return null;
+  }
+  return posix.normalize(candidate);
+}
+
+export function mayUsePreinstalledRunnerArtifact(
+  configuredRemoteBinaryPath: string | null | undefined,
+): boolean {
+  return !configuredRemoteBinaryPath?.trim();
+}
+
+const RUNNERD_BUILD_METADATA_SCHEMA =
+  "paperclip-runner/runnerd-build-metadata/v1";
+const RUNNERD_BINARY_CONTRACT_VERSION = 2;
+
+const REMOTE_PROVIDER_PACK_SCHEMA = "paperclip-runner/remote-provider-pack/v1";
+const REMOTE_PROVIDER_PACK_PINS = {
+  nodeMinimum: "24.11.0",
+  codex: "0.153.4",
+  opencode: "1.18.29",
+  acpx: "0.13.1",
+  claudeAcp: "0.73.0",
+  codexAcp: "1.6.2",
+} as const;
+const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
+  claude:
+    "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+  codex:
+    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+} as const;
+const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
+  nodeCommand: "node_modules/node/bin/node",
+  productionLock: "pnpm-lock.yaml",
+  opencodeCommand: "node_modules/.bin/opencode",
+  opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
+  opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs",
+  acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
+} as const;
+
+type RemoteProviderPackManifest = {
+  schema: typeof REMOTE_PROVIDER_PACK_SCHEMA;
+  digest: string;
+  payload: {
+    pins: typeof REMOTE_PROVIDER_PACK_PINS;
+    target: { platform: string; architecture: string };
+    runnerSourceRevision: string;
+    distDigest: string;
+    bridgeDigest: string;
+    acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
+    artifacts: {
+      nodeCommand: { path: string; sha256: string };
+      productionLock: { path: string; sha256: string };
+      opencodeCommand: { path: string; sha256: string };
+      opencodeExecutable: { path: string; sha256: string };
+      opencodeProxy: { path: string; sha256: string };
+      acpxSidecar: { path: string; sha256: string };
+    };
+  };
+};
+
+function sha256File(path: string): string {
+  return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+}
+
+export function sha256DirectoryTree(root: string): string {
+  const hash = createHash("sha256");
+  const visit = (directory: string, prefix = "") => {
+    const entries = readdirSync(directory, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`directory\0${relativePath}\n`);
+        visit(absolutePath, relativePath);
+      } else if (entry.isFile()) {
+        hash.update(`file\0${relativePath}\0${sha256File(absolutePath)}\n`);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(
+          `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
+        );
+      } else {
+        throw new Error(
+          `runner_remote_provider_artifact_incompatible: unsupported dist entry ${relativePath}`,
+        );
+      }
+    }
+  };
+  visit(root);
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function providerPackRelativePath(value: unknown, field: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    posix.normalize(value) !== value ||
+    value.split("/").includes("..")
+  ) {
+    throw new Error(
+      `runner_remote_provider_artifact_incompatible: invalid ${field}`,
+    );
+  }
+  return value;
+}
+
+export function readRemoteProviderPackManifest(
+  packRoot: string,
+): RemoteProviderPackManifest {
+  let manifest: RemoteProviderPackManifest;
+  try {
+    manifest = JSON.parse(
+      readFileSync(resolve(packRoot, "provider-pack.json"), "utf8"),
+    ) as RemoteProviderPackManifest;
+  } catch (error) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider-pack.json is unreadable",
+      { cause: error },
+    );
+  }
+  const payload = manifest?.payload;
+  if (
+    manifest.schema !== REMOTE_PROVIDER_PACK_SCHEMA ||
+    !payload ||
+    canonicalJson(payload.pins) !== canonicalJson(REMOTE_PROVIDER_PACK_PINS) ||
+    canonicalJson(payload.acpxProfileDigests) !==
+      canonicalJson(REMOTE_PROVIDER_PACK_PROFILE_DIGESTS) ||
+    typeof payload.target?.platform !== "string" ||
+    typeof payload.target?.architecture !== "string" ||
+    !/^[0-9a-f]{40}(?:-dirty)?$/.test(payload.runnerSourceRevision) ||
+    !/^sha256:[0-9a-f]{64}$/.test(payload.distDigest)
+  ) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider pack pins or source revision do not match",
+    );
+  }
+  const digest = `sha256:${createHash("sha256")
+    .update(canonicalJson(payload))
+    .digest("hex")}`;
+  if (manifest.digest !== digest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider pack manifest digest mismatch",
+    );
+  }
+  const artifactEntries = [
+    [
+      "provider Node",
+      payload.artifacts?.nodeCommand,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.nodeCommand,
+    ],
+    [
+      "production lockfile",
+      payload.artifacts?.productionLock,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.productionLock,
+    ],
+    [
+      "OpenCode command",
+      payload.artifacts?.opencodeCommand,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeCommand,
+    ],
+    [
+      "OpenCode executable",
+      payload.artifacts?.opencodeExecutable,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeExecutable,
+    ],
+    [
+      "OpenCode proxy",
+      payload.artifacts?.opencodeProxy,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.opencodeProxy,
+    ],
+    [
+      "ACPX sidecar",
+      payload.artifacts?.acpxSidecar,
+      REMOTE_PROVIDER_PACK_ARTIFACT_PATHS.acpxSidecar,
+    ],
+  ] as const;
+  for (const [label, artifact, expectedPath] of artifactEntries) {
+    const artifactPath = providerPackRelativePath(
+      artifact?.path,
+      `${label} path`,
+    );
+    if (artifactPath !== expectedPath) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: ${label} path must be ${expectedPath}`,
+      );
+    }
+    if (
+      typeof artifact?.sha256 !== "string" ||
+      sha256File(resolve(packRoot, artifactPath)) !== artifact.sha256
+    ) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: ${label} digest mismatch`,
+      );
+    }
+  }
+  if (sha256DirectoryTree(resolve(packRoot, "dist")) !== payload.distDigest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
+    );
+  }
+  const bridgeDigest = `sha256:${createHash("sha256")
+    .update(payload.artifacts.opencodeProxy.sha256)
+    .update("\n")
+    .update(payload.artifacts.acpxSidecar.sha256)
+    .update("\n")
+    .update(payload.distDigest)
+    .digest("hex")}`;
+  if (payload.bridgeDigest !== bridgeDigest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: provider bridge digest mismatch",
+    );
+  }
+  return structuredClone(manifest);
+}
+
+export function assertRemoteRunnerBuildMetadata(
+  value: unknown,
+  requiredMode: "dial_wss" | "listen_ws",
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("runner_remote_artifact_metadata_invalid");
+  }
+  const metadata = value as Record<string, unknown>;
+  if (
+    metadata.schema !== RUNNERD_BUILD_METADATA_SCHEMA ||
+    metadata.binaryName !== "paperclip-runnerd" ||
+    metadata.packageName !== "@paperclipai/paperclip-runner" ||
+    metadata.binaryContractVersion !== RUNNERD_BINARY_CONTRACT_VERSION
+  ) {
+    throw new Error("runner_remote_artifact_contract_incompatible");
+  }
+  const modes = Array.isArray(metadata.prpTransportModes)
+    ? metadata.prpTransportModes
+    : [];
+  if (!modes.includes(requiredMode)) {
+    throw new Error(
+      `runner_remote_transport_capability_missing:${requiredMode}`,
+    );
+  }
+}
+
+async function stageRemoteRunnerFile(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  sourcePath: string;
+  targetPath: string;
+  mode: number;
+}): Promise<void> {
+  const runner = input.runner;
+  if (runner.syncIn) {
+    await runner.syncIn([
+      {
+        operationId: `runner-stage-${randomUUID()}`,
+        files: [
+          {
+            sourcePath: input.sourcePath,
+            targetPath: input.targetPath,
+            kind: "file",
+            mode: input.mode,
+          },
+        ],
+      },
+    ]);
+    return;
+  }
+  const bytes = readFileSync(input.sourcePath);
+  const directory = posix.dirname(input.targetPath);
+  const script =
+    `umask 077; mkdir -p '${directory.replaceAll("'", "'\\''")}' && ` +
+    `base64 -d > '${input.targetPath.replaceAll("'", "'\\''")}' && ` +
+    `chmod ${input.mode.toString(8)} '${input.targetPath.replaceAll("'", "'\\''")}'`;
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c", script],
+    stdin: bytes.toString("base64"),
+    bypassSession: true,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_staging_failed");
+  }
+}
+
+function archiveExcludeArgs(entries: readonly string[]): string[] {
+  for (const entry of entries) {
+    const segments = entry.split("/");
+    if (
+      entry.length === 0 ||
+      entry.startsWith("/") ||
+      segments.some(
+        (segment) =>
+          segment === "" ||
+          segment === "." ||
+          segment === ".." ||
+          !/^[A-Za-z0-9._-]+$/.test(segment),
+      )
+    ) {
+      throw new Error("runner_remote_checkpoint_exclusion_invalid");
+    }
+  }
+  return entries.map((entry) => `--exclude=./${entry}`);
+}
+
+export async function stageRemoteRunnerDirectory(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  sourcePath: string;
+  targetPath: string;
+  mode: number;
+  excludeEntries?: readonly string[];
+}): Promise<void> {
+  const excludeArgs = archiveExcludeArgs(input.excludeEntries ?? []);
+  if (input.runner.syncIn) {
+    let stagingRoot: string | null = null;
+    let sourcePath = input.sourcePath;
+    try {
+      if (excludeArgs.length > 0) {
+        stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-restore-"));
+        const archive = execFileSync(
+          "tar",
+          [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
+          { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
+        );
+        execFileSync("tar", ["-xzf", "-", "-C", stagingRoot], {
+          input: archive,
+          maxBuffer: 64 * 1024 * 1024,
+        });
+        sourcePath = stagingRoot;
+      }
+      await input.runner.syncIn([
+        {
+          operationId: `runner-stage-dir-${randomUUID()}`,
+          files: [
+            {
+              sourcePath,
+              targetPath: input.targetPath,
+              kind: "directory",
+              mode: input.mode,
+            },
+          ],
+        },
+      ]);
+    } finally {
+      if (stagingRoot) rmSync(stagingRoot, { recursive: true, force: true });
+    }
+    return;
+  }
+  const archive = execFileSync(
+    "tar",
+    [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
+    { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
+  );
+  const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
+  const script =
+    `umask 077; mkdir -p '${escapedTarget}' && ` +
+    `base64 -d | tar -xzf - -C '${escapedTarget}' && ` +
+    `chmod ${input.mode.toString(8)} '${escapedTarget}'`;
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", script],
+    stdin: archive.toString("base64"),
+    bypassSession: true,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_directory_staging_failed");
+  }
+}
+
+async function remoteRunnerPathExists(input: {
+  runner: CommandManagedRuntimeRunner;
+  path: string;
+  kind: "file" | "directory";
+}): Promise<boolean> {
+  const escapedPath = input.path.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `test -${input.kind === "file" ? "f" : "d"} '${escapedPath}'`],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  });
+  return result.exitCode === 0 && !result.timedOut;
+}
+
+function assertSafeRemoteCheckpointArchive(archive: Buffer): void {
+  if (archive.length > MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES) {
+    throw new Error("runner_remote_checkpoint_archive_too_large");
+  }
+  let names: string[];
+  let verboseEntries: string[];
+  try {
+    names = execFileSync("tar", ["-tzf", "-"], {
+      input: archive,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 30_000,
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    verboseEntries = execFileSync("tar", ["-tvzf", "-"], {
+      input: archive,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 30_000,
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+  } catch {
+    throw new Error("runner_remote_checkpoint_archive_invalid");
+  }
+  if (
+    names.length === 0 ||
+    names.length > MAX_REMOTE_CHECKPOINT_ENTRIES ||
+    verboseEntries.length !== names.length
+  ) {
+    throw new Error("runner_remote_checkpoint_archive_invalid");
+  }
+  for (const name of names) {
+    const normalized = name.replace(/^\.\//, "");
+    if (
+      name.includes("\0") ||
+      name.startsWith("/") ||
+      normalized.split("/").some((part) => part === "..")
+    ) {
+      throw new Error("runner_remote_checkpoint_archive_unsafe_path");
+    }
+  }
+  for (const entry of verboseEntries) {
+    const type = entry.trimStart()[0];
+    if (type !== "-" && type !== "d") {
+      throw new Error("runner_remote_checkpoint_archive_unsafe_entry");
+    }
+  }
+  try {
+    execFileSync("tar", ["-xOzf", "-"], {
+      input: archive,
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES,
+      timeout: 60_000,
+    });
+  } catch {
+    throw new Error("runner_remote_checkpoint_archive_expanded_too_large");
+  }
+}
+
+function assertSafeExtractedCheckpoint(root: string): void {
+  const pending = [root];
+  let entries = 0;
+  let totalBytes = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      entries += 1;
+      if (entries > MAX_REMOTE_CHECKPOINT_ENTRIES) {
+        throw new Error("runner_remote_checkpoint_too_many_entries");
+      }
+      const path = join(directory, entry.name);
+      const metadata = lstatSync(path);
+      if (
+        metadata.isSymbolicLink() ||
+        (!metadata.isDirectory() && !metadata.isFile())
+      ) {
+        throw new Error("runner_remote_checkpoint_unsafe_entry");
+      }
+      if (metadata.isDirectory()) {
+        pending.push(path);
+      } else {
+        totalBytes += metadata.size;
+        if (totalBytes > MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES) {
+          throw new Error("runner_remote_checkpoint_expanded_too_large");
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Copy a remote runner directory into durable local state.
+ *
+ * Some provider homes contain process-local scratch trees (for example Codex's
+ * `tmp/arg0` executable aliases). Those aliases can point outside the directory
+ * and are neither portable nor required to resume a provider session. When a
+ * provider supplies a native syncOut implementation, create a sibling snapshot
+ * first so the live runtime remains untouched and the provider's archive safety
+ * checks still apply to every persisted entry.
+ */
+export async function syncRemoteRunnerDirectoryOut(input: {
+  runner: CommandManagedRuntimeRunner;
+  sourcePath: string;
+  targetPath: string;
+  mode: number;
+  excludeEntries?: readonly string[];
+}): Promise<void> {
+  if (
+    !(await remoteRunnerPathExists({
+      runner: input.runner,
+      path: input.sourcePath,
+      kind: "directory",
+    }))
+  )
+    return;
+  mkdirSync(resolve(input.targetPath, ".."), { recursive: true, mode: 0o700 });
+  const excluded = input.excludeEntries ?? [];
+  const excludeArgs = archiveExcludeArgs(excluded)
+    .map((argument) => `'${argument}'`)
+    .join(" ");
+  if (input.runner.syncOut) {
+    let syncSourcePath = input.sourcePath;
+    let snapshotPath: string | null = null;
+    if (excluded.length > 0) {
+      const checkpointId = randomUUID();
+      snapshotPath = posix.join(
+        posix.dirname(input.sourcePath),
+        `.paperclip-checkpoint-${checkpointId}`,
+      );
+      const archivePath = `${snapshotPath}.tar`;
+      const escapedSource = input.sourcePath.replaceAll("'", "'\\''");
+      const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
+      const escapedArchive = archivePath.replaceAll("'", "'\\''");
+      const snapshotResult = await input.runner.execute({
+        command: "sh",
+        args: [
+          "-c",
+          `set -e; umask 077; mkdir -p '${escapedSnapshot}'; ` +
+            `trap "rm -f '${escapedArchive}'" EXIT; ` +
+            `tar ${excludeArgs} -cf '${escapedArchive}' -C '${escapedSource}' .; ` +
+            `tar -xf '${escapedArchive}' -C '${escapedSnapshot}'`,
+        ],
+        bypassSession: true,
+        timeoutMs: 120_000,
+      });
+      if (snapshotResult.exitCode !== 0 || snapshotResult.timedOut) {
+        throw new Error("runner_remote_checkpoint_snapshot_failed");
+      }
+      syncSourcePath = snapshotPath;
+    }
+    try {
+      await input.runner.syncOut([
+        {
+          operationId: `runner-checkpoint-dir-${randomUUID()}`,
+          files: [
+            {
+              sourcePath: syncSourcePath,
+              targetPath: input.targetPath,
+              kind: "directory",
+              mode: input.mode,
+            },
+          ],
+        },
+      ]);
+    } finally {
+      if (snapshotPath) {
+        const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
+        await input.runner
+          .execute({
+            command: "sh",
+            args: ["-c", `rm -rf -- '${escapedSnapshot}'`],
+            bypassSession: true,
+            timeoutMs: 30_000,
+          })
+          .catch(() => undefined);
+      }
+    }
+    return;
+  }
+  const escapedSource = input.sourcePath.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `tar ${excludeArgs} -czf - -C '${escapedSource}' . | base64`],
+    bypassSession: true,
+    timeoutMs: 120_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_checkpoint_failed");
+  }
+  const archive = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+  assertSafeRemoteCheckpointArchive(archive);
+  const parent = resolve(input.targetPath, "..");
+  const stagingRoot = mkdtempSync(join(parent, ".paperclip-checkpoint-"));
+  const stagedTarget = join(stagingRoot, "payload");
+  const previousTarget = join(
+    parent,
+    `.paperclip-checkpoint-previous-${randomUUID()}`,
+  );
+  let previousMoved = false;
+  let replacementInstalled = false;
+  try {
+    mkdirSync(stagedTarget, { recursive: true, mode: input.mode });
+    execFileSync(
+      "tar",
+      [
+        "--no-same-owner",
+        "--no-same-permissions",
+        "-xzf",
+        "-",
+        "-C",
+        stagedTarget,
+      ],
+      { input: archive, maxBuffer: 8 * 1024 * 1024, timeout: 60_000 },
+    );
+    assertSafeExtractedCheckpoint(stagedTarget);
+    chmodSync(stagedTarget, input.mode);
+    if (existsSync(input.targetPath)) {
+      renameSync(input.targetPath, previousTarget);
+      previousMoved = true;
+    }
+    renameSync(stagedTarget, input.targetPath);
+    replacementInstalled = true;
+    if (previousMoved) {
+      rmSync(previousTarget, { recursive: true, force: true });
+      previousMoved = false;
+    }
+  } catch (error) {
+    if (
+      previousMoved &&
+      !replacementInstalled &&
+      !existsSync(input.targetPath)
+    ) {
+      try {
+        renameSync(previousTarget, input.targetPath);
+        previousMoved = false;
+      } catch {
+        // Leave the last durable checkpoint at previousTarget. Deleting it in
+        // finally would turn a failed replacement into irreversible data loss.
+      }
+    }
+    throw error;
+  } finally {
+    if (previousMoved && replacementInstalled) {
+      rmSync(previousTarget, { recursive: true, force: true });
+    }
+    rmSync(stagingRoot, { recursive: true, force: true });
+  }
+}
+
+async function readRemoteRunnerState(input: {
+  runner: CommandManagedRuntimeRunner;
+  stateDirectory: string;
+}): Promise<Record<string, unknown>> {
+  const statePath = posix.join(input.stateDirectory, "runner-state.json");
+  const escapedPath = statePath.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `test -f '${escapedPath}' && base64 < '${escapedPath}'`],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_state_unavailable");
+  }
+  return record(
+    JSON.parse(
+      Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8"),
+    ),
+  );
+}
+
+async function readRemoteRunnerProviderState(input: {
+  runner: CommandManagedRuntimeRunner;
+  stateDirectory: string;
+  execution: NativeExecutionInput;
+}): Promise<Record<string, unknown>> {
+  const statePath = posix.join(
+    input.stateDirectory,
+    runnerProviderStateFilename(input.execution),
+  );
+  const escapedPath = statePath.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `test -f '${escapedPath}' && base64 < '${escapedPath}'`],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_provider_state_unavailable");
+  }
+  return record(
+    JSON.parse(
+      Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8"),
+    ),
+  );
+}
+
+const REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS = 20_000;
+const REMOTE_RUNNER_PROCESS_POLL_MS = 1_000;
+
+const REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT =
+  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; expected_pid=$4; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 4; kill -0 "$pid" 2>/dev/null || exit 3; if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi';
+
+const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
+  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); identity_tmp="${identity_path}.tmp.$$"; printf "%s\\n%s\\n%s\\n%s\\n" "$identity_nonce" "$$" "$started_at" "$runner_instance_id" > "$identity_tmp"; chmod 0600 "$identity_tmp"; mv -f -- "$identity_tmp" "$identity_path"; exec "$@"';
+
+const REMOTE_RUNNER_FAILED_IDENTITY_CLEANUP_SCRIPT =
+  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; marker_wait=0; while { test ! -f "$identity_path" || test -L "$identity_path"; } && test "$marker_wait" -lt 50; do marker_wait=$((marker_wait + 1)); sleep 0.1; done; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test -n "$started_at" || exit 4; case "$pid" in ""|*[!0-9]*) exit 4 ;; esac; test "$pid" -gt 0 || exit 4; if kill -0 "$pid" 2>/dev/null; then if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi; signal_target=$pid; if command -v ps >/dev/null 2>&1; then session_id=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d " ") || true; if test "$session_id" = "$pid"; then signal_target="-$pid"; fi; fi; kill -TERM -- "$signal_target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; term_wait=0; while kill -0 "$pid" 2>/dev/null && test "$term_wait" -lt 50; do term_wait=$((term_wait + 1)); sleep 0.1; done; if kill -0 "$pid" 2>/dev/null; then kill -KILL -- "$signal_target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; kill_wait=0; while kill -0 "$pid" 2>/dev/null && test "$kill_wait" -lt 50; do kill_wait=$((kill_wait + 1)); sleep 0.1; done; fi; kill -0 "$pid" 2>/dev/null && exit 5; fi; test -f "$identity_path" && test ! -L "$identity_path" || exit 4; { IFS= read -r final_nonce; IFS= read -r final_pid; IFS= read -r final_started_at; IFS= read -r final_runner_id; } < "$identity_path"; test "$final_nonce" = "$nonce" && test "$final_pid" = "$pid" && test "$final_started_at" = "$started_at" && test "$final_runner_id" = "$runner_id" || exit 4; rm -f -- "$identity_path"';
+
+export function parseRemoteRunnerProcessIdentity(
+  value: string,
+  expected: { nonce: string; runnerInstanceId: string },
+): { pid: number; startedAt: string } | null {
+  const [nonce, rawPid, startedAt, runnerInstanceId, ...remainder] = value
+    .trim()
+    .split("\n");
+  const pid = Number(rawPid);
+  if (
+    remainder.length > 0 ||
+    nonce !== expected.nonce ||
+    runnerInstanceId !== expected.runnerInstanceId ||
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    !startedAt ||
+    Number.isNaN(new Date(startedAt).getTime())
+  ) {
+    return null;
+  }
+  return { pid, startedAt };
+}
+
+async function waitForRemoteRunnerProcessIdentity(input: {
+  runner: CommandManagedRuntimeRunner;
+  identityPath: string;
+  nonce: string;
+  runnerInstanceId: string;
+}): Promise<{ pid: number; startedAt: string }> {
+  const deadline = Date.now() + REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS;
+  while (Date.now() < deadline) {
+    const result = await input.runner
+      .execute({
+        command: "sh",
+        args: [
+          "-c",
+          'test -f "$1" && test ! -L "$1" && cat -- "$1"',
+          "paperclip-runner-process-identity",
+          input.identityPath,
+        ],
+        bypassSession: true,
+        timeoutMs: 2_000,
+      })
+      .catch(() => null);
+    const identity =
+      result && result.exitCode === 0 && !result.timedOut
+        ? parseRemoteRunnerProcessIdentity(result.stdout, input)
+        : null;
+    if (identity) return identity;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("runner_remote_process_identity_unavailable");
+}
+
+async function cleanupRemoteRunnerAfterIdentityFailure(input: {
+  runner: CommandManagedRuntimeRunner;
+  identityPath: string;
+  nonce: string;
+  runnerInstanceId: string;
+}): Promise<boolean> {
+  const result = await input.runner
+    .execute({
+      command: "sh",
+      args: [
+        "-c",
+        REMOTE_RUNNER_FAILED_IDENTITY_CLEANUP_SCRIPT,
+        "paperclip-runner-identity-failure-cleanup",
+        input.identityPath,
+        input.nonce,
+        input.runnerInstanceId,
+      ],
+      bypassSession: true,
+      timeoutMs: 20_000,
+    })
+    .catch(() => null);
+  return result?.exitCode === 0 && result.timedOut === false;
+}
+
+export function createRemoteRunnerProcessLauncher(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  remoteBinary: string;
+  processIdentityPath: string;
+  stateDirectory: string;
+  diagnosticsDirectory: string;
+  runnerInstanceId: string;
+  ensureArtifact?: () => Promise<void>;
+  onSpawn?: (meta: {
+    pid: number;
+    processGroupId: number | null;
+    startedAt: string;
+  }) => Promise<void>;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  trace?: NativeRunTrace;
+  onRunnerProcessSpawned?: () => void;
+}): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
+  const runner = input.runner;
+  return (spec) => {
+    let launchedIdentity: {
+      nonce: string;
+      pid: number;
+      startedAt: string;
+    } | null = null;
+    const child: RunnerProcessHandle["child"] = {
+      pid: undefined,
+      exitCode: null,
+      signalCode: null,
+      kill: (requestedSignal) => {
+        const identity = launchedIdentity;
+        if (!identity) return false;
+        const signal =
+          requestedSignal === "SIGKILL" || requestedSignal === 9
+            ? "KILL"
+            : requestedSignal === "SIGINT" || requestedSignal === 2
+              ? "INT"
+              : "TERM";
+        // The durable marker, nonce, exact pid, and runner-id command line are
+        // revalidated in the sandbox immediately before signalling. A recycled
+        // pid or replaced marker therefore fails closed instead of killing an
+        // unrelated process.
+        void runner.execute({
+          command: "sh",
+          args: [
+            "-c",
+            `${REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT}; kill -${signal} "$expected_pid"`,
+            "paperclip-runner-signal",
+            input.processIdentityPath,
+            identity.nonce,
+            input.runnerInstanceId,
+            String(identity.pid),
+          ],
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        return true;
+      },
+    };
+    const completion = (async () => {
+      if (input.ensureArtifact) {
+        if (input.trace) {
+          await input.trace.measure(
+            "runner.runtime.stage",
+            input.ensureArtifact,
+            { parentName: "runner.session.startup" },
+          );
+        } else {
+          await input.ensureArtifact();
+        }
+      }
+      const launchStartedAtMs = Date.now();
+      // The provider's onSpawn callback is optional and some sandbox command
+      // runners cannot report a remote pid until after the command has begun
+      // streaming. Signal as soon as staging is complete and the launch RPC is
+      // dispatched; this is late enough to avoid preview retries during staging
+      // and early enough to avoid a callback-dependent deadlock.
+      input.onRunnerProcessSpawned?.();
+      await input.trace?.record({
+        name: "runner.process.dispatch",
+        parentName: "runner.session.startup",
+        startedAtMs: launchStartedAtMs,
+        endedAtMs: Date.now(),
+        attributes: { target: "remote" },
+      });
+      const identityNonce = randomUUID();
+      const remoteArgs = [...spec.args];
+      const diagnosticsArgumentIndex = remoteArgs.indexOf(
+        "--diagnostics-directory",
+      );
+      if (diagnosticsArgumentIndex >= 0) {
+        remoteArgs[diagnosticsArgumentIndex + 1] = input.diagnosticsDirectory;
+      } else {
+        remoteArgs.push("--diagnostics-directory", input.diagnosticsDirectory);
+      }
+      // Do not keep runnerd as the foreground command of a provider RPC. Some
+      // sandbox command/session transports impose a provider-side lifetime on
+      // that RPC even when Paperclip requests a longer timeout. Detach runnerd
+      // into its own session instead; its own bounded diagnostics directory and
+      // durable PRP state remain the authorities, and the controller monitors
+      // the exact persisted process identity below.
+      const launchResult = await runner.execute({
+        command: "sh",
+        args: [
+          "-c",
+          'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; child_script=$4; shift 4; umask 077; identity_dir=$(dirname -- "$identity_path"); mkdir -p -- "$identity_dir"; if command -v setsid >/dev/null 2>&1; then nohup setsid sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & else nohup sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & fi',
+          "paperclip-runner-launch",
+          input.processIdentityPath,
+          identityNonce,
+          input.runnerInstanceId,
+          REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+          input.diagnosticsDirectory,
+          input.remoteBinary,
+          ...remoteArgs,
+        ],
+        cwd: input.target.remoteCwd,
+        env: processEnvironment(spec.environment),
+        timeoutMs: 20_000,
+        bypassSession: true,
+        onLog: input.onLog,
+      });
+      if (launchResult.exitCode !== 0 || launchResult.timedOut) {
+        throw new Error(
+          launchResult.timedOut
+            ? "runner_remote_process_launch_timed_out"
+            : "runner_remote_process_launch_failed",
+        );
+      }
+      let identity: { pid: number; startedAt: string };
+      try {
+        identity = await waitForRemoteRunnerProcessIdentity({
+          runner,
+          identityPath: input.processIdentityPath,
+          nonce: identityNonce,
+          runnerInstanceId: input.runnerInstanceId,
+        });
+      } catch {
+        const cleanupStartedAtMs = Date.now();
+        const cleaned = await cleanupRemoteRunnerAfterIdentityFailure({
+          runner,
+          identityPath: input.processIdentityPath,
+          nonce: identityNonce,
+          runnerInstanceId: input.runnerInstanceId,
+        });
+        await input.trace?.record({
+          name: "runner.process.identity_failure_cleanup",
+          parentName: "runner.session.startup",
+          startedAtMs: cleanupStartedAtMs,
+          endedAtMs: Date.now(),
+          attributes: { cleaned },
+        });
+        if (!cleaned) {
+          throw new Error(
+            "runner_remote_process_identity_unavailable_cleanup_failed",
+          );
+        }
+        throw new Error("runner_remote_process_identity_unavailable");
+      }
+      launchedIdentity = { nonce: identityNonce, ...identity };
+      child.pid = identity.pid;
+      await input.onSpawn?.({
+        pid: identity.pid,
+        processGroupId: null,
+        startedAt: identity.startedAt,
+      });
+      await input.trace?.record({
+        name: "runner.process.launch",
+        parentName: "runner.session.startup",
+        startedAtMs: launchStartedAtMs,
+        endedAtMs: Date.now(),
+        attributes: { identitySource: "remote_marker", detached: true },
+      });
+
+      while (true) {
+        const observed = await runner.execute({
+          command: "sh",
+          args: [
+            "-c",
+            REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT,
+            "paperclip-runner-monitor",
+            input.processIdentityPath,
+            identityNonce,
+            input.runnerInstanceId,
+            String(identity.pid),
+          ],
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        if (observed.exitCode === 0 && !observed.timedOut) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),
+          );
+          continue;
+        }
+        child.exitCode = null;
+        const identityMismatch = observed.exitCode === 4;
+        const diagnostic = await runner
+          .execute({
+            command: "sh",
+            args: [
+              "-c",
+              'set -eu; directory=$1; file="$directory/runnerd.stderr.log"; test -d "$directory" && test ! -L "$directory" && test -f "$file" && test ! -L "$file"; tail -c 65536 -- "$file"',
+              "paperclip-runner-diagnostics",
+              input.diagnosticsDirectory,
+            ],
+            bypassSession: true,
+            timeoutMs: 10_000,
+          })
+          .catch(() => null);
+        const diagnosticTail =
+          diagnostic && diagnostic.exitCode === 0 && !diagnostic.timedOut
+            ? redactSensitiveText(diagnostic.stdout).slice(-16_384).trim()
+            : "";
+        const durableState = await readRemoteRunnerState({
+          runner,
+          stateDirectory: input.stateDirectory,
+        }).catch(() => null);
+        const lifecycle =
+          typeof durableState?.lifecycle === "string"
+            ? durableState.lifecycle
+            : "unavailable";
+        const recoverableFailure =
+          typeof durableState?.recoverableFailure === "string"
+            ? durableState.recoverableFailure
+            : typeof durableState?.recoverable_failure === "string"
+              ? durableState.recoverable_failure
+              : null;
+        const stateDiagnostics = Array.isArray(durableState?.diagnostics)
+          ? durableState.diagnostics
+              .filter((value): value is string => typeof value === "string")
+              .slice(-4)
+              .map((value) => redactSensitiveText(value).slice(-1_000))
+          : [];
+        const stateSummary = `runner_remote_process_exited lifecycle=${lifecycle}${recoverableFailure ? ` recoverableFailure=${redactSensitiveText(recoverableFailure).slice(-1_000)}` : ""}${stateDiagnostics.length > 0 ? ` diagnostics=${JSON.stringify(stateDiagnostics)}` : ""}`;
+        return {
+          code: null,
+          signal: null,
+          stdout: "",
+          stderr: identityMismatch
+            ? "runner_remote_process_identity_mismatch"
+            : diagnosticTail || stateSummary,
+        };
+      }
+    })();
+    return { child, completion };
+  };
+}
+
+/**
+ * Select the remote runner transport before any artifact is staged or provider
+ * endpoint is acquired. Sandbox ingress is available only to a run already
+ * authorized by native runtime selection.
+ */
+export function resolveRemoteRunnerTransportMode(input: {
+  target: AdapterExecutionTarget;
+  runnerIngressAuthorized: boolean;
+}): "listen_ws" | "dial_wss" {
+  if (input.target.kind !== "remote") {
+    throw new Error("runner_transport_ineligible: remote target is required");
+  }
+  const requiredMode =
+    input.target.transport === "sandbox" &&
+    input.target.effectiveCapabilities?.runnerWebSocketIngress === true
+      ? "listen_ws"
+      : "dial_wss";
+  if (requiredMode === "listen_ws" && !input.runnerIngressAuthorized) {
+    throw new Error("runner_ingress_unavailable");
+  }
+  return requiredMode;
+}
+
+export function remoteCheckpointIncompleteFailure(
+  settlement: "settled" | "unsettled",
+  incompleteReason: "unavailable" | "not_suspended" | null,
+): Error | null {
+  // A transport that never completed provider bootstrap has no provider state
+  // to preserve; its original launch failure remains authoritative. Once
+  // runnerd has proved suspension, however, an unreadable or incomplete
+  // checkpoint must fail the required close so outer sandbox release is
+  // withheld. Process containment still happens in the transport finally.
+  if (settlement === "unsettled") return null;
+  return new Error(
+    `runner_remote_checkpoint_incomplete: exact suspended harness state unavailable (${incompleteReason ?? "unknown"})`,
+  );
+}
+
+/** Production runnerd backend seam, exported so provider wiring can be regression tested. */
+export async function createRunnerdBackend(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+  chatAttachmentReadScope?: NativeChatAttachmentReadScope;
+  restartRecovery?: NativeRestartRecoveryClaim;
+  durableEnvironmentLeaseId?: string;
+  onSpawn?: (meta: {
+    pid: number;
+    processGroupId: number | null;
+    startedAt: string;
+  }) => Promise<void>;
+  runnerEnvironment?: NodeJS.ProcessEnv;
+  /** Private grant materialization; never a user-configured host path. */
+  managedAiCredentialHome?: string;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  /** Resolved per-run authorization; not an independent instance setting. */
+  runnerIngressAuthorized?: boolean;
+  runnerPublicUrl?: string | null;
+  runnerCaBundlePath?: string | null;
+  runnerRemoteBinaryPath?: string | null;
+  runnerRemoteCodexPath?: string | null;
+  runnerRemoteCodexNpmSpec?: string | null;
+  runnerRemoteProviderPackPath?: string | null;
+  trace?: NativeRunTrace;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  enqueueWakeup?: (
+    agentId: string,
+    options: {
+      source: "assignment";
+      triggerDetail: "system";
+      reason: "issue_assigned";
+      payload: Record<string, unknown>;
+      idempotencyKey: string;
+      requestedByActorType: "agent";
+      requestedByActorId: string;
+      contextSnapshot: Record<string, unknown>;
+    },
+  ) => Promise<unknown>;
+}): Promise<NativeSessionBackend> {
+  const sessionScopeId = nativeSessionScopeKey(input.execution);
+  const scopeOwner = executingRunnerdSessionScopes.get(sessionScopeId);
+  if (scopeOwner && scopeOwner !== input.execution.binding.runId) {
+    throw new Error("native_session_supervisor_busy");
+  }
+  if (initializingSessionToolAuthorities.has(sessionScopeId)) {
+    throw new Error("native_session_supervisor_busy");
+  }
+  initializingSessionToolAuthorities.add(sessionScopeId);
+  try {
+    let retainedTransition: VerifiedWarmTransitionBinding | undefined;
+    // executePaperclipNativeSession holds the full session-scope claim and
+    // verifies/migrates the durable root before it acquires the coordinator
+    // lease. Avoid reclassifying the same root after that path has marked its
+    // retained warm owner busy for this run. Direct backend construction still
+    // performs the complete fail-closed verification here.
+    if (
+      executingRunnerdSessionScopes.get(sessionScopeId) !==
+        input.execution.binding.runId ||
+      hasRetainedWarmTransitionEvidence(scopedRunnerdStateRoot(input.execution))
+    ) {
+      retainedTransition = await migrateRunnerdStateRootForExecution({
+        db: input.db,
+        execution: input.execution,
+        allowVerifiedBackup:
+          input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "sandbox",
+        allowRetainedWarmRunner: false,
+        allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
+        onLog: input.onLog,
+        restartRecovery: input.restartRecovery,
+        runnerExecutionTarget: input.runnerExecutionTarget,
+      });
+    }
+    return await createRunnerdBackendWithinSessionClaim(
+      input,
+      sessionScopeId,
+      retainedTransition,
+    );
+  } finally {
+    initializingSessionToolAuthorities.delete(sessionScopeId);
+  }
+}
+
+async function createRunnerdBackendWithinSessionClaim(
+  input: Parameters<typeof createRunnerdBackend>[0],
+  sessionScopeId: string,
+  retainedTransition?: VerifiedWarmTransitionBinding,
+): Promise<NativeSessionBackend> {
+  let recoveryPending = retainedTransition !== undefined;
+  const target = input.runnerExecutionTarget ?? { kind: "local" as const };
+  const currentWakeComments = await resolveCurrentWakeCommentsBinding(
+    input.db,
+    input.execution.binding,
+  );
+  const pinnedSkills = new Set("runtimeContext" in input.execution ? input.execution.runtimeContext.skills.map((skill) => skill.key) : []);
+  const connectorAssignments = [...pinnedSkills].some(isConnectorSkill)
+    ? await resolveConnectorAssignments(input.db, input.execution.binding) : [];
+  const authority = new PaperclipRunnerToolAuthority(input.db, {
+    connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
+    companyId: input.execution.binding.companyId,
+    issueId: input.execution.binding.issueId,
+    runId: input.execution.binding.runId,
+    agentId: input.execution.binding.agentId,
+    normalizedSessionId: nativeSessionKey(input.execution),
+    pinnedMcpDigest:
+      "runtimeContext" in input.execution
+        ? input.execution.runtimeContext.mcp.digest
+        : undefined,
+    workMode: input.execution.task.workMode,
+    workspaceRoot: input.execution.workspace.cwd,
+    executionTargetKind: target.kind,
+    currentWakeComments: currentWakeComments ?? undefined,
+    chatAttachmentReadScope: input.chatAttachmentReadScope,
+    enqueueWakeup: input.enqueueWakeup,
+  });
+  const authorityEpoch = new SessionToolAuthorityEpoch(
+    input.execution.binding.runId,
+    authority,
+  );
+  let dynamicTools: Awaited<
+    ReturnType<SessionToolAuthorityEpoch["definitions"]>
+  >;
+  try {
+    dynamicTools = await authorityEpoch.definitions();
+  } catch (error) {
+    authorityEpoch.revoke();
+    throw error;
+  }
+  const root = runnerdStateRoot(input.execution);
+  const durableIdentity = readRunnerdDurableIdentity(root);
+  const durableBinding = retainedTransition
+    ? loadRunnerdDurableBinding(input.execution, retainedTransition)
+    : durableIdentityMatchesSession(durableIdentity, input.execution)
+      ? durableIdentity
+      : null;
+  const effectiveRunnerInstanceId =
+    durableBinding?.runnerInstanceId ?? input.runnerInstanceId;
+  const effectiveEnvironmentLeaseId =
+    durableBinding?.environmentLeaseId ??
+    input.durableEnvironmentLeaseId ??
+    input.execution.binding.executionWorkspaceId;
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const remoteTarget = target.kind === "remote" ? target : null;
+  const remoteCommandRunner = remoteTarget
+    ? remoteTarget.transport === "ssh"
+      ? createSshCommandManagedRuntimeRunner({
+          spec: remoteTarget.spec,
+          defaultCwd: remoteTarget.remoteCwd,
+        })
+      : remoteTarget.runner
+    : null;
+  if (remoteTarget && !remoteCommandRunner) {
+    throw new Error(
+      "runner_transport_ineligible: remote process runner is unavailable",
+    );
+  }
+  const remoteRuntimeRoot = remoteTarget
+    ? posix.join(
+        remoteTarget.remoteCwd,
+        ".paperclip-runtime",
+        "paperclip-runner",
+      )
+    : null;
+  const requiresRemoteProviderPack =
+    remoteTarget !== null &&
+    (input.execution.provider.kind === "opencode" ||
+      input.execution.provider.kind === "acpx");
+  const configuredProviderPackRoot =
+    input.runnerRemoteProviderPackPath?.trim() || null;
+  let expectedProviderPackManifest: RemoteProviderPackManifest | null = null;
+  if (requiresRemoteProviderPack) {
+    if (
+      !configuredProviderPackRoot ||
+      !existsSync(configuredProviderPackRoot) ||
+      !lstatSync(configuredProviderPackRoot).isDirectory()
+    ) {
+      throw new Error(
+        "runner_remote_provider_artifact_incompatible: configure PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH with the build-owned provider pack",
+      );
+    }
+    expectedProviderPackManifest = readRemoteProviderPackManifest(
+      configuredProviderPackRoot,
+    );
+  }
+  const stagedRemoteProviderPackRoot = remoteRuntimeRoot
+    ? posix.join(remoteRuntimeRoot, "provider-pack")
+    : null;
+  let activeRemoteProviderPackRoot: string | null = null;
+  const remoteBinary = remoteRuntimeRoot
+    ? posix.join(remoteRuntimeRoot, "bin", "paperclip-runnerd")
+    : null;
+  // The transport hashes runnerBinary on the controller before an external
+  // launcher starts runnerd. Keep that artifact identity in the controller's
+  // filesystem; the remote launcher separately owns the sandbox command path.
+  // When an explicit remote artifact is configured, prepareRemoteRunner stages
+  // these exact bytes at remoteBinary before launch.
+  const controllerRunnerBinary = remoteTarget
+    ? input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary()
+    : resolvePaperclipRunnerBinary();
+  const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
+  const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
+  if (explicitRemoteCodex && remoteCodexNpmSpec) {
+    throw new Error("runner_remote_codex_source_conflict");
+  }
+  const remoteCodexBinary =
+    remoteRuntimeRoot && input.execution.provider.kind === "codex"
+      ? remoteCodexNpmSpec
+        ? posix.join(
+            remoteRuntimeRoot,
+            "harnesses",
+            "codex",
+            "node_modules",
+            ".bin",
+            "codex",
+          )
+        : posix.join(remoteRuntimeRoot, "bin", "codex")
+      : null;
+  const remoteSessionDigest = createHash("sha256")
+    .update(nativeSessionKey(input.execution))
+    .digest("hex");
+  const remoteSessionRoot = remoteRuntimeRoot
+    ? posix.join(remoteRuntimeRoot, "sessions", remoteSessionDigest)
+    : null;
+  const remoteStateDirectory = remoteSessionRoot
+    ? posix.join(remoteSessionRoot, "runner")
+    : undefined;
+  const remoteRunnerFilesystemRoot = remoteSessionRoot
+    ? posix.join(remoteSessionRoot, "filesystem")
+    : null;
+  const persistenceProfile = resolveNativeHarnessPersistenceProfile(
+    input.execution,
+  );
+  const sandboxLeaseAcquisition =
+    remoteTarget?.transport === "sandbox"
+      ? (remoteTarget.sandboxLeaseAcquisition ?? null)
+      : null;
+  const remotePersistencePath = (
+    directory: NativeHarnessPersistenceDirectory,
+  ): string | null =>
+    directory.location === "runner"
+      ? (remoteStateDirectory ?? null)
+      : remoteRunnerFilesystemRoot
+        ? posix.join(remoteRunnerFilesystemRoot, directory.name)
+        : null;
+  const sourceRuntimeContext =
+    "runtimeContext" in input.execution ? input.execution.runtimeContext : null;
+  const remoteRuntimeContext: NativeRuntimeContextSnapshot | null =
+    remoteRunnerFilesystemRoot && sourceRuntimeContext
+      ? {
+          ...sourceRuntimeContext,
+          instructions: {
+            ...sourceRuntimeContext.instructions,
+            bundle: {
+              ...sourceRuntimeContext.instructions.bundle,
+              rootPath: posix.join(
+                remoteRunnerFilesystemRoot,
+                "context",
+                "instructions",
+              ),
+            },
+          },
+          skills: sourceRuntimeContext.skills.map((skill, index) => ({
+            ...skill,
+            bundle: {
+              ...skill.bundle,
+              rootPath: posix.join(
+                remoteRunnerFilesystemRoot,
+                "context",
+                "skills",
+                `${index}-${skill.bundle.digest.slice(0, 12)}`,
+              ),
+            },
+          })),
+        }
+      : sourceRuntimeContext;
+  let remotePrepared = false;
+  let remoteHarnessStatePrepared = false;
+  let selectedRemoteMode: "dial_wss" | "listen_ws" | null = null;
+  let remoteCaBundleMapping: { sourcePath: string; targetPath: string } | null =
+    null;
+  let resolveRemoteRunnerProcessSpawned: (() => void) | null = null;
+  const remoteRunnerProcessSpawned = remoteTarget
+    ? new Promise<void>((resolveSpawned) => {
+        resolveRemoteRunnerProcessSpawned = resolveSpawned;
+      })
+    : Promise.resolve();
+
+  const verifyRemoteRunner = async (
+    requiredMode: "dial_wss" | "listen_ws",
+    executable = remoteBinary,
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner || !executable) return;
+    const metadataResult = await remoteCommandRunner.execute({
+      command: executable,
+      args: ["--build-metadata"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (metadataResult.exitCode !== 0 || metadataResult.timedOut) {
+      throw new Error("runner_remote_artifact_verification_failed");
+    }
+    let metadata: Record<string, unknown>;
+    try {
+      metadata = JSON.parse(metadataResult.stdout) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error("runner_remote_artifact_metadata_invalid", {
+        cause: error,
+      });
+    }
+    assertRemoteRunnerBuildMetadata(metadata, requiredMode);
+  };
+
+  const verifyRemoteCodex = async (executable = remoteCodexBinary) => {
+    if (!remoteTarget || !remoteCommandRunner || !executable) return;
+    const versionResult = await remoteCommandRunner.execute({
+      command: executable,
+      args: ["--version"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (versionResult.exitCode !== 0 || versionResult.timedOut) {
+      throw new Error("runner_remote_codex_artifact_verification_failed");
+    }
+    const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`;
+    const version = versionOutput.match(/\bcodex-cli\s+(\d+\.\d+\.\d+)\b/)?.[1];
+    if (version !== REMOTE_PROVIDER_PACK_PINS.codex) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: expected Codex ${REMOTE_PROVIDER_PACK_PINS.codex}, received ${version ?? "an unrecognized version"}`,
+      );
+    }
+  };
+
+  const verifyRemoteProviderPack = async (packRoot: string) => {
+    if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
+      return;
+    const expected = Buffer.from(
+      canonicalJson(expectedProviderPackManifest),
+      "utf8",
+    ).toString("base64");
+    const providerNodeCommand = posix.join(
+      packRoot,
+      expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
+    );
+    const verifyScript = [
+      "const fs=require('node:fs')",
+      "const crypto=require('node:crypto')",
+      "const path=require('node:path')",
+      "const root=process.argv[1]",
+      "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
+      "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
+      "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
+      "const manifest=JSON.parse(actual)",
+      "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
+      "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
+      "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
+      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
+      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
+      "const version=process.versions.node.split('.').map(Number)",
+      "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
+      "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
+      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
+      "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
+      "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
+      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
+    ].join(";");
+    const verified = await remoteCommandRunner.execute({
+      command: providerNodeCommand,
+      args: ["-e", verifyScript, packRoot, expected],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (verified.exitCode !== 0 || verified.timedOut) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: provider pack verification failed (${verified.stderr.trim().slice(-1_024)})`,
+      );
+    }
+    const opencodeCommand = posix.join(
+      packRoot,
+      expectedProviderPackManifest.payload.artifacts.opencodeCommand.path,
+    );
+    const opencodeVersion = await remoteCommandRunner.execute({
+      command: opencodeCommand,
+      args: ["--version"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (
+      opencodeVersion.exitCode !== 0 ||
+      opencodeVersion.timedOut ||
+      opencodeVersion.stdout.trim() !== REMOTE_PROVIDER_PACK_PINS.opencode
+    ) {
+      throw new Error(
+        "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
+      );
+    }
+  };
+
+  const discoverPreinstalledProviderPack = async () => {
+    if (!remoteTarget || !remoteCommandRunner) return null;
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        'for candidate in /opt/paperclip-runner/provider-pack "$HOME/.local/share/paperclip-runner/provider-pack"; do if [ -f "$candidate/provider-pack.json" ]; then printf \'%s\\n\' "$candidate"; break; fi; done',
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) return null;
+    return parseRemoteExecutableCandidate(result.stdout);
+  };
+
+  // Image policy: keep one latest stable CLI installation shared by native and
+  // local adapters. Preferred bin entries must point to that same installation;
+  // never bake an older global CLI alongside a private runner-only version.
+  const discoverPreinstalledExecutable = async (
+    name: "paperclip-runnerd" | "codex",
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner) return null;
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        `for candidate in /opt/paperclip-runner/bin/${name} "$HOME/.local/bin/${name}"; do ` +
+          `if [ -x "$candidate" ]; then printf '%s\\n' "$candidate"; exit 0; fi; done; ` +
+          `command -v ${name} 2>/dev/null || true`,
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) return null;
+    return parseRemoteExecutableCandidate(result.stdout);
+  };
+
+  const linkPreinstalledExecutable = async (
+    sourcePath: string,
+    targetPath: string,
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner) return;
+    const escapedSource = sourcePath.replaceAll("'", "'\\''");
+    const escapedTarget = targetPath.replaceAll("'", "'\\''");
+    const escapedDirectory = posix.dirname(targetPath).replaceAll("'", "'\\''");
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        targetPath === remoteCodexBinary
+          ? buildRemoteCodexLauncherCommand(sourcePath, targetPath)
+          : `umask 077; mkdir -p '${escapedDirectory}' && ` +
+            `ln -sfn '${escapedSource}' '${escapedTarget}'`,
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) {
+      throw new Error("runner_remote_preinstalled_link_failed");
+    }
+  };
+
+  const prepareRemoteRunner = async (
+    requiredMode: "dial_wss" | "listen_ws",
+  ) => {
+    if (
+      !remoteTarget ||
+      !remoteCommandRunner ||
+      !remoteBinary ||
+      remotePrepared
+    )
+      return;
+    selectedRemoteMode = requiredMode;
+    let usedPreinstalledRunner = false;
+    const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
+    if (mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
+      const preinstalledRunner = await measureNativeRunnerSpan(
+        input.trace,
+        "runner.artifact.discover",
+        () => discoverPreinstalledExecutable("paperclip-runnerd"),
+      );
+      if (preinstalledRunner) {
+        try {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "runner.artifact.verify_preinstalled",
+            () => verifyRemoteRunner(requiredMode, preinstalledRunner),
+          );
+          await measureNativeRunnerSpan(
+            input.trace,
+            "runner.artifact.link",
+            () => linkPreinstalledExecutable(preinstalledRunner, remoteBinary),
+          );
+          usedPreinstalledRunner = true;
+          await input.onLog?.(
+            "stderr",
+            "[paperclip-runner] using preinstalled runnerd from the sandbox image\n",
+          );
+        } catch {
+          usedPreinstalledRunner = false;
+        }
+      }
+    }
+    if (!usedPreinstalledRunner) {
+      const sourceBinary =
+        explicitRemoteBinary ?? defaultCapabilityRunnerdBinary();
+      if (!existsSync(sourceBinary)) {
+        throw new Error("runner_remote_artifact_unavailable");
+      }
+      if (!explicitRemoteBinary) {
+        const platform = await remoteCommandRunner.execute({
+          command: "sh",
+          args: ["-c", "uname -s; uname -m"],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        const [remoteOs = "", remoteArch = ""] = platform.stdout
+          .trim()
+          .split(/\r?\n/);
+        const localOs =
+          process.platform === "darwin"
+            ? "Darwin"
+            : process.platform === "linux"
+              ? "Linux"
+              : process.platform;
+        const localArch =
+          process.arch === "x64"
+            ? "x86_64"
+            : process.arch === "arm64"
+              ? "aarch64"
+              : process.arch;
+        const archMatches =
+          remoteArch === localArch ||
+          (localArch === "aarch64" && remoteArch === "arm64");
+        if (
+          platform.exitCode !== 0 ||
+          platform.timedOut ||
+          remoteOs !== localOs ||
+          !archMatches
+        ) {
+          throw new Error(
+            "runner_remote_artifact_platform_mismatch: configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH for the remote OS and architecture",
+          );
+        }
+      }
+      await stageRemoteRunnerFile({
+        target: remoteTarget,
+        runner: remoteCommandRunner,
+        sourcePath: sourceBinary,
+        targetPath: remoteBinary,
+        mode: 0o700,
+      });
+    }
+    await measureNativeRunnerSpan(input.trace, "runner.artifact.verify", () =>
+      verifyRemoteRunner(requiredMode),
+    );
+    if (remoteCodexBinary && explicitRemoteCodex) {
+      if (!existsSync(explicitRemoteCodex)) {
+        throw new Error("runner_remote_codex_artifact_unavailable");
+      }
+      await stageRemoteRunnerFile({
+        target: remoteTarget,
+        runner: remoteCommandRunner,
+        sourcePath: explicitRemoteCodex,
+        targetPath: remoteCodexBinary,
+        mode: 0o700,
+      });
+      await verifyRemoteCodex();
+    }
+    if (remoteCodexBinary && remoteCodexNpmSpec) {
+      let usedPreinstalledCodex = false;
+      const preinstalledCodex = await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.discover",
+        () => discoverPreinstalledExecutable("codex"),
+      );
+      if (preinstalledCodex) {
+        try {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "harness.artifact.verify_preinstalled",
+            () => verifyRemoteCodex(preinstalledCodex),
+          );
+          await measureNativeRunnerSpan(
+            input.trace,
+            "harness.artifact.link",
+            () =>
+              linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
+          );
+          usedPreinstalledCodex = true;
+          await input.onLog?.(
+            "stderr",
+            "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
+          );
+        } catch {
+          usedPreinstalledCodex = false;
+        }
+      }
+      if (!usedPreinstalledCodex) {
+        const installRoot = posix.join(
+          remoteRuntimeRoot!,
+          "harnesses",
+          "codex",
+        );
+        const installResult = await remoteCommandRunner.execute({
+          command: "npm",
+          args: [
+            "install",
+            "--prefix",
+            installRoot,
+            "--no-audit",
+            "--no-fund",
+            remoteCodexNpmSpec,
+          ],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 180_000,
+        });
+        if (installResult.exitCode !== 0 || installResult.timedOut) {
+          throw new Error("runner_remote_codex_install_failed");
+        }
+      }
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify",
+        () => verifyRemoteCodex(),
+      );
+    }
+    if (remoteCodexBinary && !explicitRemoteCodex && !remoteCodexNpmSpec) {
+      const preinstalledCodex = await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.discover",
+        () => discoverPreinstalledExecutable("codex"),
+      );
+      if (!preinstalledCodex) {
+        throw new Error(
+          "runner_remote_codex_artifact_unavailable: install codex in the sandbox image or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC",
+        );
+      }
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify_preinstalled",
+        () => verifyRemoteCodex(preinstalledCodex),
+      );
+      await measureNativeRunnerSpan(input.trace, "harness.artifact.link", () =>
+        linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
+      );
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify",
+        () => verifyRemoteCodex(),
+      );
+      await input.onLog?.(
+        "stderr",
+        "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
+      );
+    }
+    if (
+      requiresRemoteProviderPack &&
+      configuredProviderPackRoot &&
+      stagedRemoteProviderPackRoot
+    ) {
+      const packSource = await prepareVerifiedRemoteProviderPack({
+        verifyStaged: () => measureNativeRunnerSpan(
+          input.trace,
+          "provider_pack.verify",
+          () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+        ),
+        usePreinstalled: async () => {
+          let preinstalledProviderPack = await discoverPreinstalledProviderPack();
+          if (preinstalledProviderPack) {
+            try {
+              await measureNativeRunnerSpan(
+                input.trace,
+                "provider_pack.verify_preinstalled",
+                () => verifyRemoteProviderPack(preinstalledProviderPack!),
+              );
+              const escapedSource = preinstalledProviderPack.replaceAll(
+                "'",
+                "'\\''",
+              );
+              const escapedTarget = stagedRemoteProviderPackRoot.replaceAll(
+                "'",
+                "'\\''",
+              );
+              const escapedParent = posix
+                .dirname(stagedRemoteProviderPackRoot)
+                .replaceAll("'", "'\\''");
+              const linked = await remoteCommandRunner.execute({
+                command: "sh",
+                args: [
+                  "-c",
+                  `umask 077; mkdir -p '${escapedParent}' && rm -rf '${escapedTarget}' && ln -s '${escapedSource}' '${escapedTarget}'`,
+                ],
+                cwd: remoteTarget.remoteCwd,
+                bypassSession: true,
+                timeoutMs: 10_000,
+              });
+              if (linked.exitCode !== 0 || linked.timedOut) {
+                throw new Error(
+                  "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
+                );
+              }
+              activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+              await input.onLog?.(
+                "stderr",
+                "[paperclip-runner] using manifest-matched provider pack from the sandbox image\n",
+              );
+            } catch {
+              preinstalledProviderPack = null;
+            }
+          }
+          return preinstalledProviderPack !== null;
+        },
+        stageAndVerify: async () => {
+          if (!remoteCommandRunner.syncIn) {
+            throw new Error(
+              "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
+            );
+          }
+          const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
+            "'",
+            "'\\''",
+          );
+          const cleared = await remoteCommandRunner.execute({
+            command: "sh",
+            args: ["-c", `rm -rf '${escapedPackRoot}'`],
+            cwd: remoteTarget.remoteCwd,
+            bypassSession: true,
+            timeoutMs: 10_000,
+          });
+          if (cleared.exitCode !== 0 || cleared.timedOut) {
+            throw new Error(
+              "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
+            );
+          }
+          await stageRemoteRunnerDirectory({
+            target: remoteTarget,
+            runner: remoteCommandRunner,
+            sourcePath: configuredProviderPackRoot,
+            targetPath: stagedRemoteProviderPackRoot,
+            mode: 0o700,
+          });
+          await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
+            verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+          );
+          activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+        },
+      });
+      activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      if (packSource === "staged") {
+        await input.onLog?.(
+          "stderr",
+          "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
+        );
+      }
+    }
+    remotePrepared = true;
+  };
+
+  const inspectRemoteHarnessState = async (): Promise<{
+    complete: boolean;
+    runnerState: Record<string, unknown> | null;
+    providerSessionIdentity: Record<string, unknown> | null;
+    incompleteReason: "unavailable" | "not_suspended" | null;
+  }> => {
+    if (!remoteCommandRunner || !remoteStateDirectory) {
+      return {
+        complete: false,
+        runnerState: null,
+        providerSessionIdentity: null,
+        incompleteReason: "unavailable",
+      };
+    }
+    const requirements = persistenceProfile.directories.flatMap((directory) => {
+      const path = remotePersistencePath(directory);
+      if (!path) return [];
+      const escaped = path.replaceAll("'", "'\\''");
+      return directory.name === "runner"
+        ? [`test -f '${escaped}/runner-state.json'`]
+        : [`test -d '${escaped}'`];
+    });
+    const escapedRunnerState = posix
+      .join(remoteStateDirectory, "runner-state.json")
+      .replaceAll("'", "'\\''");
+    const escapedProviderState = posix
+      .join(remoteStateDirectory, runnerProviderStateFilename(input.execution))
+      .replaceAll("'", "'\\''");
+    const inspected = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        `${requirements.join(" && ")} && test -f '${escapedProviderState}' && base64 < '${escapedRunnerState}'`,
+      ],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (inspected.exitCode !== 0 || inspected.timedOut) {
+      return {
+        complete: false,
+        runnerState: null,
+        providerSessionIdentity: null,
+        incompleteReason: "unavailable",
+      };
+    }
+    let runnerState: Record<string, unknown>;
+    try {
+      runnerState = record(
+        JSON.parse(
+          Buffer.from(inspected.stdout.replace(/\s+/g, ""), "base64").toString(
+            "utf8",
+          ),
+        ),
+      );
+    } catch {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    if (
+      runnerState.runnerInstanceId !== input.runnerInstanceId ||
+      runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
+    ) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    if (runnerState.lifecycle !== "suspended") {
+      return {
+        complete: false,
+        runnerState: null,
+        providerSessionIdentity: null,
+        incompleteReason: "not_suspended",
+      };
+    }
+    let providerState: Record<string, unknown>;
+    try {
+      providerState = await readRemoteRunnerProviderState({
+        runner: remoteCommandRunner,
+        stateDirectory: remoteStateDirectory,
+        execution: input.execution,
+      });
+    } catch {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    const providerSessionIdentity =
+      providerSessionIdentityFromDurableProviderState({
+        execution: input.execution,
+        providerState,
+      });
+    if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    const previousManifest = compatibleNativeHarnessBackupManifests({
+      root,
+      execution: input.execution,
+      runnerInstanceId: input.runnerInstanceId,
+    })[0]?.manifest;
+    if (
+      previousManifest &&
+      !providerSessionIdentityTransitionIsAllowed({
+        execution: input.execution,
+        previous: previousManifest.providerSessionIdentity,
+        current: providerSessionIdentity,
+      })
+    ) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    return {
+      complete: true,
+      runnerState,
+      providerSessionIdentity,
+      incompleteReason: null,
+    };
+  };
+
+  const claimUntouchedSessionInResumedLease = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
+    const identity = readRunnerdDurableIdentity(root);
+    if (!durableIdentityMatchesExecution(identity, input.execution) ||
+        identity?.runnerInstanceId !== effectiveRunnerInstanceId ||
+        identity?.environmentLeaseId !== effectiveEnvironmentLeaseId ||
+        !runnerdStateProvesIncompleteBootstrap(root)) return false;
+    // A reusable workspace may have failed before any harness was created.
+    // Claim this exact new session atomically under readable real directories.
+    // Missing files inside an existing session never authorize a fresh start.
+    const probe = await remoteCommandRunner.execute({
+      command: "sh",
+      args: ["-c",
+        'set -eu; umask 077; test -d "$1" && test ! -L "$1" && test -r "$1" && test -x "$1" || exit 1; if test ! -e "$2" && test ! -L "$2"; then mkdir -- "$2"; fi; test -d "$2" && test ! -L "$2" && test -r "$2" && test -x "$2" || exit 1; mkdir -- "$3"',
+        "paperclip-runner-claim-unstarted-session", remoteRuntimeRoot,
+        posix.dirname(remoteSessionRoot), remoteSessionRoot],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    return probe.exitCode === 0 && !probe.timedOut;
+  };
+
+  const recordInPlaceHarnessReuse = async (
+    providerSessionIdentity: Record<string, unknown>,
+    startedAtMs = Date.now(),
+  ) => {
+    const now = Date.now();
+    const attributes = {
+      provider: input.execution.provider.kind,
+      harness: input.execution.session.driverKind,
+      lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+      stateSource: "sandbox_filesystem",
+      bytesTransferred: 0,
+    };
+    await input.trace?.record({
+      name: "harness_state.reuse",
+      startedAtMs,
+      endedAtMs: now,
+      attributes,
+    });
+    await input.trace?.record({
+      name: "provider.session.resume",
+      startedAtMs: now,
+      endedAtMs: now,
+      attributes: {
+        provider: input.execution.provider.kind,
+        harness: input.execution.session.driverKind,
+        identityPresent: providerSessionIdentityIsPresent(
+          providerSessionIdentity,
+        ),
+      },
+    });
+  };
+
+  const recordHarnessBackupStampForCurrentLease = async (
+    backup: VerifiedHarnessBackup,
+  ) => {
+    if (remoteTarget?.transport !== "sandbox" || !remoteTarget.leaseId) {
+      return;
+    }
+    const leaseRow = await input.db
+      .select({
+        metadata: environmentLeases.metadata,
+        providerLeaseId: environmentLeases.providerLeaseId,
+      })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, remoteTarget.leaseId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!leaseRow?.providerLeaseId) {
+      throw new Error("runner_harness_backup_lease_missing");
+    }
+    if (
+      sandboxLeaseAcquisition?.providerLeaseId &&
+      sandboxLeaseAcquisition.providerLeaseId !== leaseRow.providerLeaseId
+    ) {
+      throw new Error("runner_harness_backup_lease_mismatch");
+    }
+    const stamp = createNativeHarnessBackupStamp({
+      manifestPath: resolve(backup.root, "manifest.json"),
+      sessionScopeId,
+      authorizedProviderLeaseId: leaseRow.providerLeaseId,
+      normalizedSessionId: backup.manifest.normalizedSessionId,
+      runnerInstanceId: backup.manifest.runnerInstanceId,
+      completedAt: backup.manifest.completedAt,
+    });
+    const updated = await input.db
+      .update(environmentLeases)
+      .set({
+        metadata: {
+          ...(leaseRow.metadata ?? {}),
+          nativeHarnessBackup: stamp,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(environmentLeases.id, remoteTarget.leaseId))
+      .returning({ id: environmentLeases.id })
+      .then((rows) => rows[0] ?? null);
+    if (!updated) throw new Error("runner_harness_backup_lease_missing");
+  };
+
+  const restoreVerifiedHarnessBackup = async () => {
+    if (!remoteTarget || !remoteCommandRunner) {
+      throw new Error("runner_harness_backup_unavailable");
+    }
+    const backup = verifyNativeHarnessBackup({
+      root,
+      execution: input.execution,
+      runnerInstanceId: input.runnerInstanceId,
+    });
+    if (!backup) throw new Error("runner_harness_backup_unavailable");
+    await measureNativeRunnerSpan(
+      input.trace,
+      "harness_state.failover_restore",
+      async () => {
+        for (const directory of persistenceProfile.directories) {
+          const targetPath = remotePersistencePath(directory);
+          if (!targetPath) throw new Error("runner_harness_state_mismatch");
+          await stageRemoteRunnerDirectory({
+            target: remoteTarget,
+            runner: remoteCommandRunner,
+            sourcePath: resolve(backup.root, directory.name),
+            targetPath,
+            mode: 0o700,
+          });
+        }
+      },
+      {
+        attributes: {
+          provider: input.execution.provider.kind,
+          harness: input.execution.session.driverKind,
+          lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+          stateSource: "verified_failover_backup",
+          bytesTransferred: backup.bytes,
+        },
+      },
+    );
+    const restored = await inspectRemoteHarnessState();
+    if (
+      !restored.complete ||
+      !restored.runnerState ||
+      !restored.providerSessionIdentity ||
+      canonicalJson(restored.providerSessionIdentity) !==
+        canonicalJson(backup.manifest.providerSessionIdentity)
+    ) {
+      throw new Error("runner_harness_state_mismatch");
+    }
+    // A deliberately non-reusable environment receives a fresh provider lease
+    // for every turn. Stamp that new lease as soon as the verified host backup
+    // has been restored so a later provider/bootstrap failure can still clean
+    // the ephemeral sandbox up without discarding the only durable copy.
+    await recordHarnessBackupStampForCurrentLease(backup);
+    return backup;
+  };
+
+  const materializeRemoteHarnessLaunchState = async () => {
+    if (!remoteTarget || !remoteCommandRunner) return;
+    for (const directory of persistenceProfile.directories) {
+      if (directory.location !== "filesystem") continue;
+      const targetPath = remotePersistencePath(directory);
+      if (!targetPath) throw new Error("runner_harness_state_mismatch");
+      const escapedTarget = targetPath.replaceAll("'", "'\\''");
+      const created = await remoteCommandRunner.execute({
+        command: "sh",
+        args: ["-c", `umask 077; install -d -m 0700 '${escapedTarget}'`],
+        bypassSession: true,
+        timeoutMs: 10_000,
+      });
+      if (created.exitCode !== 0 || created.timedOut) {
+        throw new Error("runner_remote_directory_staging_failed");
+      }
+
+      // Codex launch credentials are intentionally excluded from failover
+      // backups. Re-materialize only those launch-time files into a fresh or
+      // replacement sandbox after the durable history has been restored.
+      if (directory.name !== "codex-home") continue;
+      const localDirectory = resolve(root, directory.name);
+      for (const name of ["auth.json", "config.toml"] as const) {
+        const sourcePath = resolve(localDirectory, name);
+        if (!existsSync(sourcePath)) continue;
+        await stageRemoteRunnerFile({
+          target: remoteTarget,
+          runner: remoteCommandRunner,
+          sourcePath,
+          targetPath: posix.join(targetPath, name),
+          mode: 0o600,
+        });
+      }
+    }
+  };
+
+  const ensureRemoteRunner = async () => {
+    await measureNativeRunnerSpan(
+      input.trace,
+      "stage.sync",
+      async () => {
+        if (!selectedRemoteMode) {
+          throw new Error("runner_remote_transport_mode_unresolved");
+        }
+        try {
+          await verifyRemoteRunner(selectedRemoteMode);
+          await verifyRemoteCodex();
+          if (requiresRemoteProviderPack) {
+            if (!activeRemoteProviderPackRoot) {
+              throw new Error(
+                "runner_remote_provider_artifact_incompatible: provider pack was not prepared",
+              );
+            }
+            await verifyRemoteProviderPack(activeRemoteProviderPackRoot);
+          }
+        } catch {
+          remotePrepared = false;
+          await prepareRemoteRunner(selectedRemoteMode);
+        }
+        if (!remoteHarnessStatePrepared) {
+          await measureNativeRunnerSpan(input.trace, "stage.asset.home", () =>
+            measureNativeRunnerSpan(
+              input.trace,
+              "session.checkpoint.restore",
+              async () => {
+                if (
+                  remoteTarget?.transport === "sandbox" &&
+                  remoteCommandRunner
+                ) {
+                  const acquisitionRecordedAtMs = Date.now();
+                  const backupAvailable = harnessBackupCandidates(root).some(
+                    (candidate) =>
+                      existsSync(resolve(candidate, "manifest.json")),
+                  );
+                  const restoreIntoCreatedSandbox =
+                    shouldRestoreNativeHarnessBackupIntoSandbox({
+                      acquisitionOutcome:
+                        sandboxLeaseAcquisition?.outcome ?? null,
+                      reusableLeaseConfigured:
+                        remoteTarget.reusableLeaseConfigured,
+                      backupAvailable,
+                    });
+                  await input.trace?.record({
+                    name: "sandbox.lease.acquisition",
+                    startedAtMs: acquisitionRecordedAtMs,
+                    endedAtMs: acquisitionRecordedAtMs,
+                    attributes: {
+                      provider: remoteTarget.providerKey ?? "sandbox",
+                      harness: input.execution.session.driverKind,
+                      lifecycleMode:
+                        input.execution.session.lifecyclePolicy.mode,
+                      outcome: sandboxLeaseAcquisition?.outcome ?? "unknown",
+                      stateSource:
+                        sandboxLeaseAcquisition?.outcome === "replacement" ||
+                        restoreIntoCreatedSandbox
+                          ? "verified_failover_backup"
+                          : sandboxLeaseAcquisition?.outcome === "resumed"
+                            ? "sandbox_filesystem"
+                            : "new_sandbox",
+                      bytesTransferred: 0,
+                    },
+                  });
+                  if (sandboxLeaseAcquisition?.outcome === "resumed") {
+                    const reuseStartedAtMs = Date.now();
+                    const state = await measureNativeRunnerSpan(
+                      input.trace,
+                      "sandbox.lease.resume",
+                      inspectRemoteHarnessState,
+                      {
+                        attributes: {
+                          provider: remoteTarget.providerKey ?? "sandbox",
+                          harness: input.execution.session.driverKind,
+                          lifecycleMode:
+                            input.execution.session.lifecyclePolicy.mode,
+                          outcome: "resumed",
+                        },
+                      },
+                    );
+                    if (
+                      !state.complete ||
+                      !state.runnerState ||
+                      !state.providerSessionIdentity
+                    ) {
+                      if (state.incompleteReason !== "unavailable" || backupAvailable ||
+                          !(await claimUntouchedSessionInResumedLease())) {
+                        throw new Error("runner_harness_state_mismatch");
+                      }
+                    } else {
+                      await recordInPlaceHarnessReuse(
+                        state.providerSessionIdentity,
+                        reuseStartedAtMs,
+                      );
+                    }
+                  } else if (
+                    sandboxLeaseAcquisition?.outcome === "replacement"
+                  ) {
+                    await measureNativeRunnerSpan(
+                      input.trace,
+                      "sandbox.lease.replacement",
+                      restoreVerifiedHarnessBackup,
+                      {
+                        attributes: {
+                          provider: remoteTarget.providerKey ?? "sandbox",
+                          harness: input.execution.session.driverKind,
+                          lifecycleMode:
+                            input.execution.session.lifecyclePolicy.mode,
+                          outcome: "replacement",
+                          reason: sandboxLeaseAcquisition.reason ?? "unknown",
+                        },
+                      },
+                    );
+                  } else if (restoreIntoCreatedSandbox) {
+                    await measureNativeRunnerSpan(
+                      input.trace,
+                      "sandbox.lease.replacement",
+                      restoreVerifiedHarnessBackup,
+                      {
+                        attributes: {
+                          provider: remoteTarget.providerKey ?? "sandbox",
+                          harness: input.execution.session.driverKind,
+                          lifecycleMode:
+                            input.execution.session.lifecyclePolicy.mode,
+                          outcome: "created",
+                          reason: "reuse_disabled",
+                        },
+                      },
+                    );
+                  } else {
+                    const reuseStartedAtMs = Date.now();
+                    const state = await inspectRemoteHarnessState();
+                    if (
+                      state.complete &&
+                      state.runnerState &&
+                      state.providerSessionIdentity
+                    ) {
+                      // Re-entry while this newly-created lease is already running (for
+                      // example a transport reconnect) still uses the in-place state.
+                      await recordInPlaceHarnessReuse(
+                        state.providerSessionIdentity,
+                        reuseStartedAtMs,
+                      );
+                    } else if (backupAvailable) {
+                      // A continuation that has a durable backup but no recorded reusable
+                      // lease was not provider-confirmed lost. Never silently create a new
+                      // provider session from that ambiguous state.
+                      throw new Error("runner_harness_state_mismatch");
+                    }
+                  }
+                  await materializeRemoteHarnessLaunchState();
+                } else if (remoteTarget && remoteCommandRunner) {
+                  // Local and generic SSH execution retain their existing checkpoint
+                  // behavior. The manifest-only failover gate applies to managed sandbox
+                  // replacement, where provider lease provenance is available.
+                  for (const directory of persistenceProfile.directories) {
+                    const localDirectory = resolve(root, directory.name);
+                    const remoteDirectory = remotePersistencePath(directory);
+                    if (
+                      remoteDirectory &&
+                      existsSync(localDirectory) &&
+                      !(await remoteRunnerPathExists({
+                        runner: remoteCommandRunner,
+                        path:
+                          directory.name === "runner"
+                            ? posix.join(remoteDirectory, "runner-state.json")
+                            : remoteDirectory,
+                        kind:
+                          directory.name === "runner" ? "file" : "directory",
+                      }))
+                    ) {
+                      await stageRemoteRunnerDirectory({
+                        target: remoteTarget,
+                        runner: remoteCommandRunner,
+                        sourcePath: localDirectory,
+                        targetPath: remoteDirectory,
+                        mode: 0o700,
+                        excludeEntries: directory.excludeEntries,
+                      });
+                    }
+                  }
+                }
+              },
+              {
+                attributes: {
+                  mode: remoteTarget?.transport ?? "local",
+                  lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+                },
+              },
+            ),
+          );
+          remoteHarnessStatePrepared = true;
+        }
+        if (
+          remoteTarget &&
+          remoteCommandRunner &&
+          remoteRunnerFilesystemRoot &&
+          sourceRuntimeContext &&
+          remoteRuntimeContext
+        ) {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "stage.asset.runtime_context",
+            async () => {
+              await stageRemoteRunnerDirectory({
+                target: remoteTarget,
+                runner: remoteCommandRunner,
+                sourcePath: sourceRuntimeContext.instructions.bundle.rootPath,
+                targetPath: remoteRuntimeContext.instructions.bundle.rootPath,
+                mode: 0o555,
+              });
+              for (
+                let index = 0;
+                index < sourceRuntimeContext.skills.length;
+                index += 1
+              ) {
+                await stageRemoteRunnerDirectory({
+                  target: remoteTarget,
+                  runner: remoteCommandRunner,
+                  sourcePath:
+                    sourceRuntimeContext.skills[index]!.bundle.rootPath,
+                  targetPath:
+                    remoteRuntimeContext.skills[index]!.bundle.rootPath,
+                  mode: 0o555,
+                });
+              }
+              await stageRemoteRunnerFile({
+                target: remoteTarget,
+                runner: remoteCommandRunner,
+                sourcePath: resolve(root, "runtime-context.json"),
+                targetPath: posix.join(
+                  remoteRunnerFilesystemRoot,
+                  "runtime-context.json",
+                ),
+                mode: 0o600,
+              });
+            },
+          );
+        }
+        if (remoteTarget && remoteCommandRunner && remoteCaBundleMapping) {
+          const caBundleMapping = remoteCaBundleMapping;
+          await measureNativeRunnerSpan(
+            input.trace,
+            "stage.asset.ca_bundle",
+            () =>
+              stageRemoteRunnerFile({
+                target: remoteTarget,
+                runner: remoteCommandRunner,
+                sourcePath: caBundleMapping.sourcePath,
+                targetPath: caBundleMapping.targetPath,
+                mode: 0o600,
+              }),
+          );
+        }
+      },
+      {
+        attributes: {
+          target: remoteTarget?.transport ?? "local",
+          lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+        },
+      },
+    );
+  };
+
+  const checkpointRemoteRunner = async (
+    settlement: "settled" | "unsettled",
+  ) => {
+    if (
+      !remoteCommandRunner ||
+      !remoteStateDirectory ||
+      !remoteRunnerFilesystemRoot
+    )
+      return;
+    // Transport release also runs when provider bootstrap failed. In that case
+    // runnerd has no durable provider identity (and may not have created the
+    // provider persistence directory at all), so attempting a failover backup
+    // would replace the original provider error with
+    // `runner_harness_state_mismatch`. Only checkpoint a harness that runnerd
+    // has proved complete. A malformed or identity-conflicting state still
+    // throws from inspectRemoteHarnessState and therefore fails closed.
+    let checkpointable = await inspectRemoteHarnessState();
+    // The remote runner writes its suspended lifecycle and provider state
+    // before the outer process-owner RPC necessarily observes completion.
+    // Allow a very small bounded visibility window without ever accepting an
+    // active, incomplete, malformed, or identity-conflicting checkpoint.
+    for (let attempt = 1; !checkpointable.complete && attempt < 3; attempt++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      checkpointable = await inspectRemoteHarnessState();
+    }
+    if (!checkpointable.complete) {
+      const incompleteFailure = remoteCheckpointIncompleteFailure(
+        settlement,
+        checkpointable.incompleteReason,
+      );
+      await input.onLog?.(
+        "stderr",
+        `[paperclip-runner] remote checkpoint ${incompleteFailure ? "failed" : "skipped"}: exact suspended harness state unavailable (process=${settlement} reason=${checkpointable.incompleteReason})\n`,
+      );
+      if (incompleteFailure) throw incompleteFailure;
+      return;
+    }
+    const backupSpanAttributes = {
+      provider: input.execution.provider.kind,
+      harness: input.execution.session.driverKind,
+      lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+      stateSource: "sandbox_filesystem",
+      bytesTransferred: 0,
+    };
+    try {
+      await measureNativeRunnerSpan(
+        input.trace,
+        "session.checkpoint.persist",
+        () =>
+          measureNativeRunnerSpan(
+            input.trace,
+            "harness_state.backup.persist",
+            async () => {
+              const verified = await inspectRemoteHarnessState();
+              if (
+                !verified.complete ||
+                !verified.runnerState ||
+                !verified.providerSessionIdentity
+              ) {
+                throw new Error("runner_harness_state_mismatch");
+              }
+              const providerSessionIdentity = verified.providerSessionIdentity;
+
+              const backupRoot = harnessBackupRoot(root);
+              mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+              const pendingRoot = resolve(
+                backupRoot,
+                `.pending-${randomUUID()}`,
+              );
+              mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
+              try {
+                for (const directory of persistenceProfile.directories) {
+                  const sourcePath = remotePersistencePath(directory);
+                  if (!sourcePath)
+                    throw new Error("runner_harness_state_mismatch");
+                  const targetPath = resolve(pendingRoot, directory.name);
+                  await syncRemoteRunnerDirectoryOut({
+                    runner: remoteCommandRunner,
+                    sourcePath,
+                    targetPath,
+                    mode: 0o700,
+                    excludeEntries: directory.excludeEntries,
+                  });
+                  if (!existsSync(targetPath)) {
+                    throw new Error("runner_harness_state_mismatch");
+                  }
+                }
+                const manifest = buildNativeHarnessBackupManifest({
+                  backupRoot: pendingRoot,
+                  execution: input.execution,
+                  runnerInstanceId: input.runnerInstanceId,
+                  providerSessionIdentity,
+                  sourceProviderLeaseId:
+                    sandboxLeaseAcquisition?.providerLeaseId ??
+                    remoteTarget?.leaseId ??
+                    input.durableEnvironmentLeaseId ??
+                    "unknown",
+                });
+                backupSpanAttributes.bytesTransferred =
+                  manifest.directories.reduce(
+                    (total, directory) => total + directory.bytes,
+                    0,
+                  );
+                const temporaryManifest = resolve(
+                  pendingRoot,
+                  "manifest.json.tmp",
+                );
+                const manifestPath = resolve(pendingRoot, "manifest.json");
+                writeFileSync(temporaryManifest, JSON.stringify(manifest), {
+                  encoding: "utf8",
+                  mode: 0o600,
+                });
+                renameSync(temporaryManifest, manifestPath);
+
+                const currentRoot = resolve(backupRoot, "current");
+                const previousRoot = resolve(backupRoot, "previous");
+                rmSync(previousRoot, { recursive: true, force: true });
+                let movedCurrent = false;
+                if (existsSync(currentRoot)) {
+                  renameSync(currentRoot, previousRoot);
+                  movedCurrent = true;
+                }
+                try {
+                  renameSync(pendingRoot, currentRoot);
+                  if (
+                    remoteTarget?.transport === "sandbox" &&
+                    remoteTarget.leaseId
+                  ) {
+                    await recordHarnessBackupStampForCurrentLease({
+                      root: currentRoot,
+                      manifest,
+                      bytes: backupSpanAttributes.bytesTransferred,
+                    });
+                  }
+                } catch (error) {
+                  if (existsSync(currentRoot)) {
+                    rmSync(currentRoot, { recursive: true, force: true });
+                  }
+                  if (
+                    movedCurrent &&
+                    existsSync(previousRoot) &&
+                    !existsSync(currentRoot)
+                  ) {
+                    renameSync(previousRoot, currentRoot);
+                  }
+                  throw error;
+                }
+                rmSync(previousRoot, { recursive: true, force: true });
+              } finally {
+                rmSync(pendingRoot, { recursive: true, force: true });
+              }
+            },
+            {
+              attributes: backupSpanAttributes,
+            },
+          ),
+        { parentName: "task.settle" },
+      );
+    } catch (error) {
+      const detail = redactSensitiveText(
+        error instanceof Error ? error.message : String(error),
+      )
+        .replace(/[\r\n]+/g, " ")
+        .slice(0, 512);
+      await input.onLog?.(
+        "stderr",
+        `[paperclip-runner] remote checkpoint failed: ${detail || "unknown failure"}\n`,
+      );
+      throw error;
+    }
+  };
+
+  const prepareExternalRunnerState =
+    remoteTarget && remoteCommandRunner
+      ? async () => {
+          selectedRemoteMode ??= resolveRemoteRunnerTransportMode({
+            target: remoteTarget,
+            runnerIngressAuthorized: input.runnerIngressAuthorized === true,
+          });
+          await ensureRemoteRunner();
+        }
+      : undefined;
+  const archiveExternalRunnerState =
+    remoteCommandRunner && remoteStateDirectory && remoteSessionRoot
+      ? async (archive: { archiveKey: string }) => {
+          if (!/^[0-9a-f]{24}$/.test(archive.archiveKey)) {
+            throw new Error("runner_remote_authority_archive_invalid");
+          }
+          const sourcePath = posix.join(
+            remoteStateDirectory,
+            "runner-state.json",
+          );
+          const archiveDirectory = posix.join(
+            remoteSessionRoot,
+            "authority-epochs",
+            `epoch-${archive.archiveKey}`,
+          );
+          const archivedStatePath = posix.join(
+            archiveDirectory,
+            "runner-state.json",
+          );
+          const result = await remoteCommandRunner.execute({
+            command: "sh",
+            args: [
+              "-c",
+              'set -eu; if test -L "$2" || { test -e "$2" && test ! -d "$2"; }; then exit 1; fi; if test -f "$1" && test ! -L "$1" && test ! -e "$3" && test ! -L "$3"; then umask 077; install -d -m 0700 "$2"; mv -- "$1" "$3"; elif test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"; then :; else exit 1; fi; base64 < "$3"',
+              "paperclip-runner-authority-archive",
+              sourcePath,
+              archiveDirectory,
+              archivedStatePath,
+            ],
+            bypassSession: true,
+            timeoutMs: 10_000,
+          });
+          if (result.exitCode !== 0 || result.timedOut) {
+            throw new Error("runner_remote_authority_archive_failed");
+          }
+          try {
+            return record(
+              JSON.parse(
+                Buffer.from(
+                  result.stdout.replace(/\s+/g, ""),
+                  "base64",
+                ).toString("utf8"),
+              ),
+            );
+          } catch {
+            throw new Error("runner_remote_authority_archive_failed");
+          }
+        }
+      : undefined;
+
+  const remoteProcessLauncher =
+    remoteTarget && remoteCommandRunner && remoteBinary && remoteStateDirectory
+      ? createRemoteRunnerProcessLauncher({
+          target: remoteTarget,
+          runner: remoteCommandRunner,
+          remoteBinary,
+          processIdentityPath: posix.join(
+            remoteStateDirectory,
+            "runner-process.identity",
+          ),
+          stateDirectory: remoteStateDirectory,
+          diagnosticsDirectory: posix.join(remoteSessionRoot!, "diagnostics"),
+          runnerInstanceId: input.runnerInstanceId,
+          ensureArtifact: ensureRemoteRunner,
+          onSpawn: input.onSpawn,
+          onLog: input.onLog,
+          trace: input.trace,
+          onRunnerProcessSpawned: () => resolveRemoteRunnerProcessSpawned?.(),
+        })
+      : undefined;
+  const runnerExecution: NativeExecutionInput = remoteTarget
+    ? {
+        ...input.execution,
+        workspace: {
+          ...input.execution.workspace,
+          cwd: remoteTarget.remoteCwd,
+        },
+      }
+    : input.execution;
+  const effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
+    ...(input.runnerEnvironment ?? process.env),
+  };
+  // This authority bit is derived only from the selected execution target.
+  // Never let an agent, environment binding, or host variable disable the
+  // Codex sandbox for a local runner by supplying the same key.
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
+  const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
+    ? {
+        ...effectiveRunnerEnvironmentBase,
+        // The provider home is runner-owned state, not the execution workspace.
+        // Codex's permission profile explicitly denies HOME and CODEX_HOME. If
+        // either points at remoteCwd, that deny rule shadows the workspace write
+        // grant and the provider cannot initialize its shell sandbox or edit.
+        HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
+        CODEX_HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
+        PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
+        ...(remoteTarget!.transport === "sandbox"
+          ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
+          : {}),
+      }
+    : {
+        ...effectiveRunnerEnvironmentBase,
+        PAPERCLIP_WORKSPACE_CWD: input.execution.workspace.cwd,
+      };
+  const archiveContinuityState = async () => {
+    if (hasRetainedWarmTransitionEvidence(root)) {
+      throw new Error("native_runner_warm_transition_recovery_unproven");
+    }
+    const archiveToken = `${Date.now()}-${randomUUID()}`;
+    const archiveRoot = resolve(root, "continuity-breaks", archiveToken);
+    mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
+    for (const name of [
+      "control-plane",
+      "runner",
+      "codex-home",
+      "opencode",
+      "acpx",
+    ]) {
+      const source = resolve(root, name);
+      if (existsSync(source)) renameSync(source, resolve(archiveRoot, name));
+    }
+    if (remoteCommandRunner && remoteSessionRoot) {
+      const escapedSource = remoteSessionRoot.replaceAll("'", "'\\''");
+      const archivedRemote = `${remoteSessionRoot}.continuity-break-${archiveToken}`;
+      const escapedArchive = archivedRemote.replaceAll("'", "'\\''");
+      const result = await remoteCommandRunner.execute({
+        command: "sh",
+        args: [
+          "-c",
+          `if test -d '${escapedSource}'; then mv '${escapedSource}' '${escapedArchive}'; fi`,
+        ],
+        bypassSession: true,
+        timeoutMs: 30_000,
+      });
+      if (result.exitCode !== 0 || result.timedOut) {
+        throw new Error("runner_continuity_break_archive_failed");
+      }
+    }
+    remotePrepared = false;
+  };
+  const adoptedProcess =
+    target.kind === "local" &&
+    input.restartRecovery?.kind === "reattach_existing_runner"
+      ? input.restartRecovery.process
+      : null;
+  const executeCurrentToolAuthority = (
+    call: Parameters<SessionToolAuthorityEpoch["execute"]>[0],
+  ) => {
+    const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+    if (!current) throw new Error("native_session_tool_authority_unavailable");
+    return current.execute(call);
+  };
+  const backend = createNativeSessionBackend(runnerExecution, {
+    runnerInstanceId:
+      retainedTransition?.runnerInstanceId ?? input.runnerInstanceId,
+    environment: effectiveRunnerEnvironment,
+    workingDirectoryAuthority: remoteTarget
+      ? "remote_runner"
+      : "local_filesystem",
+    onSpawn: input.onSpawn,
+    dynamicTools,
+    completionFeedback: async (result) => {
+      const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+      if (!current) throw new Error("native_session_tool_authority_unavailable");
+      await current.definitions(); // Reject a revoked run authority before reading task state.
+      return nativeCompletionFeedback(input.db, current.runId, result);
+    },
+    dynamicToolHandler: executeCurrentToolAuthority,
+    acpxDynamicToolHandler: executeCurrentToolAuthority,
+    opencodeRuntimeDirectory: resolve(
+      resolvePaperclipInstanceRoot(),
+      "runtime",
+      "paperclip-runner",
+      "opencode",
+    ),
+    acpxRuntimeDirectory: resolve(
+      resolvePaperclipInstanceRoot(),
+      "runtime",
+      "paperclip-runner",
+      "acpx",
+    ),
+    codexTransportFactory: (recoveryContext) =>
+      createRunnerdCodexTransport({
+        onSpawn: input.onSpawn,
+        provider:
+          input.execution.provider.kind === "codex"
+            ? "codex"
+            : input.execution.provider.kind === "opencode"
+              ? "opencode"
+              : input.execution.provider.kind === "claude_managed"
+                ? "claude_managed"
+                : input.execution.provider.kind === "aws_agentcore"
+                  ? "aws_agentcore"
+                  : input.execution.provider.kind === "acpx"
+                    ? "acpx"
+                    : undefined,
+        ...(input.execution.provider.kind === "acpx"
+          ? {
+              acpxAgent: input.execution.provider.agent,
+              acpxPermissionMode: input.execution.provider.permissionMode,
+              acpxPermissionModePinned:
+                input.execution.schema ===
+                "paperclip.native-execution-input.v4",
+              acpxRuntimeDirectory: remoteRunnerFilesystemRoot
+                ? posix.join(remoteRunnerFilesystemRoot, "acpx")
+                : resolve(
+                    resolvePaperclipInstanceRoot(),
+                    "runtime",
+                    "paperclip-runner",
+                    "acpx",
+                  ),
+            }
+          : {}),
+        ...(input.execution.provider.kind === "opencode"
+          ? {
+              opencodePermissionMode: input.execution.provider.permissionMode,
+            }
+          : {}),
+        ...(input.execution.provider.kind === "claude_managed"
+          ? {
+              managedProfile: {
+                ...input.execution.provider.managedProfile,
+                maxSessionListCostUsd:
+                  input.execution.provider.maxSessionListCostUsd,
+                model: input.execution.provider.model,
+              },
+            }
+          : {}),
+        ...(input.execution.provider.kind === "aws_agentcore"
+          ? {
+              agentCoreProfile: {
+                ...input.execution.provider.agentCoreProfile,
+                maxEstimatedSessionCostUsd:
+                  input.execution.provider.maxEstimatedSessionCostUsd,
+                maxIterations:
+                  input.execution.provider.invocationLimits.maxIterations,
+                maxOutputTokens:
+                  input.execution.provider.invocationLimits.maxOutputTokens,
+                timeoutSeconds:
+                  input.execution.provider.invocationLimits.timeoutSeconds,
+                model: input.execution.provider.model,
+              },
+            }
+          : {}),
+        ...(expectedProviderPackManifest && stagedRemoteProviderPackRoot
+          ? {
+              providerNodeCommand: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
+              ),
+              providerNodeCommandSha256:
+                expectedProviderPackManifest.payload.artifacts.nodeCommand
+                  .sha256,
+              providerPackAuthorityDigest: expectedProviderPackManifest.digest,
+              opencodeCommand: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts
+                  .opencodeExecutable.path,
+              ),
+              opencodeCommandSha256:
+                expectedProviderPackManifest.payload.artifacts
+                  .opencodeExecutable.sha256,
+              opencodeProxyPath: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts.opencodeProxy
+                  .path,
+              ),
+              opencodeProxySha256:
+                expectedProviderPackManifest.payload.artifacts.opencodeProxy
+                  .sha256,
+              acpxSidecarPath: posix.join(
+                stagedRemoteProviderPackRoot,
+                expectedProviderPackManifest.payload.artifacts.acpxSidecar.path,
+              ),
+              acpxSidecarSha256:
+                expectedProviderPackManifest.payload.artifacts.acpxSidecar
+                  .sha256,
+            }
+          : {}),
+        stateDirectory: root,
+        runnerStateDirectory: remoteStateDirectory,
+        readRunnerState:
+          remoteStateDirectory && remoteCommandRunner
+            ? () =>
+                readRemoteRunnerState({
+                  runner: remoteCommandRunner,
+                  stateDirectory: remoteStateDirectory,
+                })
+            : undefined,
+        prepareExternalRunnerState,
+        archiveExternalRunnerState,
+        runnerBinary: controllerRunnerBinary,
+        codexCommand: remoteCodexBinary ?? undefined,
+        sourceCodexHome: remoteTarget
+          ? resolveSourceCodexHome(input.runnerEnvironment ?? process.env)
+          : undefined,
+        runnerProcessLauncher: remoteProcessLauncher,
+        runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,
+        adoptExistingRunner: adoptedProcess
+          ? {
+              ...adoptedProcess,
+              isAlive: () => verifiedRecoveryProcessIsAlive(adoptedProcess),
+              signal: (signal) =>
+                signalVerifiedRecoveryProcess(adoptedProcess, signal),
+            }
+          : undefined,
+        environment: effectiveRunnerEnvironment,
+        onDiagnostic: (message) => {
+          void input.onLog?.(
+            "stderr",
+            `[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`,
+          );
+        },
+        lifecyclePolicy: input.execution.session.lifecyclePolicy,
+        runtimeContext:
+          "runtimeContext" in input.execution
+            ? input.execution.runtimeContext
+            : null,
+        runnerRuntimeContext: remoteRuntimeContext,
+        runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
+        resumeWorkingDirectory: runnerExecution.workspace.cwd,
+        externallySandboxed: remoteTarget?.transport === "sandbox",
+        opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
+          ? posix.join(remoteRunnerFilesystemRoot, "opencode")
+          : undefined,
+        resumeDynamicTools: dynamicTools,
+        resumeCompletionContract: {
+          revision: input.execution.completionContract.contract.revision,
+          criterionIds:
+            input.execution.completionContract.contract.criteria.map(
+              (criterion) => criterion.id,
+            ),
+        },
+        resumeActiveTurnId:
+          recoveryContext?.persistedSession?.activeTurnId ?? null,
+        resumeProviderSession: recoveryContext?.persistedSession,
+        providerRecoveryPolicy:
+          recoveryContext?.providerRecoveryPolicy ??
+          (input.execution.provider.kind === "acpx" &&
+          input.execution.interactionResponses.length > 0
+            ? "allow_replacement_after_governed_wait"
+            : undefined),
+        prpIdentity: {
+          runnerInstanceId: effectiveRunnerInstanceId,
+          environmentLeaseId: effectiveEnvironmentLeaseId,
+          runId: input.execution.binding.runId,
+          normalizedSessionId:
+            input.execution.session.normalizedSessionId ??
+            `session-${input.execution.binding.runId}`,
+          turnId: `turn-${input.execution.binding.runId}`,
+          itemId: `item-${input.execution.binding.runId}`,
+        },
+        warmTransitionRegistrationMode: retainedTransition
+          ? "routed_connect"
+          : undefined,
+        authorizeWarmTransitionRecovery: retainedTransition
+          ? async (
+              stage:
+                "before_bootstrap" | "before_spawn" | "before_authentication",
+            ) => {
+              if (!recoveryPending) return;
+              const current = await verifyWarmTransitionRestart(input);
+              if (
+                current.transitionId !== retainedTransition.transitionId ||
+                (stage === "before_bootstrap" &&
+                  current.stateFingerprint !==
+                    retainedTransition.stateFingerprint)
+              ) {
+                throw new Error(
+                  "native_runner_warm_transition_recovery_unproven",
+                );
+              }
+            }
+          : undefined,
+        onWarmTransitionRecoveryCompleted: retainedTransition
+          ? (completed: { transitionId: string }) => {
+              // Only the package's fresh completed new-authority snapshot can
+              // reach this callback. A tombstone or caller hint cannot retire
+              // the server's pending-recovery admission checks.
+              if (completed?.transitionId !== retainedTransition.transitionId) {
+                throw new Error(
+                  "native_runner_warm_transition_recovery_unproven",
+                );
+              }
+              recoveryPending = false;
+            }
+          : undefined,
+        controlPlaneRegistration: async (authority, attachmentIdentity) => {
+          if (retainedTransition && recoveryPending) {
+            const current = await verifyWarmTransitionRestart(input);
+            if (
+              current.stateFingerprint !== retainedTransition.stateFingerprint
+            ) {
+              throw new Error(
+                "native_runner_warm_transition_recovery_unproven",
+              );
+            }
+          }
+          return measureNativeRunnerSpan(
+            input.trace,
+            "runner.transport.connect",
+            async () => {
+              if (target.kind === "local") {
+                const selectedAtMs = Date.now();
+                await input.trace?.record({
+                  name: "runner.transport.selected",
+                  parentName: "runner.transport.connect",
+                  startedAtMs: selectedAtMs,
+                  endedAtMs: selectedAtMs,
+                  attributes: {
+                    mode: "local_loopback",
+                    connectionOwner: "runnerd",
+                  },
+                });
+                await input.onLog?.(
+                  "stderr",
+                  "[paperclip-runner] transport mode=local_loopback state=connecting\n",
+                );
+                const registration = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.prp.route.register",
+                  () =>
+                    registerRunnerPrpAuthority({
+                      companyId: input.execution.binding.companyId,
+                      issueId: input.execution.binding.issueId,
+                      agentId: input.execution.binding.agentId,
+                      runId:
+                        attachmentIdentity?.runId ??
+                        input.execution.binding.runId,
+                      authority,
+                    }),
+                );
+                return {
+                  ...registration,
+                  startupFailureCode: "runner_local_connect_failed" as const,
+                };
+              }
+
+              const requiredMode = resolveRemoteRunnerTransportMode({
+                target,
+                runnerIngressAuthorized: input.runnerIngressAuthorized === true,
+              });
+              let transport: PaperclipRunnerTransport;
+              if (requiredMode === "dial_wss") {
+                // Validate eligibility before staging any artifact.
+                transport = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.transport.resolve",
+                  () =>
+                    resolvePaperclipRunnerTransport({
+                      target,
+                      runId:
+                        attachmentIdentity?.runId ??
+                        input.execution.binding.runId,
+                      localConnectUrl: "ws://127.0.0.1/unused",
+                      runnerPublicUrl: input.runnerPublicUrl,
+                      runnerCaBundlePath: input.runnerCaBundlePath,
+                      runnerIngressAuthorized:
+                        input.runnerIngressAuthorized === true,
+                    }),
+                );
+                if (
+                  transport.mode === "direct_outbound" &&
+                  transport.caBundlePath &&
+                  !existsSync(transport.caBundlePath)
+                ) {
+                  throw new Error(
+                    "runner_direct_wss_failed: configured runner CA bundle is unavailable",
+                  );
+                }
+                await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.artifact.prepare",
+                  () => prepareRemoteRunner(requiredMode),
+                );
+              } else {
+                await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.artifact.prepare",
+                  () => prepareRemoteRunner(requiredMode),
+                );
+                // Provider endpoint acquisition happens only after runnerd is staged
+                // and its listener capability has been verified.
+                transport = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.ingress.acquire",
+                  () =>
+                    resolvePaperclipRunnerTransport({
+                      target,
+                      runId:
+                        attachmentIdentity?.runId ??
+                        input.execution.binding.runId,
+                      localConnectUrl: "ws://127.0.0.1/unused",
+                      runnerPublicUrl: input.runnerPublicUrl,
+                      runnerCaBundlePath: input.runnerCaBundlePath,
+                      runnerIngressAuthorized: true,
+                    }),
+                );
+              }
+
+              const selectedAtMs = Date.now();
+              await input.trace?.record({
+                name: "runner.transport.selected",
+                parentName: "runner.transport.connect",
+                startedAtMs: selectedAtMs,
+                endedAtMs: selectedAtMs,
+                attributes: {
+                  mode: transport.mode,
+                  connectionOwner:
+                    transport.mode === "provider_ingress"
+                      ? "paperclip"
+                      : "runnerd",
+                },
+              });
+
+              await input.onLog?.(
+                "stderr",
+                `[paperclip-runner] transport mode=${transport.mode} state=connecting\n`,
+              );
+
+              if (transport.mode === "direct_outbound") {
+                const inbound = await measureNativeRunnerSpan(
+                  input.trace,
+                  "runner.prp.route.register",
+                  () =>
+                    registerRunnerPrpAuthority({
+                      companyId: input.execution.binding.companyId,
+                      issueId: input.execution.binding.issueId,
+                      agentId: input.execution.binding.agentId,
+                      runId:
+                        attachmentIdentity?.runId ??
+                        input.execution.binding.runId,
+                      authority,
+                    }),
+                  { parentName: "runner.transport.connect" },
+                );
+                let caBundlePath = transport.caBundlePath;
+                if (caBundlePath && remoteBinary) {
+                  const remoteCaBundlePath = posix.join(
+                    posix.dirname(remoteBinary),
+                    "runner-ca-bundle.pem",
+                  );
+                  remoteCaBundleMapping = {
+                    sourcePath: caBundlePath,
+                    targetPath: remoteCaBundlePath,
+                  };
+                  caBundlePath = remoteCaBundlePath;
+                }
+                return {
+                  connection: {
+                    mode: "connect" as const,
+                    connectUrl: transport.connectUrl,
+                    ...(caBundlePath ? { caBundlePath } : {}),
+                  },
+                  startupFailureCode: "runner_direct_wss_failed" as const,
+                  checkpoint: checkpointRemoteRunner,
+                  release: () => inbound.release(),
+                };
+              }
+
+              if (transport.mode !== "provider_ingress") {
+                throw new Error("runner_transport_mode_changed_after_dispatch");
+              }
+              let outbound: ReturnType<typeof connectRunnerPrpIngress> | null =
+                null;
+              let activation: Promise<void> | null = null;
+              return {
+                connection: {
+                  mode: "listen" as const,
+                  listenAddress: transport.listenAddress,
+                  listenPort: transport.listenPort,
+                  listenPath: transport.listenPath,
+                },
+                activate: () => {
+                  activation = measureNativeRunnerSpan(
+                    input.trace,
+                    "runner.transport.activation",
+                    async () => {
+                      await measureNativeRunnerSpan(
+                        input.trace,
+                        "runner.ingress.wait_for_process",
+                        () => remoteRunnerProcessSpawned,
+                      );
+                      outbound = connectRunnerPrpIngress({
+                        authority,
+                        endpoint: transport.ingress,
+                        onStateChange: (state, failureCode) => {
+                          void input.onLog?.(
+                            "stderr",
+                            `[paperclip-runner] transport mode=provider_ingress state=${state}${failureCode ? ` failure=${failureCode}` : ""}\n`,
+                          );
+                        },
+                      });
+                    },
+                    { parentName: "runner.session.startup" },
+                  );
+                  // Cancellation can release the sandbox while activation is
+                  // still waiting for the remote runner process. Attach a
+                  // rejection observer immediately; `ready()` still awaits the
+                  // original promise and reports the same startup failure, but
+                  // an early teardown can no longer crash the controller with
+                  // an unhandled plugin RPC rejection.
+                  void activation.catch(() => undefined);
+                },
+                ready: async () => {
+                  await measureNativeRunnerSpan(
+                    input.trace,
+                    "runner.transport.ready",
+                    async () => {
+                      await activation;
+                      if (!outbound)
+                        throw new Error("runner_ingress_unavailable");
+                      await measureNativeRunnerSpan(
+                        input.trace,
+                        "runner.prp.authenticate",
+                        () => outbound!.ready,
+                      );
+                    },
+                    { parentName: "runner.session.startup" },
+                  );
+                },
+                get failure() {
+                  return outbound?.failure;
+                },
+                startupFailureCode: "runner_ingress_unavailable" as const,
+                checkpoint: checkpointRemoteRunner,
+                release: async () => {
+                  if (outbound) await outbound.close();
+                  else await transport.ingress.close();
+                },
+              };
+            },
+          );
+        },
+      }).transport,
+  });
+  const wrapManagedSession = (session: NativeSession): NativeSession => {
+    if (!input.managedAiCredentialHome || input.execution.provider.kind !== "codex") return session;
+    const close = session.close.bind(session);
+    const detach = session.detachControllerForRestart?.bind(session);
+    let detachedForRestart = false;
+    if (detach) {
+      session.detachControllerForRestart = async () => {
+        // Ownership is relinquished before the asynchronous detach completes.
+        // Late close finalizers must leave the live runner's credentials alone.
+        detachedForRestart = true;
+        await detach();
+      };
+    }
+    let copied = false;
+    session.close = async (closeInput) => {
+      await close(closeInput);
+      if (detachedForRestart || copied) return;
+      copied = true;
+      const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
+      const localAuth = join(root, "codex-home", "auth.json");
+      try {
+        await copyBackCodexAuth({
+          hostAuthPath: join(input.managedAiCredentialHome!, "auth.json"),
+          readSandboxAuth: async () => {
+            if (!remoteAuth || !remoteCommandRunner) return readFileSync(localAuth);
+            const result = await remoteCommandRunner.execute({ command: "base64", args: [remoteAuth], bypassSession: true, timeoutMs: 10000 });
+            if (result.exitCode !== 0 || result.timedOut) throw new Error("AI credential copy-back failed");
+            return Buffer.from(result.stdout, "base64");
+          },
+          log: () => {},
+        });
+      } finally {
+        rmSync(localAuth, { force: true });
+        if (remoteAuth && remoteCommandRunner) await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", remoteAuth], bypassSession: true, timeoutMs: 10000 });
+      }
+    };
+    return session;
+  };
+  const priorAuthorityEpoch = sessionToolAuthorityEpochs.get(sessionScopeId);
+  if (priorAuthorityEpoch && priorAuthorityEpoch !== authorityEpoch) {
+    priorAuthorityEpoch.revoke();
+  }
+  sessionToolAuthorityEpochs.set(sessionScopeId, authorityEpoch);
+  return {
+    descriptor: () => backend.descriptor(),
+    openSession: async (sessionInput) => wrapManagedSession(await backend.openSession(sessionInput)),
+    recoverSession: async (snapshot, options) => {
+      const result = backend.recoverSession ? await backend.recoverSession(snapshot, options) : { recovered: false, reason: "driver does not support recovery" };
+      return result.session ? { ...result, session: wrapManagedSession(result.session) } : result;
+    },
+    openReplacementSession: async (sessionInput) => {
+      await measureNativeRunnerSpan(
+        input.trace,
+        "provider.session.archive_before_replacement",
+        archiveContinuityState,
+        { parentName: "native.session.execute" },
+      );
+      return wrapManagedSession(await backend.openSession(sessionInput));
+    },
+  } satisfies NativeSessionBackend;
+}

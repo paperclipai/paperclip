@@ -12,13 +12,16 @@ import {
 import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   asBoolean,
   asString,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   renderTemplate,
   stringifyPaperclipWakePayload,
@@ -106,6 +109,7 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const env: Record<string, string> = {
     ...configEnv,
     ...buildPaperclipEnv(agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: runId,
   };
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
@@ -166,7 +170,10 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   }
 
   delete env.CURSOR_API_KEY;
-  return env;
+  // Cursor rejects the entire request when any envVars value is empty.
+  // Paperclip may use empty values to unset optional host credentials; remote
+  // workers do not inherit those host variables, so omit the empty entries.
+  return Object.fromEntries(Object.entries(env).filter(([, value]) => value.length > 0));
 }
 
 async function buildInstructionsPrefix(
@@ -337,7 +344,7 @@ async function getAttachedRun(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onDispatch } = ctx;
   const envConfig = asStringEnvMap(config.env);
   const apiKey = asString(envConfig.CURSOR_API_KEY, "").trim();
   if (!apiKey) {
@@ -395,7 +402,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     : null);
   const canReuseSession = sessionMatches(session, envType, envName, repos);
-  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const promptTemplate = asString(config.promptTemplate, context.conversationMode === true
+    ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+    : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
@@ -407,7 +416,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canReuseSession });
+  const taskContextNote = context.conversationMode === true
+    ? selectPaperclipTaskMarkdown(context, { resumedSession: canReuseSession })
+    : "";
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    conversationMode: context.conversationMode === true,
+    resumedSession: canReuseSession,
+    suppressIssueDescription: taskContextNote.length > 0,
+  });
   const renderedBootstrapPrompt =
     !canReuseSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -421,6 +437,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructions.prefix,
     renderedBootstrapPrompt,
     wakePrompt,
+    taskContextNote,
     paperclipEnvNote,
     renderedPrompt,
   ]);
@@ -460,6 +477,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         instructionsChars: instructions.chars,
         bootstrapPromptChars: renderedBootstrapPrompt.length,
         wakePromptChars: wakePrompt.length,
+    taskContextChars: taskContextNote.length,
         heartbeatPromptChars: renderedPrompt.length,
       },
       context: {
@@ -480,6 +498,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let run: Run | null = null;
   let streamError: string | null = null;
   try {
+    // This adapter has no local child process, so crossing into the first SDK
+    // request is its dispatch boundary. Report it before any potentially
+    // long-running remote reattach/create/send operation.
+    onDispatch?.();
     const attachedRun = canReuseSession
       ? await getAttachedRun({ apiKey, session })
       : null;
@@ -585,7 +607,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSession: false,
     };
   } catch (err) {
-    const reason = formatRunError(err);
+    const error = formatRunError(err);
+    const reason = !model && error.includes("[invalid_model]")
+      ? `${error} Cursor rejected its configured default model. Choose an available default at https://cursor.com/dashboard/cloud-agents or set this agent's model explicitly.`
+      : error.includes("Failed to determine repository default branch")
+        ? `${error} Verify that Cursor's GitHub integration can access ${repoUrl} at https://cursor.com/dashboard/cloud-agents. If the repository has no default branch, configure a starting branch for this agent.`
+        : error;
     if (run) {
       await onLog("stdout", eventLine({
         type: "cursor_cloud.result",

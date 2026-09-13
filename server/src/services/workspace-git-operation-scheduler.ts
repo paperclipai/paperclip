@@ -882,6 +882,11 @@ setExpensiveWorkspaceGitExecutor(async (input) => {
     timeoutMs: input.timeout,
     maxStdoutBytes: input.maxBuffer,
     maxStderrBytes: input.maxBuffer,
+    // Absent for the anchor workspace's own reads (they inherit the process
+    // environment, a directory this process already controls). A
+    // referenced-project scan sets this to its hardened environment, so the
+    // hardening survives the hop through this shared scheduler.
+    env: input.env,
   });
   return { stdout: result.stdout, stderr: result.stderr };
 });

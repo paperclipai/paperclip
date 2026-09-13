@@ -22,7 +22,15 @@
 //     read order — proving the host still bounds these frames on their own terms
 //     and never lets the exit crowd a data frame out of the pre-open hold.
 //   - `echoInput`: when true, the fixture echoes each `duplexChannelWrite` back as
-//     one data notification for the bound session.
+//     one data notification for the bound session, prefixed with `echo:` at the
+//     byte level (so the echo round-trips a non-UTF-8 payload unchanged).
+//
+// The JSON-RPC hop carries a duplex chunk as a base64 string (see
+// `ChannelBytesWireValue` in packages/plugins/sdk/src/protocol.ts). This fixture
+// is a hand-rolled worker, not the real SDK, so it encodes and decodes base64
+// itself with the two helpers below. A `chunk` directive value in a test is
+// always the plain-text payload; the fixture is the one place that puts it on
+// the wire as base64.
 //   - `writeReplyDelayMs`: when a positive number, the fixture delays each
 //     `duplexChannelWrite` reply by that many milliseconds, so a test proves the
 //     host holds the pending-write reservation until the RPC settles.
@@ -42,10 +50,26 @@
 //     scripted data and exit in one stdout write. The host then reads the open
 //     reply and the notifications in one batch, so a test proves the host holds
 //     and replays a frame that arrives before the route binds.
+//   - `emitScriptedFramesAfterFirstWrite`: when true, the fixture holds the
+//     scripted data and exit until it has acknowledged the first channel write.
+//     This gives tests a deterministic post-bind trigger without timing delays.
 const readline = require("node:readline");
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+// Encode one plain-text directive chunk to the wire-safe base64 form. The real
+// worker (worker-rpc-host.ts, `encodeChannelBytes`) does the same encoding.
+function toWireChunk(text) {
+  return Buffer.from(text, "utf8").toString("base64");
+}
+
+// Decode the wire-safe base64 form of one host→worker write back to a Buffer,
+// so the echo path works on exact bytes rather than a UTF-8 string. This keeps
+// the echo byte-exact for a payload that is not valid UTF-8.
+function fromWireChunk(wireValue) {
+  return Buffer.from(wireValue, "base64");
 }
 
 // Serialize the scripted data and exit frames as newline-delimited lines. The
@@ -62,7 +86,7 @@ function scriptedFrameLines(directive, hostRouteId, workerSessionId) {
       params: {
         hostRouteId: entry.rid ?? hostRouteId,
         workerSessionId: entry.sid ?? workerSessionId,
-        chunk: entry.chunk,
+        chunk: toWireChunk(entry.chunk),
       },
     })}\n`;
   }
@@ -89,7 +113,7 @@ function scriptedFrameLines(directive, hostRouteId, workerSessionId) {
       params: {
         hostRouteId: entry.rid ?? hostRouteId,
         workerSessionId: entry.sid ?? workerSessionId,
-        chunk: entry.chunk,
+        chunk: toWireChunk(entry.chunk),
       },
     })}\n`;
   }
@@ -148,6 +172,10 @@ rl.on("line", (line) => {
       noWriteReply: mode === "no-write-reply",
       writeReplyDelayMs:
         typeof directive.writeReplyDelayMs === "number" ? directive.writeReplyDelayMs : 0,
+      scriptedFramesAfterFirstWrite:
+        directive.emitScriptedFramesAfterFirstWrite === true
+          ? scriptedFrameLines(directive, hostRouteId, workerSessionId)
+          : null,
       emitAfterCloseChunk:
         typeof directive.emitAfterCloseChunk === "string" ? directive.emitAfterCloseChunk : null,
     });
@@ -201,9 +229,11 @@ rl.on("line", (line) => {
     // Emit the scripted data and the exit after the open reply, so the host
     // binds the route first. Each frame echoes the exact pair; a test overrides
     // `sid` or `rid` to force a mismatch.
-    setImmediate(() => {
-      process.stdout.write(scriptedFrameLines(directive, hostRouteId, workerSessionId));
-    });
+    if (directive.emitScriptedFramesAfterFirstWrite !== true) {
+      setImmediate(() => {
+        process.stdout.write(scriptedFrameLines(directive, hostRouteId, workerSessionId));
+      });
+    }
     return;
   }
 
@@ -223,17 +253,29 @@ rl.on("line", (line) => {
     if (entry.echoInput) {
       // Echo the input back as one data notification for the bound pair, so a
       // test proves the input reaches the worker and the output routes back.
+      // Work on the decoded Buffer, not a string, so a non-UTF-8 payload (the
+      // full 256-value byte corpus) echoes byte-exact under the `echo:` prefix.
+      const echoBytes = Buffer.concat([Buffer.from("echo:", "utf8"), fromWireChunk(params.data)]);
       send({
         jsonrpc: "2.0",
         method: "duplexChannel.data",
         params: {
           hostRouteId: entry.hostRouteId,
           workerSessionId: entry.workerSessionId,
-          chunk: `echo:${params.data}`,
+          chunk: echoBytes.toString("base64"),
         },
       });
     }
-    const replyWrite = () => send({ jsonrpc: "2.0", id: message.id, result: null });
+    const replyWrite = () => {
+      send({ jsonrpc: "2.0", id: message.id, result: null });
+      const deferredFrames = entry.scriptedFramesAfterFirstWrite;
+      entry.scriptedFramesAfterFirstWrite = null;
+      if (deferredFrames) {
+        // Emit only after acknowledging the host trigger. The trigger can only be
+        // sent through a returned session, so the route is definitively bound.
+        setImmediate(() => process.stdout.write(deferredFrames));
+      }
+    };
     if (entry.writeReplyDelayMs > 0) {
       // Delay the write reply, so the host holds the pending-write reservation for
       // a measurable time before the RPC settles.
@@ -278,7 +320,7 @@ rl.on("line", (line) => {
           params: {
             hostRouteId: entry.hostRouteId,
             workerSessionId: entry.workerSessionId,
-            chunk: entry.emitAfterCloseChunk,
+            chunk: toWireChunk(entry.emitAfterCloseChunk),
           },
         });
       });

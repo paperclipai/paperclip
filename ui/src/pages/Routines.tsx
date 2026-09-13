@@ -1,6 +1,6 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useSearchParams } from "@/lib/router";
+import { Link, Navigate, useNavigate, useSearchParams } from "@/lib/router";
 import { ArrowUpDown, Check, ChevronDown, ChevronRight, Layers, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { foldersApi } from "../api/folders";
@@ -20,7 +20,6 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
-import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -46,9 +45,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { auditSectionHref } from "./audit/audit-navigation";
+import { routineDetailHref } from "../components/RoutineContextualSidebar";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 import type { FolderListItem } from "@paperclipai/shared";
+import { Tabs } from "@/components/ui/tabs";
 import {
   AllUnfiledBanner,
   BulkBar,
@@ -83,8 +86,8 @@ function autoResizeTextarea(element: HTMLTextAreaElement | null) {
   element.style.height = `${element.scrollHeight}px`;
 }
 
-type RoutinesTab = "routines" | "runs";
 type RoutineGroupBy = "folder" | "none" | "project" | "assignee";
+type RoutinesTab = "routines" | "runs";
 type RoutineSortField = "updated" | "created" | "title" | "lastRun";
 type RoutineSortDir = "asc" | "desc";
 
@@ -284,28 +287,20 @@ export function sortRoutines(
   });
 }
 
-function buildRoutinesTabHref(tab: RoutinesTab) {
-  return tab === "runs" ? "/routines?tab=runs" : "/routines";
-}
-
 function RoutineSectionHeader({
   label,
   count,
-  isOpen,
+  isOpen: _isOpen,
 }: {
   label: string;
   count: number;
   isOpen: boolean;
 }) {
   return (
-    <div
-      className={`flex items-center gap-2 rounded-lg border border-border px-3 py-2${
-        isOpen ? " mb-1" : ""
-      }`}
-    >
+    <div className="flex items-center gap-2 px-2 py-1.5">
       <CollapsibleTrigger className="flex items-center gap-1.5">
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-        <span className="text-sm font-semibold uppercase tracking-wide">
+        <span data-routine-section-label className="text-sm font-medium">
           {label}
         </span>
       </CollapsibleTrigger>
@@ -339,7 +334,9 @@ export function Routines() {
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const activeTab: RoutinesTab = searchParams.get("tab") === "runs" ? "runs" : "routines";
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const legacyRunsRequested = searchParams.get("tab") === "runs";
+  const activeTab: RoutinesTab = !streamlinedUiEnabled && legacyRunsRequested ? "runs" : "routines";
   const [draft, setDraft] = useState<{
     title: string;
     description: string;
@@ -383,7 +380,7 @@ export function Routines() {
   const { data: routineFolders, isLoading: foldersLoading } = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId!, "routine"),
     queryFn: () => foldersApi.list(selectedCompanyId!, "routine"),
-    enabled: !!selectedCompanyId && activeTab === "routines",
+    enabled: !!selectedCompanyId,
   });
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -403,15 +400,14 @@ export function Routines() {
   const { data: routineExecutionIssues, isLoading: recentRunsLoading, error: recentRunsError } = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
     queryFn: () => issuesApi.list(selectedCompanyId!, { originKind: "routine_execution" }),
-    enabled: !!selectedCompanyId && activeTab === "runs",
+    enabled: !!selectedCompanyId && !streamlinedUiEnabled && activeTab === "runs",
   });
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!selectedCompanyId && activeTab === "runs",
-    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
+    enabled: !!selectedCompanyId && !streamlinedUiEnabled && activeTab === "runs",
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -422,7 +418,6 @@ export function Routines() {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
   }, [draft.title, composerOpen]);
@@ -460,7 +455,7 @@ export function Routines() {
           : "Draft saved. Add a default agent before enabling automation.",
         tone: "success",
       });
-      navigate(`/routines/${routine.id}?tab=triggers`);
+      navigate(routineDetailHref(routine.id, "triggers"));
     },
   });
   const createFolder = useMutation({
@@ -554,14 +549,6 @@ export function Routines() {
       });
     },
   });
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] });
-    },
-  });
-
   const updateRoutineStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => routinesApi.update(id, { status }),
     onMutate: ({ id }) => {
@@ -655,11 +642,33 @@ export function Routines() {
     () => new Map((routineFolders?.folders ?? []).map((folder) => [folder.id, folder])),
     [routineFolders],
   );
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, routineExecutionIssues), [liveRuns, routineExecutionIssues]);
   const visibleRoutines = useMemo(
     () => (routines ?? []).filter((routine) => routine.status !== "archived"),
     [routines],
   );
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(liveRuns, routineExecutionIssues),
+    [liveRuns, routineExecutionIssues],
+  );
+  const recentRunsIssueLinkState = useMemo(
+    () => createIssueDetailLocationState("Recent Runs", "/routines?tab=runs", "issues"),
+    [],
+  );
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
+      });
+    },
+  });
+
+  function handleLegacyTabChange(tab: string) {
+    const nextTab: RoutinesTab = tab === "runs" ? "runs" : "routines";
+    startTransition(() => {
+      navigate(nextTab === "runs" ? "/routines?tab=runs" : "/routines");
+    });
+  }
   const folderFilteredRoutines = useMemo(() => {
     if (routineViewState.groupBy !== "folder") return visibleRoutines;
     if (folderSelection === "all") return visibleRoutines;
@@ -694,33 +703,17 @@ export function Routines() {
     () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById, folderById),
     [agentById, folderById, projectById, routineViewState.groupBy, sortedRoutines],
   );
-  const recentRunsIssueLinkState = useMemo(
-    () =>
-      createIssueDetailLocationState(
-        "Recent Runs",
-        buildRoutinesTabHref("runs"),
-        "issues",
-      ),
-    [],
-  );
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
   const activeFolder = selectedFolderFromList(routineFolders?.folders ?? [], folderSelection);
   const hasRoutineFolders = (routineFolders?.folders.length ?? 0) > 0;
-  const showFolderRail = activeTab === "routines" && routineViewState.groupBy === "folder" && hasRoutineFolders;
+  const showFolderRail = routineViewState.groupBy === "folder" && hasRoutineFolders;
 
   function updateRoutineView(patch: Partial<RoutineViewState>) {
     setRoutineViewState((current) => {
       const next = { ...current, ...patch };
       saveRoutineViewState(routineViewStateKey, next);
       return next;
-    });
-  }
-
-  function handleTabChange(tab: string) {
-    const nextTab = tab === "runs" ? "runs" : "routines";
-    startTransition(() => {
-      navigate(buildRoutinesTabHref(nextTab));
     });
   }
 
@@ -796,46 +789,100 @@ export function Routines() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message="Select an organization to view routines." />;
+  }
+
+  if (streamlinedUiEnabled && legacyRunsRequested) {
+    return <Navigate to={auditSectionHref("runs", {})} replace />;
   }
 
   if (isLoading) {
     return <PageSkeleton variant="issues-list" />;
   }
 
+  if (!streamlinedUiEnabled && activeTab === "runs") {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-semibold tracking-tight">Routines</h1>
+            <p className="text-sm text-muted-foreground">
+              Recurring work definitions that materialize into auditable execution tasks.
+            </p>
+          </div>
+          <Button onClick={openCreateRoutine}>
+            <Plus className="mr-2 h-4 w-4" />
+            Create routine
+          </Button>
+        </div>
+        <Tabs value={activeTab} onValueChange={handleLegacyTabChange}>
+          <PageTabBar
+            align="start"
+            value={activeTab}
+            onValueChange={handleLegacyTabChange}
+            items={[
+              { value: "routines", label: "Routines" },
+              { value: "runs", label: "Recent Runs" },
+            ]}
+          />
+        </Tabs>
+        <IssuesList
+          issues={routineExecutionIssues ?? []}
+          isLoading={recentRunsLoading}
+          error={recentRunsError as Error | null}
+          agents={agents}
+          projects={projects}
+          liveIssueIds={liveIssueIds}
+          viewStateKey="paperclip:routine-recent-runs-view"
+          issueLinkState={recentRunsIssueLinkState}
+          onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Routines
-          </h1>
+          <h1 className="text-xl font-bold">Routines</h1>
           <p className="text-sm text-muted-foreground">
             Recurring work definitions that materialize into auditable execution tasks.
           </p>
         </div>
-        <Button onClick={openCreateRoutine}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create routine
-        </Button>
+        <div className="flex items-center gap-2">
+          {streamlinedUiEnabled ? (
+            <Button variant="outline" asChild>
+              <Link to={auditSectionHref("runs", {})}>View all runs</Link>
+            </Button>
+          ) : null}
+          <Button onClick={openCreateRoutine}>
+            <Plus className="mr-2 h-4 w-4" />
+            Create routine
+          </Button>
+        </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <PageTabBar
-          align="start"
-          value={activeTab}
-          onValueChange={handleTabChange}
-          items={[
-            { value: "routines", label: "Routines" },
-            { value: "runs", label: "Recent Runs" },
-          ]}
-        />
-        <TabsContent value="routines" className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">
-              {visibleRoutines.length} routine{visibleRoutines.length === 1 ? "" : "s"}
-            </p>
-            <div className="flex items-center gap-1">
+      {!streamlinedUiEnabled ? (
+        <Tabs value={activeTab} onValueChange={handleLegacyTabChange}>
+          <PageTabBar
+            align="start"
+            value={activeTab}
+            onValueChange={handleLegacyTabChange}
+            items={[
+              { value: "routines", label: "Routines" },
+              { value: "runs", label: "Recent Runs" },
+            ]}
+          />
+        </Tabs>
+      ) : null}
+
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">
+            {visibleRoutines.length} routine{visibleRoutines.length === 1 ? "" : "s"}
+          </p>
+          <div className="flex items-center gap-1">
               <Popover>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="sm" className="text-xs" title="Sort">
@@ -919,33 +966,19 @@ export function Routines() {
                   {selectMode ? "Done" : "Select"}
                 </Button>
               ) : null}
-            </div>
           </div>
-          {routineViewState.groupBy === "folder" ? (
-            <div className="md:hidden">
-              <FolderChip
-                result={railFolderResult}
-                selection={folderSelection}
-                allLabel="All routines"
-                onClick={() => setMobileFoldersOpen(true)}
-              />
-            </div>
-          ) : null}
-        </TabsContent>
-        <TabsContent value="runs">
-          <IssuesList
-            issues={routineExecutionIssues ?? []}
-            isLoading={recentRunsLoading}
-            error={recentRunsError as Error | null}
-            agents={agents}
-            projects={projects}
-            liveIssueIds={liveIssueIds}
-            viewStateKey="paperclip:routine-recent-runs-view"
-            issueLinkState={recentRunsIssueLinkState}
-            onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-          />
-        </TabsContent>
-      </Tabs>
+        </div>
+        {routineViewState.groupBy === "folder" ? (
+          <div className="md:hidden">
+            <FolderChip
+              result={railFolderResult}
+              selection={folderSelection}
+              allLabel="All routines"
+              onClick={() => setMobileFoldersOpen(true)}
+            />
+          </div>
+        ) : null}
+      </div>
 
       <Dialog
         open={composerOpen}
@@ -1230,8 +1263,7 @@ export function Routines() {
         </Card>
       ) : null}
 
-      {activeTab === "routines" ? (
-        <div className={cn(showFolderRail && "flex gap-4")}>
+      <div className={cn(showFolderRail && "flex gap-4")}>
           {showFolderRail ? (
             <FolderRail
               result={railFolderResult}
@@ -1382,7 +1414,6 @@ export function Routines() {
           )}
           </div>
         </div>
-      ) : null}
 
       <FolderFormDialog
         open={folderDialogOpen}
