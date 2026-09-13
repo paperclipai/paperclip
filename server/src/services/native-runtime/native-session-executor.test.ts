@@ -299,6 +299,116 @@ beforeEach(() => {
 });
 
 describe("remote runner process supervision", () => {
+  it.runIf(process.platform === "linux" || !!process.env.PAPERCLIP_REMOTE_PROCESS_TEST_CONTAINER).each([
+    "live-parent", "exited-parent", "replaced-marker", "unverified-member", "unavailable-containment",
+    "cancel-pending-ownership", "cancel-pending-ownership-late-rejection",
+  ])("contains ownership-save failure without signalling unrelated remote processes (%s)", async (scenario) => {
+    const root = await mkdtemp(join(process.env.PAPERCLIP_REMOTE_PROCESS_TEST_ROOT ?? tmpdir(), "remote-ownership-"));
+    const container = process.env.PAPERCLIP_REMOTE_PROCESS_TEST_CONTAINER;
+    const execute = async (command: { command?: string; args?: string[]; cwd?: string; timeoutMs?: number }) => {
+      const result = spawnSync(container ? "docker" : command.command!, container
+        ? ["exec", container, command.command!, ...(command.args ?? [])]
+        : command.args ?? [], { cwd: command.cwd, timeout: command.timeoutMs ?? 10_000, encoding: "utf8" });
+      let stdout = result.stdout ?? "";
+      if (scenario === "unavailable-containment" && command.args?.[2] === "paperclip-runner-process-identity") {
+        stdout = stdout.split("\n").slice(0, 4).join("\n") + "\n";
+      }
+      return { exitCode: result.status, signal: result.signal, timedOut: result.error?.message.includes("ETIMEDOUT") ?? false,
+        stdout, stderr: result.stderr ?? "" };
+    };
+    const script = join(root, "runner.sh"), pidsPath = join(root, "pids"), unrelatedPath = join(root, "unrelated");
+    await writeFile(script, `#!/bin/sh
+trap '' TERM
+${scenario === "unverified-member" ? "env -u PAPERCLIP_RUNNER_PROCESS_NONCE " : ""}sh -c 'trap "" TERM; while :; do sleep 1; done' --runner-id owned-child &
+printf '%s %s\\n' "$$" "$!" > '${pidsPath}'
+while :; do sleep 1; done
+`);
+    const marker = join(root, "runner-process.identity"), checkpoint = join(root, "runner-state.json");
+    await writeFile(checkpoint, '{"keep":"original-checkpoint"}');
+    let pids: number[] = [], unrelated = 0, expectedMarker = "";
+    const cancelling = scenario.startsWith("cancel-pending-ownership");
+    const confirmed = scenario === "live-parent" || scenario === "exited-parent" || cancelling;
+    let cancelLaunch!: () => void;
+    let resolveOwnership!: () => void, rejectOwnership!: (error: Error) => void;
+    const pendingOwnership = new Promise<void>((resolve, reject) => { resolveOwnership = resolve; rejectOwnership = reject; });
+    try {
+      await execute({ command: "sh", args: ["-c", `nohup setsid sh -c 'echo $$ > "${unrelatedPath}"; exec sleep 300' </dev/null >/dev/null 2>&1 &`] });
+      await vi.waitFor(async () => { unrelated = Number((await readFile(unrelatedPath, "utf8")).trim()); expect(unrelated).toBeGreaterThan(1); });
+      const saveFailure = new Error("ownership-save-rejected");
+      const onSpawn = vi.fn(async () => {
+        await vi.waitFor(async () => { pids = (await readFile(pidsPath, "utf8")).trim().split(/\s+/).map(Number); expect(pids).toHaveLength(2); });
+        expectedMarker = await readFile(marker, "utf8");
+        if (scenario === "exited-parent") await execute({ command: "sh", args: ["-c", `kill -KILL ${pids[0]}`] });
+        if (scenario === "replaced-marker") {
+          const lines = expectedMarker.split("\n"); lines[1] = String(unrelated); expectedMarker = lines.join("\n");
+          await writeFile(marker, expectedMarker);
+        }
+        if (cancelling) {
+          cancelLaunch();
+          await pendingOwnership;
+          return;
+        }
+        throw saveFailure;
+      });
+      const launcher = createRemoteRunnerProcessLauncher({
+        target: { kind: "remote", transport: "sandbox", environmentId: "test", leaseId: "test", remoteCwd: root },
+        runner: { execute } as never, remoteBinary: "/bin/sh", processIdentityPath: marker,
+        stateDirectory: root, diagnosticsDirectory: join(root, "diagnostics"), runnerInstanceId: "runner-ownership-test", onSpawn,
+      });
+      const handle = launcher({ command: "/bin/sh", args: [script, "--runner-id", "runner-ownership-test"], cwd: root, environment: {} });
+      cancelLaunch = () => handle.cancelPendingLaunch?.();
+      const failure = await handle.completion.catch(error => error);
+      expect(failure).toBeInstanceOf(Error);
+      if (cancelling) expect(failure.message).toBe("runner_remote_process_launch_cancelled");
+      else if (confirmed) expect(failure).toBe(saveFailure);
+      else expect(failure.message).toContain("cleanup incomplete");
+      await expect(handle.ready).rejects.toBe(failure);
+      expect(handle.ownershipFailure).toEqual({ error: failure, containment: confirmed ? "confirmed" : "unconfirmed" });
+      expect(onSpawn).toHaveBeenCalledOnce();
+      if (scenario === "cancel-pending-ownership-late-rejection") rejectOwnership(new Error("late ownership save failure"));
+      else resolveOwnership();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await expect(handle.ready).rejects.toBe(failure);
+      handle.cancelPendingLaunch?.(); // A classified failure is immutable.
+      expect(handle.ownershipFailure).toEqual({ error: failure, containment: confirmed ? "confirmed" : "unconfirmed" });
+      for (const pid of pids) {
+        const observed = await execute({ command: "sh", args: ["-c", `test ! -r /proc/${pid}/stat || test "$(awk '{print $3}' /proc/${pid}/stat)" = Z`] });
+        expect(observed.exitCode, `remote owned process ${pid}`).toBe(confirmed ? 0 : 1);
+      }
+      expect((await execute({ command: "sh", args: ["-c", `kill -0 ${unrelated}`] })).exitCode).toBe(0);
+      expect(await readFile(checkpoint, "utf8")).toBe('{"keep":"original-checkpoint"}');
+      expect(await readFile(marker, "utf8")).toBe(expectedMarker);
+    } finally {
+      for (const pid of [...pids, unrelated].filter(pid => Number.isSafeInteger(pid) && pid > 1)) {
+        await execute({ command: "sh", args: ["-c", `kill -KILL ${pid} 2>/dev/null || true`] });
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+  it.each([false, true])("does not dispatch after cancellation while staging is pending (trace=%s)", async (traced) => {
+    let finishStaging!: () => void;
+    const staging = new Promise<void>(resolve => { finishStaging = resolve; });
+    const execute = vi.fn(), onSpawn = vi.fn(), onRunnerProcessSpawned = vi.fn();
+    const launcher = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "test", leaseId: "test", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-cancel",
+      ensureArtifact: () => staging, onSpawn, onRunnerProcessSpawned,
+      trace: traced ? { measure: (_name: string, action: () => Promise<void>) => action() } as never : undefined,
+    });
+    const handle = launcher({ command: "/runtime/runnerd", args: [], cwd: "/workspace", environment: {} });
+    handle.cancelPendingLaunch?.();
+    const failure = await handle.completion.catch(error => error);
+    expect(failure.message).toBe("runner_remote_process_launch_cancelled");
+    await expect(handle.ready).rejects.toBe(failure);
+    expect(handle.ownershipFailure).toEqual({ error: failure, containment: "confirmed" });
+    finishStaging();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(execute).not.toHaveBeenCalled();
+    expect(onSpawn).not.toHaveBeenCalled();
+    expect(onRunnerProcessSpawned).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("supervises detached runnerd and observes signal failures (%s)", async (signalFails) => {
     let launchNonce = "";
     const execute = vi.fn(
@@ -404,6 +514,10 @@ describe("remote runner process supervision", () => {
       code: null,
       stderr: "paperclip-runnerd: provider transport closed",
     });
+
+    await expect(handle.ready).resolves.toBeUndefined();
+    handle.cancelPendingLaunch?.();
+    expect(handle.ownershipFailure).toBeUndefined();
 
     const launch = execute.mock.calls.find(
       ([input]) => input.args?.[2] === "paperclip-runner-launch",
