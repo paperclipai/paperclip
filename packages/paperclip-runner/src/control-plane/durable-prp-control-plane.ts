@@ -272,6 +272,16 @@ export interface RunnerProcessHandle {
     kill(signal?: NodeJS.Signals | number): boolean;
   };
   completion: Promise<RunnerProcessResult>;
+  /** Async launch identity AND launcher-side ownership persistence. Consumers
+   * must await this before admission and must not publish ownership a second time.
+   * Reject only after attempted containment and observe rejection immediately. */
+  ready?: Promise<void>;
+  /** Latch cancellation before async launch/readiness; prevent a later dispatch
+   * or contain an already dispatched process through launcher-owned authority. */
+  cancelPendingLaunch?(): void;
+  /** Exact ready/completion rejection and the launcher's verified containment
+   * outcome. Never infer containment from a rejected lifetime promise alone. */
+  ownershipFailure?: { error: unknown; containment: "confirmed" | "unconfirmed" };
   processGroupId?: number | null;
   startedAt?: string;
   /** Relaunches the same immutable process specification with a fresh ticket. */
@@ -3513,14 +3523,23 @@ export function spawnRunner(options: {
 
   const command = options.runnerBinaryPath ?? runnerBinary;
   const environment = runnerEnvironment(options.ticket, options.environment);
-  const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => ({
-    ...handle,
-    // Remote launchers resolve process identity after returning the handle.
-    get startedAt() {
-      return handle.startedAt;
-    },
-    restart: (ticket) => spawnRunner({ ...options, ticket }),
-  });
+  const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => {
+    // Consumers await the original promises, but a remote launch can reject
+    // before that await is installed. Observe without replacing their results.
+    void handle.ready?.catch(() => undefined);
+    void handle.completion.catch(() => undefined);
+    return {
+      ...handle,
+      // Remote launchers resolve process identity after returning the handle.
+      get startedAt() {
+        return handle.startedAt;
+      },
+      get ownershipFailure() {
+        return handle.ownershipFailure;
+      },
+      restart: (ticket) => spawnRunner({ ...options, ticket }),
+    };
+  };
   if (options.processLauncher !== undefined) {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment }),
