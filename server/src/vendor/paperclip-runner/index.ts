@@ -124,3 +124,4 @@ export const validatePrpStructuredRunResult =
 export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
+export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;

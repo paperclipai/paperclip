@@ -20,6 +20,7 @@ import {
   loadDraftSubmission,
   saveDraftSubmission,
   clearDraftSubmission,
+  settleDraftSubmission,
   type ComposerDraftSubmission,
 } from "@/lib/composer-draft";
 import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
@@ -104,6 +105,7 @@ interface TaskChatComposerProps {
     attachmentIds?: string[],
     clientRequestId?: string,
   ) => Promise<void> | void;
+  confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
@@ -381,9 +383,9 @@ function escapeMarkdownLabel(name: string): string {
  */
 export function TaskChatComposer({
   onAdd,
+  confirmedSubmissionIds,
   onStop,
   stopPending = false,
-  stopScope = "leaf",
   workMode,
   onWorkModeChange,
   disabled = false,
@@ -460,6 +462,12 @@ export function TaskChatComposer({
       typeof update === "function" ? update(attachmentsRef.current) : update;
     attachmentsRef.current = next;
     setAttachmentState(next);
+    const pending = pendingDraftRef.current;
+    if (pending && pending.draftKey === draftKey) {
+      saveDraftAttachments(pending.draftKey, next
+        .filter(item => item.status === "attached" && item.attachmentId)
+        .map(item => ({ ...item, inline: item.inline === true })), pending.attemptId);
+    }
   }
   const submittingRef = useRef(submitting);
   submittingRef.current = submitting;
@@ -469,6 +477,29 @@ export function TaskChatComposer({
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const pendingDraftRef = useRef<{
+    draftKey: string;
+    attemptId: string;
+    submittedBody: string;
+    submittedAttachmentIds: string[];
+  } | null>(null);
+  function changeBody(value: string) {
+    bodyRef.current = value;
+    setBody(value);
+    const pending = pendingDraftRef.current;
+    if (!pending || pending.draftKey !== draftKey ||
+        loadDraftSubmission(pending.draftKey)?.attemptId !== pending.attemptId) return;
+    // Keep text typed during delivery durable too. Navigation may happen before
+    // either the request promise or the matching live server receipt arrives.
+    saveDraft(pending.draftKey,
+      value ? `${pending.submittedBody}\n\n${value}` : pending.submittedBody,
+      pending.attemptId);
+    saveDraftSubmission(pending.draftKey, {
+      attemptId: pending.attemptId, reviewed: false,
+      nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
+      submittedAttachmentIds: pending.submittedAttachmentIds,
+    });
+  }
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedEditRef = useRef(queuedEdit);
   queuedEditRef.current = queuedEdit;
@@ -971,20 +1002,16 @@ export function TaskChatComposer({
             .map((item) => item.attachmentId!),
         ),
       ];
-      if (conversationMode)
-        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
-      else if (attachmentIds.length > 0)
-        await onAdd(fullBody, reopen, reassignment, attachmentIds);
-      else await onAdd(fullBody, reopen, reassignment);
-      if (mountedTaskKey.current !== draftKey) return;
-      if (draftKey) clearDraftSubmission(draftKey, attemptId);
-      if (draftKey && bodyRef.current) {
-        // The editor stays writable while the request is pending. Preserve
-        // text entered after this submission started as the next draft.
-        saveDraft(draftKey, bodyRef.current);
-      } else if (draftKey) {
-        clearDraft(draftKey);
+      if (draftKey) {
+        pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds };
+        changeBody(bodyRef.current);
       }
+      await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
+      // Navigation does not invalidate the server receipt. Settle the captured
+      // task before checking whether this composer is still on screen.
+      if (draftKey) settleDraftSubmission(draftKey, attemptId,
+        mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
+      if (mountedTaskKey.current !== draftKey) return;
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
@@ -994,8 +1021,13 @@ export function TaskChatComposer({
       }
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
+      const nextDraft = bodyRef.current;
       if (attemptId && error instanceof CommentSubmissionUnknownError) {
-        const uncertain = { attemptId, reviewed: false };
+        const uncertain = {
+          attemptId, reviewed: false,
+          nextDraftOffset: submittedBody.length + (nextDraft ? 2 : 0),
+          submittedAttachmentIds: submittedAttachments.flatMap(item => item.attachmentId ? [item.attachmentId] : []),
+        };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
           saveDraftSubmission(draftKey, uncertain);
@@ -1003,7 +1035,6 @@ export function TaskChatComposer({
         clearDraftSubmission(draftKey, attemptId);
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
-      const nextDraft = bodyRef.current;
       const restoredBody = nextDraft
         ? `${submittedBody}\n\n${nextDraft}`
         : submittedBody;
@@ -1015,9 +1046,24 @@ export function TaskChatComposer({
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
     } finally {
+      if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);
     }
   }
+
+  useEffect(() => {
+    if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
+    const nextDraft = uncertainSubmission.nextDraftOffset === undefined
+      ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
+    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
+    setUncertainSubmission(null);
+    bodyRef.current = nextDraft;
+    setBody(nextDraft);
+    const submittedIds = uncertainSubmission.submittedAttachmentIds;
+    setAttachments(current => submittedIds
+      ? current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
+      : []);
+  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
 
   async function reviewUncertainSubmission() {
     if (!uncertainSubmission) return;
@@ -1265,7 +1311,7 @@ export function TaskChatComposer({
             <MarkdownEditor
               ref={editorRef}
               value={body}
-              onChange={setBody}
+              onChange={changeBody}
               placeholder={
                 disabled
                   ? (disabledReason ?? "Composer disabled")
@@ -1537,9 +1583,7 @@ export function TaskChatComposer({
                 showStop
                   ? stopControl.stopping
                     ? "Stopping…"
-                    : stopScope === "subtree"
-                      ? "Stop and pause subtree"
-                      : "Stop and pause task"
+                    : "Stop response"
                   : queuedEdit
                     ? queuedEdit.stale
                       ? "Queue as new message"

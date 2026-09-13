@@ -68,7 +68,7 @@ describe("stop confirmation", () => {
       timeoutMs: 1000,
     });
     const assertion = expect(result).rejects.toThrow(
-      "pause was saved, but work is still stopping",
+      "stop was requested, but work is still stopping",
     );
     await vi.advanceTimersByTimeAsync(1000);
     await assertion;
@@ -78,7 +78,7 @@ describe("stop confirmation", () => {
       waitForStoppedRuns(["active"], {
         getRun: vi.fn().mockRejectedValue(new Error("offline")),
       }),
-    ).rejects.toThrow("pause was saved, but stopping could not be verified");
+    ).rejects.toThrow("stop was requested, but stopping could not be verified");
   });
 });
 

@@ -229,6 +229,16 @@ vi.mock("../app.js", () => ({
   createApp: createAppMock,
 }));
 
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({
+  verifyStoppedNativeSessionForReplacement: vi.fn(async () => null),
+}));
+
+// This suite verifies server startup scheduling; replacement correctness is
+// exercised by the dedicated DB-backed recovery suites.
+vi.mock("../services/native-runtime/native-safe-replacement.js", () => ({
+  reconcileSafeNativeReplacements: vi.fn(async () => ({ scanned: 0, scheduled: 0 })),
+}));
+
 vi.mock("../config.js", () => ({
   loadConfig: loadConfigMock,
 }));
@@ -400,6 +410,8 @@ vi.mock("../auth/better-auth.js", () => ({
 }));
 
 import { startServer } from "../index.ts";
+import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
+import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -540,6 +552,34 @@ describe("startServer feedback export wiring", () => {
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("reconciles native replacements at startup and on the execution-control interval", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    let executionControlTick: (() => void) | undefined;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+      interval: number,
+    ) => {
+      if (interval === EXECUTION_RECONCILIATION_INTERVAL_MS) executionControlTick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reconcileSafeNativeReplacements).toHaveBeenCalledExactlyOnceWith(
+        createDbMock.mock.results[0]?.value,
+        expect.any(Date),
+        { verifyStoppedSession: expect.any(Function) },
+      );
+
+      expect(executionControlTick).toBeDefined();
+      executionControlTick?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reconcileSafeNativeReplacements).toHaveBeenCalledTimes(2);
+    } finally {
       setIntervalSpy.mockRestore();
     }
   });

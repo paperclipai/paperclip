@@ -153,6 +153,29 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   return true;
 }
 
+/** Host-only counterpart of remote resource termination. The caller has verified
+ * both exact local process identities and durably fenced their run. This removes
+ * only cleanup ownership; the retained checkpoint is never made resumable.
+ */
+export function completeTerminatedLocalNativeSessionCleanup(binding: {
+  companyId: string;
+  runId: string;
+  runnerInstanceId: string;
+}): boolean {
+  const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
+    const identity = session.identity();
+    const parts = JSON.parse(domain) as string[];
+    return parts.length === 3 && identity.companyId === binding.companyId && identity.runId === binding.runId;
+  });
+  if (matches.some(entry => entry.attempt || entry.recovery ||
+      sessionOriginRunnerInstances.get(entry.session) !== binding.runnerInstanceId)) return false;
+  for (const entry of matches) {
+    if (entry.timer) clearTimeout(entry.timer);
+    quarantinedSessionCleanups.delete(entry);
+  }
+  return true;
+}
+
 export interface NativeSessionGoalControl {
   requestId: string;
   action: "create" | "edit" | "replace" | "pause" | "resume" | "clear";
@@ -161,6 +184,8 @@ export interface NativeSessionGoalControl {
 }
 
 export interface ExecuteNativeSessionOptions {
+  /** Durable launch intent, after cleanup admission and before provider calls. */
+  onSessionAdmission?: () => Promise<void>;
   input: NativeExecutionInput;
   backend: NativeSessionBackend;
   controlPlane: ControlPlanePort;
@@ -1841,6 +1866,7 @@ export async function executeNativeSession(
     previousProviderSessionId: string | null;
   } | null = null;
   let reconciledRecoveryCheckpoint: PersistedNativeSession | null = null;
+  await options.onSessionAdmission?.();
   if (options.existingSession) {
     if (options.existingSession.attachRun === undefined) {
       throw new Error("native_session_multi_run_unavailable");
@@ -2099,7 +2125,7 @@ export async function executeNativeSession(
     // Ownership publication is part of the execution-owned lifetime. If the
     // callback fails, the finally block below still quarantines and closes the
     // provider session.
-    options.onSession?.(session);
+    await options.onSession?.(session);
     const checkpointTimeoutMs =
       options.checkpointTimeoutMs ?? DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS;
     const persistCheckpoint = (
