@@ -292,6 +292,27 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
 
   // Review test (a): a foreign-company agent id produces the current failed
   // wake status and the current error text, and creates no run.
+  it("skips preserved handoff receipts for one drain without changing their durable state", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const previous = await seedDeferredWake({ companyId, agentId, issueId });
+    const next = await seedDeferredWake({ companyId, agentId, issueId });
+    await db.update(agentWakeupRequests).set({ requestedAt: new Date("2026-01-01") }).where(eq(agentWakeupRequests.id, previous));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      expect((await ports.transaction.findNextDeferredWake({ companyId, issueId }))?.id).toBe(previous);
+      expect((await ports.transaction.findNextDeferredWake({ companyId, issueId, excludedWakeIds: [previous] }))?.id).toBe(next);
+      expect(await ports.transaction.findNextDeferredWake({ companyId, issueId, excludedWakeIds: [previous, next] })).toBeNull();
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    const [preserved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, previous));
+    expect(preserved.status).toBe("deferred_issue_execution");
+    expect(preserved.runId).toBeNull();
+  });
+
   it("fails a deferred wake whose agent belongs to a different company, without creating a run", async () => {
     const companyId = await seedCompany();
     const otherCompanyId = await seedCompany();

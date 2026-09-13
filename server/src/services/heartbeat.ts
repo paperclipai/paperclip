@@ -27208,6 +27208,20 @@ export function heartbeatService(
             .returning()
             .then((rows) => rows[0]);
 
+          // A handoff changes the executor, not the owner of saved user input.
+          // Validate its exact stopped source while the issue row is locked;
+          // unrelated agents and dedicated continuations keep their own wakes.
+          const interruptedRunId = readNonEmptyString(enrichedContextSnapshot.interruptedRunId);
+          const handoffSource = source === "assignment" && reason === "issue_assigned" &&
+            issue.assigneeAgentId === agentId && interruptedRunId && isUuidLike(interruptedRunId)
+              ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.id, interruptedRunId), eq(heartbeatRuns.companyId, issue.companyId),
+                  eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, "issue_reassigned"),
+                  ne(heartbeatRuns.agentId, agentId),
+                  sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+                  or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issue.id)),
+                )).then(rows => rows[0] ?? null)
+              : null;
           const pendingComments =
             !isConversation(issue) && opts.allowRunCoalescing !== false &&
             !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
@@ -27217,7 +27231,7 @@ export function heartbeatService(
                   .where(
                     and(
                       eq(agentWakeupRequests.companyId, issue.companyId),
-                      eq(agentWakeupRequests.agentId, agentId),
+                      inArray(agentWakeupRequests.agentId, handoffSource ? [agentId, handoffSource.agentId] : [agentId]),
                       eq(agentWakeupRequests.status, "deferred_issue_execution"),
                       sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
                     ),
@@ -27250,7 +27264,7 @@ export function heartbeatService(
               ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
             ]),
           ];
-          if (opts.queuedCommentRequestId) {
+          if (opts.queuedCommentRequestId || handoffSource) {
             adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }
