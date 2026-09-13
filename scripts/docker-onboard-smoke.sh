@@ -328,7 +328,11 @@ start_provider_mock() {
     -out "$PROVIDER_MOCK_DIR/ca.pem" \
     -subj "/CN=api.anthropic.com" \
     -addext "subjectAltName=DNS:api.anthropic.com" >/dev/null 2>&1
-  chmod 644 "$PROVIDER_MOCK_DIR/ca.pem" "$PROVIDER_MOCK_DIR/key.pem"
+  # Only the certificate is public. The key stays 600 — the mock container
+  # runs as root and reads it through that — and is never mounted into the
+  # app container, which gets the lone certificate file below.
+  chmod 644 "$PROVIDER_MOCK_DIR/ca.pem"
+  chmod 600 "$PROVIDER_MOCK_DIR/key.pem"
 
   # Only the one endpoint credential validation calls. Everything else 404s,
   # so an unexpected provider call fails the flow loudly instead of being
@@ -377,7 +381,7 @@ MOCK_EOF
   fi
   PROVIDER_MOCK_RUN_ARGS=(
     --add-host "api.anthropic.com:$mock_ip"
-    -v "$PROVIDER_MOCK_DIR:/provider-mock:ro"
+    -v "$PROVIDER_MOCK_DIR/ca.pem:/provider-mock/ca.pem:ro"
     -e NODE_EXTRA_CA_CERTS=/provider-mock/ca.pem
   )
   echo "    Provider mock: api.anthropic.com -> $mock_ip (container $PROVIDER_MOCK_CONTAINER_NAME)"
