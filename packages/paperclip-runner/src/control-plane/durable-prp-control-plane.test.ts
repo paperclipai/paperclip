@@ -1055,6 +1055,44 @@ it.each([
   },
 );
 
+it.each([1, 2])("only journals session goals after negotiating PRP v2 (version %s)", async (version) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-goal-version-test-"));
+  const core = new DurablePrpControlPlane({
+    stateDirectory: root,
+    identity,
+    expectedRunnerVersion,
+    expectedRunnerDigest,
+  });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    expect(core.negotiatedProtocolVersion).toBeNull();
+    expect(() => core.queueCommand("session.goal.get")).toThrow("authenticated PRP v2");
+    expect(core.store.state.commands).toHaveLength(0);
+    client = await authenticate(core, core.issueBootstrapTicket(), identity,
+      expectedRunnerDigest, undefined, false, version);
+    expect(client).not.toBeNull();
+    expect(core.negotiatedProtocolVersion).toBe(version);
+    for (const type of ["session.goal.get", "session.goal.set", "session.goal.clear"]) {
+      if (version === 1) {
+        expect(() => core.queueCommand(type)).toThrow("authenticated PRP v2");
+        expect(core.store.state.commands).toHaveLength(0);
+      } else {
+        expect(core.queueCommand(type).schema).toBe("paperclip.prp.command.v2");
+      }
+    }
+    // Unsupported probes must not consume journal slots ahead of suspension.
+    expect(core.queueCommand("runner.suspend")).toMatchObject({
+      schema: "paperclip.prp.command.v1",
+      controllerSeq: version === 1 ? 1 : 4,
+    });
+  } finally {
+    client?.socket.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function secureAad(
   client: AuthenticatedClient,
   direction: "client_to_core" | "core_to_client",

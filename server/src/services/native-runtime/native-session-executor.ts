@@ -12,6 +12,7 @@ import {
 } from "../execution-control-deadline.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { claimFreshNativeSandboxSession, type FreshNativeSessionAuthority } from "./fresh-native-sandbox-session.js";
 import { hasSandboxPerformanceTrace } from "../sandbox-performance.js";
 import {
   adoptVerifiedRemoteRunner,
@@ -6914,6 +6915,8 @@ export async function executePaperclipNativeSession(input: {
   turnTimeoutMs?: number;
   leaseOwner?: string;
   restartRecovery?: NativeRestartRecoveryClaim;
+  /** Host-issued only when this dispatch minted a new logical session. */
+  freshSessionAuthority?: FreshNativeSessionAuthority;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -10117,6 +10120,8 @@ export async function createRunnerdBackend(input: {
   runnerInstanceId: string;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   restartRecovery?: NativeRestartRecoveryClaim;
+  /** Host-issued only when this dispatch minted a new logical session. */
+  freshSessionAuthority?: FreshNativeSessionAuthority;
   durableEnvironmentLeaseId?: string;
   onSpawn?: (meta: {
     pid: number;
@@ -11246,12 +11251,20 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      throw new Error("runner_harness_state_mismatch");
+                      await claimFreshNativeSandboxSession({
+                        authority: input.freshSessionAuthority,
+                        runId: input.execution.binding.runId,
+                        normalizedSessionId: nativeSessionKey(input.execution),
+                        hasPriorState: Boolean(durableBinding) || backupAvailable || Boolean(input.restartRecovery),
+                        runner: remoteCommandRunner,
+                        sessionRoot: remoteSessionRoot!,
+                      });
+                    } else {
+                      await recordInPlaceHarnessReuse(
+                        state.providerSessionIdentity,
+                        reuseStartedAtMs,
+                      );
                     }
-                    await recordInPlaceHarnessReuse(
-                      state.providerSessionIdentity,
-                      reuseStartedAtMs,
-                    );
                   } else if (
                     sandboxLeaseAcquisition?.outcome === "replacement"
                   ) {

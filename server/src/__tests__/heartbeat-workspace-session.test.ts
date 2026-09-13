@@ -1805,6 +1805,23 @@ describe("effective run execution workspace config freshness", () => {
     },
   );
 
+  it("recovers an older unpinned sandbox binding without overriding explicit workspace choices", () => {
+    const input = {
+      issueExecutionWorkspaceId: "workspace-old",
+      existingExecutionWorkspaceStatus: "active",
+      reuseDefaultSandboxWorkspace: true,
+    };
+    expect(resolveExecutionWorkspaceReuseRequestForIssue(input).requestedShouldReuseExisting).toBe(true);
+    for (const issueExecutionWorkspacePreference of ["isolated_workspace", "operator_branch", "agent_default", "inherit"]) {
+      expect(resolveExecutionWorkspaceReuseRequestForIssue({ ...input, issueExecutionWorkspacePreference })
+        .requestedShouldReuseExisting).toBe(false);
+    }
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({ ...input, reuseDefaultSandboxWorkspace: false })
+      .requestedShouldReuseExisting).toBe(false);
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({ ...input, requestedExistingBranch: "different-branch" })
+      .requestedShouldReuseExisting).toBe(false);
+  });
+
   it("keeps reusing an inherited workspace whose branch matches the pinned existing branch", () => {
     expect(resolveExecutionWorkspaceReuseRequestForIssue({
       issueExecutionWorkspaceId: "workspace-old",
@@ -2210,6 +2227,81 @@ function sessionParamsWithConfigMetadata(
 }
 
 describe("effective run session config freshness", () => {
+  it("upgrades actual pre-normalization native and legacy session fingerprints without resetting", async () => {
+    const fixture = JSON.parse(await fs.readFile(
+      new URL("./fixtures/pre-normalization-session-fingerprints.json", import.meta.url), "utf8",
+    ));
+    for (const prior of fixture.cases) {
+      const input = { ...fixture.baseInput, ...prior.overrides };
+      const next = await buildEffectiveRunSessionConfigMetadata({
+        ...input,
+        workspaceConfig: {
+          ...input.workspaceConfig,
+          issueSettings: { mode: "shared_workspace" },
+        },
+      });
+      expect(next.fingerprint).not.toBe(prior.metadata.fingerprint);
+      expect(resolveTaskSessionConfigFreshness({
+        hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(prior.metadata), configMetadata: next,
+      })).toMatchObject({ reset: false, reasons: [], nextFingerprint: next.fingerprint });
+      // Once published, the normalized fingerprint is reusable without the old
+      // project timestamp: a later description edit remains compatible.
+      const later = await buildEffectiveRunSessionConfigMetadata({
+        ...input,
+        workspaceConfig: { ...input.workspaceConfig, projectConfigRevisionAt: "2026-06-02T00:00:00Z" },
+      });
+      expect(resolveTaskSessionConfigFreshness({
+        hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(next), configMetadata: later,
+      }).reset).toBe(false);
+      for (const change of [
+        { effectiveAdapterConfig: { ...input.effectiveAdapterConfig, model: "other-model" } },
+        { secretManifest: input.secretManifest.map((entry: Record<string, unknown>) => ({ ...entry, version: 8 })) },
+        { workspaceConfig: { ...input.workspaceConfig, issueSettings: { mode: "shared_workspace", networkEgress: "restricted" } } },
+        { workspaceConfig: { ...input.workspaceConfig, projectPolicy: { enabled: true, defaultMode: "isolated_workspace" } } },
+      ]) {
+        const incompatible = await buildEffectiveRunSessionConfigMetadata({ ...input, ...change });
+        expect(resolveTaskSessionConfigFreshness({
+          hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+          taskSessionParams: sessionParamsWithConfigMetadata(prior.metadata), configMetadata: incompatible,
+        }).reset).toBe(true);
+      }
+    }
+  });
+
+  it("preserves a pre-upgrade conversation after metadata edits only with verified historical workspace evidence", async () => {
+    const fixture = JSON.parse(await fs.readFile(
+      new URL("./fixtures/pre-normalization-session-fingerprints.json", import.meta.url), "utf8",
+    ));
+    for (const prior of fixture.cases) {
+      const input = { ...fixture.baseInput, ...prior.overrides };
+      const next = await buildEffectiveRunSessionConfigMetadata({ ...input,
+        workspaceConfig: { ...input.workspaceConfig, projectConfigRevisionAt: "2026-06-03T00:00:00Z",
+          issueSettings: { mode: "shared_workspace" } },
+      });
+      const params = sessionParamsWithConfigMetadata(prior.metadata);
+      const decision = { hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+        taskSessionParams: params, configMetadata: next };
+      expect(resolveTaskSessionConfigFreshness(decision).reset).toBe(true);
+      expect(resolveTaskSessionConfigFreshness({ ...decision, verifiedLegacyWorkspaceUnchanged: true }))
+        .toMatchObject({ reset: false, reasons: [], changedCategories: [] });
+      expect(resolveTaskSessionConfigFreshness({ ...decision, verifiedLegacyWorkspaceUnchanged: true,
+        taskSessionParams: { ...params, __paperclipWorkspaceNormalizationVersion: 1 } }).reset).toBe(true);
+      expect(resolveTaskSessionConfigFreshness({ ...decision, verifiedLegacyWorkspaceUnchanged: true,
+        wakeResetReason: "explicit operator reset" }).reset).toBe(true);
+      for (const change of [
+        { effectiveAdapterConfig: { ...input.effectiveAdapterConfig, model: "other-model" } },
+        { secretManifest: input.secretManifest.map((entry: Record<string, unknown>) => ({ ...entry, version: 8 })) },
+        { issueOverrides: { networkEgress: "restricted" } },
+      ]) {
+        const incompatible = await buildEffectiveRunSessionConfigMetadata({ ...input, ...change });
+        expect(resolveTaskSessionConfigFreshness({ ...decision, configMetadata: incompatible,
+          verifiedLegacyWorkspaceUnchanged: true }).reset).toBe(true);
+      }
+    }
+  });
+
   it("resets when effective adapter config changes after model/profile/env resolution", async () => {
     const base = await buildSessionConfigMetadata();
     const next = await buildSessionConfigMetadata({
@@ -2285,6 +2377,56 @@ describe("effective run session config freshness", () => {
     });
   });
 
+  it.each(["codex_local", "paperclip_runner"])(
+    "preserves %s sessions across project metadata updates but detects policy changes",
+    async (adapterType) => {
+      const workspaceConfig = {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+        issueSettings: null,
+      };
+      const base = await buildSessionConfigMetadata({
+        adapterType,
+        workspaceConfig: {
+          ...workspaceConfig,
+          projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+        },
+      });
+      const metadataUpdate = await buildSessionConfigMetadata({
+        adapterType,
+        workspaceConfig: {
+          ...workspaceConfig,
+          projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+        },
+      });
+      const policyUpdate = await buildSessionConfigMetadata({
+        adapterType,
+        workspaceConfig: {
+          ...workspaceConfig,
+          projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+          projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+        },
+      });
+      const decide = (configMetadata: SessionConfigMetadata) =>
+        resolveTaskSessionConfigFreshness({
+          hasTaskSession: true,
+          configuredModel: "gpt-5.4-mini",
+          taskSessionParams: sessionParamsWithConfigMetadata(base),
+          configMetadata,
+        });
+      expect(decide(metadataUpdate)).toMatchObject({
+        reset: false,
+        changedCategories: [],
+        reasons: [],
+      });
+      expect(decide(policyUpdate)).toMatchObject({
+        reset: true,
+        changedCategories: ["workspaceConfig"],
+      });
+    },
+  );
+
   it("does not reset when a reusable execution workspace becomes realized", async () => {
     const base = await buildSessionConfigMetadata({
       workspaceConfig: {
@@ -2321,6 +2463,48 @@ describe("effective run session config freshness", () => {
       reset: false,
       changedCategories: [],
       reasons: [],
+    });
+  });
+
+  it("keeps native session identity when startup pins the already-effective workspace mode", async () => {
+    const workspaceConfig = {
+      requestedMode: "shared_workspace",
+      effectiveMode: "shared_workspace",
+      projectPolicy: { enabled: true, defaultMode: "shared_workspace" },
+    };
+    const before = await buildSessionConfigMetadata({
+      adapterType: "paperclip_runner",
+      workspaceConfig: { ...workspaceConfig, issueSettings: null },
+    });
+    const pinned = await buildSessionConfigMetadata({
+      adapterType: "paperclip_runner",
+      workspaceConfig: {
+        ...workspaceConfig,
+        issueSettings: { mode: "shared_workspace" },
+      },
+    });
+    const policyChanged = await buildSessionConfigMetadata({
+      adapterType: "paperclip_runner",
+      workspaceConfig: {
+        ...workspaceConfig,
+        issueSettings: { mode: "shared_workspace", networkEgress: "restricted" },
+      },
+    });
+    const decide = (configMetadata: SessionConfigMetadata) =>
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(before),
+        configMetadata,
+      });
+    expect(decide(pinned)).toMatchObject({
+      reset: false,
+      reasons: [],
+      changedCategories: [],
+    });
+    expect(decide(policyChanged)).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig"],
     });
   });
 

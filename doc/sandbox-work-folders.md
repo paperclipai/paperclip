@@ -13,6 +13,24 @@ such as Daytona's region when the environment leaves them unspecified. Existing
 configuration and identity checks still reject incompatible reuse; stopping and
 resuming a compatible lease must reopen the same account-scoped provider handle.
 
+Task workspace binding follows the sandbox's `reuseLease` setting independently
+of the native runner's process lifecycle. Both `warm` and `per_turn` retain the
+task's execution workspace and compatible provider session; restarting the
+provider process is not a request for a fresh sandbox. Local execution and
+sandboxes with reuse disabled retain their existing behavior.
+
+Session compatibility compares effective workspace settings. A project title or
+description edit, and startup pinning an inherited workspace mode to the same
+already-effective mode, do not invalidate the session. Actual project policy,
+network settings, model, and identity changes remain compatibility boundaries.
+
+Periodic saves are best effort for files that continue changing during a scan;
+the required final flush must still save the settled working copy or visibly
+retain it for recovery. A continuously rewritten file missing one periodic save
+and the existing file-preview polling lag are accepted limitations. Startup
+latency should be compared with the legacy folder path on an equivalent workload,
+rather than treating isolated cold-start timings as an independent acceptance gate.
+
 The deployed acceptance entry point is `pnpm test:e2e:work-folders:deployed`.
 Set `PAPERCLIP_DEPLOYED_STACK_MANIFEST` to a JSON manifest matching
 `tests/runner-e2e/deployed-stack.ts`, `PAPERCLIP_DEPLOYED_STACK_AUTH` to a private
@@ -63,6 +81,59 @@ from persisted environment records; project extensions remain untrusted.
 
 ## Existing tasks and upgrade compatibility
 
+Session fingerprint normalization accepts exact fingerprints produced by the
+previous algorithm for the same effective configuration, including an inherited
+workspace mode that startup subsequently pinned. It does not waive model, secret
+version, or workspace-policy changes. Subsequent session publication writes the
+normalized fingerprint through the existing persistence path.
+
+If project metadata changed before the first upgraded run, the original timestamp
+cannot be reconstructed from the old hash. The host can instead verify the exact
+execution-workspace fingerprint recorded by that session's last successful run.
+This requires the same company, task, agent, responsible user, conversation, and
+reused workspace, and matching fingerprints for every other session category.
+Missing or conflicting evidence still requests a fresh conversation while retaining
+working files. After normalization, the session is marked so this one-time
+compatibility path cannot mask later configuration changes.
+
+Legacy Codex and Claude session codecs retain their remote execution identity.
+Sandbox conversations bind to the physical provider sandbox and environment,
+so creating a new host lease record for another turn does not discard the
+conversation. Older records missing this metadata can be repaired from their
+last successful host run only when the company, agent, responsible user, task,
+workspace, environment, provider sandbox, working directory, and conversation
+all match. An explicit conflicting identity is never overwritten. Local and SSH
+session matching remain separate; a replacement sandbox cannot inherit a
+conversation merely because its working-directory path is the same.
+Old codecs that recorded the host checkout path are translated to the sandbox
+path only when both the saved workspace and its local realization prove that
+exact host path and project-workspace ID. Arbitrary path changes still reset.
+Codex configuration refresh replaces only the managed auth/config/skills entries;
+it preserves the sandbox's rollout files and SQLite state, including WAL files.
+Those provider-session files stay outside shared work-folder collections.
+Claude also retains the MCP server identity used by its conversation. A
+host-verified old record missing that identity may migrate with only the built-in
+Paperclip server; unknown external MCP server sets do not bypass the existing
+session compatibility check.
+Failed sandbox acquisition retains its provisional resume claim immediately.
+Startup also recovers provisional claims left active by older terminal runs;
+it does not reclaim an executing run or a pending provider release. A temporary
+provider startup failure therefore cannot permanently block the task's next run.
+If folder preparation fails before publishing a new manifest, heartbeat explicitly
+retains the lease even when the previous run completed a successful final save.
+
+An intentional native session reset (for example, changing the model) can start a
+new conversation inside the task's retained sandbox. The host authorizes this
+only when it mints a new logical session ID; the runner atomically claims an
+absent session directory. Existing task files and previous conversation state
+remain in place. A normal continuation, restart recovery, existing partial
+session directory, or saved checkpoint cannot take this fresh-session path.
+
+Older reusable per-turn sandboxes may have a task-owned execution workspace with
+no explicit reuse preference. Startup can recover that default binding only for
+the same company, project, and source task. Explicit workspace preferences remain
+authoritative, and workspace freshness and lease identity checks still apply.
+
 Tasks that have already completed a sandbox run without work-folder persistence
 keep their original workspace, adapter file-sync/restore behavior, and provider
 session directories. Upgrading does not move, clean, or replace those files. This
@@ -70,6 +141,12 @@ compatibility mode persists across turns and sandbox expiry; it does not claim
 the new scoped-folder or repository-checkpoint durability guarantee for old tasks.
 New tasks enter the scoped lifecycle below. Automatic migration of an old task's
 working tree into scoped folders is not performed.
+
+Retained PRP v1 runners continue ordinary native turns without session goals.
+The host checks the authenticated protocol version before probing or changing
+a goal, so an optional v2 request cannot disconnect an older runner or block
+its final suspension and checkpoint. Unauthenticated connections do not provide
+capability evidence.
 
 Version-1 reusable leases obtain their missing task and responsible-user identity
 from company-scoped host run records. Reuse still requires matching agent, task,
@@ -510,6 +587,8 @@ that digest before installing dependencies, failing if registry resolution
 has changed. Transfer those artifacts to the staging bucket using conditional
 creates, publishing the manifest last. Do not create GitHub releases or publish
 npm packages for this flow.
+The reusable Cloud build workflow receives those staging inputs explicitly;
+splitting the workflow must not drop the app/migrator dependency-integrity gate.
 
 Cloud enables this lane only in staging through
 `CLOUD_HARNESS_STAGING_ARTIFACT_BASE_URL`. Resolve `preview:<full SHA>` through

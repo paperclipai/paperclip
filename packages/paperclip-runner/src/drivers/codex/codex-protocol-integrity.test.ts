@@ -646,7 +646,13 @@ describe("Codex protocol integrity propagation", () => {
             runtimeIdentity: { processId: process.pid },
           }),
         );
-        await commandResult("session.goal.get", { goal: null });
+        // This synthetic runner deliberately negotiates PRP v1. The transport
+        // reports goals as unsupported locally and must never send it a v2
+        // session.goal.get command during session admission.
+        await vi.waitFor(() => expect(admitted).toHaveBeenCalledTimes(1));
+        expect(core.store.state.commands.some(
+          (command) => command.type === "session.goal.get",
+        )).toBe(false);
         if (scenario !== "integrity-fault") {
           await vi.waitFor(() =>
             expect(

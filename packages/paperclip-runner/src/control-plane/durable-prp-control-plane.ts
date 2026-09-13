@@ -1831,6 +1831,16 @@ export class DurablePrpControlPlane {
     return ticket;
   }
 
+  get negotiatedProtocolVersion(): number | null {
+    const versions = [...this.#connections]
+      .filter(
+        (connection) => connection.secureChannel !== null && !connection.replayOnly,
+      )
+      .map((connection) => connection.lease?.protocolVersion)
+      .filter((version): version is number => version !== undefined);
+    return versions.length > 0 ? Math.min(...versions) : null;
+  }
+
   queueCommand(
     type: string,
     payload: Record<string, unknown> = {},
@@ -1838,6 +1848,14 @@ export class DurablePrpControlPlane {
     deliverImmediately = false,
   ): DurableRecoveryCoreCommand {
     this.#store.assertWritable();
+    // A goal probe is optional. Never journal a v2 command for an older
+    // retained runner: it cannot reject that schema and disconnects instead,
+    // leaving the command ahead of the final suspension/checkpoint.
+    if (
+      type.startsWith("session.goal.") && this.negotiatedProtocolVersion !== 2
+    ) {
+      throw new Error("Session goals require an authenticated PRP v2 runner.");
+    }
     const transition = this.#store.state.warmTransition;
     if (transition && transition.phase !== "activated") {
       if (

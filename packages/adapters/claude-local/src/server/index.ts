@@ -1,4 +1,4 @@
-export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
+export { claudeSessionCwdMatchesExecutionTarget, claudeSessionMcpServersMatch, execute, runClaudeLogin } from "./execute.js";
 export * from "./acp.js";
 export { getConfigSchema } from "./config-schema.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
@@ -62,6 +62,7 @@ export type {
   SetupTokenLoginResult,
   RunSetupTokenLoginOptions,
 } from "./setup-token-runner.js";
+import { serializeSessionExecutionIdentity } from "@paperclipai/adapter-utils/session-execution-identity";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
@@ -82,13 +83,15 @@ export const sessionCodec: AdapterSessionCodec = {
     const promptBundleKey =
       readNonEmptyString(record.promptBundleKey) ??
       readNonEmptyString(record.prompt_bundle_key);
-    const mcpServerIdentity = readNonEmptyString(record.mcpServerIdentity);
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
+    const remoteExecution = serializeSessionExecutionIdentity(record.remoteExecution);
+    const mcpServerIdentity = readNonEmptyString(record.mcpServerIdentity);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
       ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),
@@ -107,13 +110,15 @@ export const sessionCodec: AdapterSessionCodec = {
     const promptBundleKey =
       readNonEmptyString(params.promptBundleKey) ??
       readNonEmptyString(params.prompt_bundle_key);
-    const mcpServerIdentity = readNonEmptyString(params.mcpServerIdentity);
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
+    const remoteExecution = serializeSessionExecutionIdentity(params.remoteExecution);
+    const mcpServerIdentity = readNonEmptyString(params.mcpServerIdentity);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
       ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),

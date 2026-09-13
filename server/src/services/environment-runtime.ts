@@ -700,7 +700,7 @@ export class SandboxOrphanCleanupWriteError extends Error {
   }
 }
 
-async function retainIncompleteSandboxResume(db: Db, lease: EnvironmentLease): Promise<EnvironmentLease | null> {
+async function retainIncompleteSandboxResume(db: Db, lease: EnvironmentLease, requireTerminalRun = false): Promise<EnvironmentLease | null> {
   if (lease.metadata?.sandboxResumePending !== true || !lease.heartbeatRunId) return null;
   // A resume failure is not proof that the existing workspace is disposable.
   // Keep the claimed reference eligible for retry, without a provider release
@@ -717,6 +717,11 @@ async function retainIncompleteSandboxResume(db: Db, lease: EnvironmentLease): P
     eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId),
     inArray(environmentLeases.status, ["active", "retained"]),
     sql`${environmentLeases.metadata}->'sandboxResumePending' = 'true'::jsonb`,
+    ...(requireTerminalRun ? [sql`exists (
+      select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = ${lease.heartbeatRunId}
+      and ${heartbeatRuns.companyId} = ${lease.companyId}
+      and ${heartbeatRuns.status} in ('succeeded', 'interrupted', 'failed', 'cancelled', 'timed_out')
+    )`] : []),
   )).returning();
   return retained ? toEnvironmentLeaseSnapshot(retained) : null;
 }
@@ -1843,8 +1848,10 @@ function createSandboxEnvironmentDriver(
         const handoffDeadline = Date.now() + 30_000;
         while (true) {
           const [holder] = await db.select({
+            id: environmentLeases.id,
             providerLeaseId: environmentLeases.providerLeaseId,
             runStatus: heartbeatRuns.status,
+            resumePending: sql<boolean>`${environmentLeases.metadata}->'sandboxResumePending' = 'true'::jsonb`,
             releaseFailureReason: environmentLeases.failureReason,
             releasePending: sql<boolean>`coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'sandboxReleasePending'`,
           }).from(environmentLeases).innerJoin(heartbeatRuns, and(
@@ -1865,6 +1872,14 @@ function createSandboxEnvironmentDriver(
             sql`${heartbeatRuns.responsibleUserId} is not distinct from ${responsibleUserId}`,
           )).limit(1);
           if (!holder) break;
+          // Older acquisition failures could leave an active provisional claim
+          // before the caller received a lease to clean up. Recover only a
+          // terminal owner's incomplete resume, never an executing/releasing run.
+          if (holder.resumePending && !holder.releasePending
+            && ["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(holder.runStatus)) {
+            const incomplete = await environmentsSvc.getLeaseById(holder.id);
+            if (incomplete && await retainIncompleteSandboxResume(db, incomplete, true)) continue;
+          }
           if (holder.releasePending && (holder.releaseFailureReason === "sandbox_release_recovery_required" || Date.now() >= handoffDeadline)) throw new Error("sandbox_release_recovery_required");
           if (!["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(holder.runStatus) || Date.now() >= handoffDeadline) {
             throw new ReusableSandboxResumeError({
@@ -2102,6 +2117,7 @@ function createSandboxEnvironmentDriver(
                   : "expired";
             }
           } catch (error) {
+            await retainIncompleteSandboxResume(db, reusableLease);
             throw new ReusableSandboxResumeError({
               provider: parsed.config.provider,
               providerLeaseId: reusableLease.providerLeaseId,
@@ -2414,6 +2430,7 @@ function createSandboxEnvironmentDriver(
         });
       } catch (error) {
         if (reusableLease) {
+          await retainIncompleteSandboxResume(db, reusableLease);
           throw new ReusableSandboxResumeError({
             provider: parsed.config.provider,
             providerLeaseId: reusableLease.providerLeaseId!,

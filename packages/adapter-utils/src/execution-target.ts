@@ -1326,6 +1326,9 @@ export function adapterExecutionTargetSessionIdentity(
     providerKey: target.providerKey ?? null,
     environmentId: target.environmentId ?? null,
     leaseId: target.leaseId ?? null,
+    ...(target.sandboxLeaseAcquisition?.providerLeaseId
+      ? { providerLeaseId: target.sandboxLeaseAcquisition.providerLeaseId }
+      : {}),
     remoteCwd: target.remoteCwd,
   };
 }
@@ -1344,7 +1347,9 @@ export function adapterExecutionTargetSessionMatches(
     readStringMeta(parsedSaved, "transport") === current?.transport &&
     readStringMeta(parsedSaved, "providerKey") === current?.providerKey &&
     readStringMeta(parsedSaved, "environmentId") === current?.environmentId &&
-    readStringMeta(parsedSaved, "leaseId") === current?.leaseId &&
+    (readStringMeta(parsedSaved, "providerLeaseId")
+      ? readStringMeta(parsedSaved, "providerLeaseId") === current?.providerLeaseId
+      : readStringMeta(parsedSaved, "leaseId") === current?.leaseId) &&
     readStringMeta(parsedSaved, "remoteCwd") === current?.remoteCwd
   );
 }

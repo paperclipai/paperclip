@@ -127,6 +127,19 @@ interface ClaudeRuntimeConfig {
   extraArgs: string[];
 }
 
+export function claudeSessionMcpServersMatch(input: {
+  savedIdentity: string;
+  currentIdentity: string;
+  currentConnectionIds: readonly (string | null | undefined)[];
+  legacyPlatformSession: boolean;
+}): boolean {
+  if (input.savedIdentity.length > 0) return input.savedIdentity === input.currentIdentity;
+  return input.currentConnectionIds.length === 0 || (
+    input.legacyPlatformSession
+    && input.currentConnectionIds.every((id) => id === "paperclip-runtime-tools")
+  );
+}
+
 export function claudeSessionCwdMatchesExecutionTarget(input: {
   runtimeSessionCwd: string;
   effectiveExecutionCwd: string;
@@ -772,10 +785,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
-  const hasMatchingMcpServers =
-    runtimeMcpServerIdentity.length === 0
-      ? runtimeMcpServers.length === 0
-      : runtimeMcpServerIdentity === runtimeMcpIdentity;
+  // Older codecs dropped this field. Only a host-verified legacy session using
+  // the built-in platform server may migrate without an external-server identity.
+  const hasMatchingMcpServers = claudeSessionMcpServersMatch({
+    savedIdentity: runtimeMcpServerIdentity,
+    currentIdentity: runtimeMcpIdentity,
+    currentConnectionIds: runtimeMcpServers.map((server) => server.connectionId),
+    legacyPlatformSession: runtimeSessionParams.legacyPlatformMcpSession === true,
+  });
   const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runtimeSessionId);
   const canResumeSession =
     runtimeSessionId.length > 0 &&

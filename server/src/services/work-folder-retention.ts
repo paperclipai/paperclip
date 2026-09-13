@@ -11,7 +11,7 @@ export function workFolderSandboxKey(lease: { id: string; companyId: string; env
  * A transferred old lease is protected without mutating or resurrecting its row.
  * A periodic checkpoint is not permission to discard edits made after it.
  */
-export async function retainUnsavedWorkFolderLease(db: Db, lease: { id: string; companyId: string }) {
+export async function retainUnsavedWorkFolderLease(db: Db, lease: { id: string; companyId: string }, options: { runSaveFailed?: boolean } = {}) {
   const [row] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)));
   if (!row) return false;
   // This old row no longer owns the physical resource. Protect it from stale
@@ -22,7 +22,9 @@ export async function retainUnsavedWorkFolderLease(db: Db, lease: { id: string; 
     .from(workFolderRuns).where(and(eq(workFolderRuns.companyId, lease.companyId),
       sql`(${workFolderRuns.manifest}->>'sandboxKey' = ${sandboxKey} or ${workFolderRuns.manifest}->>'leaseId' = ${lease.id})`))
     .orderBy(desc(workFolderRuns.updatedAt)).limit(1);
-  if (!run || (run.state === "saved" && run.manifest.finalCheckpointAt)) return false;
+  // A startup failure can precede this run's manifest. The previous run's final
+  // save cannot attest that partial hydration or the current working copy is safe.
+  if (!options.runSaveFailed && (!run || (run.state === "saved" && run.manifest.finalCheckpointAt))) return false;
   await db.update(environmentLeases).set({ status: "retained", expiresAt: null,
     failureReason: "work_folder_save_required", cleanupStatus: "failed",
     metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"workFolderRecoveryRequired":true}'::jsonb`,

@@ -30,7 +30,11 @@ import type {
   CodexTraceInterpretation,
   CodexTransportProcessInfo,
 } from "../drivers/codex/app-server-transport.js";
-import { createSanitizedCodexEnvironment } from "../drivers/codex/app-server-transport.js";
+import {
+  CODEX_METHOD_NOT_FOUND,
+  CodexRpcError,
+  createSanitizedCodexEnvironment,
+} from "../drivers/codex/app-server-transport.js";
 import {
   codexSemanticToolSpecs,
   createIsolatedCodexAppServerArgs,
@@ -3597,6 +3601,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           turns: recoveredTurns,
         },
       };
+    }
+    if (
+      ["thread/goal/get", "thread/goal/set", "thread/goal/clear"].includes(method)
+      && this.#core?.negotiatedProtocolVersion === 1
+    ) {
+      throw new CodexRpcError(
+        "Session goals are unavailable on this PRP v1 runner.",
+        CODEX_METHOD_NOT_FOUND,
+      );
     }
     if (method === "thread/goal/get") {
       const result = await this.#commandResult("session.goal.get", params);
