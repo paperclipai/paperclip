@@ -100,6 +100,46 @@ const externalAdapter: ServerAdapterModule = {
   testEnvironment: testEnvironmentSpy,
 };
 
+// Only the runtime preparation is replaced: it needs a database and a stored
+// grant, and these tests exercise the route's verdict, not credential
+// resolution. Everything else in the module stays real.
+const mockPrepareManagedAiRuntime = vi.hoisted(() => vi.fn());
+vi.mock("../services/ai-connection-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/ai-connection-runtime.js")>()),
+  prepareManagedAiRuntime: mockPrepareManagedAiRuntime,
+}));
+
+function mockManagedRuntime(method: "api_key" | "subscription") {
+  mockPrepareManagedAiRuntime.mockImplementation(
+    async (_db: unknown, input: { config: Record<string, unknown> }) => ({
+      config: {
+        ...input.config,
+        managedAiConnection: {
+          connectionId: "conn-1",
+          grantId: "grant-1",
+          provider: "anthropic",
+          method,
+          mode: "responsible_user",
+          responsibleUserId: "local-board",
+          identity: "grant-1:local-board:0000000000000000",
+        },
+      },
+      attribution: {
+        connectionId: "conn-1",
+        grantId: "grant-1",
+        provider: "anthropic",
+        method,
+        mode: "responsible_user",
+        responsibleUserId: "local-board",
+      },
+      accountName: "My Claude Account",
+      accountOwnerUserId: "local-board",
+      identity: "grant-1:local-board:0000000000000000",
+      cleanup: vi.fn(async () => {}),
+    }),
+  );
+}
+
 async function createApp() {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
@@ -215,6 +255,78 @@ describe("agent test-environment route", () => {
       expect(JSON.stringify(res.body)).not.toContain("gateway-probe-key");
     } finally {
       unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  // The managed-adoption verdict, both ways. An api_key account was already
+  // verified against the provider's live endpoint when it was saved, so the
+  // engine's own test decides — no forced CLI-lane hello probe, which a clean
+  // machine without a provider CLI can never pass (the regression that walled
+  // off onboarding's API-key path in the nightly release smoke). A stored
+  // subscription login still needs the hello probe: only a real turn proves
+  // the runtime lane can consume it.
+  it("adopts an api_key connection on the engine's own verdict, without a CLI hello probe", async () => {
+    mockManagedRuntime("api_key");
+    // A sentinel in claude_local's slot: the forced CLI-lane fallback would
+    // land here, so the fix is proven by this never being consulted — not by
+    // whatever verdict the host machine's real adapter would return.
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("claude_local");
+    unregisterServerAdapter("claude_local");
+    const cliProbeSpy = vi.fn(async () => ({
+      adapterType: "claude_local",
+      status: "fail" as const,
+      checks: [{ code: "adapter_command_missing", level: "error" as const, message: 'Command not found in PATH: "claude"' }],
+      testedAt: new Date(0).toISOString(),
+    }));
+    registerServerAdapter({ ...externalAdapter, type: "claude_local", testEnvironment: cliProbeSpy });
+    try {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          adapterConfig: { cwd: "/" },
+          aiConnection: { provider: "anthropic", method: "api_key", mode: "responsible_user" },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("pass");
+      expect(JSON.stringify(res.body)).not.toContain("ai_connection_validation_incomplete");
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+      expect(cliProbeSpy).not.toHaveBeenCalled();
+    } finally {
+      unregisterServerAdapter("claude_local");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("still fails subscription adoption when no hello probe can run", async () => {
+    mockManagedRuntime("subscription");
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("claude_local");
+    unregisterServerAdapter("claude_local");
+    const cliProbeSpy = vi.fn(async () => ({
+      adapterType: "claude_local",
+      status: "fail" as const,
+      checks: [{ code: "adapter_command_missing", level: "error" as const, message: 'Command not found in PATH: "claude"' }],
+      testedAt: new Date(0).toISOString(),
+    }));
+    registerServerAdapter({ ...externalAdapter, type: "claude_local", testEnvironment: cliProbeSpy });
+    try {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          adapterConfig: { cwd: "/" },
+          aiConnection: { provider: "anthropic", method: "subscription", mode: "responsible_user" },
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("fail");
+      expect(res.body.checks.map((check: { code: string }) => check.code)).toContain("ai_connection_validation_incomplete");
+      expect(cliProbeSpy).toHaveBeenCalledTimes(1);
+      expect(cliProbeSpy.mock.calls[0]?.[0]?.config.engine).toBe("cli");
+    } finally {
+      unregisterServerAdapter("claude_local");
       if (previous) registerServerAdapter(previous);
     }
   });

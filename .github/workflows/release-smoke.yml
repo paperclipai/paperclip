@@ -101,6 +101,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    # Onboarding requires a live-verified provider credential since #13344, so
+    # the suite needs the real ANTHROPIC_API_KEY — an environment secret, not a
+    # repository one. runner-e2e-paid already lends it to the live-eval
+    # workflows and allows master, which is the ref every smoke invocation
+    # runs on. The key's only use here is one models-list validation call.
+    environment:
+      name: runner-e2e-paid
+
     # Fixed here rather than read back out of the harness, so the `always()`
     # diagnostics steps below still know the container's name when the launch
     # step is the thing that failed. Reading it back was why a failing smoke
@@ -158,6 +166,7 @@ jobs:
           PAPERCLIP_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
           PAPERCLIP_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
           PAPERCLIP_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
+          PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:release-smoke
 

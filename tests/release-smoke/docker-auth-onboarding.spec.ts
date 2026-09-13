@@ -9,6 +9,17 @@ const ADMIN_PASSWORD =
   process.env.SMOKE_ADMIN_PASSWORD ??
   "paperclip-smoke-password";
 
+// A hire needs a live-verified credential since #13344 — the subscription
+// path now dead-ends in CI on a `claude auth login` no machine can finish —
+// so the wizard is driven through "Use API key instead" with a real key. CI
+// injects it from the runner-e2e-paid environment; local runs export one of
+// these before invoking the suite. Its only use is the server's one
+// models-list validation call: the seeded first task makes no LLM calls.
+const ANTHROPIC_API_KEY =
+  process.env.PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY ??
+  process.env.ANTHROPIC_API_KEY ??
+  "";
+
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
 const AGENT_NAME = "Release Smoke Lead";
 // The arc asks for a name, not a role, so every onboarding hire is filed under
@@ -76,6 +87,13 @@ test.describe("Docker authenticated onboarding smoke", () => {
   test("logs in, completes onboarding, and hires the lead agent", async ({
     page,
   }) => {
+    // Fail on arrival rather than after a 60s wait for a Connect that could
+    // never succeed: without a key there is no credential the wizard accepts.
+    expect(
+      ANTHROPIC_API_KEY,
+      "Set PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY — onboarding cannot hire without a verifiable credential"
+    ).toBeTruthy();
+
     await signIn(page);
 
     const baseUrl = new URL(page.url()).origin;
@@ -112,22 +130,42 @@ test.describe("Docker authenticated onboarding smoke", () => {
     // Step 4: answer the model-source question, then connect (hire) the lead.
     // The step now opens as a row of source tiles and the footer button has
     // nothing to do until one is picked (#12796/#12801 rebuilt the step around
-    // that question); picking Claude collapses the row and turns the button
-    // into "Connect". In the smoke container the resolved login environment is
-    // the local host, not a sandbox, so there is no sign-in to run and Connect
-    // goes straight to the hire, with the missing agent CLI reported by the
-    // probe as a warning rather than an error — a genuine failure here means
-    // the published artifact cannot hire on a clean machine. Allow generous
-    // time for the probe + hire + auto-approval.
+    // that question); picking Claude collapses the row.
+    //
+    // Since #13344, a hire requires a verified credential: the subscription
+    // path opens an isolated `claude auth login` attempt that only a human at
+    // a terminal on the server can finish, and Connect refuses to proceed
+    // until it has. The clean-machine path this suite guards is therefore the
+    // API key: switch modes, pick Claude, paste a key, Connect — the server
+    // validates it live against the provider and then hires. A genuine
+    // failure here means the published artifact cannot hire on a clean
+    // machine even with a valid key in hand. Allow generous time for the
+    // validation + hire + auto-approval.
+    //
+    // The mode switch comes before the tile: picking a tile starts the step's
+    // collapse sequence and the "Use API key instead" link only offers itself
+    // while the row is still a question (`connectLinkVisible` in
+    // OnboardingWizard.tsx).
     await expect(
       page.getByRole("heading", { name: "Connect a model" })
     ).toBeVisible({ timeout: 20_000 });
 
+    await page
+      .getByRole("button", { name: "Use API key instead", exact: true })
+      .click();
+
+    // "Claude API" once the mode has swapped the tile's tag — matched on the
+    // stable half.
     const claudeSourceTile = page
       .getByRole("radiogroup", { name: "Model source" })
       .getByRole("radio", { name: /Claude/ });
     await expect(claudeSourceTile).toBeVisible({ timeout: 10_000 });
     await claudeSourceTile.click();
+
+    // OnboardingCardField carries the accessible name via aria-label.
+    const apiKeyField = page.getByLabel("API key");
+    await expect(apiKeyField).toBeVisible({ timeout: 10_000 });
+    await apiKeyField.fill(ANTHROPIC_API_KEY);
 
     const connectButton = page.getByRole("button", {
       name: "Connect",

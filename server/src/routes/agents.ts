@@ -3178,6 +3178,21 @@ export function agentRoutes(
     await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
     const result = await requireServerAdapter(adapterType).testEnvironment(context);
     if (result.status === "fail") return result;
+    // The resolved method, not binding.method — on a responsible_user binding
+    // that field is wire-compat only and the default connection decides.
+    const resolvedMethod = (context.config as { managedAiConnection?: { method?: string } }).managedAiConnection?.method;
+    // An api_key account was already verified against the provider's live
+    // endpoint when it was saved (validateAiApiKey), and the engine's own test
+    // above judged whether this runtime can execute with it — the ACP lane
+    // deliberately runs no hello probe when a key is configured. Demanding one
+    // anyway forced the CLI lane below, whose probe needs a provider CLI on
+    // PATH, and a clean install has none: that walled off onboarding's API-key
+    // path on exactly the machines the release smoke exists to guard. The
+    // hello-probe requirement stays for subscriptions: a key travels as an
+    // env var any engine understands, but a stored login is a file layout
+    // only a provider CLI reads, so proving the runtime lane can consume it
+    // takes a real hello turn.
+    if (resolvedMethod === "api_key") return result;
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
       const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
