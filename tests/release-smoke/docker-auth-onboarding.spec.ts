@@ -14,11 +14,23 @@ const ADMIN_PASSWORD =
 // the wizard is driven through "Use API key instead". The server verifies the
 // key against api.anthropic.com, which the docker-onboard-smoke harness
 // serves from its own mock inside the container's network, so the placeholder
-// below passes without any real credential in CI. The override exists for
-// running this suite against an instance that reaches the real provider.
+// below passes without any real credential in CI.
+//
+// The placeholder is offered only to a loopback target — where the mocked
+// harness lives. Any other target reaches the real provider, which would
+// reject the placeholder late inside the wizard, so those runs must set
+// PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY and fail up front without it.
+// A real key entered here also lands in Playwright's failure traces and DOM
+// snapshots (the field is masked on screen, not in the DOM) — those artifacts
+// stay on the machine running the suite, and CI never uses a real key.
+const BASE_URL =
+  process.env.PAPERCLIP_RELEASE_SMOKE_BASE_URL ?? "http://127.0.0.1:3232";
+const TARGET_IS_LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1)([:/]|$)/i.test(
+  BASE_URL
+);
 const ANTHROPIC_API_KEY =
   process.env.PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY ??
-  "sk-ant-release-smoke-placeholder";
+  (TARGET_IS_LOOPBACK ? "sk-ant-release-smoke-placeholder" : "");
 
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
 const AGENT_NAME = "Release Smoke Lead";
@@ -87,6 +99,13 @@ test.describe("Docker authenticated onboarding smoke", () => {
   test("logs in, completes onboarding, and hires the lead agent", async ({
     page,
   }) => {
+    // Only bites off-loopback: fail on arrival rather than submitting the
+    // placeholder to the real provider and timing out deep in the wizard.
+    expect(
+      ANTHROPIC_API_KEY,
+      "This target reaches the real provider — set PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY to a key it accepts"
+    ).toBeTruthy();
+
     await signIn(page);
 
     const baseUrl = new URL(page.url()).origin;

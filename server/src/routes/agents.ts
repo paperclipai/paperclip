@@ -1,9 +1,9 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
-import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
+import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -3181,18 +3181,32 @@ export function agentRoutes(
     // The resolved method, not binding.method — on a responsible_user binding
     // that field is wire-compat only and the default connection decides.
     const resolvedMethod = (context.config as { managedAiConnection?: { method?: string } }).managedAiConnection?.method;
-    // An api_key account was already verified against the provider's live
-    // endpoint when it was saved (validateAiApiKey), and the engine's own test
+    // An api_key account does not take the CLI hello probe below: a key
+    // travels as an env var any engine understands, and the engine's own test
     // above judged whether this runtime can execute with it — the ACP lane
     // deliberately runs no hello probe when a key is configured. Demanding one
-    // anyway forced the CLI lane below, whose probe needs a provider CLI on
-    // PATH, and a clean install has none: that walled off onboarding's API-key
-    // path on exactly the machines the release smoke exists to guard. The
-    // hello-probe requirement stays for subscriptions: a key travels as an
-    // env var any engine understands, but a stored login is a file layout
+    // anyway forced the CLI lane, whose probe needs a provider CLI on PATH,
+    // and a clean install has none: that walled off onboarding's API-key path
+    // on exactly the machines the release smoke exists to guard. The account
+    // is still verified live here — the same provider-endpoint check the save
+    // performed — so a key revoked since its save fails adoption rather than
+    // producing an agent that cannot authenticate at runtime. The hello-probe
+    // requirement stays for subscriptions: a stored login is a file layout
     // only a provider CLI reads, so proving the runtime lane can consume it
     // takes a real hello turn.
-    if (resolvedMethod === "api_key") return result;
+    if (resolvedMethod === "api_key") {
+      const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
+      const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
+      try {
+        if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
+        await validateAiApiKey(binding.provider, key);
+        result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
+      } catch (error) {
+        result.status = "fail";
+        result.checks.push({ code: "ai_connection_api_key_rejected", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
+      }
+      return result;
+    }
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
       const providerAdapter = { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
