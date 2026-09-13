@@ -1485,7 +1485,7 @@ jq -n \
   --arg justification "Credential supplied for the current task" \
   '{kind:"secret", name:$name, value:$value, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer ${PAPERCLIP_TOKEN:-$PAPERCLIP_API_KEY}" \
   -H "Content-Type: application/json" \
   --data-binary @- \
   "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
@@ -1515,7 +1515,7 @@ jq -n \
   --arg justification "Inject the approved credential into my adapter environment" \
   '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer ${PAPERCLIP_TOKEN:-$PAPERCLIP_API_KEY}" \
   -H "Content-Type: application/json" \
   --data-binary @- \
   "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
@@ -1536,7 +1536,7 @@ jq -n \
   --arg justification "Use the existing OpenAI credential under the eval-specific alias" \
   '{kind:"binding", sourceConfigPath:$sourceConfigPath, configPath:$configPath, justification:$justification}' |
 curl -s -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer ${PAPERCLIP_TOKEN:-$PAPERCLIP_API_KEY}" \
   -H "Content-Type: application/json" \
   --data-binary @- \
   "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
@@ -1558,7 +1558,7 @@ The card uses `continuationPolicy: "wake_assignee"`. On resolution the issue ass
 
 ```bash
 curl -s \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Authorization: Bearer ${PAPERCLIP_TOKEN:-$PAPERCLIP_API_KEY}" \
   "$PAPERCLIP_API_BASE/api/agents/me/secrets"
 ```
 

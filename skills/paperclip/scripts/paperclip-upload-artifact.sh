@@ -11,7 +11,7 @@ Uploads a generated file from the current workspace to the current Paperclip
 issue, then creates an attachment-backed artifact work product by default.
 
 Required environment for live uploads:
-  PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID, PAPERCLIP_RUN_ID
+  PAPERCLIP_API_URL, PAPERCLIP_TOKEN (or PAPERCLIP_API_KEY), PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID, PAPERCLIP_RUN_ID
 
 Options:
   --issue-id ID          Issue id to attach to (default: PAPERCLIP_TASK_ID)
@@ -125,7 +125,7 @@ request_json() {
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+        -H "Authorization: Bearer $PAPERCLIP_AUTH" \
         -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
@@ -134,7 +134,7 @@ request_json() {
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+        -H "Authorization: Bearer $PAPERCLIP_AUTH" \
         -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
     )"
   fi
@@ -166,7 +166,7 @@ upload_file() {
   status_code="$(
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \
-      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "Authorization: Bearer $PAPERCLIP_AUTH" \
       -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )" || curl_status=$?
@@ -392,8 +392,9 @@ if [[ "$dry_run" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
-  printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
+PAPERCLIP_AUTH="${PAPERCLIP_TOKEN:-${PAPERCLIP_API_KEY:-}}"
+if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_AUTH}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
+  printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_TOKEN/PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
   exit 1
 fi
 
