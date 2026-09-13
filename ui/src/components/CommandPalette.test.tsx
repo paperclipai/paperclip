@@ -51,6 +51,15 @@ const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
 }));
 
+const mockHeartbeatsApi = vi.hoisted(() => ({
+  liveRunsForCompany: vi.fn(),
+  cancel: vi.fn(),
+}));
+
+const toastState = vi.hoisted(() => ({
+  pushToast: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -94,6 +103,14 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("../api/heartbeats", () => ({
+  heartbeatsApi: mockHeartbeatsApi,
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => toastState,
 }));
 
 vi.mock("./Identity", () => ({
@@ -204,6 +221,9 @@ describe("CommandPalette", () => {
     mockProjectsApi.list.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
     mockAuthApi.getSession.mockReset();
+    mockHeartbeatsApi.liveRunsForCompany.mockReset();
+    mockHeartbeatsApi.cancel.mockReset();
+    toastState.pushToast.mockReset();
     navigateState.navigate.mockReset();
     locationState.location.pathname = "/";
     locationState.location.search = "";
@@ -216,6 +236,7 @@ describe("CommandPalette", () => {
       enableExperimentalFileViewer: false,
     });
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
   });
 
   afterEach(() => {
