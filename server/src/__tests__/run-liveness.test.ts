@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { classifyRunLiveness } from "../services/run-liveness.ts";
+import {
+  decideRunLivenessContinuation,
+  decideSuccessfulRunHandoff,
+} from "../services/recovery/index.ts";
+
+const companyId = "company-1";
+const agentId = "agent-1";
 
 const baseInput = {
   runStatus: "succeeded",
@@ -227,5 +234,174 @@ describe("run liveness classifier", () => {
     expect(classification.livenessState).toBe("needs_followup");
     expect(classification.actionability).toBe("unknown");
     expect(classification.nextAction).toBeNull();
+  });
+});
+
+describe("terminal no-direct-report 1:1 receipts (SON-699 / SON-641 shape)", () => {
+  const terminalReceiptInput = {
+    ...baseInput,
+    issue: {
+      status: "in_progress",
+      title: "Routine: direct-report 1:1 conversation check",
+      description: "Check 1:1 conversations for this routine window against live roster data.",
+    },
+    resultJson: {
+      summary: [
+        "Roster/session check complete against live data.",
+        "Direct reports found: 0 (zero direct reports).",
+        "Preserved dated no-conversation receipt at 2026-08-26T20:00Z.",
+        "Action ledger: empty",
+      ].join("\n"),
+    },
+  };
+
+  it("classifies an explicit empty action ledger as terminal, never plan-only", () => {
+    const classification = classifyRunLiveness(terminalReceiptInput);
+
+    expect(classification.livenessState).toBe("completed");
+    expect(classification.livenessReason).toContain("empty action ledger");
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("replays the same terminal result with the identical classification", () => {
+    const first = classifyRunLiveness(terminalReceiptInput);
+    const second = classifyRunLiveness(terminalReceiptInput);
+
+    expect(second).toEqual(first);
+    expect(first.livenessState).toBe("completed");
+  });
+
+  it("does not surface a none-like labeled next action as actionable", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Reviewed the routine window; nothing pending.\nNext: none",
+      },
+    });
+
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("does not record a multiline none fallback line as a next action", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Reviewed the routine window; nothing pending.\nNext:\nnone",
+      },
+    });
+
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("keeps a required continuation when a structured next action accompanies an empty-ledger phrase", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Roster/session check complete against live data.\nAction ledger: empty",
+        nextAction: "Update the tenant migration runbook with the rollback steps.",
+      },
+    });
+
+    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.nextAction).toContain("Update the tenant migration runbook");
+  });
+
+  it("still classifies an empty-ledger receipt with a none-like structured next action as terminal", () => {
+    const classification = classifyRunLiveness({
+      ...terminalReceiptInput,
+      resultJson: {
+        ...terminalReceiptInput.resultJson,
+        nextAction: "none",
+      },
+    });
+
+    expect(classification.livenessState).toBe("completed");
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("keeps plan-only classification when an empty-ledger phrase coexists with real future-work intent", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: [
+          "Wrote up findings. Action ledger: empty for this ticket.",
+          "Next I'll inspect the flaky auth suite and fix the token refresh path.",
+        ].join("\n"),
+      },
+    });
+
+    expect(classification.livenessState).toBe("plan_only");
+  });
+
+  it("produces no corrective liveness continuation wake for a terminal receipt", () => {
+    const classification = classifyRunLiveness(terminalReceiptInput);
+    const decision = decideRunLivenessContinuation({
+      run: {
+        id: "run-1",
+        companyId,
+        agentId,
+        continuationAttempt: 0,
+      } as never,
+      issue: {
+        id: "issue-1",
+        companyId,
+        identifier: "RTN-1",
+        title: "Routine: direct-report 1:1 conversation check",
+        status: "done",
+        assigneeAgentId: agentId,
+        executionState: null,
+        projectId: null,
+      } as never,
+      agent: { id: agentId, companyId, status: "idle" } as never,
+      livenessState: classification.livenessState,
+      livenessReason: classification.livenessReason,
+      nextAction: classification.nextAction,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision).toEqual({ kind: "skip", reason: "liveness state is not actionable for continuation" });
+  });
+
+  it("produces no missing-disposition handoff wake when the routine stays done", () => {
+    const decision = decideSuccessfulRunHandoff({
+      run: {
+        id: "run-1",
+        companyId,
+        agentId,
+        status: "succeeded",
+      } as never,
+      issue: {
+        id: "issue-1",
+        companyId,
+        identifier: "RTN-1",
+        title: "Routine: direct-report 1:1 conversation check",
+        description: null,
+        originKind: null,
+        status: "done",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        executionState: null,
+      } as never,
+      agent: { id: agentId, companyId, status: "idle" } as never,
+      livenessState: "completed",
+      detectedProgressSummary: null,
+      finalReport: null,
+      nextAction: null,
+      taskKey: null,
+      hasActiveExecutionPath: false,
+      hasQueuedWake: false,
+      hasPendingInteractionOrApproval: false,
+      hasPersistedMonitor: false,
+      hasExplicitBlockerPath: false,
+      hasOpenRecoveryIssue: false,
+      hasPauseHold: false,
+      hasActiveRoutineContinuation: false,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision.kind).toBe("skip");
+    expect((decision as { reason?: string }).reason).toContain("valid disposition");
   });
 });
