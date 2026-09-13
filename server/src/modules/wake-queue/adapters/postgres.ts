@@ -1,3 +1,4 @@
+import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
@@ -676,7 +677,7 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
     issue.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(issue.status);
-  if (!applies) return false;
+  if (!applies || isAcknowledgedNativeStop(run)) return false;
 
   const existing = await tx
     .select({ id: issueRecoveryActions.id })
@@ -1042,7 +1043,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           // queues a run.
           executionCancellationAcknowledged:
             run.status === "cancelled" &&
-            parseObject(run.resultJson?.executionCancellation).state === "acknowledged" &&
+            (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || isAcknowledgedNativeStop(run)) &&
             !interruptedQueue,
         };
         const preDrain = decidePreDrain(preDrainFacts);

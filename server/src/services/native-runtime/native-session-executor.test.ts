@@ -130,6 +130,7 @@ const state = vi.hoisted(() => ({
     }),
   ),
   cancel: vi.fn(),
+  copyBackCodexAuth: vi.fn(async () => "kept-host"),
   toolAuthorityDefinitions: vi.fn(
     async (_binding: Record<string, unknown>) => [],
   ),
@@ -178,6 +179,13 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   retainedRunnerdMaintenanceIsIdle: state.maintenanceIdle,
   completeRetainedNativeSessionCleanup: state.retireCleanup,
   parsePaperclipQuestionSet: (value: unknown) => value,
+}));
+
+vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@paperclipai/adapter-codex-local/server")
+  >()),
+  copyBackCodexAuth: state.copyBackCodexAuth,
 }));
 
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
@@ -230,10 +238,13 @@ import {
   buildNativeHarnessBackupManifest,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
+  closeIdleWarmNativeSessionsForRestart,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
   executePaperclipNativeSession,
+  detachNativeSessionsForRestart,
+  NativeControllerDetachedForRestartError,
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
   assertRemoteRunnerBuildMetadata,
@@ -4188,6 +4199,7 @@ function leaseDb(
           : table === heartbeatRuns
             ? [
                 {
+                  id: boundExecution.binding.runId,
                   agentId: boundExecution.binding.agentId,
                   companyId: boundExecution.binding.companyId,
                   nativeIssueId: boundExecution.binding.issueId,
@@ -4347,6 +4359,22 @@ function cancellationDb(options?: {
     tx,
   };
 }
+
+describe("native startup restart detachment", () => {
+  it("remembers shutdown while the session is still opening and detaches its late publication", async () => {
+    const restarting = structuredClone(execution);
+    restarting.binding.runId = "restart-during-session-open";
+    const detach = vi.fn(async () => undefined);
+    await expect(detachNativeSessionsForRestart([restarting.binding.runId])).resolves.toMatchObject({ inactiveRunIds: [restarting.binding.runId] });
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession({ detachControllerForRestart: detach });
+      expect(detach).toHaveBeenCalledOnce();
+      await options.onSession(null);
+      throw new Error("detachment closed the old event stream");
+    });
+    await expect(executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting, runnerInstanceId: "runner" })).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+  });
+});
 
 describe("native resumed preparation timing", () => {
   it("keeps answered-question ingress at the run root rather than charging it to preparation", async () => {
@@ -5128,7 +5156,7 @@ describe("native warm session supervision", () => {
     expect(onGoalCheckpoint).toHaveBeenCalledOnce();
   });
 
-  it("closes an idle warm session before its remote environment is destroyed", async () => {
+  it.each(["environment deletion", "controller restart"])("closes an idle warm session before %s", async (shutdownKind) => {
     const close = vi.fn(async () => undefined);
     const warmExecution = {
       ...execution,
@@ -5144,7 +5172,12 @@ describe("native warm session supervision", () => {
       },
     } as NativeExecutionInputV1;
     state.execute.mockReset().mockImplementationOnce(async (options) => {
-      options.onSession?.({ close });
+      await options.onSession?.({ close });
+      await expect(closeWarmNativeSessionsForEnvironment({
+        environmentId: "environment-warm-delete",
+        reason: "environment deleted",
+      })).resolves.toMatchObject({ busy: 1 });
+      expect(close).not.toHaveBeenCalled();
       return {
         result: { summary: "completed" },
         terminal: { runTerminalState: "succeeded" },
@@ -5177,15 +5210,71 @@ describe("native warm session supervision", () => {
         reason: "environment deleted",
       }),
     ).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
-    await expect(
-      closeWarmNativeSessionsForEnvironment({
+    const closeResult = shutdownKind === "controller restart"
+      ? closeIdleWarmNativeSessionsForRestart()
+      : closeWarmNativeSessionsForEnvironment({
         environmentId: "environment-warm-delete",
         reason: "environment deleted",
-      }),
-    ).resolves.toEqual({ closed: 1, busy: 0, failed: 0 });
+      });
+    await expect(closeResult).resolves.toMatchObject({ closed: 1, failed: 0 });
     expect(close).toHaveBeenCalledExactlyOnceWith({
-      reason: "environment deleted",
+      reason: shutdownKind === "controller restart" ? "controller restart" : "environment deleted",
     });
+  });
+
+  it.each([false, true])("checkpoints a busy warm session on release after the restart sweep: checkpoint fails=%s", async (checkpointFails) => {
+    const checkpointError = new Error("restart checkpoint failed");
+    let finishCheckpoint!: () => void;
+    const checkpoint = new Promise<void>((resolve, reject) => {
+      finishCheckpoint = checkpointFails ? () => reject(checkpointError) : resolve;
+    });
+    const close = vi.fn(async () => checkpoint);
+    const warmExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-warm-restart-release",
+        executionWorkspaceId: "workspace-warm-restart-release",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-warm-restart-release",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
+      },
+    } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession?.({ close });
+      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toMatchObject({ busy: 1 });
+      expect(close).not.toHaveBeenCalled();
+      // The active turn can finish after the shutdown sweep has passed it.
+      return {
+        result: { summary: "completed during shutdown" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn-warm-restart-release",
+        normalizedSessionId: warmExecution.session.normalizedSessionId,
+        providerSessionId: "provider-warm-restart-release",
+        driverKind: "test",
+        driverVersion: "1",
+        nativeEventCount: 1,
+        highestContiguousSourceSeq: 1,
+        usage: null,
+      };
+    });
+    let settled = false;
+    const running = executePaperclipNativeSession({
+      db: leaseDb(warmExecution),
+      execution: warmExecution,
+      runnerInstanceId: "runner-warm-restart-release",
+    }).then((result) => { settled = true; return result; });
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "controller restart" }));
+      expect(settled).toBe(false);
+    } finally {
+      finishCheckpoint();
+      if (checkpointFails) await expect(running).rejects.toBe(checkpointError);
+      else await running;
+    }
+    await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
   });
 
   it("preserves the active turn when a warm checkpoint resumes the same run", async () => {
@@ -5919,6 +6008,25 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
+  it("does not turn an acknowledged Stop before completion into a failure or a retry", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const stop: Record<string, unknown> = {};
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      Object.assign(stop, { cancelledByActorType: "user", cancelledByUserId: "board", nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+        dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
+      } });
+      throw new Error("native_finalization_missing: session returned no semantic result");
+    });
+    state.upsertRecoveryAction.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "stop-before-completion",
+    })).rejects.toThrow("native_cancellation_pending_recovery");
+    expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+    expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
+    expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+  });
+
   it("keeps typed integrity failure permanent even if a wrapper changes its message", () => {
     const failure = new NativeSessionProtocolIntegrityError(
       "semantic_input_digest_mismatch",
@@ -6060,7 +6168,7 @@ describe("native session bounded recovery", () => {
         );
         expect(updateIssue).toHaveBeenCalledWith(
           execution.binding.issueId,
-          { status: "in_review" },
+          { status: "blocked" },
           expect.anything(),
         );
       } finally {
@@ -6114,7 +6222,7 @@ describe("native session bounded recovery", () => {
     const failure = new NativeSessionCleanupQuarantinedError();
     state.execute.mockReset().mockRejectedValueOnce(failure);
     state.upsertRecoveryAction.mockReset().mockResolvedValue({});
-    const updateIssue = vi.fn(async () => null);
+    const updateIssue = vi.fn(async () => ({ status: "blocked", statusVersion: 7 }));
     const service = vi
       .spyOn(issueServiceModule, "issueService")
       .mockReturnValue({ update: updateIssue } as unknown as ReturnType<
@@ -6146,6 +6254,7 @@ describe("native session bounded recovery", () => {
       expect(state.upsertRecoveryAction).toHaveBeenCalledWith(
         expect.objectContaining({
           cause: "native_session_cleanup_quarantined",
+          evidence: expect.objectContaining({ nativeFailureBlock: { runId: execution.binding.runId, statusVersion: 7 } }),
           ownerType: "board",
           wakePolicy: null,
           nextAction: expect.stringContaining(
@@ -6155,7 +6264,7 @@ describe("native session bounded recovery", () => {
       );
       expect(updateIssue).toHaveBeenCalledWith(
         execution.binding.issueId,
-        { status: "in_review" },
+        { status: "blocked" },
         expect.anything(),
       );
     } finally {
@@ -6461,7 +6570,7 @@ describe("native session bounded recovery", () => {
     });
   });
 
-  it("escalates exhausted result-less sessions to board review instead of leaving the provider as its own owner", () => {
+  it("blocks exhausted result-less sessions without manufacturing a human review", () => {
     expect(
       nativeSessionRecoveryProjection({
         phase: "retryable_failure",
@@ -6485,7 +6594,7 @@ describe("native session bounded recovery", () => {
       }),
     ).toEqual({
       exhausted: true,
-      issueStatus: "in_review",
+      issueStatus: "blocked",
       recoveryOwner: { kind: "board" },
       recoveryActionOwnerType: "board",
       recoveryActionOwnerAgentId: null,
@@ -6564,6 +6673,10 @@ describe("native process ownership", () => {
     const onSpawn = vi.fn(async () => undefined);
     state.createBackend.mockClear();
     state.execute.mockReset().mockImplementation(async (options) => {
+      await options.onSessionAdmission();
+      expect(updates).toContainEqual({ table: heartbeatRunEvents, values: expect.objectContaining({
+        eventType: "native.process_start_requested", runId: execution.binding.runId,
+      }) });
       await options.backend.onSpawn(processMetadata);
       return {
         result: { summary: "completed" },
@@ -6579,9 +6692,7 @@ describe("native process ownership", () => {
     });
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     state.createBackend.mockImplementationOnce((_input, options) => {
-      expect(updates).toContainEqual({ table: heartbeatRunEvents, values: expect.objectContaining({
-        eventType: "native.process_start_requested", runId: execution.binding.runId,
-      }) });
+      expect(updates.some(update => update.values.eventType === "native.process_start_requested")).toBe(false);
       return { kind: "test", onSpawn: options.onSpawn };
     });
 
@@ -6738,6 +6849,89 @@ describe("runnerd provider runtime wiring", () => {
       provider: "acpx", acpxAgent: "pi",
     }));
     expect(state.execute).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["open", "before-close"],
+    ["open", "during-close"],
+    ["recover", "before-close"],
+    ["recover", "during-close"],
+  ] as const)("preserves managed Codex credentials after %s session detachment %s", async (mode, timing) => {
+    let finishClose!: () => void;
+    const closing = new Promise<void>((resolve) => { finishClose = resolve; });
+    const close = vi.fn(async () => {
+      if (timing === "during-close") await closing;
+    });
+    const detach = vi.fn(async () => undefined);
+    const rawSession = { close, detachControllerForRestart: detach };
+    state.copyBackCodexAuth.mockClear();
+    state.createBackend.mockReturnValueOnce({
+      kind: "test",
+      openSession: async () => rawSession,
+      recoverSession: async () => ({ recovered: true, session: rawSession }),
+    } as never);
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-managed-credential-detach",
+      managedAiCredentialHome: join(isolatedStateDirectory, "managed-home"),
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+    const authPath = join(root, "codex-home", "auth.json");
+    const auth = JSON.stringify({ OPENAI_API_KEY: "fixture-managed-codex-credential" });
+    await mkdir(join(root, "codex-home"), { recursive: true });
+    await writeFile(authPath, auth);
+    const session = mode === "open"
+      ? await backend.openSession({} as never)
+      : (await backend.recoverSession!({} as never, {
+          signal: new AbortController().signal,
+        })).session!;
+
+    if (timing === "before-close") {
+      await session.detachControllerForRestart!();
+      await session.close({ reason: "old controller finalizer" });
+    } else {
+      const closed = session.close({ reason: "old controller finalizer" });
+      await session.detachControllerForRestart!();
+      finishClose();
+      await closed;
+    }
+
+    expect(detach).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(state.copyBackCodexAuth).not.toHaveBeenCalled();
+    await expect(readFile(authPath, "utf8")).resolves.toBe(auth);
+  });
+
+  it("still cleans up managed Codex credentials after an owned session closes", async () => {
+    const close = vi.fn(async () => undefined);
+    state.copyBackCodexAuth.mockClear();
+    state.createBackend.mockReturnValueOnce({
+      kind: "test",
+      openSession: async () => ({ close }),
+    } as never);
+    const managedHome = join(isolatedStateDirectory, "managed-home");
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-managed-credential-close",
+      managedAiCredentialHome: managedHome,
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+    const authPath = join(root, "codex-home", "auth.json");
+    await mkdir(join(root, "codex-home"), { recursive: true });
+    await writeFile(authPath, "fixture-managed-codex-credential");
+    const session = await backend.openSession({} as never);
+
+    await session.close({ reason: "completed" });
+    await session.close({ reason: "repeated cleanup" });
+
+    expect(state.copyBackCodexAuth).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ hostAuthPath: join(managedHome, "auth.json") }),
+    );
+    await expect(access(authPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stages from the authenticated run snapshot and cleans up after the provider turn", async () => {
@@ -9638,10 +9832,12 @@ describe("runnerd provider runtime wiring", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     } as unknown as NativeExecutionInputV1;
     state.createBackend.mockClear();
+    const onSpawn = vi.fn(async () => undefined);
     await createRunnerdBackend({
       db: leaseDb(acpxExecution),
       execution: acpxExecution,
       runnerInstanceId: "runner",
+      onSpawn,
     });
 
     expect(state.createBackend).toHaveBeenCalledWith(
@@ -9660,6 +9856,7 @@ describe("runnerd provider runtime wiring", () => {
         provider: "acpx",
         acpxAgent: "codex",
         acpxPermissionMode: "approve-reads",
+        onSpawn,
       }),
     );
   });

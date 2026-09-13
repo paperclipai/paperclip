@@ -19,13 +19,14 @@ import {
   renderPaperclipWakePrompt,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const NATIVE_EXTERNAL_CHAT_QUESTION_GUIDANCE = [
-  "## Native external-chat questions",
+const NATIVE_QUESTION_GUIDANCE = [
+  "## Questions that need a user response",
   "A request for clickable choices, buttons, or a decision needed before continuing is not a self-contained text answer. The zero-API-call shortcut does not prohibit the structured question tool.",
   'Use the available request_human_input tool with interactionKind="questions", continuationPolicy="wake_assignee", a title, prompt, and a stable idempotencyKey. Put the actual requested choices in payload.questions: each question needs an id, prompt, selectionMode="single", and options with stable id and label fields. Reuse the same key if that creation call must be retried.',
   "Paperclip renders the supported question controls and authenticates the answer. Never fabricate answer URLs, query-string choice links, callback tokens, or fake Markdown buttons. Do not manually post a duplicate question card or use call_api as a substitute.",
   "For one question at a time, read the current request and authoritative prior answers, then create only the next unanswered question. Wait for its real answer before asking another; do not infer a selection or answer your own interaction. Keep completion and disposition truthful while waiting, and preserve existing review or approval gates.",
   "If the tool is unavailable or creation fails, report that actual limitation plainly; do not pretend interactive controls were created.",
+  "A completion summary saying that you asked a question does not create a question. Create the actual question before yielding; never claim to be waiting for a response to an interaction you have not created.",
 ].join("\n");
 
 const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
@@ -165,7 +166,7 @@ export function buildNativeExecutionInput(input: {
     isPaperclipExternalChatQuestionResponseTurn(wakePayload);
   const taskPrompt = [
     wakePrompt,
-    externalChatTurn ? NATIVE_EXTERNAL_CHAT_QUESTION_GUIDANCE : "",
+    NATIVE_QUESTION_GUIDANCE,
     externalChatTurn && wake?.externalChatProvider === "github"
       ? NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE
       : "",
