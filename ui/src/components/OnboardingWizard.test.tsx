@@ -2012,6 +2012,52 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return { root, queryClient };
     }
 
+    it.each([
+      ["claude_local", "anthropic", /Claude/, "claude-session-1", "claude-setup-token-status"],
+      ["codex_local", "openai", /OpenAI/, "codex-session-1", "adapter-login-status"],
+    ] as const)("finishes %s sign-in when its connection becomes visible before the completion poll", async (adapterType, provider, label, sessionId, statusKey) => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.hire.mockRejectedValueOnce(new Error("Temporary hire failure"));
+      const { root, queryClient } = await openStep4({ adapterType });
+      await pickSource(label);
+      for (let i = 0; i < 6; i++) await flushReact();
+      try {
+        // The connection activity event arrives before the login poll. It must
+        // not replace/unmount the controller that still owns the completion.
+        await act(async () => {
+          queryClient.setQueryData(["ai-connections", "company-new"], {
+            currentUserId: "user-1",
+            connections: [{ id: "managed-connection", grantId: "managed-grant", companyId: "company-new", provider, method: "subscription", name: "My subscription", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true }],
+          });
+        });
+        for (let i = 0; i < 4; i++) await flushReact();
+        expect(document.body.textContent).toContain(adapterType === "claude_local" ? "authorization code" : "Q2RJ-E1YIF");
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        await act(async () => {
+          queryClient.setQueryData(
+            adapterType === "claude_local" ? [statusKey, "company-new", sessionId] : [statusKey, "company-new", adapterType, sessionId],
+            { sessionId, status: "authenticated", expiresAt: new Date(Date.now() + 600_000).toISOString() },
+          );
+        });
+        for (let i = 0; i < 120 && !mockAgentsApi.hire.mock.calls.length; i++) {
+          await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+        }
+        expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: { provider, method: "subscription", mode: "responsible_user" } }) }));
+        for (let i = 0; i < 4; i++) await flushReact();
+        expect(document.body.textContent).toContain("Temporary hire failure");
+        const retry = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim() === "Connect");
+        expect(retry).toBeTruthy();
+        expect(retry!.disabled).toBe(false);
+        await act(async () => { retry!.click(); });
+        for (let i = 0; i < 6; i++) await flushReact();
+        expect(mockAgentsApi.hire).toHaveBeenCalledTimes(2);
+        expect(mockAgentsApi.startClaudeSetupTokenLogin.mock.calls.length + mockAgentsApi.startAdapterAuthLogin.mock.calls.length).toBe(1);
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
     it("names the tiles for the provider, not the adapter type", async () => {
       // `MODEL_SOURCE_NAMES` exists so this row says "Claude" and "OpenAI" —
       // which provider you are signing in to, the question the step's heading

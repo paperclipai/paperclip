@@ -146,6 +146,14 @@ These axes produce combinations such as:
 transport is a REST API. Most current API-key catalog entries authenticate a
 remote MCP server.
 
+Anthropic accounts use the `runtime_auth` AI connection methods. Its obsolete
+`api-key` REST tool method is no longer offered. Existing unsupported REST tool
+connections fail health and catalog checks with HTTP 422 and
+`tool_connection_transport_unsupported`; they never use local stdio templates
+or report a successful MCP probe. Add the provider through its supported account
+flow, then remove the obsolete connection. This does not transfer credentials
+or grants automatically.
+
 For `mcp_remote`, header credentials and secret-bearing generated URLs have the
 complete generic runtime path. The schema also names `query`, `body_json`, and
 `env` key placements for specialized transports, but accepting a value in the

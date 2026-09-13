@@ -164,15 +164,24 @@ done`,
 async function acquireCredentialLease(db: Db, grantId: string) {
   const client = await db.$client.reserve();
   try {
+    // A reserved client pins our connection to PgBouncer, not its backend.
+    // Keep the lease in one transaction so transaction-pooling deployments
+    // cannot acquire and release it on different PostgreSQL sessions.
+    await client`begin`;
+    await client`set local idle_in_transaction_session_timeout = 0`;
     const [result] =
-      await client`select pg_try_advisory_lock(hashtextextended(${`ai-runtime:${grantId}`}, 0)) as acquired`;
+      await client`select pg_try_advisory_xact_lock(hashtextextended(${`ai-runtime:${grantId}`}, 0)) as acquired`;
     if (!result.acquired)
       throw unprocessable(
         "This subscription is in use. Retry when its current execution finishes.",
         { code: "ai_connection_busy" },
       );
   } catch (error) {
-    client.release();
+    try {
+      await client`rollback`;
+    } finally {
+      client.release();
+    }
     throw error;
   }
   let released = false;
@@ -180,7 +189,7 @@ async function acquireCredentialLease(db: Db, grantId: string) {
     if (released) return;
     released = true;
     try {
-      await client`select pg_advisory_unlock(hashtextextended(${`ai-runtime:${grantId}`}, 0))`;
+      await client`rollback`;
     } finally {
       client.release();
     }

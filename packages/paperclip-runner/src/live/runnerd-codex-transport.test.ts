@@ -2041,6 +2041,40 @@ it.each([99, 100])(
   },
 );
 
+it("publishes spawned runner ownership before waiting for provider startup", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runner-spawn-ownership-"));
+  let releaseOwnership!: () => void;
+  const persisted = new Promise<void>((resolve) => { releaseOwnership = resolve; });
+  const onSpawn = vi.fn(async () => persisted);
+  const activate = vi.fn();
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    onSpawn,
+    controlPlaneRegistration: async (authority) => {
+      await authority.start();
+      return { activate, release: () => undefined };
+    },
+  });
+  const opening = bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
+  try {
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
+    expect(onSpawn).toHaveBeenCalledWith({ pid: expect.any(Number), processGroupId: expect.any(Number), startedAt: expect.any(String) });
+    expect(bundle.transport.processInfo?.().pid).toBeGreaterThan(0);
+    expect(activate).not.toHaveBeenCalled();
+    releaseOwnership();
+    await opening;
+    expect(activate).toHaveBeenCalledOnce();
+  } finally {
+    releaseOwnership();
+    await opening.catch(() => undefined);
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
 it("launches runnerd with its production durable outbox limits", () => {
   expect(runnerdLaunchProfileInternals.maxOutboxBytes).toBe(16 * 1024 * 1024);
   expect(runnerdLaunchProfileInternals.p0ReserveBytes).toBe(1024 * 1024);
@@ -8326,6 +8360,8 @@ async function verifyLiveRunnerAdoption(
   mismatchedCheckpoint: boolean,
   mismatchedArtifact = false,
   goalMidTurn = false,
+  detachBeforeCleanup = false,
+  startWithoutCheckpoint = false,
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const server = createServer();
@@ -8435,7 +8471,7 @@ async function verifyLiveRunnerAdoption(
         { mode: 0o600 },
       );
     };
-    await compactProviderIdentityEvents();
+    if (!startWithoutCheckpoint) await compactProviderIdentityEvents();
 
     const duplicateLauncher = vi.fn(() => {
       throw new Error("duplicate runner spawn attempted");
@@ -8453,7 +8489,7 @@ async function verifyLiveRunnerAdoption(
           }
         : {}),
       resumeDynamicTools: [],
-      resumeProviderSession: {
+      resumeProviderSession: startWithoutCheckpoint ? undefined : {
         driverSessionId: String(openedThread.id),
         providerSessionId: mismatchedCheckpoint
           ? "wrong-provider-session"
@@ -8519,13 +8555,19 @@ async function verifyLiveRunnerAdoption(
       expect(() => process.kill(runnerPid!, 0)).not.toThrow();
       return;
     }
-    await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
+    await expect(adopted.transport.request(startWithoutCheckpoint ? "thread/start" : "thread/read", {})).resolves.toEqual(
       expect.objectContaining({
         thread: expect.objectContaining({ id: "codex-thread-1" }),
       }),
     );
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
     expect(adopted.transport.processInfo?.().startedAt).toBe("2026-09-01T10:00:00.000Z");
+    if (startWithoutCheckpoint) {
+      const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
+      for (const type of ["run.prepare", "session.open"]) {
+        expect(retained.commands.filter((command: { type: string }) => command.type === type)).toHaveLength(1);
+      }
+    }
     if (goalMidTurn) {
       const observed = await Promise.race([
         (async () => {
@@ -8542,12 +8584,24 @@ async function verifyLiveRunnerAdoption(
     expect(adopted.evidence().diagnostics).toContain(
       `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
     );
-    expect(adopted.evidence().diagnostics).toContain(
-      "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
-    );
-    expect(adopted.evidence().diagnostics).toContain(
-      "confirmed adopted provider identity against authenticated recovery session.snapshot",
-    );
+    if (!startWithoutCheckpoint) {
+      expect(adopted.evidence().diagnostics).toContain(
+        "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
+      );
+      expect(adopted.evidence().diagnostics).toContain(
+        "confirmed adopted provider identity against authenticated recovery session.snapshot",
+      );
+    }
+    if (detachBeforeCleanup) {
+      await adopted.detachControllerForRestart();
+      await adopted.transport.close("old controller finalizer");
+      expect(signal).not.toHaveBeenCalled();
+      expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+      const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
+      const commandTypes = retained.commands.map((command: { type: string }) => command.type);
+      expect(commandTypes).not.toContain("turn.stop");
+      expect(commandTypes).not.toContain("runner.suspend");
+    }
   } finally {
     await adopted?.transport.close().catch(() => undefined);
     if (runnerPid) {
@@ -8586,6 +8640,10 @@ it(
 );
 
 it("binds buffered mid-goal items only after the authenticated recovery snapshot", () => verifyLiveRunnerAdoption(false, false, true), 30_000);
+
+it("keeps an adopted runner alive when the detached controller finalizer closes", () => verifyLiveRunnerAdoption(false, false, true, true), 30_000);
+
+it("adopts an opening session without a checkpoint instead of bootstrapping a duplicate provider", () => verifyLiveRunnerAdoption(false, false, false, false, true), 30_000);
 
 it("surfaces a runner exit while provider-ingress readiness is still pending", async () => {
   const neverReady = new Promise<void>(() => undefined);
