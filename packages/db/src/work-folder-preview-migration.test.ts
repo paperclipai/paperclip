@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { describe, expect, it } from "vitest";
@@ -92,6 +96,173 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
     } finally {
       await sql.end();
       await database.cleanup();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("upgrades the exact f3c67d50 published history without losing files or provider sessions", async ({ onTestFinished }) => {
+    const database = await startEmbeddedPostgresTestDatabase("work-folder-historical-");
+    // Register each cleanup before acquiring the next resource or parsing the
+    // fixture. Vitest runs these in reverse order even when setup fails.
+    onTestFinished(() => database.cleanup());
+    const admin = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    onTestFinished(() => admin.end());
+    const migrationsFolder = mkdtempSync(path.join(os.tmpdir(), "work-folder-f3-history-"));
+    onTestFinished(() => rmSync(migrationsFolder, { recursive: true, force: true }));
+    const historyRoot = new URL("./__fixtures__/work-folders-f3c67d50/", import.meta.url);
+    const history = JSON.parse(readFileSync(new URL("history.json", historyRoot), "utf8")) as {
+      sourceCommit: string;
+      journal: { entries: { tag: string; when: number }[] };
+      files: { name: string; sha256: string }[];
+    };
+    const historicalUrl = new URL(database.connectionString);
+    historicalUrl.pathname = "/historical_preview";
+    const sql = postgres(historicalUrl.toString(), { max: 1, onnotice: () => {} });
+    try {
+      // The cluster helper's regular database is intentionally not the upgrade
+      // subject: this separate database has never seen the current schema.
+      await admin`CREATE DATABASE historical_preview`;
+      expect(history.sourceCommit).toBe("f3c67d50dad32563c7eb5cef1ebae8e83584d4cf");
+      expect(history.files).toHaveLength(248);
+      expect(history.journal.entries).toHaveLength(248);
+      mkdirSync(path.join(migrationsFolder, "meta"));
+      writeFileSync(path.join(migrationsFolder, "meta/_journal.json"), JSON.stringify(history.journal));
+      for (const file of history.files) {
+        const historicalFile = new URL(file.name, historyRoot);
+        const source = existsSync(historicalFile) ? historicalFile : new URL(`./migrations/${file.name}`, import.meta.url);
+        const bytes = readFileSync(source);
+        // The 244 unchanged files are shared, but every byte is pinned to the
+        // old package. The four removed preview migrations are verbatim fixtures.
+        expect(createHash("sha256").update(bytes).digest("hex"), file.name).toBe(file.sha256);
+        writeFileSync(path.join(migrationsFolder, file.name), bytes);
+      }
+      await migrate(drizzle(sql), { migrationsFolder });
+      const journalBefore = [...await sql`SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id`];
+      expect(journalBefore).toHaveLength(248);
+      expect(journalBefore.map(row => ({ hash: row.hash, created_at: String(row.created_at) }))).toEqual(
+        history.journal.entries.map(entry => ({
+          hash: history.files.find(file => file.name === `${entry.tag}.sql`)!.sha256,
+          created_at: String(entry.when),
+        })),
+      );
+      expect(await sql`SELECT to_regclass('public.email_messages') AS name`).toEqual([{ name: null }]);
+      expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'heartbeat_runs'
+        AND column_name = 'controller_boot_id'`).toHaveLength(0);
+
+      const company = randomUUID(), otherCompany = randomUUID(), project = randomUUID(), environment = randomUUID();
+      const responsibleUser = "paperclip-id:historical-preview-user";
+      await sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${company}, 'Historical preview', 'HPV'), (${otherCompany}, 'Other company', 'HPO')`;
+      await sql`INSERT INTO projects (id, company_id, name) VALUES (${project}, ${company}, 'Original project')`;
+      await sql`INSERT INTO environments (id, name, driver, config) VALUES (${environment}, 'Historical Daytona', 'sandbox',
+        ${JSON.stringify({ provider: "daytona", image: "historical-qualified-image", reuseLease: true })})`;
+      const taskFolders: string[] = [];
+      for (const runtimeMode of ["legacy", "native"]) {
+        const agent = randomUUID(), task = randomUUID(), run = randomUUID(), lease = randomUUID(), repository = randomUUID();
+        const nativeSession = runtimeMode === "native" ? randomUUID() : null;
+        const providerId = `historical-${runtimeMode}-sandbox`, conversationId = `original-${runtimeMode}-conversation`;
+        await sql`INSERT INTO agents (id, company_id, name, adapter_type, default_environment_id)
+          VALUES (${agent}, ${company}, ${runtimeMode}, 'codex_local', ${environment})`;
+        await sql`INSERT INTO issues (id, company_id, project_id, title, status, assignee_agent_id, responsible_user_id)
+          VALUES (${task}, ${company}, ${project}, ${runtimeMode + ' existing task'}, 'in_progress', ${agent}, ${responsibleUser})`;
+        await sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, runtime_mode, responsible_user_id,
+          native_session_id, session_id_before, session_id_after, context_snapshot)
+          VALUES (${run}, ${company}, ${agent}, 'succeeded', ${runtimeMode}, ${responsibleUser}, ${nativeSession},
+          ${conversationId}, ${conversationId}, ${JSON.stringify({ issueId: task, projectId: project })})`;
+        await sql`INSERT INTO environment_leases (id, company_id, environment_id, issue_id, heartbeat_run_id, provider,
+          provider_lease_id, lease_policy, metadata) VALUES (${lease}, ${company}, ${environment}, ${task}, ${run}, 'daytona',
+          ${providerId}, 'reuse', ${JSON.stringify({ nativeHarnessBackup: { sessionId: conversationId, objectKey: "private/provider-backup" } })})`;
+        await sql`INSERT INTO agent_task_sessions (company_id, agent_id, adapter_type, task_key, session_display_id,
+          session_params_json, last_run_id) VALUES (${company}, ${agent}, 'codex_local', ${task}, ${conversationId},
+          ${JSON.stringify({ sessionId: conversationId, nativeSessionId: nativeSession, sandboxId: providerId, cwd: "/home/daytona" })}, ${run})`;
+        const folders: Record<string, string> = {};
+        for (const [scope, owner] of [["task", task], ["agent", agent], ["user", responsibleUser], ["project", project]]) {
+          const [folder] = await sql`INSERT INTO work_folders (company_id, scope, owner_id, imported_at)
+            VALUES (${company}, ${scope}, ${owner}, '2026-09-01') ON CONFLICT (company_id, scope, owner_id)
+            DO UPDATE SET owner_id = EXCLUDED.owner_id RETURNING id`;
+          folders[scope] = folder.id;
+        }
+        taskFolders.push(folders.task);
+        const objectKey = `${company}/work-folders/${folders.task}/original-content`;
+        await sql`INSERT INTO work_files (company_id, folder_id, path, object_key, byte_size, sha256, executable, deleted_at)
+          VALUES (${company}, ${folders.task}, 'nested/keep.sh', ${objectKey}, 12, ${"a".repeat(64)}, true, NULL),
+            (${company}, ${folders.task}, 'empty.txt', ${objectKey + '/empty'}, 0, ${"b".repeat(64)}, false, NULL),
+            (${company}, ${folders.task}, 'trash.txt', ${objectKey + '/trash'}, 4, ${"c".repeat(64)}, false, '2026-09-01')`;
+        await sql`INSERT INTO work_file_operations (company_id, folder_id, operation_id, fingerprint)
+          VALUES (${company}, ${folders.task}, 'original-retry-safe-write', 'original-operation-fingerprint')`;
+        await sql`INSERT INTO task_repository_bindings (id, company_id, task_id, workspace_id, name, repo_url, repo_ref,
+          setup_complete, checkpoint_key, checkpoint_sha256, checkpoint_at)
+          VALUES (${repository}, ${company}, ${task}, ${randomUUID()}, 'original-repo', 'https://example.invalid/private.git',
+          'task-unpushed-branch', true, ${`${company}/task-repositories/${repository}/checkpoint`}, ${"d".repeat(64)}, '2026-09-01')`;
+        await sql`INSERT INTO work_folder_objects (object_key, company_id, folder_id, repository_binding_id, provider, delete_after)
+          VALUES (${objectKey}, ${company}, ${folders.task}, NULL, 's3', NULL),
+          (${objectKey + '/pending-upload'}, ${company}, ${folders.task}, NULL, 's3', '2030-01-01'),
+          (${`${company}/task-repositories/${repository}/checkpoint`}, ${company}, NULL, ${repository}, 's3', NULL)`;
+        const manifest = { version: 1, companyId: company, taskId: task, agentId: agent, responsibleUserId: responsibleUser,
+          projectId: project, runId: run, leaseId: lease, home: "/home/daytona", folders, repositories: [{ bindingId: repository }] };
+        await sql`INSERT INTO work_folder_runs (run_id, company_id, manifest, baselines, pending_operations, state,
+          last_saved_at, error, refresh_requested) VALUES (${run}, ${company}, ${JSON.stringify(manifest)},
+          ${JSON.stringify({ task: [{ path: "nested/keep.sh", kind: "file", byteSize: 12, sha256: "a".repeat(64), executable: true }] })},
+          ${JSON.stringify({ "task/empty.txt": { id: randomUUID(), signature: "pending-original-signature" } })},
+          'failed', '2026-09-01', 'Recoverable original storage interruption', true)`;
+      }
+      const preservedTables = ["issues", "agents", "environments", "environment_leases", "agent_task_sessions", "heartbeat_runs",
+        "work_folders", "work_files", "work_file_operations", "work_folder_objects", "work_folder_runs", "task_repository_bindings"];
+      const before = new Map<string, Record<string, unknown>[]>();
+      for (const table of preservedTables) {
+        const rows = await sql`SELECT to_jsonb(t) AS row FROM ${sql(table)} t`;
+        before.set(table, rows.map(row => row.row));
+      }
+      const pending = await inspectMigrations(historicalUrl.toString());
+      expect(pending.status).toBe("needsMigrations");
+      if (pending.status !== "needsMigrations") throw new Error("Historical preview unexpectedly has current migrations");
+      expect(pending.pendingMigrations).toContain("0277_sandbox_work_folders.sql");
+      await applyPendingMigrations(historicalUrl.toString());
+      expect((await inspectMigrations(historicalUrl.toString())).status).toBe("upToDate");
+      for (const table of preservedTables) {
+        const after = (await sql`SELECT to_jsonb(t) AS row FROM ${sql(table)} t`).map(row => row.row);
+        expect(after, table).toHaveLength(before.get(table)!.length);
+        for (const original of before.get(table)!) expect(after, table).toContainEqual(expect.objectContaining(original));
+      }
+      expect(await sql`SELECT to_regclass('public.email_messages') AS name`).toEqual([{ name: "email_messages" }]);
+      expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'heartbeat_runs'
+        AND column_name IN ('controller_boot_id', 'controller_lease_expires_at', 'execution_stage')`).toHaveLength(3);
+      // Compare the complete six-table catalog with the independently migrated
+      // current database, ignoring physical column order from historical ADDs.
+      async function workFolderSchema(connection: typeof sql) {
+        const tables = ["work_folders", "work_files", "work_file_operations", "work_folder_objects", "work_folder_runs", "task_repository_bindings"];
+        const columns = await connection`SELECT table_name, column_name, data_type, udt_name, column_default, is_nullable
+          FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, column_name`;
+        const constraints = await connection`SELECT c.relname AS table_name, x.contype AS type, pg_get_constraintdef(x.oid) AS definition
+          FROM pg_constraint x JOIN pg_class c ON c.oid = x.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' ORDER BY c.relname, x.contype, pg_get_constraintdef(x.oid)`;
+        const indexes = await connection`SELECT tablename AS table_name, indexdef AS definition FROM pg_indexes
+          WHERE schemaname = 'public' ORDER BY tablename, indexdef`;
+        return {
+          columns: columns.filter(row => tables.includes(row.table_name)),
+          constraints: constraints.filter(row => tables.includes(row.table_name)),
+          indexes: indexes.filter(row => tables.includes(row.table_name)).map(row => ({
+            ...row, definition: row.definition.replace(/^CREATE( UNIQUE)? INDEX \S+ ON /, "CREATE$1 INDEX ON "),
+          })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+        };
+      }
+      expect(await workFolderSchema(sql)).toEqual(await workFolderSchema(admin));
+      const journalAfter = [...await sql`SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id`];
+      expect(journalAfter).toHaveLength(pending.availableMigrations.length + 4);
+      expect(journalAfter.slice(0, journalBefore.length)).toEqual(journalBefore);
+      expect(new Set(journalAfter.map(row => row.hash)).size).toBe(journalAfter.length);
+      for (const hash of history.files.slice(-4).map(file => file.sha256)) expect(journalAfter.filter(row => row.hash === hash)).toHaveLength(1);
+      await applyPendingMigrations(historicalUrl.toString());
+      expect([...(await sql`SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id`)]).toEqual(journalAfter);
+      for (const table of preservedTables) {
+        const afterReplay = (await sql`SELECT to_jsonb(t) AS row FROM ${sql(table)} t`).map(row => row.row);
+        expect(afterReplay, `${table} after replay`).toHaveLength(before.get(table)!.length);
+        for (const original of before.get(table)!) expect(afterReplay, table).toContainEqual(expect.objectContaining(original));
+      }
+      await expect(sql`INSERT INTO work_files (company_id, folder_id, path) VALUES (${otherCompany}, ${taskFolders[0]}, 'foreign.txt')`)
+        .rejects.toMatchObject({ code: "23503" });
+      await expect(sql`INSERT INTO work_file_operations (company_id, folder_id, operation_id, fingerprint)
+        VALUES (${company}, ${taskFolders[0]}, 'original-retry-safe-write', 'new-fingerprint')`).rejects.toMatchObject({ code: "23505" });
+    } finally {
+      await sql.end();
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 

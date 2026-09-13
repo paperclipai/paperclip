@@ -1,0 +1,1 @@
+ALTER TABLE "work_folder_runs" ADD COLUMN "pending_operations" jsonb DEFAULT '{}'::jsonb NOT NULL;
