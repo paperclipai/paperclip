@@ -5317,6 +5317,93 @@ it.each(["not_suspended", "wrong_identity"] as const)(
   10_000,
 );
 
+it.each([
+  {
+    label: "interrupted",
+    args: ["--hold-turn"],
+    terminal: "turn.interrupted",
+    disposition: "needs_review",
+  },
+  {
+    label: "failed",
+    args: ["--fail-turn-immediately"],
+    terminal: "turn.failed",
+    disposition: "needs_review",
+  },
+  {
+    label: "completed",
+    args: [],
+    terminal: "turn.completed",
+    disposition: "done",
+  },
+])("retains a $label runner's result before closing its provider turn", async ({
+  label, args, terminal, disposition,
+}) => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-stop-result-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, ...args),
+    stateDirectory,
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: createCodexTaskEnvelope({
+      objective: "Stop and retain unfinished work.",
+    }),
+    environment: {
+      PATH: process.env.PATH,
+      HOME: join(tmpdir(), "runnerd-stop-host-home"),
+      PAPERCLIP_WORKSPACE_CWD: stateDirectory,
+    },
+    approvalPolicy: "never",
+    transportFactory: () => bundle.transport,
+  });
+  const session = await driver.openSession({
+    runId: "run-stop-result",
+    normalizedSessionId: "session-stop-result",
+    workingDirectory: stateDirectory,
+  });
+  try {
+    const turn = await session.startTurn({
+      message: { role: "user", text: "Keep working until interrupted." },
+    });
+    if (label === "interrupted") {
+      await session.interrupt({
+        turnId: turn.turnId,
+        reason: "Stopped by the user",
+      });
+    }
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) {
+      events.push(event);
+      if (event.eventType === "session.failed" || event.eventType === terminal) {
+        break;
+      }
+    }
+    // Let already committed durable suffix events reach the facade as well.
+    await bundle.transport.request("thread/read", {});
+    const snapshot = await session.snapshot();
+    expect(events.some((event) => event.eventType === "session.failed")).toBe(false);
+    expect(events.map((event) => event.eventType)).toContain("run.result.proposed");
+    expect(events.at(-1)?.eventType).toBe(terminal);
+    expect(snapshot).toMatchObject({
+      activeTurnId: null,
+      semanticResult: {
+        turnId: turn.turnId,
+        result: { reportedWorkDisposition: disposition },
+      },
+    });
+  } finally {
+    await session.close().catch(() => undefined);
+    await rm(stateDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 25,
+    });
+  }
+}, 30_000);
+
 it("binds an immediately failed durable turn before exposing its terminal", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-fast-terminal-"),

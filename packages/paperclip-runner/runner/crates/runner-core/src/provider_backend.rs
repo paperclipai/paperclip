@@ -28,7 +28,8 @@ use crate::provider_bridge::{
     TOOL_SET_SCHEMA,
 };
 use crate::provider_events::{
-    normalize_codex_notification, normalized_codex_terminal_event_type, NormalizedProviderEvent,
+    normalize_codex_notification, normalized_codex_terminal_event_type, with_terminal_outcome,
+    NormalizedProviderEvent,
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
@@ -2093,7 +2094,7 @@ impl CodexCommandExecutor {
                         // trustworthy success notification to replay. Terminate it
                         // conservatively so the controller cannot wait forever or
                         // mistake an unknown outcome for success.
-                        state.push_terminal_event(NormalizedProviderEvent {
+                        let provider_terminal = NormalizedProviderEvent {
                             event_type: "turn.failed".to_owned(),
                             priority: EventPriority::P0,
                             payload: json!({
@@ -2102,11 +2103,15 @@ impl CodexCommandExecutor {
                                 "status": "failed",
                                 "providerTerminalObserved": false,
                             }),
-                        })?;
-                        state.extend_terminal_events(terminal_events(
+                        };
+                        let outcome = terminal_events(
                             state,
                             "turn.failed",
                             state.goal.as_ref().map(|goal| goal.status.as_str()),
+                        );
+                        state.extend_terminal_events(with_terminal_outcome(
+                            vec![provider_terminal],
+                            outcome,
                         ))?;
                     }
                 } else {
@@ -3533,7 +3538,7 @@ impl CodexCommandExecutor {
         } else {
             "Codex"
         };
-        state.push_terminal_event(NormalizedProviderEvent {
+        let provider_terminal = NormalizedProviderEvent {
             event_type: terminal_event_type.to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -3552,9 +3557,9 @@ impl CodexCommandExecutor {
                 "providerTerminalObserved": false,
                 "providerShutdownFailed": provider_shutdown_failed,
             }),
-        })?;
+        };
         let terminal = terminal_events(state, terminal_event_type, None);
-        state.extend_terminal_events(terminal)?;
+        state.extend_terminal_events(with_terminal_outcome(vec![provider_terminal], terminal))?;
         self.save_state()
     }
 
@@ -3919,14 +3924,18 @@ impl CodexCommandExecutor {
                         priority: EventPriority::P0,
                         payload: diagnostic.clone(),
                     })?;
-                    state.push_terminal_event(NormalizedProviderEvent {
+                    let provider_terminal = NormalizedProviderEvent {
                         event_type: "turn.failed".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({ "provider": state.config.provider, "status": "failed",
                             "code": diagnostic["code"], "recoverable": false,
                             "message": diagnostic["message"], "error": diagnostic }),
-                    })?;
-                    state.extend_terminal_events(terminal_events(state, "turn.failed", None))?;
+                    };
+                    let outcome = terminal_events(state, "turn.failed", None);
+                    state.extend_terminal_events(with_terminal_outcome(
+                        vec![provider_terminal],
+                        outcome,
+                    ))?;
                     // Commit the authoritative failure before best-effort provider cleanup.
                     self.save_state()?;
                     if let Some(mut provider) = self.provider.take() {
@@ -4197,8 +4206,10 @@ impl CodexCommandExecutor {
                         }
                     }
                     let trace_first_event_sequence = state.next_provider_event_seq;
-                    if terminal_event_type.is_some() {
-                        state.extend_terminal_events(normalized)?;
+                    if let Some(ref event_type) = terminal_event_type {
+                        let goal_status = state.goal.as_ref().map(|goal| goal.status.as_str());
+                        let outcome = terminal_events(state, event_type, goal_status);
+                        state.extend_terminal_events(with_terminal_outcome(normalized, outcome))?;
                     } else if receipt_limit_terminal_poll {
                         for event in normalized {
                             state.push_receipt_limit_cleanup_event(event)?;
@@ -4207,14 +4218,6 @@ impl CodexCommandExecutor {
                         state.extend_events(normalized)?;
                     }
                     let trace_last_event_sequence = state.next_provider_event_seq;
-                    if let Some(event_type) = terminal_event_type {
-                        let goal_status = state.goal.as_ref().map(|goal| goal.status.as_str());
-                        state.extend_terminal_events(terminal_events(
-                            state,
-                            &event_type,
-                            goal_status,
-                        ))?;
-                    }
                     let trace_emitted_event_ids = identity
                         .as_ref()
                         .map(|identity| {

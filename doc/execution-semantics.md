@@ -834,6 +834,11 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+If runnerd synthesizes a result when the provider stops, it publishes that result
+before the provider-turn terminal and publishes the run terminal last. The
+adapter can therefore retain the result while the matching turn still has
+authority. A late result must not reopen an already finalized turn.
+
 Routine task completion and human-input requests must work under Conservative
 runner permissions. The isolated Claude runtime grants only the narrow task
 tools on the runner-owned bridge; it does not change general tool permissions.
@@ -853,6 +858,11 @@ it does not create a pause hold. An acknowledged intentional cancellation remain
 neutral even if teardown releases the run lease or returns no semantic result.
 **Pause work** separately controls future execution. A crash preventing progress
 is **Blocked**; **In Review** requires a concrete human decision.
+
+Subtree pause and cancel record the authenticated board actor on each run they
+interrupt. A verified native stop must not become an unexplained failure simply
+because it came from a subtree action. The explicit pause hold still prevents
+future execution until Resume, and missing stop proof still blocks continuation.
 
 ### Provider continuity and bounded finalization
 
@@ -1158,3 +1168,17 @@ and final dispatch gates. Queued and final native replacement dispatch also
 re-read dependency readiness, since new dependencies need not change the
 displayed task status. Old blocked rows without a receipt remain held; no
 historical status backfill is performed.
+
+### Queued input after a native Stop
+
+A run-only Stop ends the current response. It does not discard queued user
+messages or require a recovery incident. After the controller releases ownership
+and the old local process or remote environment has a verified stop record,
+Paperclip submits saved input through normal task admission, once, with the
+original user's authority. Pauses, task ownership, budgets, approvals, and
+execution recovery holds still apply. Unconfirmed cleanup does not start work.
+
+The active session advertises steering only when its driver supports it. A
+transport method that rejects steering does not grant that capability. The
+queued-message control remains mounted until the server accepts a steer request,
+so a rejected last-row action keeps its message and visible error.

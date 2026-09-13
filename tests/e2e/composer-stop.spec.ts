@@ -397,6 +397,13 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       const resumedChildRun = await running(request, child.id, adapter);
       expect(resumedParentRun.id).not.toBe(parentRun.id);
       expect(resumedChildRun.id).not.toBe(childRun.id);
+      if (adapter === "paperclip_runner") {
+        await expect.poll(async () => {
+          const calls = await readFile(process.env.PAPERCLIP_STOP_CODEX_LOG!, "utf8");
+          return calls.split("turn/start").length - 1;
+        }, { timeout: 30_000 }).toBeGreaterThanOrEqual(5);
+        await page.screenshot({ path: testInfo.outputPath("native-resumed.png"), fullPage: true });
+      }
       await menu(page, "Pause subtree");
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect(

@@ -19,6 +19,24 @@ pub struct NormalizedProviderEvent {
     pub payload: Value,
 }
 
+/// The facade closes provider-turn authority on its terminal notification.
+/// Commit any result synthesized at that boundary before the turn terminal,
+/// then publish the run terminal. Already committed semantic results and
+/// active goals supply no new result and keep their existing event order.
+pub(crate) fn with_terminal_outcome(
+    provider_events: Vec<NormalizedProviderEvent>,
+    outcome_events: Vec<NormalizedProviderEvent>,
+) -> Vec<NormalizedProviderEvent> {
+    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events
+        .into_iter()
+        .partition(|event| event.event_type == "run.result.proposed");
+    results
+        .into_iter()
+        .chain(provider_events)
+        .chain(terminals)
+        .collect()
+}
+
 pub(crate) fn normalized_codex_terminal_event_type(
     method: &str,
     params: &Value,
