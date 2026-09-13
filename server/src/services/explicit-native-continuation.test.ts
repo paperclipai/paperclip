@@ -68,9 +68,9 @@ const support = await getEmbeddedPostgresTestSupport();
     }
     const queueId = randomUUID();
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
-      source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
+      source: "automation", triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
       requestedByActorType: "user", requestedByActorId: "board", payload: {
-        issueId: f.issueId, commentId: f.commentId, _paperclipWakeContext: { issueId: f.issueId, wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] },
+        issueId: f.issueId, commentId: f.commentId, _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] },
       },
     });
     if (gate.startsWith("remote_")) {

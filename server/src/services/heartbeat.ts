@@ -10085,9 +10085,10 @@ export function heartbeatService(
       }
       const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
       const commentId = deriveCommentId(context, payload);
+      const reason = readNonEmptyString(context.wakeReason) ?? wake.reason;
       if (legacyContinuation || stoppedNativeContinuation) {
         if (!commentId || !run.finishedAt || !wake.requestedByActorId ||
-            !["issue_commented", "issue_reopened_via_comment"].includes(wake.reason ?? "")) continue;
+            !["issue_commented", "issue_reopened_via_comment"].includes(reason ?? "")) continue;
         const [comment] = await db.select().from(issueComments).where(and(
           eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
           sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
@@ -10103,7 +10104,7 @@ export function heartbeatService(
         let wait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
         const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
           agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
-          reason: wake.reason, commentId, successorRunId: randomUUID(), dryRun: true,
+          reason, commentId, successorRunId: randomUUID(), dryRun: true,
           onBlocked: (reason, message) => { wait = { reason, message }; },
         });
         if (!admitted) {
@@ -10119,7 +10120,7 @@ export function heartbeatService(
       // Re-enter ordinary admission with the original user's authority. It
       // atomically adopts the deferred comments and still applies every gate.
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
-        reason: wake.reason, payload, contextSnapshot: context,
+        reason, payload, contextSnapshot: context,
         requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
         idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
       break;
