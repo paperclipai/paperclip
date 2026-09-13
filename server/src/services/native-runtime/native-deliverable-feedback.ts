@@ -11,6 +11,28 @@ function evidenceRefs(value: unknown): string[] {
   });
 }
 
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+}
+
+function hasCurrentPublicationReceipt(receipts: unknown, attachment: {
+  id: string; filename: string | null; byteSize: number; sha256: string;
+}): boolean {
+  return Object.values(record(receipts)).some(value => {
+    const receipt = record(value);
+    const input = record(receipt.input);
+    const result = record(receipt.result);
+    return receipt.operationId === "register_deliverable" &&
+      (result.disposition === "applied" || result.disposition === "duplicate") &&
+      result.commandId === `deliverable-prepared:${attachment.id}` &&
+      Array.isArray(result.entityRefs) && result.entityRefs[0] === attachment.id &&
+      typeof input.filename === "string" && input.filename.trim() === attachment.filename &&
+      input.byteSize === attachment.byteSize &&
+      typeof input.sha256 === "string" && input.sha256.trim().toLowerCase() === attachment.sha256.toLowerCase();
+  });
+}
+
 /** Recognize explicit output requests, not incidental mentions of source files.
  * The current server-bound objective is authoritative; summaries cannot invent
  * an output requirement or erase a user's request for a file.
@@ -39,7 +61,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
 /** Files cited as completed output must be reachable outside the agent workspace. */
 export async function validateNativeDeliverableEvidence(
   db: Db,
-  binding: { companyId: string; issueId: string; objective: string },
+  binding: { companyId: string; issueId: string; runId: string; objective: string; semanticToolReceipts: unknown },
   result: PrpStructuredRunResult,
 ): Promise<void> {
   if (result.reportedWorkDisposition !== "done") return;
@@ -59,13 +81,22 @@ export async function validateNativeDeliverableEvidence(
       const id = attachmentPath?.[1] ?? ref.slice("deliverable:".length);
       const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
       const [attachment] = uuid.test(id)
-        ? await db.select({ id: issueAttachments.id }).from(issueAttachments)
+        ? await db.select({ id: issueAttachments.id, originatingRunId: issueAttachments.originatingRunId,
+            filename: assets.originalFilename, byteSize: assets.byteSize, sha256: assets.sha256 }).from(issueAttachments)
             .innerJoin(assets, and(eq(assets.id, issueAttachments.assetId), eq(assets.companyId, binding.companyId)))
             .where(and(eq(issueAttachments.id, id), eq(issueAttachments.companyId, binding.companyId), eq(issueAttachments.issueId, binding.issueId)))
             .limit(1)
         : [];
       if (!attachment) {
         throw new Error("Completion cites no registered attachment on this task. Use register_deliverable for the requested file and cite deliverable:<attachmentId> from its receipt. No human completion approval was created.");
+      }
+      // A prior output (or user input) can be useful context, but does not prove
+      // this run published the newly requested output. The receipt survives a
+      // controller restart of this run; a replacement can re-register preserved
+      // workspace bytes internally rather than asking the user to confirm them.
+      if (fileRequested && (attachment.originatingRunId !== binding.runId ||
+          !hasCurrentPublicationReceipt(binding.semanticToolReceipts, attachment))) {
+        throw new Error("This attachment has no matching verified publication receipt for this run's requested output. Inspect any preserved file and use register_deliverable to verify its current filename, size, and SHA-256, then cite the new receipt. No human completion approval was created.");
       }
       registeredAttachment = true;
       continue;
@@ -83,6 +114,7 @@ export async function validateNativeDeliverableEvidence(
       eq(issueWorkProducts.companyId, binding.companyId), eq(issueWorkProducts.issueId, binding.issueId),
     )) : [];
     const accessibleProduct = products.some(product => {
+      if (product.createdByRunId !== binding.runId) return false;
       if (["failed", "cancelled", "archived"].includes(product.status)) return false;
       // A workspace_file resource is only a locator: registration neither checks
       // its current bytes nor keeps them alive after workspace cleanup. Requested
@@ -91,6 +123,6 @@ export async function validateNativeDeliverableEvidence(
       return accessible && [product.url, `work_product:${product.id}`, `work-product:${product.id}`, `artifact:${product.id}`]
         .some(ref => typeof ref === "string" && refs.has(ref));
     });
-    if (!accessibleProduct) throw new Error("The requested file has no accessible delivery evidence. Use register_deliverable and cite deliverable:<attachmentId>, or cite a registered accessible work product for this task. Empty evidence and a verification result cannot substitute for the requested file. Continue publishing or report a concrete blocker; no human completion approval was created.");
+    if (!accessibleProduct) throw new Error("The requested file has no accessible delivery evidence. Use register_deliverable and cite deliverable:<attachmentId>, or cite an accessible work product registered by this run for this task. Empty evidence, prior-run output, and a verification result cannot substitute for the requested file. Continue publishing or report a concrete blocker; no human completion approval was created.");
   }
 }

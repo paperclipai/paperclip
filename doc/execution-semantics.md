@@ -1206,8 +1206,13 @@ that the task is complete.
 
 For an explicit file output in the current request, an empty report, a
 verification-only reference, or an unregistered URL cannot satisfy delivery.
-The report must cite a task-scoped attachment or a registered accessible work
-product with a published URL. A `workspace_file` locator alone is not delivery
+The report must cite an attachment verified by the current run's durable
+publication receipt, matching its task, filename, size, and SHA-256, or an
+accessible work product registered by that run with a published URL. A prior
+run's output cannot stand in for a newly requested file. A same-run controller
+restart keeps the receipt; a replacement can inspect and re-register preserved
+workspace bytes without user bookkeeping. Follow-ups requesting no new file can
+still reference existing downloads. A `workspace_file` locator alone is not delivery
 evidence: it neither verifies the file nor preserves its bytes after cleanup.
 Reading or reviewing an existing file for an inline answer does not
 require uploading that input. Ambiguous prose remains subject to the runner's

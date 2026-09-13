@@ -1,6 +1,6 @@
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -1151,6 +1151,71 @@ describe("native runner file handoff", () => {
         .update(heartbeatRuns)
         .set({ contextSnapshot: originalRun.contextSnapshot })
         .where(eq(heartbeatRuns.id, runId));
+    }
+  });
+  it.each(["attachment", "work product"])("rejects a previous run's %s for new output and revalidates preserved bytes internally", async (kind) => {
+    const key = `prior-output-${kind}`;
+    const body = Buffer.from("Preserved work from the previous run.\n");
+    await writeFile(path.join(workspaceRoot, `${key}.txt`), body);
+    const prior = await authority().execute(callFor(`${key}.txt`, body, key)) as { entityRefs: string[] };
+    const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "artifact", provider: "external",
+      title: "Previous report", status: "ready_for_review", url: "https://example.com/previous.pdf", createdByRunId: runId }).returning();
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, issueId));
+    const ref = kind === "attachment" ? `deliverable:${prior.entityRefs[0]}` : `work_product:${product.id}`;
+    try {
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref])))
+        .rejects.toThrow(/current run|this run|requested file.*accessible/);
+
+      // A reference in a text-only follow-up is still useful evidence, not a new output claim.
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective: "Do not create a file. Explain the result inline." } } }).where(eq(heartbeatRuns.id, nextRunId));
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref])))
+        .resolves.toContain("Completion report accepted");
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, nextRunId));
+
+      // The replacement can verify and publish the existing bytes itself. No user action is needed.
+      const replacement = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId: nextRunId,
+        workspaceRoot, executionTargetKind: "local", storage: createStorageService(createLocalDiskStorageProvider(storageRoot)) });
+      const current = await replacement.execute(callFor(`${key}.txt`, body, `${key}-verified`)) as { entityRefs: string[] };
+      expect(current.entityRefs[0]).not.toBe(prior.entityRefs[0]);
+      expect(await readFile(path.join(workspaceRoot, `${key}.txt`))).toEqual(body);
+      // Feedback reloads the durable receipt, so a controller restart of the same run keeps this proof.
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([`deliverable:${current.entityRefs[0]}`])))
+        .resolves.toContain("Completion report accepted");
+    } finally {
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));
+    }
+  });
+
+  it.each(["filename", "size", "hash", "origin", "missing receipt", "wrong operation"])("requires matching current publication proof after %s changes", async (mutation) => {
+    const key = `receipt-match-${mutation}`;
+    const body = Buffer.from(`verified publication ${mutation}\n`);
+    await writeFile(path.join(workspaceRoot, `${key}.txt`), body);
+    const result = await authority().execute(callFor(`${key}.txt`, body, key)) as { entityRefs: string[] };
+    const [attachment] = await db.select().from(issueAttachments).where(eq(issueAttachments.id, result.entityRefs[0]));
+    const [asset] = await db.select().from(assets).where(eq(assets.id, attachment.assetId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    if (mutation === "filename") await db.update(assets).set({ originalFilename: "different.txt" }).where(eq(assets.id, asset.id));
+    if (mutation === "size") await db.update(assets).set({ byteSize: asset.byteSize + 1 }).where(eq(assets.id, asset.id));
+    if (mutation === "hash") await db.update(assets).set({ sha256: "0".repeat(64) }).where(eq(assets.id, asset.id));
+    if (mutation === "origin") await db.update(issueAttachments).set({ originatingRunId: null }).where(eq(issueAttachments.id, attachment.id));
+    if (mutation === "missing receipt" || mutation === "wrong operation") {
+      const changed = structuredClone(run.resultJson!);
+      const receipts = changed.semanticToolReceipts as Record<string, { operationId: string }>;
+      if (mutation === "missing receipt") delete receipts[key];
+      else receipts[key]!.operationId = "report_progress";
+      await db.update(heartbeatRuns).set({ resultJson: changed }).where(eq(heartbeatRuns.id, runId));
+    }
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${attachment.id}`])))
+        .rejects.toThrow(/current run|this run/);
+    } finally {
+      await db.update(assets).set({ originalFilename: asset.originalFilename, byteSize: asset.byteSize, sha256: asset.sha256 }).where(eq(assets.id, asset.id));
+      await db.update(issueAttachments).set({ originatingRunId: attachment.originatingRunId }).where(eq(issueAttachments.id, attachment.id));
+      await db.update(heartbeatRuns).set({ resultJson: run.resultJson }).where(eq(heartbeatRuns.id, runId));
     }
   });
 });
