@@ -1477,6 +1477,51 @@ const recoveryFakeCodex = resolve(
 );
 
 describe("rebindNativeSessionCheckpoint", () => {
+  it("reports an unverified historical tool contract with full context, then resumes the upgraded contract", () => {
+    const prior = previousRun({ nativeToolContractFingerprint: undefined });
+    const original = structuredClone(prior);
+    const upgraded = buildNativeExecutionWithCheckpoint({
+      previousRun: prior,
+      normalizedSessionId,
+      executionTargetKind: "remote",
+      buildExecution: (options) => ({
+        ...execution(currentRunId),
+        session: { ...execution(currentRunId).session, normalizedSessionId: options.normalizedSessionId },
+        task: { ...execution(currentRunId).task, prompt: options.resumedSession ? "Compact delta" : "Full original task instructions" },
+      }),
+    });
+    expect(upgraded.sessionTransition).toEqual({
+      mode: "fresh", reason: "native_tool_contract_unverified", taskContext: "full",
+    });
+    expect(upgraded.checkpoint).toBeNull();
+    expect(upgraded.execution.task.prompt).toBe("Full original task instructions");
+    expect(prior).toEqual(original);
+    const nextRunId = "90000000-0000-4000-8000-000000000009";
+    const next = buildNativeExecutionWithCheckpoint({
+      previousRun: {
+        id: currentRunId, companyId, agentId, nativeSessionId: upgraded.normalizedSessionId,
+        runnerProfileJson: {
+          nativeToolContractFingerprint: nativeToolContractFingerprintForTarget("remote"),
+          nativeExecutionInput: upgraded.execution,
+          sessionCheckpoint: {
+            ...original.runnerProfileJson.sessionCheckpoint,
+            sessionId: "upgraded-provider-thread", providerSessionId: "upgraded-provider-thread",
+            identity: { runId: currentRunId, companyId, issueId, agentId, sessionId: upgraded.normalizedSessionId },
+          },
+        },
+      },
+      normalizedSessionId: upgraded.normalizedSessionId,
+      executionTargetKind: "remote",
+      buildExecution: (options) => ({
+        ...execution(nextRunId),
+        session: { ...execution(nextRunId).session, normalizedSessionId: options.normalizedSessionId },
+      }),
+    });
+    expect(next.sessionTransition).toEqual({ mode: "resumed", reason: "checkpoint_compatible", taskContext: "resume" });
+    expect(next.normalizedSessionId).toBe(upgraded.normalizedSessionId);
+    expect(next.checkpoint?.sessionId).toBe("upgraded-provider-thread");
+  });
+
   it("rotates a carried session id when no checkpoint source exists", () => {
     const calls: boolean[] = [];
     const result = buildNativeExecutionWithCheckpoint({
@@ -1802,6 +1847,9 @@ describe("rebindNativeSessionCheckpoint", () => {
     expect(result.checkpoint).toBeNull();
     expect(result.execution.task.prompt).toBe("Full task instructions");
     expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
+    expect(result.sessionTransition).toEqual({
+      mode: "fresh", reason: "native_tool_contract_changed", taskContext: "full",
+    });
   });
 
   it.each([

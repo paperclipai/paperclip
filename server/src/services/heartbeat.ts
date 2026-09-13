@@ -53,7 +53,7 @@ import fs from "node:fs/promises";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "./work-folder-retention.js";
 import { hasMatchingLegacySessionWorkspace } from "./legacy-session-workspace-compatibility.js";
 import { findUnboundLegacyTaskWorkspace, hasLegacySandboxWorkspace } from "./legacy-sandbox-workspace.js";
-import { recoverLegacySandboxSession } from "./legacy-sandbox-session.js";
+import { recoverLegacySandboxSession, recoverLegacyClaudeMcpIdentity } from "./legacy-sandbox-session.js";
 import { prepareSandboxWorkFolders } from "./sandbox-work-folders.js";
 import { bindReusableSandboxWorkspace, shouldBindReusableSandboxWorkspace } from "./sandbox-workspace-binding.js";
 import path from "node:path";
@@ -22082,6 +22082,27 @@ export function heartbeatService(
           responsibleUserId: run.responsibleUserId ?? null,
           executionWorkspaceId: persistedExecutionWorkspace?.id ?? null, previousRun,
         });
+        if (agent.adapterType === "claude_local" && previousRun
+          && previousSessionParams?.legacyPlatformMcpSession === true && !previousSessionParams.mcpServerIdentity) {
+          const [invocations, gateways] = await Promise.all([
+            db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+              eq(heartbeatRunEvents.companyId, agent.companyId), eq(heartbeatRunEvents.agentId, agent.id),
+              eq(heartbeatRunEvents.runId, previousRun.id), eq(heartbeatRunEvents.eventType, "adapter.invoke"),
+            )).limit(2),
+            db.select({ companyId: toolMcpGatewayTokens.companyId, subjectType: toolMcpGatewayTokens.subjectType,
+              subjectId: toolMcpGatewayTokens.subjectId, createdByAgentId: toolMcpGatewayTokens.createdByAgentId,
+              gatewayCompanyId: toolMcpGateways.companyId, gatewayPublicId: toolMcpGateways.gatewayPublicId,
+              metadata: toolMcpGateways.metadata }).from(toolMcpGatewayTokens)
+              .innerJoin(toolMcpGateways, eq(toolMcpGateways.id, toolMcpGatewayTokens.gatewayId)).where(and(
+                eq(toolMcpGatewayTokens.companyId, agent.companyId), eq(toolMcpGateways.companyId, agent.companyId),
+                eq(toolMcpGatewayTokens.subjectType, "heartbeat_run"), eq(toolMcpGatewayTokens.subjectId, previousRun.id),
+                eq(toolMcpGatewayTokens.createdByAgentId, agent.id),
+              )).limit(2),
+          ]);
+          previousSessionParams = recoverLegacyClaudeMcpIdentity({ params: previousSessionParams,
+            previousRunId: previousRun.id, companyId: agent.companyId, agentId: agent.id, taskId: issueId,
+            paperclipApiUrl: paperclipApiBaseUrl(), invocations, gateways });
+        }
       }
       const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
         agentId: agent.id,
@@ -23159,6 +23180,23 @@ export function heartbeatService(
               });
             nativeExecution = nativeExecutionWithCheckpoint.execution;
             nativeResumeCheckpoint = nativeExecutionWithCheckpoint.checkpoint;
+            if (
+              previousNativeRun &&
+              executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" &&
+              nativeExecutionWithCheckpoint.sessionTransition.mode === "fresh"
+            ) {
+              const transition = nativeExecutionWithCheckpoint.sessionTransition;
+              const detail = transition.reason === "native_tool_contract_unverified"
+                ? "the saved native tool contract cannot be verified after an upgrade"
+                : transition.reason === "native_tool_contract_changed"
+                  ? "the native tool contract changed"
+                  : "the saved native checkpoint is incompatible with the current runtime";
+              await appendRunEvent(currentRun, {
+                eventType: "native.session.transition", stream: "system", level: "info",
+                message: `Starting a fresh provider conversation because ${detail}. The full task context is included.`,
+                payload: transition,
+              });
+            }
             if (
               nativeSessionId !==
               nativeExecutionWithCheckpoint.normalizedSessionId
