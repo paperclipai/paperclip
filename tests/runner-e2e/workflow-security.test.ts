@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const ordinaryPrTrustedWorkflowRevision =
-  "03609aa6ecc9a047ed53d6b6469d8be554fbc46d";
+  "44dde2dec42a22746a2f36b595acacc9ccfa1df6";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
@@ -77,7 +77,7 @@ describe("public repository paid workflow security", () => {
       },
       {
         name: "pr-trusted.yml",
-        expectedCachedSetupNodeSteps: 8,
+        expectedCachedSetupNodeSteps: 0,
       },
     ];
 
@@ -99,6 +99,9 @@ describe("public repository paid workflow security", () => {
         const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
         expect(nodeBootstrapStep, name).toContain("uses: actions/setup-node@");
         expect(nodeBootstrapStep, name).not.toContain("cache: pnpm");
+        if (name === "pr-trusted.yml") {
+          expect(nodeBootstrapStep, name).toContain("package-manager-cache: false");
+        }
 
         const nodeVersionMatch = nodeBootstrapStep.match(
           /^\s*node-version:\s*["']?(\d+)(?:\.(\d+))?/mu,
@@ -117,9 +120,15 @@ describe("public repository paid workflow security", () => {
         );
       }
 
-      expect(workflow.match(/^\s+cache: pnpm$/gmu), name).toHaveLength(
+      expect(workflow.match(/^\s+cache: pnpm$/gmu) ?? [], name).toHaveLength(
         expectedCachedSetupNodeSteps,
       );
+      if (name === "pr-trusted.yml") {
+        // Upstream #13300/#13302 deliberately made PR stores restore-only:
+        // seven install jobs reuse caches; the policy resolver has no cache.
+        expect(workflow.match(/uses: actions\/cache\/restore@caa296126883cff596d87d8935842f9db880ef25/gmu)).toHaveLength(7);
+        expect(workflow).not.toMatch(/uses: actions\/cache(?:\/save)?@/u);
+      }
     }
   });
 

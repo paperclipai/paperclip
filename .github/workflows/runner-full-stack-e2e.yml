@@ -1060,6 +1060,17 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Resolve trusted reporting lockfile without lifecycle scripts
+        run: |
+          set -euo pipefail
+          # Resolve only this trusted checkout's lock, never the target artifact.
+          test -z "$(git status --porcelain)"
+          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
+          test -s pnpm-lock.yaml
+          git diff --exit-code HEAD -- . ':!pnpm-lock.yaml'
+          test -z "$(git ls-files --others --exclude-standard)"
+          sha256sum pnpm-lock.yaml
+
       - run: pnpm install --frozen-lockfile
 
       - name: Resolve workflow job attempts
@@ -1201,6 +1212,17 @@ jobs:
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
+
+      - name: Resolve trusted reporting lockfile without lifecycle scripts
+        run: |
+          set -euo pipefail
+          # Resolve only this trusted checkout's lock, never the target artifact.
+          test -z "$(git status --porcelain)"
+          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
+          test -s pnpm-lock.yaml
+          git diff --exit-code HEAD -- . ':!pnpm-lock.yaml'
+          test -z "$(git ls-files --others --exclude-standard)"
+          sha256sum pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
 
