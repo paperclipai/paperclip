@@ -208,7 +208,7 @@ describe("execute", () => {
     expect(prompt).not.toContain("Create child issues");
   });
 
-  it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
+  it("sends the current task brief once on fresh runs and stable-session resumes", async () => {
     const description = "Update launch-card.svg and change the CTA to Try Team free.";
     const fullTaskMarkdown = [
       "Paperclip task context:",
@@ -271,9 +271,9 @@ describe("execute", () => {
     expect(runBodies).toHaveLength(2);
     // Fresh run: brief exactly once (task markdown only; wake-prompt copy suppressed).
     expect(runBodies[0]!.input.split(description)).toHaveLength(2);
-    // Stable-session resume: compact task markdown, no re-sent brief.
+    // Stable-session resume: current brief exactly once, with no duplicate wake copy.
     expect(runBodies[1]!.input).toContain("Paperclip task context:");
-    expect(runBodies[1]!.input).not.toContain(description);
+    expect(runBodies[1]!.input.split(description)).toHaveLength(2);
   });
 
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {

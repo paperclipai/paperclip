@@ -1250,6 +1250,14 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
+When an adapter includes the task brief, it includes the current description on
+resumed sessions as well as fresh sessions. A saved provider conversation does
+not prove that it has received later description edits. Comment deltas may
+remain compact; they do not replace the current brief. An edited brief must not
+be replaced by an already delivered historical comment, including on subsequent
+resumes. New human direction and explicit interaction outcomes remain available
+alongside the brief. These context updates do not reset the provider session.
+
 ## 11.5 Recovery Work Classes
 
 Status-only recovery coordination must include guard context that prevents deliverable work and document or plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`). Recovery work classes do not select or change the agent model.

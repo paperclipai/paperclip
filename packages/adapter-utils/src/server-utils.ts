@@ -2151,28 +2151,14 @@ export function isAssignmentShapedPaperclipWakeReason(
   );
 }
 
-// Picks the task-context markdown variant for adapters that inject it into the
-// prompt. Fresh sessions, assignment-shaped wakes, and recovery wakes get the
-// full brief; other resume deltas get the compact variant (description
-// stripped) because the session already received the brief when it picked the
-// issue up. Falls back to the full variant when no compact one was provided.
+// A resumed provider session has no certified revision of the task description.
+// Always deliver the current brief: an ordinary status/comment wake can follow
+// an edit, even when its comment delta is empty. This does not reset the session.
 export function selectPaperclipTaskMarkdown(
   context: Record<string, unknown> | null | undefined,
-  options: { resumedSession?: boolean } = {},
+  _options: { resumedSession?: boolean } = {},
 ): string {
-  const full = asString(context?.paperclipTaskMarkdown, "").trim();
-  if (!full) return "";
-  if (options.resumedSession !== true) return full;
-  const wake = normalizePaperclipWakePayload(context?.paperclipWake);
-  if (!wake) return full;
-  if (
-    isAssignmentShapedPaperclipWakeReason(wake.reason) ||
-    isPaperclipRecoveryWakePayload(context?.paperclipWake)
-  ) {
-    return full;
-  }
-  const compact = asString(context?.paperclipTaskMarkdownCompact, "").trim();
-  return compact || full;
+  return asString(context?.paperclipTaskMarkdown, "").trim();
 }
 
 // Runtime-only connector skills are supplied by the server after assignment resolution.
@@ -2466,18 +2452,10 @@ function renderPaperclipWakePromptBody(
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
   const issueDescription = normalized.issue?.description ?? null;
-  // Resume deltas skip the description: the session already received the brief
-  // when it picked up the issue. Assignment-shaped and recovery wakes are the
-  // exceptions — there the resuming session may be seeing this issue fresh.
-  const resumeOmitsIssueDescription =
-    resumedSession &&
-    !recoveryScoped &&
-    !isAssignmentShapedPaperclipWakeReason(normalized.reason);
-  if (
-    issueDescription !== null &&
-    options.suppressIssueDescription !== true &&
-    !resumeOmitsIssueDescription
-  ) {
+  // Comment coverage does not establish which description revision the provider
+  // saw. Keep the current brief on resumes; adapters carrying the full task
+  // markdown can still suppress this duplicate copy explicitly.
+  if (issueDescription !== null && options.suppressIssueDescription !== true) {
     lines.push(
       "",
       "Issue description:",
@@ -2489,10 +2467,6 @@ function renderPaperclipWakePromptBody(
         "[issue description truncated; fetch the issue for the full brief]",
       );
     }
-  } else if (issueDescription !== null && resumeOmitsIssueDescription) {
-    lines.push(
-      "- issue description: omitted from this resume delta; fetch the issue if you need the latest brief",
-    );
   }
   if (normalized.checkboxSelection) {
     if (normalized.checkboxSelection.prompt) {
