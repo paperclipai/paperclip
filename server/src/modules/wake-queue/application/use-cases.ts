@@ -143,15 +143,20 @@ async function runReleaseDrain(
     return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
   }
 
-  // Each `continue` path below leaves the wake row off the
+  // Each `continue` path either excludes a pending handoff receipt from
+  // this drain or leaves the wake row off the
   // `deferred_issue_execution` status, so the next queue read cannot
   // return that same row again. That invariant is what ends this loop.
   // The `processedWakeIds` guard below makes a break of the invariant
   // fail loudly, instead of holding this transaction open forever.
   const processedWakeIds = new Set<string>();
+  const handoffWakeIds: string[] = [];
 
   while (true) {
-    const candidate = await ports.transaction.findNextDeferredWake({ companyId: run.companyId, issueId: issue.id });
+    const candidate = await ports.transaction.findNextDeferredWake({
+      companyId: run.companyId, issueId: issue.id,
+      ...(handoffWakeIds.length ? { excludedWakeIds: handoffWakeIds } : {}),
+    });
     if (!candidate) break;
     if (processedWakeIds.has(candidate.id)) {
       throw new WakeQueueApplicationError(
@@ -161,6 +166,28 @@ async function runReleaseDrain(
       );
     }
     processedWakeIds.add(candidate.id);
+
+    const ordinaryTaskComment = !candidate.authorizedFailedChatRetry &&
+      !candidate.preservesIndependentContinuation && candidate.queuedCommentIds.length > 0 &&
+      ["issue_commented", "issue_reopened_via_comment"].includes(candidate.wakeReason ?? candidate.reason ?? "");
+    if (ordinaryTaskComment && candidate.agentId !== issue.assigneeAgentId) {
+      if (run.agentId !== issue.assigneeAgentId) {
+        // The old owner can release before assignment admission adopts these
+        // exact IDs. Leave its receipt intact, skip it for this drain, and let
+        // a current-assignee wake behind it proceed.
+        handoffWakeIds.push(candidate.id);
+      } else {
+        // The current owner has finished. An obsolete assignment cannot
+        // launch another former-owner run or reopen its completed task.
+        await ports.transaction.cancelDeferredWake({
+          companyId: run.companyId,
+          wakeId: candidate.id,
+          reason: "Deferred task messages now belong to the current assignee",
+          now: input.now,
+        });
+      }
+      continue;
+    }
 
     let liveness = { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
     if (
