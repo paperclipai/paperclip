@@ -793,7 +793,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.search(claims, "notion"))
       .rejects.toThrow("no longer active");
   });
-  it("keeps runtime authentication requests distinct from the same provider's tool requests", async () => {
+  it("keeps runtime authentication separate from obsolete Anthropic tool requests", async () => {
     const companyId = claims.company_id;
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -808,16 +808,38 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await db.insert(aiConnectionDefaults).values({ companyId, userId: claims.responsible_user_id!, provider: "anthropic", method: "api_key", grantId: grant!.id });
     const aiClaims = { ...claims, sub: agentId, run_id: aiRunId };
     const service = connectionIntentService(db);
-    const toolRequest = await service.request(aiClaims, "anthropic");
+    await expect(service.request(aiClaims, "anthropic")).rejects.toMatchObject({
+      status: 422,
+      message: "Connection service anthropic is not available",
+    });
+    // Preserve an intent created before the obsolete REST method was removed.
+    // It must neither alias the AI request nor accept an AI account as tools.
+    const toolRequest = await issueThreadInteractionService(db).createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload: {
+          version: 1,
+          serviceSlug: "anthropic",
+          serviceName: "Anthropic",
+          serviceLogoUrl: null,
+          requestingAgentId: agentId,
+          requestingAgentName: "AI Agent",
+          phase: "requested",
+        },
+        sourceRunId: aiRunId,
+        addresseeUserId: claims.responsible_user_id!,
+        idempotencyKey: `connection-intent:${aiRunId}:${claims.responsible_user_id}:anthropic`,
+      },
+    );
     const aiRequest = await service.request(aiClaims, "anthropic", { purpose: "ai" });
     expect(aiRequest.state).toBe("needs_user_action");
-    expect(aiRequest.interactionId).not.toBe(toolRequest.interactionId);
+    expect(aiRequest.interactionId).not.toBe(toolRequest.id);
     expect((await service.setupOptions(aiRequest.interactionId!)).aiConnection).toEqual(binding);
-    expect((await service.setupOptions(toolRequest.interactionId!)).existingConnections).toEqual([]);
-    await expect(service.complete(toolRequest.interactionId!, connection!.id, claims.responsible_user_id!)).rejects.toThrow("cannot satisfy");
+    expect((await service.setupOptions(toolRequest.id)).existingConnections).toEqual([]);
+    await expect(service.complete(toolRequest.id, connection!.id, claims.responsible_user_id!)).rejects.toThrow("cannot satisfy");
     await expect(service.complete(aiRequest.interactionId!, connection!.id, claims.responsible_user_id!)).resolves.toMatchObject({ status: "accepted" });
     expect((await service.request(aiClaims, "anthropic", { purpose: "ai" })).state).toBe("ready");
-    expect((await service.request(aiClaims, "anthropic")).state).toBe("needs_user_action");
+    await expect(service.request(aiClaims, "anthropic")).rejects.toMatchObject({ status: 422 });
     expect((await service.search(aiClaims, "openrouter")).results.some(result => result.service === "openrouter")).toBe(false);
   });
 

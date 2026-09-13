@@ -11,7 +11,7 @@ identity, isolation behavior, and conformance coverage are defined.
 |---|---|---|---|
 | Codex | `codexPermissionMode` | `never`, `on-request`, `untrusted` | `never` |
 | OpenCode | `opencodePermissionMode` | `allow`, `ask`, `deny` | `allow` |
-| ACPX (Claude, Codex) | `acpxPermissionMode` | `approve-all`, `approve-reads`, `deny-all` | `approve-all` |
+| ACPX (Claude, Codex) | `acpxPermissionMode` | `approve-all`, `approve-reads`, `deny-all` | `approve-reads` |
 
 The browser-safe source of truth for labels, defaults, and configuration
 validation is `PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES` in

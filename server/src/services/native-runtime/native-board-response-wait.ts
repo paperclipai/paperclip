@@ -74,7 +74,7 @@ export async function readNativeBoardResponseWaitOrigin(
         eq(agentWakeupRequests.agentId, binding.agentId),
         eq(agentWakeupRequests.runId, binding.runId),
         eq(agentWakeupRequests.source, "automation"),
-        eq(agentWakeupRequests.reason, "issue_commented"),
+        inArray(agentWakeupRequests.reason, ["issue_commented", "issue_reopened_via_comment"]),
         eq(agentWakeupRequests.requestedByActorType, "user"),
       ),
     )
@@ -203,7 +203,7 @@ export async function readNativeBoardResponseWaitSource(
         eq(agentWakeupRequests.agentId, binding.agentId),
         eq(agentWakeupRequests.runId, binding.runId),
         eq(agentWakeupRequests.source, "automation"),
-        eq(agentWakeupRequests.reason, "issue_commented"),
+        inArray(agentWakeupRequests.reason, ["issue_commented", "issue_reopened_via_comment"]),
         eq(agentWakeupRequests.requestedByActorType, "user"),
       ),
     )

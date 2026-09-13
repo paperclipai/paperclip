@@ -594,8 +594,9 @@ describe("ACPX installation integrity", () => {
       );
       await (await installation.openCommand()).close();
     },
-    // The real macOS snapshot copies the installed SDK tree; this is an
-    // integrity check, not a five-second startup performance benchmark.
+    // This hashes the real installed SDK tree and competes with the complete
+    // package suite for filesystem I/O, especially on macOS. It is an integrity
+    // check, not a startup benchmark; small fixtures keep the default timeout.
     60_000,
   );
 
