@@ -176,11 +176,11 @@ export function AgentProviderConnection({
             };
       if (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data) {
         savedManagedAccount.current ??= await localLogin.connect();
-        connection = { env: {}, aiConnection: { provider: aiProvider, mode: "responsible_user" } };
+        connection = { env: {}, aiConnection: { provider: aiProvider, method: "subscription", mode: "responsible_user" } };
       }
       if (connection.credentials) {
         await aiConnectionsApi.create(companyId, { provider: aiProvider, method: "api_key", name: `My ${provider} API`, ownership: "personal", apiKey: connection.credentials[envKey], agentIds: [], allAgents: true });
-        connection = { env: {}, aiConnection: { provider: aiProvider, mode: "responsible_user" } };
+        connection = { env: {}, aiConnection: { provider: aiProvider, method: "api_key", mode: "responsible_user" } };
       }
       if (run !== epoch.current) return;
       if (method === "api") {
@@ -348,7 +348,7 @@ export function AgentProviderConnection({
                     });
                     return;
                   }
-                  const connection: ProviderConnection = { env: {}, aiConnection: { provider: aiProvider, mode: "responsible_user" } };
+                  const connection: ProviderConnection = { env: {}, aiConnection: { provider: aiProvider, method: "subscription", mode: "responsible_user" } };
                   setStoredConnection(connection);
                   onConnected(connection);
                 }}

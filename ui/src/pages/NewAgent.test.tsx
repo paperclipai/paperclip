@@ -385,7 +385,7 @@ describe("New agent setup", () => {
     await click(provider + "API");
     await fill("API key", "connection-key");
     await click("Connect");
-    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", mode: "responsible_user" };
+    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", method: "api_key", mode: "responsible_user" };
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ apiKey: "connection-key", provider: binding.provider }));
     expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
     expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual(binding);
@@ -466,7 +466,7 @@ describe("New agent setup", () => {
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       provider: "openrouter", method: "api_key", apiKey: "example-test-secret",
     }));
-    const binding = { provider: "openrouter", mode: "responsible_user" };
+    const binding = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
     await click("Run test");
     expect(api.testEnvironment.mock.calls[0][2]).toEqual(expect.objectContaining({
       aiConnection: binding, testCredentials: {},

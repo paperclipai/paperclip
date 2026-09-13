@@ -66,7 +66,7 @@ function AgentConnectionReview({
     initialBinding ?? {
       ...AI_REVIEW_BINDING,
       provider: requirement.provider,
-      method: requirement.method,
+      method,
     },
   );
   const [stage, setStage] = useState<string>(

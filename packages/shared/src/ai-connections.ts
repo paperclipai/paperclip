@@ -40,9 +40,9 @@ const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
 export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
   z.object({
     provider: aiProviderSchema,
-    // Accepted for older saved agents; the responsible user's provider default
-    // determines the method at execution time.
-    method: aiAuthMethodSchema.optional(),
+    // Retained on the wire for older servers during rolling upgrades. The
+    // responsible user's provider default determines the actual run method.
+    method: aiAuthMethodSchema,
     mode: z.literal("responsible_user"),
   }).strict(),
   z

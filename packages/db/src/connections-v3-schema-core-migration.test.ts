@@ -36,8 +36,9 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql`ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_company_connection_fk"`;
 
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
-    // AI defaults arrive in 0273 and depend on the composite grant key from
-    // 0232. Rewind that later table before recreating the 0182 grant schema.
+    // AI defaults arrive in 0273/0277 and depend on the composite grant key
+    // from 0232. Rewind those tables before recreating the 0182 grant schema.
+    await sql`DROP TABLE IF EXISTS "ai_provider_defaults"`;
     await sql`DROP TABLE IF EXISTS "ai_connection_defaults"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_delegations"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_members"`;

@@ -933,7 +933,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(managedApi.create).toHaveBeenCalledTimes(1);
         expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({ provider: "anthropic", method: "api_key", ownership: "personal", apiKey: KEY }));
         const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown }; adapterConfig: { env?: Record<string, unknown> } };
-        expect(hireBody.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", mode: "responsible_user" });
+        expect(hireBody.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", method: "api_key", mode: "responsible_user" });
         expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toBeUndefined();
         // The whole payload, not just that one field: the point is that the key
         // is nowhere in what gets persisted, however it might be nested.
@@ -2043,7 +2043,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
         }
         expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
-        expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: { provider, mode: "responsible_user" } }) }));
+        expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: { provider, method: "subscription", mode: "responsible_user" } }) }));
         for (let i = 0; i < 4; i++) await flushReact();
         expect(document.body.textContent).toContain("Temporary hire failure");
         const retry = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim() === "Connect");
@@ -3106,7 +3106,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(managedApi.connectLocal).toHaveBeenCalledWith("company-new", expect.objectContaining({ provider: "anthropic", method: "subscription", ownership: "personal" }));
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hire = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown } };
-      expect(hire.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", mode: "responsible_user" });
+      expect(hire.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", method: "subscription", mode: "responsible_user" });
       await act(async () => root.unmount());
     });
 

@@ -171,7 +171,7 @@ export function AiConnectionField({
                 queryKey: ["ai-connections", companyId],
               });
               setConnecting(false);
-              changeBinding({ provider, mode: "responsible_user" });
+              changeBinding({ provider, method, mode: "responsible_user" });
             }}
           />
         </DialogContent>

@@ -79,7 +79,7 @@ describe("managed AI connections", () => {
       expect(subRun.config.model).toBe(bot.config.model);
       expect(apiRun.config.model).toBe(bot.config.model);
       expect(bot).toEqual(original);
-      expect((await service.select({ ...bot, userId: apiUser, binding: { provider, mode: "responsible_user" } })).grant.id).toBe(api.grantId);
+      expect(aiConnectionBindingSchema.parse(bot.binding)).toEqual(bot.binding);
     } finally { await Promise.all([subRun.cleanup(), apiRun.cleanup()]); }
   });
 
@@ -116,6 +116,24 @@ describe("managed AI connections", () => {
     await service.setDefault(companyId, userId, subscription.grantId);
     for (const statement of migration.split("--> statement-breakpoint").filter(value => value.trim())) await db.execute(sql.raw(statement));
     expect((await service.select({ ...input, userId })).grant.id).toBe(subscription.grantId);
+  });
+  it("observes old-server default changes during rolling upgrades without treating new accounts as default changes", async () => {
+    const userId = "rolling-upgrade-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const api = await create(userId, "Rolling API");
+    const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Rolling subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-rolling-subscription");
+    expect((await service.select({ ...input, userId })).grant.id).toBe(api.grantId);
+    // An older server updates only the legacy per-method row on Make default.
+    await db.update(aiConnectionDefaults).set({ grantId: subscription.grantId, updatedAt: new Date() })
+      .where(and(eq(aiConnectionDefaults.userId, userId), eq(aiConnectionDefaults.method, "subscription")));
+    expect((await service.select({ ...input, userId })).attribution).toMatchObject({ grantId: subscription.grantId, method: "subscription" });
+    expect((await service.list(companyId, userId)).filter(account => account.isDefault).map(account => account.grantId)).toEqual([subscription.grantId]);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, subscription.grantId));
+    await create(userId, "Rolling second API");
+    await expect(service.select({ ...input, userId })).rejects.toThrow("Reconnect");
+    await db.update(aiConnectionDefaults).set({ grantId: api.grantId, updatedAt: new Date() })
+      .where(and(eq(aiConnectionDefaults.userId, userId), eq(aiConnectionDefaults.method, "api_key")));
+    expect((await service.select({ ...input, userId })).grant.id).toBe(api.grantId);
   });
   it("checks the selected environment for project auth overrides without exposing their contents", async () => {
     const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
@@ -313,9 +331,9 @@ describe("managed AI connections", () => {
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "agentmail" } }).success).toBe(true);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "slack" } }).success).toBe(false);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "runtime_auth", config: { provider: "agentmail" } }).success).toBe(false);
-    expect(aiConnectionBindingSchema.parse({ provider: "anthropic", mode: "responsible_user" })).toEqual({ provider: "anthropic", mode: "responsible_user" });
+    expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "responsible_user" }).success).toBe(false);
     expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "shared", connectionId: randomUUID(), grantId: randomUUID() }).success).toBe(false);
-    expect(isAiConnectionCompatible({ provider: "anthropic", mode: "responsible_user" }, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key", mode: "responsible_user" }, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "codex")).toBe(false);
     expect(isAiConnectionCompatible({ provider: "openrouter", method: "api_key" }, "opencode_local", "anthropic/model")).toBe(false);
