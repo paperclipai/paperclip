@@ -146,6 +146,19 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
       return null;
     }
 
+    const toplevelResult = await runLocalGit(localDir, ["rev-parse", "--show-toplevel"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    // Git discovers a parent repository from a nested project directory, but
+    // that directory is not a fetch source. Keep the selected workspace
+    // boundary: subfolders use directory sync instead of importing the parent.
+    const [workspacePath, repositoryPath] = await Promise.all([
+      fs.realpath(localDir),
+      fs.realpath(toplevelResult.stdout.trim()),
+    ]);
+    if (workspacePath !== repositoryPath) return null;
+
     const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
       runLocalGit(localDir, ["rev-parse", "HEAD"], {
         timeout: 10_000,
