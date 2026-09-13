@@ -1209,7 +1209,9 @@ jobs:
   publish_history:
     name: Publish S3 history and Pages bundle with declared screenshots
     needs: [authorize, catalog, report]
-    if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
+    # Preview evidence remains in access-controlled workflow artifacts.
+    # Do not publish to shared S3 history or the main dashboard.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -1292,7 +1294,8 @@ jobs:
   pages:
     name: Publish latest dashboard with declared screenshots
     needs: [report, publish_history]
-    if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
+    # This isolated preview does not update the shared Pages dashboard.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     permissions:
       pages: write
