@@ -103,14 +103,23 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
-Subscription invocations take a grant-scoped database advisory lease. Two
+Subscription invocations take a grant-scoped, transaction-held database advisory
+lease so the lock remains on one backend through transaction-pooling proxies. Two
 different users' grants can run concurrently; a second invocation of the same
 subscription receives a retryable busy response while it is in use. Refreshes
 are merged only into the originating active grant, with reconnect/revocation
 version checks. Temporary homes are removed on normal completion or failure.
 
 Session reuse includes grant identity, responsible user, and credential
-generation. A changed identity starts a fresh provider session. Managed native
+generation. For recognized Codex subscription credentials, generation describes
+the account and principal rather than rotating tokens or token timestamps.
+Same-account token refresh and generated authentication-home paths therefore
+preserve the session; changes to the principal, account, permissions, model, or
+user configuration still invalidate it. Opaque credentials and API keys retain
+credential-byte change detection. The prior raw-hash identity is accepted only
+when it matches the exact currently authorized credential, allowing that identity
+format to upgrade without treating an older or different credential as equivalent.
+A changed identity starts a fresh provider session. Managed native
 executions use per-turn lifecycle cleanup; a suspended native execution whose
 credential identity changed must restart as a new execution.
 

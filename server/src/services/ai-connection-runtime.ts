@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalJson } from "@paperclipai/shared/portability-hash";
 import { unprocessable } from "../errors.js";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -182,15 +183,24 @@ done`,
 async function acquireCredentialLease(db: Db, grantId: string) {
   const client = await db.$client.reserve();
   try {
+    // A reserved client pins our connection to PgBouncer, not its backend.
+    // Keep the lease in one transaction so transaction-pooling deployments
+    // cannot acquire and release it on different PostgreSQL sessions.
+    await client`begin`;
+    await client`set local idle_in_transaction_session_timeout = 0`;
     const [result] =
-      await client`select pg_try_advisory_lock(hashtextextended(${`ai-runtime:${grantId}`}, 0)) as acquired`;
+      await client`select pg_try_advisory_xact_lock(hashtextextended(${`ai-runtime:${grantId}`}, 0)) as acquired`;
     if (!result.acquired)
       throw unprocessable(
         "This subscription is in use. Retry when its current execution finishes.",
         { code: "ai_connection_busy" },
       );
   } catch (error) {
-    client.release();
+    try {
+      await client`rollback`;
+    } finally {
+      client.release();
+    }
     throw error;
   }
   let released = false;
@@ -198,11 +208,90 @@ async function acquireCredentialLease(db: Db, grantId: string) {
     if (released) return;
     released = true;
     try {
-      await client`select pg_advisory_unlock(hashtextextended(${`ai-runtime:${grantId}`}, 0))`;
+      await client`rollback`;
     } finally {
       client.release();
     }
   };
+}
+
+/** A session partition, never a substitute for selecting and authorizing the grant. */
+export function managedAiCredentialGeneration(
+  provider: AiConnectionBinding["provider"],
+  method: AiConnectionBinding["method"],
+  value: string,
+): string {
+  let identityMaterial = value;
+  if (provider === "openai" && method === "subscription") {
+    try {
+      const record = (value: unknown): Record<string, unknown> | null =>
+        value !== null && typeof value === "object" && !Array.isArray(value)
+          ? value as Record<string, unknown> : null;
+      const text = (value: unknown): value is string =>
+        typeof value === "string" && value.length > 0 && value.trim() === value;
+      const claims = (token: unknown): Record<string, unknown> | null => {
+        if (!text(token)) return null;
+        const parts = token.split(".");
+        if (parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) return null;
+        const header = record(JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")));
+        if (header?.alg !== "RS256") return null;
+        return record(JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")));
+      };
+      const audience = (value: unknown): string[] | null => {
+        const values = typeof value === "string" ? [value] : value;
+        return Array.isArray(values) && values.length > 0 && values.every(text)
+          ? [...new Set(values)].sort() : null;
+      };
+      const auth = record(JSON.parse(value)), tokens = record(auth?.tokens);
+      const id = claims(tokens?.id_token), access = claims(tokens?.access_token);
+      const idAuth = record(id?.["https://api.openai.com/auth"]);
+      const accessAuth = record(access?.["https://api.openai.com/auth"]);
+      const principal = (auth: Record<string, unknown> | null): string | null => {
+        if (!auth) return null;
+        const user = auth.chatgpt_user_id ?? auth.user_id;
+        if (!text(user) || (auth.chatgpt_user_id !== undefined && auth.user_id !== undefined && auth.chatgpt_user_id !== auth.user_id)) return null;
+        return user;
+      };
+      const idUser = principal(idAuth), accessUser = principal(accessAuth);
+      const idAudience = audience(id?.aud), accessAudience = audience(access?.aud);
+      if (auth && tokens && id && access && idAuth && accessAuth &&
+          (auth.auth_mode === undefined || auth.auth_mode === "chatgpt") &&
+          !auth.OPENAI_API_KEY && text(tokens.account_id) && text(tokens.refresh_token) &&
+          id.iss === "https://auth.openai.com" && access.iss === id.iss &&
+          text(id.sub) && access.sub === id.sub && idAudience && accessAudience &&
+          idAuth.chatgpt_account_id === tokens.account_id && accessAuth.chatgpt_account_id === tokens.account_id &&
+          idUser !== null && accessUser === idUser &&
+          (idAuth.chatgpt_account_user_id === undefined || text(idAuth.chatgpt_account_user_id)) &&
+          (accessAuth.chatgpt_account_user_id === undefined || text(accessAuth.chatgpt_account_user_id)) &&
+          (idAuth.chatgpt_account_user_id === undefined || accessAuth.chatgpt_account_user_id === undefined || idAuth.chatgpt_account_user_id === accessAuth.chatgpt_account_user_id) &&
+          (access.scope === undefined || typeof access.scope === "string") &&
+          (access.scp === undefined || (Array.isArray(access.scp) && access.scp.every(text)))) {
+        // Rotating tokens and token timestamps do not change the provider principal.
+        // Unknown root/token configuration still partitions sessions conservatively.
+        const { tokens: _tokens, last_refresh: _refresh, ...authConfig } = auth;
+        const { id_token: _id, access_token: _access, refresh_token: _token, ...tokenConfig } = tokens;
+        identityMaterial = canonicalJson({
+          kind: "codex-account-principal-v1", authConfig, tokenConfig,
+          issuer: id.iss, subject: id.sub, accountId: tokens.account_id,
+          userId: idUser, idAudience, accessAudience,
+          accountUserId: accessAuth.chatgpt_account_user_id ?? idAuth.chatgpt_account_user_id ?? null,
+          scope: typeof access.scope === "string" ? [...new Set(access.scope.split(/\s+/).filter(Boolean))].sort() : null,
+          scp: Array.isArray(access.scp) ? [...new Set(access.scp)].sort() : null,
+        });
+      }
+    } catch {
+      // Opaque, malformed or unprovable identity retains credential-change invalidation.
+    }
+  }
+  return createHash("sha256").update(identityMaterial).digest("hex").slice(0, 16);
+}
+
+export function managedAiCredentialIdentityMatches(
+  stored: unknown,
+  runtime: { identity: string; legacyCredentialIdentity?: string },
+): boolean {
+  return typeof stored === "string" &&
+    (stored === runtime.identity || stored === runtime.legacyCredentialIdentity);
 }
 
 export async function prepareManagedAiRuntime(
@@ -315,11 +404,12 @@ export async function prepareManagedAiRuntime(
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
     }
-    const generation = createHash("sha256")
-      .update(value)
-      .digest("hex")
-      .slice(0, 16);
-    const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}`;
+    const generation = managedAiCredentialGeneration(input.binding.provider, input.binding.method, value);
+    const identityPrefix = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:`;
+    const identity = `${identityPrefix}${generation}`;
+    // Recognize only the old algorithm for these exact current credential bytes.
+    // An older credential, account, grant or responsible user gets no exemption.
+    const legacyIdentity = `${identityPrefix}${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
     return {
       config: {
         ...input.config,
@@ -330,6 +420,7 @@ export async function prepareManagedAiRuntime(
       accountName: selection.connection.name,
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,
+      legacyCredentialIdentity: legacyIdentity === identity ? undefined : legacyIdentity,
       cleanup: async () => {
         try {
           if (subscriptionFile) {

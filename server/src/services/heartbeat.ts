@@ -9,7 +9,7 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS, managedAiSessionFingerprintConfig } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS, managedAiSessionFingerprintConfig, managedAiCredentialIdentityMatches } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -6403,6 +6403,8 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
   runtimeSkills: unknown;
   agentConfigRevision?: unknown;
+  /** Host-derived old identity for the exact current managed credential only. */
+  managedAiLegacyCredentialIdentity?: string;
 }): Promise<EffectiveRunSessionConfigMetadata> {
   const secretManifest = input.secretManifest ?? [];
   const instructions = await resolveInstructionsConfigFingerprintMetadata(
@@ -6462,6 +6464,15 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
         readPaperclipSkillSyncPreference(categoryValues.adapterConfig).desiredSkillEntries),
       paperclipConnectorSkillDigest: null,
     });
+  }
+  if (input.managedAiLegacyCredentialIdentity) {
+    for (const adapterConfig of [...adapterVariants]) {
+      const managed = parseObject(adapterConfig.managedAiConnection);
+      if (typeof managed.identity !== "string") continue;
+      adapterVariants.push({ ...adapterConfig, managedAiConnection: {
+        ...managed, identity: input.managedAiLegacyCredentialIdentity,
+      } });
+    }
   }
   const compatibleFingerprints = [...new Set(
     [categoryValues.workspaceConfig, ...legacyWorkspaceVariants].flatMap((workspaceConfig) =>
@@ -20856,7 +20867,7 @@ export function heartbeatService(
               fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
           });
         }
-        if (persistedNativeExecutionInput && parseObject(run.contextSnapshot?.aiConnection).identity !== managedAiRuntime.identity) {
+        if (persistedNativeExecutionInput && !managedAiCredentialIdentityMatches(parseObject(run.contextSnapshot?.aiConnection).identity, managedAiRuntime)) {
           throw new ConfigurationIncompleteFailure("The AI account changed while this native run was suspended. Start a new execution.", { configurationIncomplete: { reason: "ai_connection_changed", actionUrl: `/agents/${agent.id}/runtime` } });
         }
         Object.assign(resolvedConfig, managedAiRuntime.config);
@@ -20927,6 +20938,7 @@ export function heartbeatService(
         await measureSandboxOperation("heartbeat.build_effective_run_session_config_metadata", { operationIndex: 61 }, async () => (buildEffectiveRunSessionConfigMetadata({
           adapterType: agent.adapterType,
           effectiveAdapterConfig: managedAiSessionFingerprintConfig(runtimeConfig, managedAiRuntime),
+          managedAiLegacyCredentialIdentity: managedAiRuntime?.legacyCredentialIdentity,
           agentRuntimeConfig: agent.runtimeConfig,
           issueOverrides: issueAssigneeOverrides,
           workspaceConfig: {
@@ -22227,7 +22239,7 @@ export function heartbeatService(
 
       if (managedAiRuntime) {
         sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
-        if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
+        if (!managedAiCredentialIdentityMatches(taskSessionDecodedParams?.paperclipAiCredentialIdentity, managedAiRuntime)) {
           runtimeSessionIdForAdapter = null;
           runtimeSessionParamsForAdapter = null;
           previousSessionDisplayId = null;
@@ -22742,7 +22754,7 @@ export function heartbeatService(
                   })(),
                 })));
           const taskSessionIdentityChanged = Boolean(sandboxWorkFolders?.identityChanged
-            || (managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity));
+            || (managedAiRuntime && !managedAiCredentialIdentityMatches(taskSessionDecodedParams?.paperclipAiCredentialIdentity, managedAiRuntime)));
           const taskNativeSessionId = taskSessionIdentityChanged ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
