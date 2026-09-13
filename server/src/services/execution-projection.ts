@@ -184,6 +184,16 @@ export function projectExecution(
   if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
     projection.cause = recoveryAction.cause;
     projection.nextAction = recoveryAction.nextAction;
+    const continuation = recoveryAction.evidence.explicitUserContinuation as
+      { previousRunId?: unknown; runId?: unknown } | undefined;
+    const explicitSuccessor = text(continuation?.runId);
+    if (continuation?.previousRunId === run.id && explicitSuccessor && explicitSuccessor !== run.id) {
+      // The admission transaction already recorded the user's successor. Keep
+      // the old failure diagnostic without making it hold the newer attempt.
+      projection.successorRunId = explicitSuccessor;
+      projection.nextAction = null;
+      return set("completed", "Continued in another run");
+    }
     // Diagnostic projection only: no user decision or replay affordance.
     return set("recovery_needed", "Stopped");
   }
