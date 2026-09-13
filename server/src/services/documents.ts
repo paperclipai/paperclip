@@ -499,7 +499,7 @@ export function documentService(db: Db) {
           };
           });
         } catch (error) {
-          if (isUniqueViolation(error)) {
+          if (isUniqueViolation(error, "issue_documents_company_issue_key_uq")) {
             if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
               continue;
             }

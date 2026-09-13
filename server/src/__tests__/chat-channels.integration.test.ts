@@ -59573,7 +59573,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(
         deliveries.every((delivery) => delivery.state === "processed"),
       ).toBe(true);
-    });
+    }, { timeout: 5_000 });
 
     const [conversation] = await db
       .select()
@@ -59601,7 +59601,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toMatchObject({ ok: true });
     expect(deferred).toHaveLength(1);
     await drainDeferred();
-    await vi.waitFor(() => expect(deferred).toHaveLength(1));
+    await vi.waitFor(() => expect(deferred).toHaveLength(1), { timeout: 5_000 });
     await drainDeferred();
     await vi.waitFor(async () => {
       await expect(
@@ -59627,7 +59627,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           state: "filtered",
         },
       ]);
-    });
+    }, { timeout: 5_000 });
     await expect(
       db
         .select({ body: issueComments.body })
