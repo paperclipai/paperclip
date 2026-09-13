@@ -118,6 +118,8 @@ const mockTelemetryClient = vi.hoisted(() => ({
 }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
+const mockDetachNativeSessionsForRestart = vi.hoisted(() => vi.fn());
+const mockCloseIdleWarmNativeSessionsForRestart = vi.hoisted(() => vi.fn());
 const mockRetainedNativeCleanup = vi.hoisted(() =>
   vi.fn<
     typeof import("../services/native-runtime/native-session-executor.js").reconcileRetainedNativeSessionCleanup
@@ -154,10 +156,14 @@ vi.mock("../services/native-runtime/native-session-executor.js", async () => {
   mockExecutePaperclipNativeSession.mockImplementation(
     actual.executePaperclipNativeSession,
   );
+  mockDetachNativeSessionsForRestart.mockImplementation(actual.detachNativeSessionsForRestart);
+  mockCloseIdleWarmNativeSessionsForRestart.mockImplementation(actual.closeIdleWarmNativeSessionsForRestart);
   return {
     ...actual,
     reconcileRetainedNativeSessionCleanup: mockRetainedNativeCleanup,
     executePaperclipNativeSession: mockExecutePaperclipNativeSession,
+    detachNativeSessionsForRestart: mockDetachNativeSessionsForRestart,
+    closeIdleWarmNativeSessionsForRestart: mockCloseIdleWarmNativeSessionsForRestart,
   };
 });
 
@@ -2932,6 +2938,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("checkpoints idle warm sessions even when no hot restart was requested", async () => {
+    await withTempPaperclipHome(async () => {
+      mockCloseIdleWarmNativeSessionsForRestart.mockClear();
+      const heartbeat = heartbeatService(db);
+      await expect(heartbeat.prepareHotRestartShutdown("SIGTERM")).resolves.toMatchObject({ mode: "not_requested" });
+      expect(mockCloseIdleWarmNativeSessionsForRestart).toHaveBeenCalledOnce();
+    });
+  });
+
   it("captures a hot-restart shutdown snapshot without interrupting running runs", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -2954,6 +2969,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
       const heartbeat = heartbeatService(db);
 
+      mockCloseIdleWarmNativeSessionsForRestart.mockClear();
       const result = await heartbeat.prepareHotRestartShutdown(
         "SIGTERM",
         new Date("2026-03-19T00:06:00.000Z"),
@@ -2964,6 +2980,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         skipDrain: true,
         activeRunIds: [runId],
       });
+      expect(mockCloseIdleWarmNativeSessionsForRestart).toHaveBeenCalledOnce();
       expect(isPidAlive(child.pid)).toBe(true);
       const run = await db
         .select()
@@ -3748,6 +3765,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryRunIds: [],
       restartSuspendedRunIds: [runId],
     });
+    expect(mockDetachNativeSessionsForRestart).toHaveBeenCalledWith([runId]);
     await expect(
       db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
     ).resolves.toEqual([
@@ -13529,8 +13547,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { ...fixture, commentId, contractId, summary };
   }
 
-  it("commits a native passive Board response without manufacturing immediate work", async () => {
+  it.each(["issue_commented", "issue_reopened_via_comment"])("commits a native passive Board response without manufacturing immediate work (%s)", async (reason) => {
     const fixture = await seedNativePassiveBoardResponse();
+    await db.update(agentWakeupRequests).set({ reason }).where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -14015,6 +14034,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     "source_delete",
     "different_user",
     "wake_actor",
+    "wake_reason",
     "wake_run",
     "native_issue",
     "new_comment",
@@ -14027,6 +14047,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(
         await readNativeBoardResponseWaitSource(db, fixture),
       ).not.toBeNull();
+      if (change === "wake_reason")
+        await db.update(agentWakeupRequests).set({ reason: "issue_continuation_needed" }).where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
       if (change === "source_edit")
         await db
           .update(issueComments)
