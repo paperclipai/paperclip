@@ -342,6 +342,9 @@ export async function buildExecutionContinuation(input: {
         status: row.status,
         result: row.result,
       })),
+    // Low-trust evidence only: renderPaperclipWakePrompt removes completedWork
+    // from requestContext and encodes it in the fenced, non-authoritative
+    // continuation-evidence section. It cannot supply objective or authority.
     completedWork: input.summary ??
       string(object(object(sourceRun?.result).nativeResult).summary)?.slice(0, 32_000) ??
       string(object(sourceRun?.result).summary)?.slice(0, 32_000) ?? null,
