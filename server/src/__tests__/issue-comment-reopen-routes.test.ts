@@ -546,6 +546,7 @@ describe.sequential("issue comment reopen routes", () => {
       .patch(`/api/issues/${issue.id}`)
       .send({
         comment: "Inspect the file",
+        commentClientRequestId: "77777777-7777-4777-8777-777777777777",
         attachmentIds: [id],
         assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       });
@@ -561,7 +562,7 @@ describe.sequential("issue comment reopen routes", () => {
       issue.id,
       "Inspect the file",
       expect.anything(),
-      expect.objectContaining({ attachmentIds: [id] }),
+      expect.objectContaining({ attachmentIds: [id], clientRequestId: "77777777-7777-4777-8777-777777777777" }),
       mockTx,
     );
   });

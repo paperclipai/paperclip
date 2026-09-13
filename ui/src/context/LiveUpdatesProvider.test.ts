@@ -16,6 +16,17 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it.each(["issue.attachment_added", "issue.attachment_removed", "issue.work_product_created", "issue.work_product_updated"])("refreshes visible delivered files for %s", action => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.issues.detail("issue-1"), { id: "issue-1", companyId: "company-1", identifier: "PAP-1" });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "issue-1", actorType: "agent", actorId: "agent-1", action,
+    }, { userId: "user-1", agentId: null }, { pathname: "/PAP/issues/PAP-1", isForegrounded: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.attachments("issue-1") });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.workProducts("issue-1") });
+    client.clear();
+  });
   it("connects trusted local boards without admitting signed-out authenticated users", () => {
     const canConnect = __liveUpdatesTestUtils.canUseLiveSession;
     expect(canConnect("success", false, "local_trusted")).toBe(true);

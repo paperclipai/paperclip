@@ -587,6 +587,9 @@ describe("ACPX installation integrity", () => {
       );
       await (await installation.openCommand()).close();
     },
+    // This hashes the real installed SDK tree and competes with the complete
+    // package suite for filesystem I/O; the small fixture tests keep the default.
+    30_000,
   );
 
   it.runIf(process.platform === "linux" && process.arch === "x64")(
