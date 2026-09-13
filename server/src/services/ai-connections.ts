@@ -6,6 +6,7 @@ import {
   authUsers,
   adapterAuthSessions,
   aiConnectionDefaults,
+  aiProviderDefaults,
   agents,
   companyMemberships,
   companySecrets,
@@ -94,11 +95,11 @@ export function aiConnectionService(db: Db) {
         rows(companyId),
         db
           .select()
-          .from(aiConnectionDefaults)
+          .from(aiProviderDefaults)
           .where(
             and(
-              eq(aiConnectionDefaults.companyId, companyId),
-              eq(aiConnectionDefaults.userId, userId),
+              eq(aiProviderDefaults.companyId, companyId),
+              eq(aiProviderDefaults.userId, userId),
             ),
           ),
         db
@@ -192,16 +193,17 @@ export function aiConnectionService(db: Db) {
       const metadata = aiConnectionMetadataSchema.parse(
         row.connection.config.ai,
       );
-      await tx
-        .insert(aiConnectionDefaults)
+      // Keep old servers' method preferences intact during an additive rollout.
+      await tx.insert(aiConnectionDefaults)
         .values({ companyId, userId, ...metadata, grantId })
         .onConflictDoUpdate({
-          target: [
-            aiConnectionDefaults.companyId,
-            aiConnectionDefaults.userId,
-            aiConnectionDefaults.provider,
-            aiConnectionDefaults.method,
-          ],
+          target: [aiConnectionDefaults.companyId, aiConnectionDefaults.userId, aiConnectionDefaults.provider, aiConnectionDefaults.method],
+          set: { grantId, updatedAt: new Date() },
+        });
+      await tx.insert(aiProviderDefaults)
+        .values({ companyId, userId, provider: metadata.provider, grantId })
+        .onConflictDoUpdate({
+          target: [aiProviderDefaults.companyId, aiProviderDefaults.userId, aiProviderDefaults.provider],
           set: { grantId, updatedAt: new Date() },
         });
     });
@@ -245,13 +247,12 @@ export function aiConnectionService(db: Db) {
         ? (
             await db
               .select()
-              .from(aiConnectionDefaults)
+              .from(aiProviderDefaults)
               .where(
                 and(
-                  eq(aiConnectionDefaults.companyId, companyId),
-                  eq(aiConnectionDefaults.userId, userId!),
-                  eq(aiConnectionDefaults.provider, binding.provider),
-                  eq(aiConnectionDefaults.method, binding.method),
+                  eq(aiProviderDefaults.companyId, companyId),
+                  eq(aiProviderDefaults.userId, userId!),
+                  eq(aiProviderDefaults.provider, binding.provider),
                 ),
               )
               .limit(1)
@@ -281,7 +282,8 @@ export function aiConnectionService(db: Db) {
     if (
       !metadata.success ||
       metadata.data.provider !== binding.provider ||
-      metadata.data.method !== binding.method
+      (binding.mode !== "responsible_user" && metadata.data.method !== binding.method) ||
+      !isAiConnectionCompatible(metadata.data, input.adapterType, input.model, input.runnerProvider, input.acpxAgent)
     )
       throw unprocessable("The selected AI connection is incompatible", {
         code: "ai_connection_incompatible",
@@ -365,7 +367,7 @@ export function aiConnectionService(db: Db) {
         connectionId: connection.id,
         grantId: grant.id,
         provider: binding.provider,
-        method: binding.method,
+        method: metadata.data.method,
         mode: binding.mode,
         responsibleUserId: userId,
       } satisfies AiConnectionAttribution,
@@ -711,7 +713,7 @@ export function aiConnectionService(db: Db) {
         .from(toolConnections)
         .where(eq(toolConnections.id, id));
       await syncConnectionCredentialBindings(tx, savedConnection, refs);
-      if (input.ownership === "personal")
+      if (input.ownership === "personal") {
         await tx
           .insert(aiConnectionDefaults)
           .values({
@@ -722,6 +724,8 @@ export function aiConnectionService(db: Db) {
             grantId,
           })
           .onConflictDoNothing();
+        await tx.insert(aiProviderDefaults).values({ companyId, userId, provider: input.provider, grantId }).onConflictDoNothing();
+      }
       if (!reconnect) {
         const installs = input.allAgents
           ? [{ targetType: "company" as const, targetId: companyId }]

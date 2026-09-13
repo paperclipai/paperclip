@@ -33,9 +33,9 @@ not change agent execution settings.
 API keys are validated against fixed provider endpoints; redirects
 and caller-supplied validation URLs are rejected.
 
-`runtimeConfig.aiConnection` contains `provider`, `method`, and `mode`:
+`runtimeConfig.aiConnection` contains `provider` and `mode`; explicit selections also require `method`:
 
-- `responsible_user`: resolve the run's responsible user's personal default.
+- `responsible_user`: resolve the run's responsible user's personal provider default, using that account's subscription or API key. Older bindings may include `method`; it does not restrict the responsible user's account.
 - `shared`: use the named `connectionId` and `grantId`, with audience and agent
   access checks.
 - `delegated`: retained only to read legacy bindings. It cannot bypass human
@@ -52,8 +52,10 @@ A connection choice never changes the harness, model, or provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
 
-Personal defaults are unique per company, user, provider, and sign-in method.
+Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 The first successful personal connection sets a default only when none exists.
+The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. Writes maintain the legacy table for older servers.
+
 Revocation retains the unavailable default; connecting another account does not
 silently replace it. Change it explicitly on the account detail page.
 
@@ -62,7 +64,7 @@ silently replace it. Change it explicitly on the account detail page.
 AI connections pair `connectionPurpose: ai` with `transport: runtime_auth`.
 Database checks and the shared discriminator enforce the pair. These entries
 cannot participate in tool discovery, MCP gateways, execution, or channels.
-Anthropic retains its existing tool methods alongside its AI methods. Catalog
+Anthropic offers Claude subscription and Claude API key; the unsupported duplicate REST API option is excluded. Catalog
 validation also pairs AI metadata with runtime authentication and rejects unsupported
 sign-in methods. Provider artwork and source provenance live in
 `ui/public/brands/apps/manifest.json`; OpenRouter uses its official sign-in assets,

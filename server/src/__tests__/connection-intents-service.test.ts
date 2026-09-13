@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
-  aiConnectionDefaults,
+  aiProviderDefaults,
   agentWakeupRequests,
   issueComments,
   companies,
@@ -798,14 +798,14 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const aiRunId = randomUUID();
-    const binding = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
+    const binding = { provider: "anthropic", method: "subscription", mode: "responsible_user" } as const;
     await db.insert(agents).values({ id: agentId, companyId, name: "AI Agent", adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
     await db.insert(issues).values({ id: issueId, companyId, title: "AI authentication", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
     const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: "ai-intent-fixture", name: "AI intent fixture", type: "mcp_http", metadata: { sourceTemplateKey: "anthropic" } }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, name: "Personal Claude API", uid: `ai-${randomUUID()}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "anthropic", ai: { provider: "anthropic", method: "api_key" } } }).returning();
     const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, createdByUserId: claims.responsible_user_id }).returning();
-    await db.insert(aiConnectionDefaults).values({ companyId, userId: claims.responsible_user_id!, provider: "anthropic", method: "api_key", grantId: grant!.id });
+    await db.insert(aiProviderDefaults).values({ companyId, userId: claims.responsible_user_id!, provider: "anthropic", grantId: grant!.id });
     const aiClaims = { ...claims, sub: agentId, run_id: aiRunId };
     const service = connectionIntentService(db);
     await expect(service.request(aiClaims, "anthropic")).rejects.toMatchObject({
@@ -835,6 +835,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(aiRequest.state).toBe("needs_user_action");
     expect(aiRequest.interactionId).not.toBe(toolRequest.id);
     expect((await service.setupOptions(aiRequest.interactionId!)).aiConnection).toEqual(binding);
+    expect((await service.setupOptions(aiRequest.interactionId!)).aiRepair?.connection).toMatchObject({ id: connection!.id, method: "api_key" });
     expect((await service.setupOptions(toolRequest.id)).existingConnections).toEqual([]);
     await expect(service.complete(toolRequest.id, connection!.id, claims.responsible_user_id!)).rejects.toThrow("cannot satisfy");
     await expect(service.complete(aiRequest.interactionId!, connection!.id, claims.responsible_user_id!)).resolves.toMatchObject({ status: "accepted" });

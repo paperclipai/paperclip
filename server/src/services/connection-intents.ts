@@ -483,7 +483,7 @@ export function connectionIntentService(db: Db) {
     }) : null;
     const aiAccounts = managed ? await aiConnectionService(db).list(loaded.issue.companyId, loaded.interaction.addresseeUserId!) : [];
     const selectedAiAccount = managed ? aiAccounts.find((account) =>
-      account.provider === managed.binding.provider && account.method === managed.binding.method
+      account.provider === managed.binding.provider && (managed.binding.mode === "responsible_user" || account.method === managed.binding.method)
       && (managed.binding.mode === "responsible_user" ? account.isDefault
         : account.id === managed.binding.connectionId && account.grantId === managed.binding.grantId)
     ) : undefined;

@@ -443,7 +443,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   // credential is entered.
   // -------------------------------------------------------------------------
 
-  it("offers supported Anthropic AI authentication without the obsolete REST tool method", async () => {
+  it.each([false, true])("offers both Anthropic methods without the obsolete REST option (task repair: %s)", async (taskRepair) => {
     const createAiAccount = vi.spyOn(aiConnectionsApi, "create").mockResolvedValue({
       connectionId: "anthropic-ai-account", grantId: "anthropic-ai-grant",
     });
@@ -460,7 +460,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     client.setQueryData(queryKeys.instance.settings, { defaultEnvironmentId: "local-env" });
     client.setQueryData(queryKeys.instance.generalSettings, {});
     client.setQueryData(queryKeys.health, { deploymentMode: "authenticated", localAiLoginSupported: false });
-    await render(client);
+    await render(client, false, taskRepair ? <ConnectionSetupFlow host="dialog" serviceSlug="anthropic" interactionId="ai-intent" requestedAgentId="agent-1" aiConnection={{ provider: "anthropic", method: "subscription", mode: "responsible_user" }} /> : undefined);
     await passAccessStep();
     expect(container.textContent).toContain("Connect account");
     expect(container.textContent).toContain("Connection name");
@@ -478,7 +478,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(createAiAccount).toHaveBeenCalledWith("company-1", expect.objectContaining({
       provider: "anthropic", method: "api_key", apiKey: "fixture-anthropic-ai-key",
     }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/anthropic-ai-account/permissions");
+    if (!taskRepair) expect(mockNavigate).toHaveBeenCalledWith("/apps/anthropic-ai-account/permissions");
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Connect for tool access instead");
   });

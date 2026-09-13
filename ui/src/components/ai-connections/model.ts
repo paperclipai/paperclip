@@ -30,7 +30,7 @@ export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> 
 export interface AiConnectionRequirement {
   companyId: string;
   provider: AiProvider;
-  method: AiAuthMethod;
+  method?: AiAuthMethod;
 }
 
 export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
@@ -53,7 +53,7 @@ export function matchesAiRequirement(
   return (
     connection.companyId === requirement.companyId &&
     connection.provider === requirement.provider &&
-    connection.method === requirement.method
+    (requirement.method === undefined || connection.method === requirement.method)
   );
 }
 
@@ -65,7 +65,7 @@ export function personalAiDefault(
   // Never choose another account because the declared default is unhealthy.
   return connections.find(
     (connection) =>
-      matchesAiRequirement(connection, requirement) &&
+      matchesAiRequirement(connection, { ...requirement, method: undefined }) &&
       connection.ownership === "personal" &&
       connection.ownerUserId === userId &&
       connection.isDefault,
@@ -92,7 +92,7 @@ export function bindingProblem(
 ) {
   if (
     binding.provider !== requirement.provider ||
-    binding.method !== requirement.method
+    (binding.mode !== "responsible_user" && requirement.method !== undefined && binding.method !== requirement.method)
   )
     return "Choose a connection compatible with this provider and sign-in method.";
   if (binding.mode === "responsible_user")
@@ -103,6 +103,7 @@ export function bindingProblem(
     (item) =>
       item.id === binding.connectionId &&
       item.grantId === binding.grantId &&
+      item.method === binding.method &&
       matchesAiRequirement(item, requirement),
   );
   if (!connection)

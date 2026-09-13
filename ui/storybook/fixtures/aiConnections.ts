@@ -4,16 +4,16 @@ import type {
   AiConnectionSummary,
 } from "@/components/ai-connections/model";
 
-export const AI_REVIEW_REQUIREMENT: AiConnectionRequirement = {
+export const AI_REVIEW_REQUIREMENT = {
   companyId: "ai-review-company",
   provider: "anthropic",
   method: "subscription",
-};
-export const AI_REVIEW_BINDING: AiConnectionBinding = {
+} satisfies AiConnectionRequirement;
+export const AI_REVIEW_BINDING = {
   provider: "anthropic",
   method: "subscription",
   mode: "responsible_user",
-};
+} satisfies AiConnectionBinding;
 export const AI_REVIEW_CONNECTIONS: AiConnectionSummary[] = [
   {
     id: "claude-dotta",

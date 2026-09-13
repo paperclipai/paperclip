@@ -389,7 +389,7 @@ describe("AgentProviderConnection reuse", () => {
     openProvider();
     expect(host.querySelector('select[aria-label="Saved subscription"]')?.textContent).toContain("My subscription (Your default)");
     click("Use saved subscription");
-    await vi.waitFor(() => expect(connected).toHaveBeenCalledWith({ env: {}, aiConnection: { provider, method: "subscription", mode: "responsible_user" } }));
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledWith({ env: {}, aiConnection: { provider, mode: "responsible_user" } }));
     expect(managedApi.create).not.toHaveBeenCalled();
     flushSync(() => {
       const select = host.querySelector("select")!;

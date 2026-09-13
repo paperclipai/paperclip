@@ -54,13 +54,13 @@ export function useSavedProviderKeys(
   });
   return {
     storedLogin,
-    options: [...managedAccounts.filter(account => account.aiConnection?.method === "api_key"), ...savedProviderKeys(
+    options: [...managedAccounts.filter(account => account.method === "api_key"), ...savedProviderKeys(
       companyId ?? "",
       envKey,
       personal.data ?? [],
       organization.data ?? [],
     )],
-    subscriptions: [...managedAccounts.filter(account => account.aiConnection?.method === "subscription"), ...(provider === "openai" ? savedCodexSubscriptions(
+    subscriptions: [...managedAccounts.filter(account => account.method === "subscription"), ...(provider === "openai" ? savedCodexSubscriptions(
       companyId ?? "",
       organization.data ?? [],
     ) : [])],

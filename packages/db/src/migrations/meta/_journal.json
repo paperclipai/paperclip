@@ -1926,6 +1926,13 @@
       "when": 1789245055965,
       "tag": "0276_hard_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 277,
+      "version": "7",
+      "when": 1789260211664,
+      "tag": "0277_uneven_lady_deathstrike",
+      "breakpoints": true
     }
   ]
 }

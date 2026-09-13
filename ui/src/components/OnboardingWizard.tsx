@@ -1739,7 +1739,7 @@ function OnboardingWizardInner({
     try {
       if (managedProvider) {
         await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
-        apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
+        apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, mode: "responsible_user" } };
         return true;
       }
       const stored = await storeProviderApiKey(companyId, envKey, key);
@@ -2027,7 +2027,7 @@ function OnboardingWizardInner({
       }
       if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
         await localLogin.connect();
-        managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
+        managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, mode: "responsible_user" } };
       }
       const managedBinding = managedBindingForStep();
       const baseAdapterConfig = buildAdapterConfig(apiKeyStored);
@@ -2751,7 +2751,7 @@ function OnboardingWizardInner({
                           );
                         }}
                         onConnected={() => {
-                          if (managedProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
+                          if (managedProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, mode: "responsible_user" } };
                           setConnectAuthUrl(null);
                           // Not into a card the customer has left. The panel is
                           // still mounted through Back's exit, and a login that

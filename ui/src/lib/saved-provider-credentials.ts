@@ -1,7 +1,7 @@
-import type { AiConnectionBinding, AiManagedConnectionSummary, AiProvider, CompanySecret, EnvBinding } from "@paperclipai/shared";
+import type { AiAuthMethod, AiConnectionBinding, AiManagedConnectionSummary, AiProvider, CompanySecret, EnvBinding } from "@paperclipai/shared";
 import type { MyUserSecretEntry } from "../api/secrets";
 
-export type SavedProviderKey = { id: string; label: string } & (
+export type SavedProviderKey = { id: string; label: string; method?: AiAuthMethod } & (
   | { binding: EnvBinding; aiConnection?: never }
   | { binding?: never; aiConnection: AiConnectionBinding }
 );
@@ -13,10 +13,10 @@ export function savedManagedProviderAccounts(
   return connections.flatMap<SavedProviderKey>((account) => {
     if (account.companyId !== companyId || account.provider !== provider || account.status !== "connected") return [];
     if (account.ownership === "personal" && account.ownerUserId === currentUserId && account.isDefault) {
-      return [{ id: `ai:${account.grantId}`, label: `${account.name} (Your default)`, aiConnection: { provider, method: account.method, mode: "responsible_user" as const } }];
+      return [{ id: `ai:${account.grantId}`, label: `${account.name} (Your default)`, method: account.method, aiConnection: { provider, mode: "responsible_user" as const } }];
     }
     if (account.ownership === "shared") {
-      return [{ id: `ai:${account.grantId}`, label: `${account.name} (Company shared)`, aiConnection: { provider, method: account.method, mode: "shared" as const, connectionId: account.id, grantId: account.grantId } }];
+      return [{ id: `ai:${account.grantId}`, label: `${account.name} (Company shared)`, method: account.method, aiConnection: { provider, method: account.method, mode: "shared" as const, connectionId: account.id, grantId: account.grantId } }];
     }
     return [];
   });

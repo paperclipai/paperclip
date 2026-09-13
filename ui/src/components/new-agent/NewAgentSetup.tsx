@@ -145,7 +145,7 @@ function Setup({
   );
   const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(() =>
     brandType === "opencode_local"
-      ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
+      ? { provider: "openrouter", mode: "responsible_user" }
       : undefined,
   );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
