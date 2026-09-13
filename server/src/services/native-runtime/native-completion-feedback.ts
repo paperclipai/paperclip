@@ -1,3 +1,4 @@
+import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { issueService } from "../issues.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
@@ -61,6 +62,7 @@ export async function nativeCompletionFeedback(
   if (issue.executionRunId && issue.executionRunId !== runId) {
     return "Report accepted; a newer run owns the task. Do not claim this report changed its status.";
   }
+  await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id }, result);
   const retiredCandidates = await findAutomaticCompletionReviews(db, issue.id);
   const retiredIds = retiredCandidates.map(({ interaction }) => interaction.id);
   const [interaction, approval] = await Promise.all([

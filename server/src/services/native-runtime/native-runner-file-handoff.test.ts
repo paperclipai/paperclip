@@ -1,3 +1,5 @@
+import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
+import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -14,7 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   activityLog,
@@ -116,6 +118,7 @@ describe("native runner file handoff", () => {
     overrides: Partial<{
       companyId: string;
       executionTargetKind: "local" | "remote";
+      readRemoteWorkspaceFile: (input: { contentRef: string; byteSize: number; sha256: string }) => Promise<Buffer>;
     }> = {},
   ) {
     return new PaperclipRunnerToolAuthority(db, {
@@ -125,6 +128,7 @@ describe("native runner file handoff", () => {
       runId,
       workspaceRoot,
       executionTargetKind: overrides.executionTargetKind ?? "local",
+      readRemoteWorkspaceFile: overrides.readRemoteWorkspaceFile,
       storage: createStorageService(
         createLocalDiskStorageProvider(storageRoot),
       ),
@@ -179,6 +183,28 @@ describe("native runner file handoff", () => {
     return { attachment, comment, stored };
   }
 
+  function doneReport(refs: string[]): PrpStructuredRunResult {
+    return {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "done",
+      summary: "Created the requested checklist.",
+      completionClaim: { contractRevision: "test", objectiveSatisfied: true, criteria: [], remainingWork: [] },
+      evidence: refs.map((ref) => ({ ref })),
+      verification: [], attentionRequests: [], artifacts: [],
+    };
+  }
+
+  it("rejects a workspace-only file completion and invented delivery receipts without asking the user to approve completion", async () => {
+    for (const ref of ["launch-checklist.md", "./out/report.pdf", "/workspace/answer.txt", "file:out/report.csv", "deliverable:00000000-0000-4000-8000-000000000001"]) {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([ref])))
+        .rejects.toThrow(/register_deliverable|registered attachment/);
+    }
+    await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+      .resolves.toContain("Completion report accepted");
+    await expect(nativeCompletionFeedback(db, runId, doneReport(["https://example.com/report.pdf"])))
+      .resolves.toContain("Completion report accepted");
+  });
+
   it("prepares one verified same-run attachment and replays without duplicates", async () => {
     const body = Buffer.from("native runner file handoff\n", "utf8");
     await mkdir(path.join(workspaceRoot, "out"), { recursive: true });
@@ -227,6 +253,19 @@ describe("native runner file handoff", () => {
       disposition: "duplicate",
       entityRefs: first.entityRefs,
     });
+
+    await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+      .resolves.toContain("Completion report accepted");
+    const otherIssueId = "00000000-0000-4000-8000-000000009111";
+    await db.insert(issues).values({ id: otherIssueId, companyId, title: "Unrelated file", status: "in_progress" });
+    await db.update(issueAttachments).set({ issueId: otherIssueId }).where(eq(issueAttachments.id, first.entityRefs[0]));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+        .rejects.toThrow("registered attachment on this task");
+    } finally {
+      await db.update(issueAttachments).set({ issueId }).where(eq(issueAttachments.id, first.entityRefs[0]));
+      await db.delete(issues).where(eq(issues.id, otherIssueId));
+    }
 
     const attachmentRows = await db
       .select()
@@ -351,6 +390,22 @@ describe("native runner file handoff", () => {
         callFor("checked.txt", body, "foreign-denied"),
       ),
     ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+  });
+
+  it("registers a verified remote output without reading a controller path", async () => {
+    const body = Buffer.from("Remote requested file\n");
+    const reader = vi.fn(async () => body);
+    const remote = authority({ executionTargetKind: "remote", readRemoteWorkspaceFile: reader });
+    expect(remote.definitions()).toContainEqual(expect.objectContaining({ name: "register_deliverable" }));
+    const call = callFor("remote-only/result.txt", body, "remote-output");
+    const result = await remote.execute(call) as { entityRefs: string[] };
+    expect(reader).toHaveBeenCalledWith({ contentRef: call.arguments.contentRef, byteSize: body.length, sha256: call.arguments.sha256 });
+    await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${result.entityRefs[0]}`])))
+      .resolves.toContain("Completion report accepted");
+    const badReader = vi.fn(async () => Buffer.from("wrong bytes"));
+    await expect(authority({ executionTargetKind: "remote", readRemoteWorkspaceFile: badReader })
+      .execute(callFor("remote-only/drift.txt", body, "remote-drift")))
+      .rejects.toThrow(/size|hash/);
   });
 
   it("stages only exact wake-bound inbound bytes without exposing an API credential", async () => {

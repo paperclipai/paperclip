@@ -35,6 +35,8 @@ import type { StorageService } from "../../storage/types.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { issueService } from "../issues.js";
 
+export type RemoteWorkspaceFileReader = (input: Pick<NativeRunnerFileHandoffInput, "contentRef" | "byteSize" | "sha256">) => Promise<Buffer>;
+
 export interface NativeRunnerFileHandoffBinding {
   readonly companyId: string;
   readonly issueId: string;
@@ -42,6 +44,8 @@ export interface NativeRunnerFileHandoffBinding {
   readonly agentId: string;
   readonly workspaceRoot: string;
   readonly executionTargetKind: "local" | "remote";
+  /** Server-bound reader. Never supplied by the model or a request body. */
+  readonly readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
 }
 
 export interface NativeRunnerFileHandoffInput {
@@ -286,8 +290,43 @@ async function readVerifiedWorkspaceFile(
   binding: NativeRunnerFileHandoffBinding,
   input: NativeRunnerFileHandoffInput,
 ): Promise<VerifiedWorkspaceFile> {
-  if (binding.executionTargetKind !== "local") {
-    throw new Error("paperclip_runner_file_handoff_remote_unsupported");
+  const filename = requiredText(input.filename, "filename", 500);
+  if (path.basename(filename) !== filename || filename.includes("\\")) {
+    throw new Error("paperclip_runner_file_handoff_invalid_filename");
+  }
+  const title = requiredText(input.title, "title", 500);
+  if (
+    !Number.isSafeInteger(input.byteSize) ||
+    input.byteSize <= 0 ||
+    input.byteSize > MAX_ATTACHMENT_BYTES
+  ) {
+    throw new Error("paperclip_runner_file_handoff_size_denied");
+  }
+  const expectedSha256 = input.sha256.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/u.test(expectedSha256)) {
+    throw new Error("paperclip_runner_file_handoff_invalid_sha256");
+  }
+  const contentType = normalizeUploadAttachmentContentType({
+    contentType: requiredText(input.contentType, "content_type", 200),
+    originalFilename: filename,
+    isAllowedContentType,
+  });
+  if (!isAllowedContentType(contentType)) {
+    throw new Error("paperclip_runner_file_handoff_content_type_denied");
+  }
+
+  if (binding.executionTargetKind === "remote") {
+    if (!binding.readRemoteWorkspaceFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
+    const contentRef = requiredText(input.contentRef, "content_ref", 2_000);
+    if (path.posix.isAbsolute(contentRef) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
+      || contentRef.includes("\\") || path.posix.normalize(contentRef) === ".."
+      || path.posix.normalize(contentRef).startsWith("../")) {
+      throw new Error("paperclip_runner_file_handoff_path_denied");
+    }
+    const body = await binding.readRemoteWorkspaceFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
+    if (body.length !== input.byteSize) throw new Error("paperclip_runner_file_handoff_size_denied");
+    if (createHash("sha256").update(body).digest("hex") !== expectedSha256) throw new Error("paperclip_runner_file_handoff_hash_mismatch");
+    return { body, contentType, filename, sha256: expectedSha256, title };
   }
 
   const workspaceRoot = await realpath(
@@ -313,31 +352,6 @@ async function readVerifiedWorkspaceFile(
   const canonicalCandidate = await realpath(candidate);
   if (!isWithin(workspaceRoot, canonicalCandidate)) {
     throw new Error("paperclip_runner_file_handoff_path_denied");
-  }
-
-  const filename = requiredText(input.filename, "filename", 500);
-  if (path.basename(filename) !== filename || filename.includes("\\")) {
-    throw new Error("paperclip_runner_file_handoff_invalid_filename");
-  }
-  const title = requiredText(input.title, "title", 500);
-  if (
-    !Number.isSafeInteger(input.byteSize) ||
-    input.byteSize <= 0 ||
-    input.byteSize > MAX_ATTACHMENT_BYTES
-  ) {
-    throw new Error("paperclip_runner_file_handoff_size_denied");
-  }
-  const expectedSha256 = input.sha256.trim().toLowerCase();
-  if (!/^[a-f0-9]{64}$/u.test(expectedSha256)) {
-    throw new Error("paperclip_runner_file_handoff_invalid_sha256");
-  }
-  const contentType = normalizeUploadAttachmentContentType({
-    contentType: requiredText(input.contentType, "content_type", 200),
-    originalFilename: filename,
-    isAllowedContentType,
-  });
-  if (!isAllowedContentType(contentType)) {
-    throw new Error("paperclip_runner_file_handoff_content_type_denied");
   }
 
   const handle = await open(

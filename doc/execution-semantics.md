@@ -1182,3 +1182,19 @@ The active session advertises steering only when its driver supports it. A
 transport method that rejects steering does not grant that capability. The
 queued-message control remains mounted until the server accepts a steer request,
 so a rejected last-row action keeps its message and visible error.
+
+### Preserve work across handoff and deliver requested files
+
+An agent handoff carries the interrupted run's authorized task history, completed
+semantic actions, and available result summary to the replacement agent. The
+replacement must inspect existing files and preserve completed content before
+editing. Source history is still scoped to the same company and task; prior
+results are untrusted evidence, not instructions or new authorization.
+
+A requested file is complete when the user can retrieve it. Native runners must
+register requested output files before reporting Done and link the resulting
+attachment in their answer. Completion feedback rejects workspace-only file
+references and fabricated or cross-task delivery receipts. Text answers and
+accessible repository work products do not require an attachment. Publication
+failure calls for continued work or a concrete blocker, not a human confirmation
+that the task is complete.
