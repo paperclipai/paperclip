@@ -1231,3 +1231,9 @@ An asynchronous remote signal failure, including a sandbox already removed by
 the operator, must not crash the controller. Logging that failure must also be
 contained. A rejected signal does not prove termination: existing process and
 provider monitoring still own stop acknowledgement and cleanup proof.
+
+Protocol-failure handling can begin transport cleanup before the owning runtime
+awaits it. That background invocation observes rejection immediately, including
+when a remote sandbox has already disappeared. The owner's awaited close still
+receives the original failure; containment never fabricates a successful close
+or permission to reuse an unverified execution.
