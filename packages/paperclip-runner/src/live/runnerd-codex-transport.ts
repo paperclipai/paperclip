@@ -6472,11 +6472,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#evidence.runnerExited = false;
         this.#evidence.runnerExitCode = null;
         this.#evidence.runnerSignal = null;
-        this.#evidence.runnerPid = recoveredHandle.child.pid ?? null;
-        this.#evidence.runnerProcessGroupId =
-          recoveredHandle.processGroupId ?? null;
-        this.#publish();
-
         let processSettled = false;
         const completion = recoveredHandle.completion.then(
           (result) => {
@@ -6490,6 +6485,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             return false;
           },
         );
+        try {
+          await this.#publishSpawnedProcess(recoveredHandle);
+        } catch (error) {
+          this.#failTransport(new Error(
+            `native_runner_process_ownership_failed: ${error instanceof Error ? error.message : String(error)}`,
+          ));
+          return;
+        }
+        if (this.#closed || this.#failure !== null) return;
         const authenticated = (async () => {
           while (
             !processSettled &&
