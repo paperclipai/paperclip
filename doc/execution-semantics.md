@@ -1204,6 +1204,13 @@ accessible repository work products do not require an attachment. Publication
 failure calls for continued work or a concrete blocker, not a human confirmation
 that the task is complete.
 
+For an explicit file output in the current request, an empty report, a
+verification-only reference, or an unregistered URL cannot satisfy delivery.
+The report must cite a task-scoped attachment or a registered accessible work
+product. Reading or reviewing an existing file for an inline answer does not
+require uploading that input. Ambiguous prose remains subject to the runner's
+completion contract; the server's explicit-output check is deliberately narrow.
+
 Local and remote runners use the same attachment publication contract. Remote
 files are read through the bound environment runner, with workspace confinement,
 no symlinks or hardlinks, stable file identity, a 10 MiB bound, and exact size and

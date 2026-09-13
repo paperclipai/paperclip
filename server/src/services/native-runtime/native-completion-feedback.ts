@@ -62,7 +62,10 @@ export async function nativeCompletionFeedback(
   if (issue.executionRunId && issue.executionRunId !== runId) {
     return "Report accepted; a newer run owns the task. Do not claim this report changed its status.";
   }
-  await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id }, result);
+  const continuation = run.contextSnapshot?.executionContinuation as { objective?: unknown } | undefined;
+  const objective = typeof continuation?.objective === "string"
+    ? continuation.objective : [issue.title, issue.description].filter(Boolean).join("\n");
+  await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id, objective }, result);
   const retiredCandidates = await findAutomaticCompletionReviews(db, issue.id);
   const retiredIds = retiredCandidates.map(({ interaction }) => interaction.id);
   const [interaction, approval] = await Promise.all([

@@ -200,9 +200,45 @@ describe("native runner file handoff", () => {
         .rejects.toThrow(/register_deliverable|registered attachment/);
     }
     await expect(nativeCompletionFeedback(db, runId, doneReport([])))
-      .resolves.toContain("Completion report accepted");
+      .rejects.toThrow(/requested file.*accessible|register_deliverable/);
+    await expect(nativeCompletionFeedback(db, runId, doneReport(["verification:passed"])))
+      .rejects.toThrow(/requested file.*accessible|register_deliverable/);
     await expect(nativeCompletionFeedback(db, runId, doneReport(["https://example.com/report.pdf"])))
-      .resolves.toContain("Completion report accepted");
+      .rejects.toThrow(/requested file.*accessible|register_deliverable/);
+    await db.update(issues).set({ title: "Explain how a newsletter works" }).where(eq(issues.id, issueId));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+        .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, runId, doneReport(["README.md"])))
+        .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, runId, { ...doneReport([]), artifacts: [{ ref: "unpublished.pdf" }] }))
+        .rejects.toThrow("workspace-only file");
+    } finally {
+      await db.update(issues).set({ title: "Prepare a requested file" }).where(eq(issues.id, issueId));
+    }
+  });
+
+  it("accepts a cited registered work product and respects the current request", async () => {
+    const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "artifact", provider: "external",
+      title: "Requested report", status: "ready_for_review", url: "https://example.com/report.pdf", createdByRunId: runId }).returning();
+    try {
+      for (const ref of [product.url!, `work_product:${product.id}`]) {
+        await expect(nativeCompletionFeedback(db, runId, doneReport([ref])))
+          .resolves.toContain("Completion report accepted");
+      }
+      await db.update(issueWorkProducts).set({ url: null, metadata: { resourceRef: { kind: "workspace_file", path: "report.pdf" } } }).where(eq(issueWorkProducts.id, product.id));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
+        .resolves.toContain("Completion report accepted");
+      await db.update(issueWorkProducts).set({ status: "failed" }).where(eq(issueWorkProducts.id, product.id));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
+        .rejects.toThrow("requested file has no accessible delivery evidence");
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective: "Do not create a file. Explain the result inline." } } }).where(eq(heartbeatRuns.id, runId));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+        .resolves.toContain("Completion report accepted");
+    } finally {
+      await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+    }
   });
 
   it("prepares one verified same-run attachment and replays without duplicates", async () => {
