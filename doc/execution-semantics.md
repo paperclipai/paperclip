@@ -1033,9 +1033,13 @@ Legacy finalization retries deferred input after adapter and lease cleanup.
 The scheduler also revisits bounded batches of stranded queues after restart
 or a late enqueue. Both use normal admission; an existing queued successor
 owns the next turn even before it acquires the task execution lock. A recovery
-hold or a plain operator Stop does not by itself authorize old input. The
-successor guard is scoped to the same agent so another agent's review
-participation keeps its independent recovery path.
+hold does not block an undelivered user message in a durable queue. The server
+validates the saved comment and its author, even if the queue began as a system
+wake. It can then start a fresh legacy conversation after proving the old
+process stopped. It preserves unknown action outcomes and does not replay
+comments already delivered to the failed run. A plain operator Stop still
+requires a new user action. The successor guard is scoped to the same agent so
+another agent's review participation keeps its independent recovery path.
 
 An explicit queued-message Interrupt also grants one scoped cleanup retry for
 the stopped run. Old ephemeral leases whose cleanup predates provider stop
@@ -1044,6 +1048,11 @@ resources and sandboxes owned by another lease are not rechecked this way.
 Delivery still requires the provider's verified stop receipt. Periodic queue
 retries do not gain extra cleanup attempts, and the queue displays the server's
 waiting reason while cleanup remains unresolved.
+
+The legacy task recovery notice shows “Automatic recovery of this task stopped.” in
+a bordered container with Retry for a failed or timed-out run. A failed Retry
+shows its error in the same container. New user messages and saved undelivered
+messages pass normal admission independently of automatic recovery exhaustion.
 
 ### Operator identity and permission for manual dispatch
 
