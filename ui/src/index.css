@@ -2984,6 +2984,15 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   animation: none;
 }
 
+/* Task recovery panel uses the shared spacing, radius, and type scales. */
+.execution-blocker-notice {
+  gap: calc(var(--spacing) * 2);
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
 /* The runner keeps one fixed-height activity row between commentary updates. */
 @keyframes runner-activity-roll-in {
   from { transform: translateY(100%); opacity: 0; }
