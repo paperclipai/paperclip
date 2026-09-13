@@ -6365,12 +6365,19 @@ function buildSessionConfigCategoryValues(input: {
   // boundary; the reusable row and its evolving generation are state.
   delete workspaceConfig.existingExecutionWorkspace;
   delete workspaceConfig.reusableExecutionWorkspaceConfig;
+  const adapterConfig = { ...input.effectiveAdapterConfig };
+  // Connector preparation adds a null digest even without assignments. That
+  // generated absence is not a change to an older agent's execution contract.
+  // Nonempty digests remain fingerprinted, including shared-home delivery.
+  if (adapterConfig.paperclipConnectorSkillDigest == null) {
+    delete adapterConfig.paperclipConnectorSkillDigest;
+  }
   return {
     adapter: {
       adapterType: input.adapterType,
       agentConfigRevision: input.agentConfigRevision,
     },
-    adapterConfig: input.effectiveAdapterConfig,
+    adapterConfig,
     agentRuntimeConfig: input.agentRuntimeConfig,
     instructions: input.instructions,
     issueOverrides: input.issueOverrides,
@@ -6448,12 +6455,24 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
       legacyWorkspaceVariants.push({ ...legacyWorkspace, issueSettings: null });
     }
   }
-  const compatibleFingerprints = [...new Set(legacyWorkspaceVariants.map((workspaceConfig) =>
-    createEffectiveRunConfigFingerprints({
-      session: { ...categoryValues, workspaceConfig },
-      secretManifest,
-    }).sessionFingerprint.fingerprint,
-  ))];
+  const adapterVariants = [categoryValues.adapterConfig];
+  if (input.effectiveAdapterConfig.paperclipConnectorSkillDigest == null) {
+    // The first connector-aware release always wrote these defaults. Accept
+    // only that exact old representation of today's skill selection; never
+    // excuse a changed assignment digest, credential, permission, or model.
+    adapterVariants.push({
+      ...writePaperclipSkillSyncPreference(categoryValues.adapterConfig,
+        readPaperclipSkillSyncPreference(categoryValues.adapterConfig).desiredSkillEntries),
+      paperclipConnectorSkillDigest: null,
+    });
+  }
+  const compatibleFingerprints = [...new Set(
+    [categoryValues.workspaceConfig, ...legacyWorkspaceVariants].flatMap((workspaceConfig) =>
+      adapterVariants.map((adapterConfig) => createEffectiveRunConfigFingerprints({
+        session: { ...categoryValues, workspaceConfig, adapterConfig },
+        secretManifest,
+      }).sessionFingerprint.fingerprint)),
+  )];
   return {
     version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
     fingerprint: fingerprints.sessionFingerprint.fingerprint,
