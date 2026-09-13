@@ -226,6 +226,40 @@ const support = await getEmbeddedPostgresTestSupport();
 
     });
 
+    it.each([true, false])("uses an edited older request ahead of delivered later history (explicit wake=%s)", async (explicitWake) => {
+      const taskId = randomUUID(), priorRunId = randomUUID(), olderId = randomUUID(), newerId = randomUUID();
+      const description = "Implement the approved project.";
+      const editedDirection = "Change of plan: implement only the authentication step.";
+      await db.insert(issues).values({ id: taskId, companyId, title: "Edited request",
+        description, status: "in_progress", assigneeAgentId: agentId });
+      await db.insert(issueComments).values([
+        { id: olderId, companyId, issueId: taskId, authorType: "user", authorUserId: "local-board",
+          body: "Implement the whole plan.", createdAt: new Date("2026-09-08T10:00:00Z"),
+          updatedAt: new Date("2026-09-08T10:00:00Z") },
+        { id: newerId, companyId, issueId: taskId, authorType: "user", authorUserId: "local-board",
+          body: "Include the reporting step too.", createdAt: new Date("2026-09-08T11:00:00Z"),
+          updatedAt: new Date("2026-09-08T11:00:00Z") },
+      ]);
+      const input = { db, companyId, issueId: taskId, agentId,
+        context: { commentId: newerId }, summary: null, exposeLowTrustRaw: false };
+      const delivered = await buildExecutionContinuation(input);
+      await db.insert(heartbeatRuns).values({ id: priorRunId, companyId, agentId, status: "succeeded",
+        contextSnapshot: { issueId: taskId, paperclipIssue: { description }, executionContinuation: delivered } });
+      await db.update(issueComments).set({ body: editedDirection, updatedAt: new Date("2026-09-08T12:00:00Z") })
+        .where(eq(issueComments.id, olderId));
+      const resumed = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId,
+        context: explicitWake ? { commentId: olderId } : {} });
+      expect(resumed.objective).toBe(editedDirection);
+      expect(resumed.messages.map(message => message.id)).toEqual([olderId, newerId]);
+      expect(resumed.resumeDelta?.messages.map(message => message.id)).toEqual([olderId]);
+      expect(resumed.messages[1]?.body).toBe("Include the reporting step too.");
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: taskId,
+        paperclipIssue: { description }, executionContinuation: resumed } }).where(eq(heartbeatRuns.id, priorRunId));
+      const next = await buildExecutionContinuation({ ...input, previousContextRunId: priorRunId, context: {} });
+      expect(next.objective).toBe(editedDirection);
+      expect(next.resumeDelta?.messages).toEqual([]);
+    });
+
     it("cancelled admission must not hide the interrupted execution", async () => {
       const rejectedId = randomUUID();
       await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", createdAt: new Date("2026-09-08T10:00:00Z") }).where(eq(heartbeatRuns.id, runId));
