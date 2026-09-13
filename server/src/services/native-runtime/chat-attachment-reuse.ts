@@ -180,6 +180,8 @@ export type PreparedReusedChatAttachment = {
       attachmentId: string;
       workProductId: string;
       commentId: string;
+      filename: string;
+      byteSize: number;
       sha256: string;
     };
   };
@@ -1530,6 +1532,8 @@ export async function prepareReusedChatAttachment(input: {
           attachmentId: attachment.id,
           workProductId: attachment.artifactWorkProductId,
           commentId: comment.id,
+          filename: input.source.filename,
+          byteSize: body.length,
           sha256: attachment.sha256,
         },
       },

@@ -1212,7 +1212,11 @@ accessible work product registered by that run with a published URL. A prior
 run's output cannot stand in for a newly requested file. A same-run controller
 restart keeps the receipt; a replacement can inspect and re-register preserved
 workspace bytes without user bookkeeping. Follow-ups requesting no new file can
-still reference existing downloads. A `workspace_file` locator alone is not delivery
+still reference existing downloads. Prior downloads can also accompany a valid
+current output as context. Authorized chat attachment reuse supplies a current-run
+publication receipt for its verified clone; older reuse receipts must additionally
+match an intact company-scoped source's filename, size, and hash.
+A `workspace_file` locator alone is not delivery
 evidence: it neither verifies the file nor preserves its bytes after cleanup.
 Reading or reviewing an existing file for an inline answer does not
 require uploading that input. Ambiguous prose remains subject to the runner's

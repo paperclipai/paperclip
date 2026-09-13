@@ -16,21 +16,46 @@ function record(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown> : {};
 }
 
-function hasCurrentPublicationReceipt(receipts: unknown, attachment: {
+async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts: unknown, attachment: {
   id: string; filename: string | null; byteSize: number; sha256: string;
-}): boolean {
-  return Object.values(record(receipts)).some(value => {
+}): Promise<boolean> {
+  for (const value of Object.values(record(receipts))) {
     const receipt = record(value);
     const input = record(receipt.input);
     const result = record(receipt.result);
-    return receipt.operationId === "register_deliverable" &&
-      (result.disposition === "applied" || result.disposition === "duplicate") &&
-      result.commandId === `deliverable-prepared:${attachment.id}` &&
-      Array.isArray(result.entityRefs) && result.entityRefs[0] === attachment.id &&
-      typeof input.filename === "string" && input.filename.trim() === attachment.filename &&
-      input.byteSize === attachment.byteSize &&
-      typeof input.sha256 === "string" && input.sha256.trim().toLowerCase() === attachment.sha256.toLowerCase();
-  });
+    if ((result.disposition !== "applied" && result.disposition !== "duplicate") ||
+        !Array.isArray(result.entityRefs) || result.entityRefs[0] !== attachment.id) continue;
+    if (receipt.operationId === "register_deliverable" &&
+        result.commandId === `deliverable-prepared:${attachment.id}` &&
+        typeof input.filename === "string" && input.filename.trim() === attachment.filename &&
+        input.byteSize === attachment.byteSize &&
+        typeof input.sha256 === "string" && input.sha256.trim().toLowerCase() === attachment.sha256.toLowerCase()) return true;
+    if (receipt.operationId !== "reuse_chat_attachment" ||
+        result.commandId !== `chat-attachment-reused:${attachment.id}`) continue;
+    const prepared = record(result.prepared);
+    const source = record(result.source);
+    if (prepared.attachmentId !== attachment.id ||
+        source.attachmentId !== input.attachmentId || source.commentId !== input.sourceCommentId ||
+        typeof prepared.sha256 !== "string" || prepared.sha256.toLowerCase() !== attachment.sha256.toLowerCase() ||
+        typeof source.sha256 !== "string" || source.sha256.toLowerCase() !== attachment.sha256.toLowerCase()) continue;
+    if ("filename" in prepared || "byteSize" in prepared) {
+      if (prepared.filename === attachment.filename && prepared.byteSize === attachment.byteSize) return true;
+      continue;
+    }
+    // Older committed reuse receipts contain the authenticated source and hash,
+    // but not its filename/size. Only an intact, matching source can supply those
+    // missing facts; this does not authorize a new reuse or bypass its tool gate.
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+    if (typeof source.attachmentId !== "string" || !uuid.test(source.attachmentId) ||
+        typeof source.commentId !== "string" || !uuid.test(source.commentId)) continue;
+    const [original] = await db.select({ filename: assets.originalFilename, byteSize: assets.byteSize, sha256: assets.sha256 })
+      .from(issueAttachments).innerJoin(assets, and(eq(assets.id, issueAttachments.assetId), eq(assets.companyId, companyId)))
+      .where(and(eq(issueAttachments.id, source.attachmentId), eq(issueAttachments.companyId, companyId),
+        eq(issueAttachments.issueCommentId, source.commentId))).limit(1);
+    if (original?.filename === attachment.filename && original.byteSize === attachment.byteSize &&
+        original.sha256.toLowerCase() === attachment.sha256.toLowerCase()) return true;
+  }
+  return false;
 }
 
 /** Recognize explicit output requests, not incidental mentions of source files.
@@ -94,8 +119,8 @@ export async function validateNativeDeliverableEvidence(
       // this run published the newly requested output. The receipt survives a
       // controller restart of this run; a replacement can re-register preserved
       // workspace bytes internally rather than asking the user to confirm them.
-      if (fileRequested && (attachment.originatingRunId !== binding.runId ||
-          !hasCurrentPublicationReceipt(binding.semanticToolReceipts, attachment))) {
+      if (fileRequested && attachment.originatingRunId !== binding.runId) continue;
+      if (fileRequested && !await hasCurrentPublicationReceipt(db, binding.companyId, binding.semanticToolReceipts, attachment)) {
         throw new Error("This attachment has no matching verified publication receipt for this run's requested output. Inspect any preserved file and use register_deliverable to verify its current filename, size, and SHA-256, then cite the new receipt. No human completion approval was created.");
       }
       registeredAttachment = true;

@@ -1184,6 +1184,12 @@ describe("native runner file handoff", () => {
       // Feedback reloads the durable receipt, so a controller restart of the same run keeps this proof.
       await expect(nativeCompletionFeedback(db, nextRunId, doneReport([`deliverable:${current.entityRefs[0]}`])))
         .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref, `deliverable:${current.entityRefs[0]}`])))
+        .resolves.toContain("Completion report accepted");
+      const [currentProduct] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "artifact", provider: "external",
+        title: "Current report", status: "ready_for_review", url: "https://example.com/current.pdf", createdByRunId: nextRunId }).returning();
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref, `work_product:${currentProduct.id}`])))
+        .resolves.toContain("Completion report accepted");
     } finally {
       await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
       await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));

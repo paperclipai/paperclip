@@ -41,6 +41,7 @@ import {
   type ChatAttachmentReuseSource,
 } from "./chat-attachment-reuse.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 
 describe("native same-conversation chat attachment reuse", () => {
   let temporary: Awaited<
@@ -458,6 +459,8 @@ describe("native same-conversation chat attachment reuse", () => {
         attachmentId: expect.any(String),
         workProductId: expect.any(String),
         commentId: expect.any(String),
+        filename: "earlier.txt",
+        byteSize: sourceBody.length,
         sha256: createHash("sha256").update(sourceBody).digest("hex"),
       },
     });
@@ -522,6 +525,53 @@ describe("native same-conversation chat attachment reuse", () => {
     });
     expect(receipts["reuse-earlier-v1"]?.result).toEqual(first);
     expect(receipts["reuse-earlier-v2"]?.result).toEqual(duplicate);
+    const verifyReceipt = (semanticToolReceipts: unknown) => validateNativeDeliverableEvidence(db, {
+      companyId, issueId, runId, objective: "Send me that file again.", semanticToolReceipts,
+    }, {
+      schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Prepared the requested existing file.",
+      completionClaim: { contractRevision: "test", objectiveSatisfied: true, criteria: [], remainingWork: [] },
+      evidence: [{ ref: `deliverable:${preparedId}` }], verification: [], attentionRequests: [], artifacts: [],
+    });
+    await expect(verifyReceipt(receipts)).resolves.toBeUndefined();
+    for (const field of ["filename", "byteSize"]) {
+      const corrupted = structuredClone(receipts);
+      for (const receipt of Object.values(corrupted)) {
+        const prepared = (receipt.result as { prepared?: Record<string, unknown> }).prepared;
+        if (prepared) prepared[field] = field === "filename" ? "different.txt" : sourceBody.length + 1;
+      }
+      await expect(verifyReceipt(corrupted)).rejects.toThrow("this run's requested output");
+    }
+    const legacy = structuredClone(receipts);
+    for (const receipt of Object.values(legacy)) {
+      const prepared = (receipt.result as { prepared?: Record<string, unknown> }).prepared;
+      if (prepared) { delete prepared.filename; delete prepared.byteSize; }
+    }
+    await expect(verifyReceipt(legacy)).resolves.toBeUndefined();
+    const [sourceRow] = await db.select({ attachment: issueAttachments, asset: assets }).from(issueAttachments)
+      .innerJoin(assets, eq(assets.id, issueAttachments.assetId)).where(eq(issueAttachments.id, sourceAttachmentId));
+    const foreignCompanyId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Unrelated receipt source" });
+    try {
+      for (const mutation of ["missing", "filename", "size", "hash", "foreign company"]) {
+        if (mutation === "missing") await db.delete(issueAttachments).where(eq(issueAttachments.id, sourceAttachmentId));
+        if (mutation === "filename") await db.update(assets).set({ originalFilename: "different.txt" }).where(eq(assets.id, sourceRow.asset.id));
+        if (mutation === "size") await db.update(assets).set({ byteSize: sourceBody.length + 1 }).where(eq(assets.id, sourceRow.asset.id));
+        if (mutation === "hash") await db.update(assets).set({ sha256: "0".repeat(64) }).where(eq(assets.id, sourceRow.asset.id));
+        if (mutation === "foreign company") await db.update(issueAttachments).set({ companyId: foreignCompanyId }).where(eq(issueAttachments.id, sourceAttachmentId));
+        try {
+          await expect(verifyReceipt(legacy)).rejects.toThrow("this run's requested output");
+          // New receipts preserve the verified tuple even after the source is removed.
+          await expect(verifyReceipt(receipts)).resolves.toBeUndefined();
+        } finally {
+          if (mutation === "missing") await db.insert(issueAttachments).values(sourceRow.attachment);
+          else await db.update(issueAttachments).set({ companyId }).where(eq(issueAttachments.id, sourceAttachmentId));
+          await db.update(assets).set({ originalFilename: sourceRow.asset.originalFilename,
+            byteSize: sourceRow.asset.byteSize, sha256: sourceRow.asset.sha256 }).where(eq(assets.id, sourceRow.asset.id));
+        }
+      }
+    } finally {
+      await db.delete(companies).where(eq(companies.id, foreignCompanyId));
+    }
     const completedResult = mergeHeartbeatRunResultJson(
       {
         ...(run.resultJson ?? {}),
