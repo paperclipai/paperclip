@@ -9,7 +9,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidePanelFrame, SidePanelWindowControls } from "@/components/side-panel";
 
 export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
-  const { panelContent, panelContentMode, panelVisible, setPanelVisible } = usePanel();
+  const {
+    panelContent,
+    panelContentMode,
+    panelVisible,
+    setPanelVisible,
+    panelMaximizeRequested,
+    clearPanelMaximizeRequest,
+  } = usePanel();
   const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const streamlinedTaskDetailLayout = streamlinedUiEnabled && taskDetailLayout;
@@ -45,6 +52,8 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
       panelVisible={panelVisible}
       setPanelVisible={setPanelVisible}
       taskDetailLayout={streamlinedTaskDetailLayout}
+      maximizeRequested={panelMaximizeRequested}
+      clearMaximizeRequest={clearPanelMaximizeRequest}
     />
   );
 }
@@ -144,6 +153,9 @@ interface ResizablePropertiesPanelProps {
   panelVisible: boolean;
   setPanelVisible: (visible: boolean) => void;
   taskDetailLayout: boolean;
+  /** Pending `viewer=full` deep-link request (LOOA-2181); cleared once consumed. */
+  maximizeRequested: boolean;
+  clearMaximizeRequest: () => void;
 }
 
 function ResizablePropertiesPanel({
@@ -152,6 +164,8 @@ function ResizablePropertiesPanel({
   panelVisible,
   setPanelVisible,
   taskDetailLayout,
+  maximizeRequested,
+  clearMaximizeRequest,
 }: ResizablePropertiesPanelProps) {
   const defaultPaneWidth = taskDetailLayout
     ? TASK_DETAIL_DEFAULT_PANE_WIDTH
@@ -300,6 +314,16 @@ function ResizablePropertiesPanel({
     clearRestoreTimer();
     restoreTimerRef.current = window.setTimeout(finishRestore, RESTORE_FALLBACK_DELAY);
   }, [clearRestoreTimer, finishRestore]);
+
+  // Deep-link maximize (LOOA-2181): the request may predate this mount (the
+  // hash routes before the panel content commits), so it lives in context and
+  // is consumed here once the panel is actually visible and laid out —
+  // handleMaximize measures live geometry, which needs a committed DOM.
+  useEffect(() => {
+    if (!maximizeRequested || !panelVisible) return;
+    clearMaximizeRequest();
+    if (!maximized) handleMaximize();
+  }, [maximizeRequested, panelVisible, maximized, handleMaximize, clearMaximizeRequest]);
 
   const handleTransitionEnd = useCallback(
     (event: React.TransitionEvent<HTMLElement>) => {

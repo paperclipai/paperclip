@@ -425,13 +425,13 @@ export function Connections() {
                             ? application.name
                             : null;
                   const appHref = connection
-                    ? `/apps/${connection.id}/setup`
-                    : `/apps/app/${application.id}/setup`;
+                    ? `/apps/${connection.id}/permissions`
+                    : `/apps/app/${application.id}/permissions`;
                   const actionLabel = !connection
                     ? "Connect"
                     : status.tone === "attention"
                       ? "Reconnect"
-                      : "Edit";
+                      : "Permissions";
                   return (
                     <tr
                       key={connection?.id ?? application.id}

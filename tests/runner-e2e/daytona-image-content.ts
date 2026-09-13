@@ -6,13 +6,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export const DAYTONA_IMAGE_CONTENT_SCHEMA =
-  "paperclip-daytona-runner-image-content/v3";
+  "paperclip-daytona-runner-image-content/v5";
 export const DAYTONA_IMAGE_PLATFORM = "linux/amd64";
 export const DAYTONA_IMAGE_DOCKERFILE_PATH = "docker/daytona-runner/Dockerfile";
 
-// This is the audited dependency closure of docker/daytona-runner/Dockerfile.
-// Keep it conservative: a false positive only rebuilds the image, while a
-// missing input could incorrectly reuse an incompatible paid-test image.
+// This mirrors the explicit repository-local build inputs copied by
+// docker/daytona-runner/Dockerfile. Broad package-tree COPYs are forbidden by
+// the contract test so development-only files cannot silently enter the image
+// without first changing this content-identity contract.
 export const DAYTONA_IMAGE_INPUT_PATHS = [
   ".dockerignore",
   ".npmrc",
@@ -23,14 +24,40 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [
   "pnpm-workspace.yaml",
   "scripts/link-plugin-dev-sdk.mjs",
   "tsconfig.base.json",
-  "packages/paperclip-eval-kernel",
-  "packages/paperclip-runner",
+  "packages/paperclip-eval-kernel/package.json",
+  "packages/paperclip-eval-kernel/src",
+  "packages/paperclip-eval-kernel/tsconfig.json",
+  "packages/paperclip-runner/package.json",
+  "packages/paperclip-runner/protocol",
+  "packages/paperclip-runner/runner/Cargo.lock",
+  "packages/paperclip-runner/runner/Cargo.toml",
+  "packages/paperclip-runner/runner/crates",
+  "packages/paperclip-runner/scripts/acpx-sidecar-contract.mjs",
+  "packages/paperclip-runner/scripts/build-provider-pack.mjs",
+  "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs",
+  "packages/paperclip-runner/scripts/generate-acpx-sidecar-contract.mjs",
+  "packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs",
+  "packages/paperclip-runner/src",
+  "packages/paperclip-runner/styles.css",
+  "packages/paperclip-runner/tsconfig.json",
+  "packages/paperclip-runner/tsconfig.surfaces.json",
 ] as const;
 
-const ignoredDirectoryPaths = new Set([
-  "packages/paperclip-runner/dist",
-  "packages/paperclip-runner/runner/target",
+const ignoredRunnerDevelopmentDirectoryPaths = new Set([
+  "packages/paperclip-runner/devtools",
+  "packages/paperclip-runner/docs",
+  "packages/paperclip-runner/examples",
+  "packages/paperclip-runner/test",
+  "packages/paperclip-runner/test-fixtures",
+  "packages/paperclip-runner/test-support",
 ]);
+
+const runnerDocumentationFilePattern = /\.md$/;
+const runnerTestFilePattern = /\.(?:spec|test)\.(?:[cm]?[jt]sx?)$/;
+const runnerRustIntegrationTestPathPattern =
+  /^packages\/paperclip-runner\/runner\/crates\/[^/]+\/tests(?:\/|$)/;
+const runnerSmokeScriptPattern =
+  /^packages\/paperclip-runner\/scripts\/[^/]+-smoke\.mjs$/;
 
 export interface DaytonaImageContentOptions {
   repositoryRoot?: string;
@@ -49,8 +76,18 @@ function normalizedRelativePath(value: string): string {
 }
 
 function shouldIgnore(relativePath: string): boolean {
-  if (ignoredDirectoryPaths.has(relativePath)) return true;
   return relativePath.split("/").includes("node_modules");
+}
+
+function shouldIgnoreRunnerDevelopmentInput(relativePath: string): boolean {
+  if (!relativePath.startsWith("packages/paperclip-runner/")) return false;
+  if (ignoredRunnerDevelopmentDirectoryPaths.has(relativePath)) return true;
+  return (
+    runnerDocumentationFilePattern.test(relativePath) ||
+    runnerTestFilePattern.test(relativePath) ||
+    runnerRustIntegrationTestPathPattern.test(relativePath) ||
+    runnerSmokeScriptPattern.test(relativePath)
+  );
 }
 
 function updateRecord(
@@ -160,7 +197,12 @@ async function hashEntry(
   relativePath: string,
 ): Promise<void> {
   const normalizedPath = normalizedRelativePath(relativePath);
-  if (shouldIgnore(normalizedPath)) return;
+  if (
+    shouldIgnore(normalizedPath) ||
+    shouldIgnoreRunnerDevelopmentInput(normalizedPath)
+  ) {
+    return;
+  }
 
   const absolutePath = path.resolve(root, relativePath);
   const relativeFromRoot = path.relative(root, absolutePath);
@@ -176,7 +218,6 @@ async function hashEntry(
 
   const stats = await lstat(absolutePath);
   if (stats.isDirectory()) {
-    updateRecord(hash, "directory", normalizedPath);
     const entries = await readdir(absolutePath, { withFileTypes: true });
     entries.sort((left, right) => compareNames(left.name, right.name));
     for (const entry of entries) {

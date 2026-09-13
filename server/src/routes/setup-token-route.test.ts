@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SETUP_TOKEN_SESSION_NOT_FOUND,
   SETUP_TOKEN_PROVIDER_UNSUPPORTED,
+  isTerminalSessionState,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
   type SetupTokenLeaseManager,
@@ -288,6 +289,26 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
       }
       row.boundAt = Date.now();
       return { ...row };
+    },
+    async cancelDurable(identity, cancellableStates) {
+      const row = rows.get(identity.sessionId);
+      if (!row || !cancellableStates.includes(row.state)) return null;
+      row.state = "cancelled";
+      return { ...row };
+    },
+    async findActiveDurable(key, now) {
+      for (const row of rows.values()) {
+        if (
+          row.companyId === key.companyId &&
+          row.ownerUserId === key.ownerUserId &&
+          row.adapterType === key.adapterType &&
+          !isTerminalSessionState(row.state) &&
+          row.deadline > now
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
     },
   };
   const leases: SetupTokenLeaseManager = {
@@ -637,6 +658,50 @@ describe("company-and-environment setup-token route — object-level authorizati
     const res = await request(app).get(`${crossCompanyBase}/${sessionId}`).send();
     expect(res.status).toBe(404);
     expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+  });
+
+  it("returns the caller's active session with no session id in the URL", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    const active = await request(app).get(`${COMPANY_BASE}/active`).send();
+    expect(active.status, JSON.stringify(active.body)).toBe(200);
+    expect(active.body.sessionId).toBe(sessionId);
+    expect(active.body.status).toBe("waiting_for_user");
+    expect(active.body.panelMode).toBe("submitted_browser_code");
+    // The full login URL rides in this owner response, the same way it rides in
+    // the guarded `.../prompt` response — this is not a public, secret-free
+    // surface, so it is not checked against `expectNoSecret`.
+    expect(active.body.prompt).toEqual({ authorizationUrl: FULL_LOGIN_URL, transportAdvisory: null });
+    expect(active.headers["cache-control"]).toBe("no-store, private");
+  });
+
+  it("returns the identical not-found on the active route for no active session, a cross-owner caller, and a cross-company caller", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    // No session has started yet.
+    const none = await request(app).get(`${COMPANY_BASE}/active`).send();
+    expect(none.status).toBe(404);
+    expect(none.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+
+    await startCompanySession(app);
+
+    // A different board user in the same company holds no active session.
+    useOwner(OTHER_USER_ID);
+    const otherOwner = await request(app).get(`${COMPANY_BASE}/active`).send();
+    expect(otherOwner.status).toBe(404);
+    expect(otherOwner.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+    useOwner();
+
+    // The same owner under a different company holds no active session there.
+    const crossCompanyBase = `/api/companies/${OTHER_COMPANY_ID}/setup-token-login-sessions`;
+    const otherCompany = await request(app).get(`${crossCompanyBase}/active`).send();
+    expect(otherCompany.status).toBe(404);
+    expect(otherCompany.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
   });
 
   it("returns the fixed not-found for a non-member on every action across a company boundary", async () => {

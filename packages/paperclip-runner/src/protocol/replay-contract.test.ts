@@ -281,7 +281,7 @@ describe("PRP v1 JSON Schema contract", () => {
   it("fails closed on unsupported nested required schema versions", async () => {
     const fixture = await readFixture();
     const events = fixture.events as Array<Record<string, unknown>>;
-    events[0]!.schemaVersion = 2;
+    events[0]!.schemaVersion = 3;
     expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
       ok: false,
       issues: [
@@ -291,6 +291,19 @@ describe("PRP v1 JSON Schema contract", () => {
         },
       ],
     });
+  });
+
+  it("rejects unsafe event source sequences", async () => {
+    const fixture = await readFixture();
+    const events = fixture.events as Array<Record<string, unknown>>;
+    events[0]!.sourceSeq = Number.MAX_SAFE_INTEGER + 1;
+    const result = parsePrpFixtureText(JSON.stringify(fixture));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues.some((issue) =>
+        issue.code === "schema_validation" && issue.path === "/events/0/sourceSeq"
+      )).toBe(true);
+    }
   });
 
   it("requires the declared result to match the replayed result event", async () => {
@@ -352,7 +365,9 @@ describe("PRP v1 JSON Schema contract", () => {
         { min: 1, max: PRP_PROTOCOL_VERSION },
         { min: 1, max: 2 },
       ),
-    ).toBe(1);
-    expect(negotiateProtocolVersion({ min: 2, max: 3 }, { min: 1, max: 1 })).toBeNull();
+    ).toBe(2);
+    expect(
+      negotiateProtocolVersion({ min: 2, max: 3 }, { min: 1, max: 1 }),
+    ).toBeNull();
   });
 });

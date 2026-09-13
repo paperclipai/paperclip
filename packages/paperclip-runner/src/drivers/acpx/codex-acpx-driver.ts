@@ -1154,6 +1154,8 @@ class CodexAcpxSession implements HarnessSession {
         requestedModel: identity.requestedModel,
         effectiveModel: identity.effectiveModel,
         permissionMode: identity.permissionMode,
+        providerLifetimeFenceCandidates:
+          identity.providerLifetimeFenceCandidates,
       },
       semanticResult:
         this.#semanticResult &&
@@ -1871,7 +1873,10 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
     (identity.permissionMode !== undefined &&
       !["approve-all", "approve-reads", "deny-all"].includes(
         identity.permissionMode,
-      ))
+      )) ||
+    !validProviderLifetimeFenceCandidates(
+      identity.providerLifetimeFenceCandidates,
+    )
   ) {
     throw new Error("persisted Codex ACPX session identity is inconsistent");
   }
@@ -1999,6 +2004,19 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
       );
     }
   }
+}
+
+function validProviderLifetimeFenceCandidates(
+  value: unknown,
+): value is readonly [number, number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every(
+      (port) => Number.isSafeInteger(port) && port >= 49_152 && port <= 65_535,
+    ) &&
+    new Set(value).size === 3
+  );
 }
 
 function isCompletedTerminal(terminalFingerprint: string): boolean {

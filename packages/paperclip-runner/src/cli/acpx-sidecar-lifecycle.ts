@@ -7,6 +7,15 @@ export interface OpenedAcpxSidecarHost {
 const FAILED_ADMISSION_CLOSE_TIMEOUT_MS = 8_000;
 const ACTIVE_HOST_CLEANUP_ATTEMPTS = 4;
 
+class AcpxSidecarStatusReadTimeoutError extends Error {
+  readonly code = "ACPX_SIDECAR_STATUS_READ_TIMEOUT";
+
+  constructor() {
+    super("ACPX session status read exceeded its timeout");
+    this.name = "AcpxSidecarStatusReadTimeoutError";
+  }
+}
+
 export function hasSidecarSessionOwnership(
   host: unknown,
   activeHostCleanup: Promise<void> | null,
@@ -42,8 +51,7 @@ export async function readSidecarHostStatusWithin(
       host.status(),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () =>
-            reject(new Error("ACPX session status read exceeded its timeout")),
+          () => reject(new AcpxSidecarStatusReadTimeoutError()),
           timeoutMs,
         );
         timer.unref();
@@ -129,9 +137,7 @@ export function recoverAndCombineSidecarHostCleanup(
   prior: Promise<void> | null,
 ): Promise<void> {
   const recovered = recoverSidecarHostCleanup(host, cleanup);
-  return prior
-    ? combineSidecarHostCleanups([prior, recovered])
-    : recovered;
+  return prior ? combineSidecarHostCleanups([prior, recovered]) : recovered;
 }
 
 export function reportAuthoritativeSidecarHostCleanupFailure(

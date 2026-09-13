@@ -10,6 +10,7 @@ import {
   nativeRunResults,
 } from "@paperclipai/db";
 import {
+  NativeSessionProtocolIntegrityError,
   type PrpEvent,
   type PrpStructuredRunResult,
   type PrpTerminalState,
@@ -250,7 +251,9 @@ export class NativeRunCoordinatorStore {
           existing.sourceInstanceId !== event.sourceInstanceId ||
           existing.sourceSeq !== event.sourceSeq
         ) {
-          throw new Error("native_event_replay_conflict");
+          throw new NativeSessionProtocolIntegrityError(
+            "source_event_replay_conflict",
+          );
         }
         const [latest] = await tx
           .select({ sourceSeq: heartbeatRunEvents.sourceSeq })

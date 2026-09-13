@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  toolConnectionInstalls,
   agentConfigRevisions,
   agentApiKeys,
   agentRuntimeState,
@@ -113,6 +114,7 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
+  aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
@@ -344,7 +346,7 @@ export function agentService(db: Db) {
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
-      permissions: normalizeAgentPermissions(row.permissions, row.role),
+      permissions: normalizeAgentPermissions(row.permissions),
     });
   }
 
@@ -676,8 +678,7 @@ export function agentService(db: Db) {
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
     if (
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
@@ -725,6 +726,18 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+
+      const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+      const afterConfig = isPlainRecord(updated.adapterConfig) ? updated.adapterConfig : {};
+      const changedExecution = updated.adapterType !== existing.adapterType
+        || (updated.adapterType === "paperclip_runner" && ["provider", "acpxAgent", "model"].some(
+          (key) => priorAdapterConfig[key] !== afterConfig[key],
+        ));
+      if (changedExecution) {
+        await txDb.delete(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, existing.companyId), eq(agentTaskSessions.agentId, id)));
+        await txDb.update(agentRuntimeState).set({ adapterType: updated.adapterType, sessionId: null, stateJson: {}, updatedAt: new Date() })
+          .where(and(eq(agentRuntimeState.companyId, existing.companyId), eq(agentRuntimeState.agentId, id)));
+      }
 
       if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
         if (bindingDecision) {
@@ -806,7 +819,7 @@ export function agentService(db: Db) {
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
       const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const adapterType = data.adapterType ?? "process";
       const rawAdapterConfig = isPlainRecord(data.adapterConfig)
@@ -846,6 +859,13 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        if (options?.aiConnectionInstall) {
+          await tx.insert(toolConnectionInstalls).values({
+            companyId, connectionId: options.aiConnectionInstall.connectionId,
+            targetType: "agent", targetId: created.id,
+            createdByUserId: options.aiConnectionInstall.createdByUserId,
+          }).onConflictDoNothing();
+        }
         await syncAgentSecretBindings(created, txDb);
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
@@ -1039,10 +1059,9 @@ export function agentService(db: Db) {
           );
         }
         if (patch.permissions !== undefined) {
-          patch.permissions = normalizeAgentPermissions(
-            patch.permissions,
-            (patch.role ?? existing.role) as string,
-          );
+          // The pending-approval activation replays the original hire
+          // request, so the new-agent creation default applies.
+          patch.permissions = normalizeAgentPermissions(patch.permissions, { context: "create" });
         }
         const updated = await tx
           .update(agents)
@@ -1089,7 +1108,7 @@ export function agentService(db: Db) {
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

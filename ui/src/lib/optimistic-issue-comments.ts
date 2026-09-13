@@ -153,6 +153,8 @@ export function mergeIssueComments(
     );
     if (matchingPersistedComment) {
       reconciledPersistedIds.add(matchingPersistedComment.id);
+      const acknowledged = { ...matchingPersistedComment, clientId: comment.clientId };
+      merged[merged.findIndex((entry) => entry.id === matchingPersistedComment.id)] = acknowledged;
       continue;
     }
 

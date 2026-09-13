@@ -20,6 +20,18 @@ export function CompanyActivity() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
   const mode: AuditFeedMode = searchParams.get("mode") === "agents" ? "agents" : "all";
+  const actionParam = searchParams.get("action");
+  const actionDomain = [
+    "issue.",
+    "agent.",
+    "heartbeat.",
+    "approval.",
+    "project.",
+    "goal.",
+    "tool_",
+    "cost.",
+    "company.",
+  ].includes(actionParam ?? "") ? actionParam! : "__all";
 
   useEffect(() => {
     if (!streamlinedUiEnabled) setBreadcrumbs([{ label: "Activity" }]);
@@ -40,11 +52,31 @@ export function CompanyActivity() {
     [setSearchParams],
   );
 
+  const handleActionDomainChange = useCallback(
+    (next: string) => {
+      setSearchParams((current) => {
+        const params = new URLSearchParams(current);
+        if (next === "__all") params.delete("action");
+        else params.set("action", next);
+        return params;
+      }, { replace: true });
+    },
+    [setSearchParams],
+  );
+
   if (streamlinedUiEnabled) return <AuditHub section="activity" />;
 
   if (!selectedCompanyId) {
     return <EmptyState icon={History} message="Select an organization to view activity." />;
   }
 
-  return <AuditFeed companyId={selectedCompanyId} mode={mode} onModeChange={handleModeChange} />;
+  return (
+    <AuditFeed
+      companyId={selectedCompanyId}
+      mode={mode}
+      onModeChange={handleModeChange}
+      actionDomain={actionDomain}
+      onActionDomainChange={handleActionDomainChange}
+    />
+  );
 }

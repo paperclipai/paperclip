@@ -2642,7 +2642,7 @@ function recoveryWorkspaceLease(
 function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
   return {
     identity: () => ({
-      schema: "paperclip.runner.acpx-identity.v1" as const,
+      schema: "paperclip.runner.acpx-identity.v2" as const,
       normalizedSessionId: "session-1",
       acpxRecordId: "record-1",
       backendSessionId: "backend-1",
@@ -2652,6 +2652,7 @@ function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
       requestedModel: "gpt-5.6-sol",
       effectiveModel: "gpt-5.6-sol",
       permissionMode: "approve-reads" as const,
+      providerLifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
     }),
     binding: () => ({
       normalizedSessionId: "session-1",

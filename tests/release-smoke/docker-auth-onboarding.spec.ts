@@ -109,12 +109,26 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(nextButton).toBeEnabled({ timeout: 10_000 });
     await nextButton.click();
 
-    // Step 4: keep the default adapter and connect (hire) the lead. Connect
-    // probes the adapter environment first and blocks the hire on a `fail`. In
-    // the smoke container no agent CLI is installed, which the probe reports as
-    // a warning rather than an error, so the hire proceeds — a genuine failure
-    // here means the published artifact cannot hire on a clean machine. Allow
-    // generous time for the probe + hire + auto-approval.
+    // Step 4: answer the model-source question, then connect (hire) the lead.
+    // The step now opens as a row of source tiles and the footer button has
+    // nothing to do until one is picked (#12796/#12801 rebuilt the step around
+    // that question); picking Claude collapses the row and turns the button
+    // into "Connect". In the smoke container the resolved login environment is
+    // the local host, not a sandbox, so there is no sign-in to run and Connect
+    // goes straight to the hire, with the missing agent CLI reported by the
+    // probe as a warning rather than an error — a genuine failure here means
+    // the published artifact cannot hire on a clean machine. Allow generous
+    // time for the probe + hire + auto-approval.
+    await expect(
+      page.getByRole("heading", { name: "Connect a model" })
+    ).toBeVisible({ timeout: 20_000 });
+
+    const claudeSourceTile = page
+      .getByRole("radiogroup", { name: "Model source" })
+      .getByRole("radio", { name: /Claude/ });
+    await expect(claudeSourceTile).toBeVisible({ timeout: 10_000 });
+    await claudeSourceTile.click();
+
     const connectButton = page.getByRole("button", {
       name: "Connect",
       exact: true,
@@ -178,31 +192,28 @@ test.describe("Docker authenticated onboarding smoke", () => {
       true
     );
 
-    await expect.poll(
-      async () => {
-        const runs = await getJson<
-          Array<{ agentId: string; invocationSource: string; status: string }>
-        >(
-          page,
-          `${baseUrl}/api/companies/${company!.id}/heartbeat-runs?agentId=${leadAgent!.id}`
-        );
-        const latestRun = runs.find((entry) => entry.agentId === leadAgent!.id);
-        return latestRun
-          ? {
-              invocationSource: latestRun.invocationSource,
-              status: latestRun.status,
-            }
-          : null;
-      },
-      {
-        timeout: 30_000,
-        intervals: [1_000, 2_000, 5_000],
-      }
-    ).toEqual(
-      expect.objectContaining({
-        invocationSource: "assignment",
-        status: expect.stringMatching(/^(queued|running|succeeded|failed)$/),
-      })
-    );
+    // #13068 rebuilt the seeded first task as a chat with the lead: launch
+    // posts a deterministic, server-owned greeting plus an opening question
+    // card, and deliberately does not wake the assignee — "no run until the
+    // user answers". Assert the chat actually opened (the greeting and the
+    // card are seeded without an LLM, so their absence means the launch
+    // half-finished) …
+    await expect(
+      page.getByText("Welcome to Paperclip!").first()
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("What would you like to do?")).toBeVisible();
+
+    // … and that the no-run contract holds. This spec used to poll for an
+    // assignment-triggered heartbeat run here; a run appearing before the
+    // user's first answer is now the regression, not the success. Wake
+    // dispatch is asynchronous, so watch the endpoint over a bounded window
+    // rather than sampling it once — a launch-time wake that slips through
+    // lands well within this window.
+    const runsUrl = `${baseUrl}/api/companies/${company!.id}/heartbeat-runs?agentId=${leadAgent!.id}`;
+    const noRunDeadline = Date.now() + 15_000;
+    while (Date.now() < noRunDeadline) {
+      expect(await getJson<Array<{ id: string }>>(page, runsUrl)).toEqual([]);
+      await page.waitForTimeout(1_000);
+    }
   });
 });

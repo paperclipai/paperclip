@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "openrouter",
+  "name": "OpenRouter",
+  "description": "Connect OpenRouter accounts for your agents.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/openrouter.svg",
+    "darkLogoUrl": "/brands/apps/openrouter-dark.svg"
+  },
+  "urlPatterns": [
+    "https://openrouter.ai/api/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "OpenRouter API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "openrouter",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "OPENROUTER_API_KEY"
+      }
+    }
+  ]
+}

@@ -148,6 +148,7 @@ task.run
 │   ├── environment.startup
 │   │   ├── environment.acquire
 │   │   └── environment.workspace.realize
+│   ├── skills.prepare
 │   ├── heartbeat.prepare_before_environment
 │   ├── heartbeat.prepare_after_environment
 │   └── native.coordinator.claim
@@ -753,16 +754,93 @@ To add a name or an enum value, extend the literal constant in
 
 ### Known behavior: aggregate retained body bytes
 
-The HTTP/2 bridge bounds retained body bytes for one route only. Each route
-holds up to 8,388,608 bytes (8 MiB) at its own peak (see
-`HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`). The host
-process admits up to 128 concurrent routes (see
-`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). The
-process can therefore retain up to 1,073,741,824 bytes (1 GiB) of body data
-across every route at the same time.
+Each HTTP/2 bridge route holds up to 168,820,736 bytes (161 MiB) at its own
+peak (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`).
+The host process admits up to 128 concurrent routes (see
+`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). Those
+two figures alone would let the process retain up to 21,609,054,208 bytes
+(about 20.1 GiB) of body data across every route at the same time.
 
-This is accepted, known behavior. The process tracks no aggregate byte
-ledger across routes: a per-route bound stops one busy route from starving
-another route's own budget, but the host enforces no smaller ceiling on the
-sum across every route.
+The process does not reach that figure, on two levels.
+`HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` (`http2-bridge-server.ts`) enforces a
+real, live ledger: 1,073,741,824 bytes (1 GiB) across every route, not merely
+an accepted paper ceiling. Every HTTP/2 stream creates one `BridgeBodyReservation` owner over
+its lifetime, and every source-level full-body buffer that stream retains —
+its request-body chunk array, the concatenated request body, the
+response-body chunk array, and the concatenated response body — reserves
+against that one owner before it allocates. A reservation that would pass the
+process total is denied before it copies anything, and the host answers 503
+instead of accepting the body. The reservation stays live for the response
+body until the HTTP/2 write actually finishes flowing to the peer or the
+stream closes, not merely until the write call returns, so a slow or
+backpressured peer cannot hold response bytes in memory the ledger no longer
+counts.
+
+`HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES` adds a second, per-route ledger on top of
+that process-wide one: each route's own reservations also check a ceiling
+scoped to that one route (its own 168,820,736-byte peak from above), so one
+busy or malicious route can pass its own ceiling and get denied with a 503,
+but it can never spend the whole process-wide total and deny every sibling
+route admission. This accounting covers source-level full-body buffers only:
+internal Node.js and Undici copies (socket buffers, HTTP/2 frame buffers,
+decompression buffers) stay outside it.
+
+The generated gateway process inside the sandbox (`getSandboxCallbackBridgeServerSource`
+in `sandbox-callback-bridge.ts`) enforces its own separate ledger, independent
+of the two host-side ledgers above: each side bounds only the memory in its
+own process. `readBodyBytes` reserves a request body's chunk bytes as they
+arrive, then reserves the concatenated buffer's own byte count before
+`Buffer.concat` allocates it, against a ceiling of `maxBodyBytes * 8` (4
+concurrent bodies, each counted twice for its two live copies). A denied
+reservation answers 503 with no forward call. Each request handler releases
+its own reservation once the whole request settles: a completed response, a
+thrown error, a client abort, or a deadline timeout all reach the same
+release call.
+
 Keep every dimension low-cardinality and free of user content.
+
+### Shared skill preparation
+
+`skills.prepare` measures the shared inventory listing and runtime materialization
+inside `task.prepare`. It is also contained in the broader
+`heartbeat.prepare_before_environment` interval; do not add those two durations.
+Preparation failures emit a failed span even when no native session starts.
+It carries no skill contents, identifiers, locations, or credentials. It uses the
+existing run performance events and operator-configured OpenTelemetry endpoint;
+no first-party Telemetry event is added.
+
+Runtime preparation refreshes the company inventory once per listing. Local and
+catalog directories remain direct sources, so edits are visible on the next
+preparation. Explicit version selections still use their stored snapshots.
+
+Reconstructed skills use `__runtime_cache_v1__/<skill-id>/<fingerprint>/files`
+beneath company skill storage, with a sibling manifest of paths, sizes, and SHA-256
+content digests. Every warm hit validates the manifest and exact file contents;
+it does not fetch upstream, rewrite files, or remove directories. The fingerprint
+includes installed source identity, revision, file inventory, and stored Markdown,
+and excludes display names, stars, and general update timestamps. Manifests stay
+outside the directory delivered to agents.
+
+GitHub and skills.sh imports are cached only when pinned to a full commit SHA.
+Remote freshness is explicit: update or reimport selects a new revision, including
+supporting-file-only changes. A branch advancing upstream does not change an
+installed revision. Legacy mutable refs retain uncached behavior until updated.
+URL-only skills use stored Markdown. An unavailable new revision reports missing;
+it never silently reuses an older revision. Stored `SKILL.md` remains a fallback,
+but missing supporting files prevent publication of a reusable partial cache.
+
+Builds publish read-only files and directories from unique staging directories.
+A skill-scoped lock serializes builds and cleanup across processes. Cold builders
+recheck that the skill still exists under its original key before reading files
+and before atomic publication. Existing valid
+revisions stay readable during updates. Invalid entries are quarantined in the
+same skill cache root for inspection; rename/removal cleans up that skill's cache.
+Read-only listings validate caches without downloading or repairing them. A
+publication lock left by an abruptly terminated process is reported for operator
+cleanup; remove it only after confirming its recorded PID is no longer running.
+
+Run `pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-skill-preparation.ts` for an isolated embedded
+PostgreSQL benchmark with 114 mixed skills and at least 400 remote files. It
+reports one cold sample and ten warm samples (one in a new process), refresh and
+fetch counts, rebuilds, missing entries, and content checks. Upstream responses are
+deterministic fixtures; use real deployed run spans for user-facing latency.

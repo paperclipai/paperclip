@@ -2,37 +2,34 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
+  Flag,
   LogOut,
-  Megaphone,
   type LucideIcon,
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
+import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
-import { Badge } from "@/components/ui/badge";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
-const SOURCE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
-const SOURCE_VERSION_RE = /\+\d+\.git\.([0-9a-f]{7,40})(?:\.dirty)?$/i;
 
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  serverGit?: ServerGitInfo;
-  version?: string | null;
 }
 
 interface MenuActionProps {
@@ -64,11 +61,6 @@ function deriveUserSlug(name: string | null | undefined, email: string | null | 
     if (slug) return slug;
   }
   return "me";
-}
-
-function sourceVersionSha(version: string): string | null {
-  const sourceVersion = version.match(SOURCE_VERSION_RE);
-  return sourceVersion?.[1] ?? null;
 }
 
 function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
@@ -114,9 +106,8 @@ export function SidebarAccountMenu({
   deploymentMode,
   open: controlledOpen,
   onOpenChange,
-  serverGit,
-  version,
 }: SidebarAccountMenuProps) {
+  const isCloud = Boolean(useCloudInstance());
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -133,15 +124,8 @@ export function SidebarAccountMenu({
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
     session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
-  const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
-  const sourceSha = version ? sourceVersionSha(version) : null;
-  const sourceFullSha =
-    sourceSha && serverGit?.available && serverGit.fullSha.toLowerCase().startsWith(sourceSha.toLowerCase())
-      ? serverGit.fullSha
-      : sourceSha;
-  const sourceBranch = sourceSha && serverGit?.available ? serverGit.branchName : null;
 
   function closeNavigationChrome() {
     setOpen(false);
@@ -154,11 +138,15 @@ export function SidebarAccountMenu({
 
   return (
     <div className="border-t border-r border-border bg-background px-3 py-2">
-      <Popover open={open} onOpenChange={setOpen}>
+      <div className={cn("flex items-center gap-0.5", !rail && "px-2")}>
+        <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
+            className={cn(
+              "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground",
+              rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+            )}
             aria-label="Open account menu"
           >
             <Avatar size="sm">
@@ -184,40 +172,8 @@ export function SidebarAccountMenu({
                 </Avatar>
               </div>
               <div className="min-w-0 flex-1 pt-1">
-                <div className="flex items-center gap-2">
-                  <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
-                  <Badge variant="ghost" className="bg-accent text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
-                    {accountBadge}
-                  </Badge>
-                </div>
+                <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
-                {sourceSha && sourceFullSha ? (
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {sourceBranch ? (
-                      <a
-                        href={`${SOURCE_REPOSITORY_URL}/tree/${encodeURIComponent(sourceBranch)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block truncate transition-colors hover:text-foreground"
-                      >
-                        {sourceBranch}
-                      </a>
-                    ) : null}
-                    <p>
-                      Paperclip{" "}
-                      <a
-                        href={`${SOURCE_REPOSITORY_URL}/commit/${sourceFullSha}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="transition-colors hover:text-foreground"
-                      >
-                        {sourceSha.slice(0, 7)}
-                      </a>
-                    </p>
-                  </div>
-                ) : version ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
-                ) : null}
               </div>
             </div>
 
@@ -241,14 +197,6 @@ export function SidebarAccountMenu({
                 description="Open Paperclip docs in a new tab."
                 icon={BookOpen}
                 href={DOCS_URL}
-                external
-                onClick={() => setOpen(false)}
-              />
-              <MenuAction
-                label="Feedback"
-                description="Share feedback or report an issue."
-                icon={Megaphone}
-                href={FEEDBACK_URL}
                 external
                 onClick={() => setOpen(false)}
               />
@@ -280,7 +228,24 @@ export function SidebarAccountMenu({
             </div>
           </div>
         </PopoverContent>
-      </Popover>
+        </Popover>
+        {!rail && !isCloud ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={FEEDBACK_URL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Share feedback"
+                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Flag className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="top">Share feedback</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
     </div>
   );
 }

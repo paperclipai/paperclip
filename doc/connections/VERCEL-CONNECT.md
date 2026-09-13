@@ -149,7 +149,7 @@ Before enabling another app method, run the real-provider smoke matrix:
 - create/attach the connector and validate its UID;
 - discover the MCP catalog;
 - run an allowed read;
-- confirm a write stops at ask-first and runs only after approval;
+- set a write to ask-first, then confirm it stops for approval and runs only after approval;
 - revoke in Vercel and confirm the one retry fails closed;
 - confirm the grant becomes `needs_reauthorization` and the audit trail contains
   no bearer, claims, bootstrap authority, or upstream response body;

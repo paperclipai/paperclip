@@ -9,6 +9,7 @@ import { assetService, logActivity } from "../services/index.js";
 import {
   formatAttachmentSize,
   isAllowedContentType,
+  isInlineAttachmentContentType,
   MAX_ATTACHMENT_BYTES,
 } from "../attachment-types.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
@@ -329,15 +330,21 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
+    const mediaType = responseContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const inlineSafe = mediaType !== SVG_CONTENT_TYPE
+      && isInlineAttachmentContentType(mediaType);
     res.setHeader("Content-Type", responseContentType);
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    if (responseContentType === SVG_CONTENT_TYPE) {
-      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+    if (!inlineSafe) {
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
     }
     const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    const disposition = inlineSafe
+      ? "inline"
+      : "attachment";
+    res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     object.stream.on("error", (err) => {
       next(err);

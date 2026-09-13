@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "slug": "slack",
   "name": "Slack",
-  "description": "Search channels and coordinate team communication.",
+  "description": "Give agents Slack tools or let people start and continue Paperclip work from Slack.",
   "categories": [
     "communication"
   ],
@@ -11,7 +11,8 @@
     "logoUrl": "/brands/apps/slack.png"
   },
   "urlPatterns": [
-    "https://mcp.slack.com/*"
+    "https://mcp.slack.com/*",
+    "https://app.slack.com/client/*"
   ],
   "methods": [
     {
@@ -33,6 +34,48 @@
         ]
       },
       "guidanceMd": "Connect a Slack workspace and limit access to the channels agents need.",
+      "riskTier": "S3",
+      "label": "Use this connection as an agent tool",
+      "purpose": "tool",
+      "requiredResourceFilters": [
+        "workspace",
+        "channel"
+      ]
+    },
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "slack",
+      "transport": "chat_sdk",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Let people in Slack start and continue work with one Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "botToken",
+          "label": "Bot User OAuth Token",
+          "type": "password",
+          "required": true,
+          "placeholder": "xoxb-...",
+          "secret": true
+        },
+        {
+          "key": "signingSecret",
+          "label": "Signing Secret",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the Slack App signing secret",
+          "secret": true
+        }
+      ],
+      "guidanceMd": "Create and install one Slack App for this agent. Paperclip receives verified Events API requests and interactive callbacks, acknowledges with reactions, responds in direct messages, and starts one Paperclip task per new mentioned channel thread.",
+      "consoleLinks": {
+        "register": "https://api.slack.com/apps",
+        "docs": "https://api.slack.com/start/quickstart"
+      },
       "riskTier": "S3",
       "requiredResourceFilters": [
         "workspace",

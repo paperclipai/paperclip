@@ -14,6 +14,19 @@ Parameters:
     Type: String
     Description: Stable IAM user or role ARN allowed to assume the Paperclip invocation role.
     AllowedPattern: "^arn:aws(-[^:]+)?:iam::[0-9]{12}:(role|user)/.+$"
+  GitHubOidcProviderArn:
+    Type: String
+    Default: ""
+    Description: Optional account-local GitHub Actions OIDC provider for hosted Runner evals.
+    AllowedPattern: "^$|^arn:aws(-[^:]+)?:iam::[0-9]{12}:oidc-provider/token[.]actions[.]githubusercontent[.]com$"
+  GitHubRepository:
+    Type: String
+    Default: paperclipai/paperclip
+    AllowedPattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  GitHubEnvironment:
+    Type: String
+    Default: runner-e2e-paid
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
   BedrockModelId:
     Type: String
     Default: global.anthropic.claude-sonnet-4-6
@@ -53,6 +66,7 @@ Parameters:
 
 Conditions:
   IsPrivate: !Equals [!Ref DeploymentMode, private]
+  HasGitHubOidcTrust: !Not [!Equals [!Ref GitHubOidcProviderArn, ""]]
 
 Resources:
   ContextEncryptionKey:
@@ -304,6 +318,17 @@ Resources:
             Principal:
               AWS: !Ref TrustedRunnerPrincipalArn
             Action: sts:AssumeRole
+          - !If
+            - HasGitHubOidcTrust
+            - Effect: Allow
+              Principal:
+                Federated: !Ref GitHubOidcProviderArn
+              Action: sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  "token.actions.githubusercontent.com:aud": sts.amazonaws.com
+                  "token.actions.githubusercontent.com:sub": !Sub repo:${GitHubRepository}:environment:${GitHubEnvironment}
+            - !Ref AWS::NoValue
       Policies:
         - PolicyName: InvokeAndOperatePinnedHarness
           PolicyDocument:

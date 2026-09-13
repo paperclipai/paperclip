@@ -96,3 +96,47 @@ Browse/search is the fallback for recovering a workspace file when the issue
 chip or link cannot open it; it is not the preferred deliverable path. Do not
 leave artifact-producing work `in_progress` with only a local path or a
 `Remaining` note.
+
+When the current run was started by an external chat request and the file is
+part of the response intended for that external conversation, have the upload
+helper bind that specific file to an explicit response comment:
+
+```bash
+scripts/paperclip-upload-artifact.sh path/to/result.png \
+  --title "Requested image" \
+  --chat-comment "Here is the requested image."
+```
+
+`--chat-comment` uses the current run-scoped API directly, so it does not depend
+on a separately installed CLI version. It first uploads the file and creates
+the same-run artifact work product, then binds that exact attachment to the
+comment. Concurrent matching invocations on one host serialize by API, company,
+task, run, filename, content hash, and media type. On retry, the helper reuses
+the server's immutable same-run attachment record instead of uploading a second
+copy. A retry from a different host is still subject to server-side attachment
+admission and should not be run concurrently.
+
+If the upload connection ends without an HTTP response, the helper records that
+ambiguous outcome locally. The same command polls briefly for Paperclip's
+immutable attachment record and otherwise stops instead of blindly creating a
+duplicate. Retry later. Use `--retry-unknown-upload` only after establishing
+that the first upload did not commit; this explicit override accepts the risk of
+creating a duplicate file.
+
+The binding is durable Paperclip state, but it is not proof of external
+delivery—or even proof that the current run has an active external-chat origin.
+For an authorized active chat-origin run, Paperclip keeps this selection
+internal until it selects the run's final response, then attempts the provider
+publication. The final assistant response may use different prose from
+`--chat-comment`.
+
+Treat the helper's exit status as confirmation that the Paperclip attachment,
+work product, and requested comment binding were saved. Use neutral final prose
+such as “I prepared the requested image.” Do not claim the file is shown above,
+attached, queued, or delivered. If the bind step fails after upload, say that
+the artifact was saved to the Paperclip task but was **not** bound to the
+response comment; never also claim that it appears above or is attached.
+
+Do not infer sharing intent from other files on the task or bind every
+attachment from a run. Only the file passed with `--chat-comment` is eligible
+for external publication; unbound artifacts remain Paperclip-only.

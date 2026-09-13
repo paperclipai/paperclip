@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
+import type { PaperclipQuestionResponse, PaperclipQuestionSet } from "@paperclipai/adapter-utils";
+import { QuestionForm, QuestionResponseSummary } from "@/components/task-chat/QuestionForm";
+import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { Button } from "@/components/ui/button";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { IssueChatThread } from "@/components/IssueChatThread";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
@@ -494,6 +499,121 @@ export const SuggestedTasksRejected: Story = {
       </ScenarioCard>
     </StoryFrame>
   ),
+};
+
+const composerQuestions: PaperclipQuestionSet = {
+  schema: "paperclip.question_set.v1",
+  title: "Express app — scope",
+  questions: [
+    {
+      id: "storage",
+      prompt: "Does it need to store anything?",
+      answerMode: "single_select",
+      required: true,
+      options: [
+        { id: "memory", label: "No — in-memory is fine", description: "Fastest to something running; state dies on restart." },
+        { id: "sqlite", label: "SQLite file", description: "Real persistence, zero infrastructure. Good default for a first version." },
+        { id: "postgres", label: "Postgres", description: "Needs a database to point at." },
+      ],
+      customAnswer: { enabled: true },
+    },
+    {
+      id: "features",
+      prompt: "Which features should it include?",
+      helpText: "Choose all that apply, then click Next.",
+      answerMode: "multi_select",
+      required: true,
+      options: [
+        { id: "auth", label: "Sign in" },
+        { id: "search", label: "Search" },
+        { id: "uploads", label: "File uploads" },
+      ],
+    },
+    {
+      id: "timing",
+      prompt: "When should we start?",
+      answerMode: "single_select",
+      required: true,
+      options: [
+        { id: "now", label: "Now" },
+        { id: "later", label: "Later" },
+      ],
+    },
+  ],
+};
+
+function InteractiveComposerQuestions() {
+  const [response, setResponse] = useState<PaperclipQuestionResponse | null>(null);
+  const [open, setOpen] = useState(true);
+  const [reset, setReset] = useState(0);
+  return (
+    <div className="mx-auto max-w-2xl space-y-4">
+      {response ? (
+        <div role="status" className="space-y-3">
+          <p className="text-sm font-medium">Answers submitted</p>
+          <QuestionResponseSummary questionSet={composerQuestions} response={response} />
+        </div>
+      ) : null}
+      <TaskChatComposer
+        onAdd={() => {}}
+        workMode="standard"
+        takeover={open ? {
+          id: `composer-questions-${reset}`,
+          label: composerQuestions.title!,
+          pendingCount: 1,
+          inlineSkip: true,
+          content: <QuestionForm
+            key={reset}
+            id="composer-questions"
+            questionSet={composerQuestions}
+            onSubmit={(next) => { setResponse(next); setOpen(false); }}
+          />,
+          onDismiss: () => setOpen(false),
+          onSkip: () => setOpen(false),
+        } : null}
+      />
+      <Button variant="outline" onClick={() => { setResponse(null); setReset((value) => value + 1); setOpen(true); }}>
+        Restart questions
+      </Button>
+    </div>
+  );
+}
+
+/** Single choices advance, while Other, multi-select, and final submission wait. */
+export const ComposerQuestionsAutoAdvance: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Composer questions"
+        description="Selected rows are lightly highlighted. Choose a single option to see a quick selection confirmation, then advance. Other stays open for typing. Multi-select waits for Next, and the last question waits for Submit answers."
+      >
+        <InteractiveComposerQuestions />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ComposerQuestionsAutoAdvanceVerified: Story = {
+  ...ComposerQuestionsAutoAdvance,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("radio", { name: "Other" }));
+    await expect(canvas.getByText("1 of 3")).toBeVisible();
+    await expect(canvas.getByTestId("question-other-answer-composer")).toBeVisible();
+    await userEvent.click(canvas.getByRole("radio", { name: /SQLite file/ }));
+    await waitFor(() => expect(canvas.getByText("2 of 3")).toBeVisible());
+    await userEvent.click(canvas.getByRole("checkbox", { name: "Sign in" }));
+    await userEvent.click(canvas.getByRole("checkbox", { name: "Search" }));
+    await expect(canvas.getByText("2 of 3")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Next" }));
+    await userEvent.click(canvas.getByRole("radio", { name: "Now" }));
+    await expect(canvas.getByText("3 of 3")).toBeVisible();
+    await expect(canvas.queryByText("Answers submitted")).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "Submit answers" }));
+    await expect(canvas.getByText("Answers submitted")).toBeVisible();
+    await expect(canvas.getByText("SQLite file", { exact: true })).toBeVisible();
+    await expect(canvas.getByText("Sign in, Search", { exact: true })).toBeVisible();
+  },
 };
 
 export const AskUserQuestionsPending: Story = {

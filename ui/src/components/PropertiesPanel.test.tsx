@@ -19,8 +19,10 @@ const mockPanelState = vi.hoisted(() => ({
   panelContent: null as unknown,
   panelContentMode: "padded" as const,
   panelVisible: true,
+  panelMaximizeRequested: false,
 }));
 const mockSetPanelVisible = vi.hoisted(() => vi.fn());
+const mockClearPanelMaximizeRequest = vi.hoisted(() => vi.fn());
 
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
@@ -31,6 +33,9 @@ vi.mock("../context/PanelContext", () => ({
     closePanel: vi.fn(),
     setPanelVisible: mockSetPanelVisible,
     togglePanelVisible: vi.fn(),
+    panelMaximizeRequested: mockPanelState.panelMaximizeRequested,
+    requestPanelMaximize: vi.fn(),
+    clearPanelMaximizeRequest: mockClearPanelMaximizeRequest,
   }),
 }));
 
@@ -74,6 +79,8 @@ describe("PropertiesPanel", () => {
     document.body.appendChild(container);
     window.localStorage.clear();
     mockSetPanelVisible.mockClear();
+    mockClearPanelMaximizeRequest.mockClear();
+    mockPanelState.panelMaximizeRequested = false;
   });
 
   afterEach(() => {
@@ -149,6 +156,20 @@ describe("PropertiesPanel", () => {
 
       expect(aside.className).not.toContain("border-l");
       expect(container.querySelector("section")?.getAttribute("data-maximized")).toBe("true");
+    });
+
+    it("consumes a pending deep-link maximize request on mount (LOOA-2181)", async () => {
+      mockPanelState.panelMaximizeRequested = true;
+      await renderPanel({ taskDetailLayout: true });
+      expect(mockClearPanelMaximizeRequest).toHaveBeenCalled();
+      expect(container.querySelector("section")?.getAttribute("data-maximized")).toBe("true");
+    });
+
+    it("holds a deep-link maximize request while the panel is hidden", async () => {
+      mockPanelState.panelMaximizeRequested = true;
+      await renderPanel({ panelVisible: false });
+      expect(mockClearPanelMaximizeRequest).not.toHaveBeenCalled();
+      expect(container.querySelector("section")?.getAttribute("data-maximized")).not.toBe("true");
     });
 
     it("uses an X to close the Streamlined task-detail sidebar", async () => {

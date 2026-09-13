@@ -86,7 +86,13 @@ vi.mock("../live/live-session.js", () => ({
 }));
 
 import { runnerWorkflowCase } from "./workflow-catalog.js";
-import { executeLiveRunnerWorkflow } from "./live-workflow-executor.js";
+import { CapabilityMockControlPlaneAdapter } from "../mock-core/capability-mock-control-plane-adapter.js";
+import {
+  advanceDelegationReturnMockState,
+  executeLiveRunnerWorkflow,
+  scorableLiveWorkflowCalls,
+  unexpectedLiveWorkflowCalls,
+} from "./live-workflow-executor.js";
 import {
   RUNNER_LIVE_CANDIDATE_SLOTS,
   type RunnerLiveScheduleEntry,
@@ -122,6 +128,117 @@ describe("live workflow executor infrastructure failures", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("allows read-only context support without permitting extra effects", () => {
+    const calls = [
+      "get_task_context",
+      "get_task_history",
+      "finish_task",
+      "create_task",
+    ];
+    expect(unexpectedLiveWorkflowCalls(calls, ["finish_task"])).toEqual([
+      "create_task",
+    ]);
+    expect(scorableLiveWorkflowCalls(calls, ["finish_task"])).toEqual([
+      "finish_task",
+      "create_task",
+    ]);
+  });
+
+  it("keeps required read-only calls in trajectory scoring", () => {
+    expect(
+      scorableLiveWorkflowCalls(
+        ["get_task_context", "get_task_history"],
+        ["get_task_context"],
+      ),
+    ).toEqual(["get_task_context"]);
+  });
+
+  it("advances a delegated child through the authoritative return wake", async () => {
+    const grants = ["delegation:tasks:create", "dependencies:write"];
+    const adapter = new CapabilityMockControlPlaneAdapter({
+      actors: [
+        {
+          id: "actor-1",
+          companyId: "company-1",
+          name: "Workflow eval actor",
+          role: "engineer",
+          status: "active",
+          budgetId: "budget-actor-1",
+          capabilityGrants: grants,
+        },
+      ],
+    });
+    await adapter.start();
+    await adapter.openFixtureRun({
+      identity: {
+        runId: "delegation-parent",
+        sessionId: "delegation-session",
+        companyId: "company-1",
+        issueId: "task-1",
+        agentId: "actor-1",
+      },
+      backendKind: "runner",
+      capabilities: grants,
+    });
+    const created = await adapter.applyCommand({
+      runId: "delegation-parent",
+      idempotencyKey: "create-child",
+      command: {
+        kind: "create_task",
+        title: "Independent verification",
+        description: "Verify the external boundary.",
+        assigneeActorId: "actor-1",
+      },
+    });
+    const childTaskId = created.entityRefs
+      .find((entityRef) => entityRef.startsWith("task:"))!
+      .slice("task:".length);
+    await adapter.applyCommand({
+      runId: "delegation-parent",
+      idempotencyKey: "set-child-dependency",
+      command: {
+        kind: "set_dependencies",
+        blockedByTaskIds: [childTaskId],
+      },
+    });
+
+    const advanced = await advanceDelegationReturnMockState({
+      mockState: adapter.serialize(),
+      parentRunId: "delegation-parent",
+      parentSessionId: "delegation-session",
+      parentTaskId: "task-1",
+      capabilities: grants,
+    });
+    expect(advanced).not.toBeNull();
+    const restored = CapabilityMockControlPlaneAdapter.restore(
+      advanced!.mockState,
+    );
+    expect(restored.snapshot().tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: childTaskId, status: "done" }),
+        expect.objectContaining({
+          id: "task-1",
+          status: "in_progress",
+          checkoutRunId: advanced!.returnRunId,
+        }),
+      ]),
+    );
+    expect(restored.snapshot().blockers).toEqual([]);
+    expect(restored.snapshot().wakes).toContainEqual(
+      expect.objectContaining({
+        taskId: "task-1",
+        reason: "blockers_resolved",
+      }),
+    );
+    await expect(
+      restored.applyCommand({
+        runId: advanced!.returnRunId,
+        idempotencyKey: "finish-parent",
+        command: { kind: "finish_task", summary: "Return completed." },
+      }),
+    ).resolves.toMatchObject({ disposition: "applied" });
   });
 
   it("classifies shutdown failures as retryable infrastructure errors and redacts them", async () => {
@@ -217,6 +334,57 @@ describe("live workflow executor infrastructure failures", () => {
         }
       }
     }
+  });
+
+  it("keeps launch-only smoke exceptions explicit and rejects a wrong marker", async () => {
+    liveSessionMocks.snapshot.mockReturnValue({
+      sessionId: "session-smoke-marker",
+      authority: {},
+      mockState: JSON.stringify({ tasks: [] }),
+      transcript: [
+        {
+          id: "assistant-smoke-marker",
+          role: "assistant",
+          text: "a different response",
+        },
+      ],
+      evidence: [],
+      authorizationRecords: [],
+      attempts: [],
+      usageLedger: [],
+      stateHistory: [],
+      workspaceDiffs: [],
+    });
+    const candidate = RUNNER_LIVE_CANDIDATE_SLOTS[0]!.candidates[0]!;
+    const entry: RunnerLiveScheduleEntry = {
+      executionId: "local-smoke-marker",
+      caseId: "final-response",
+      candidateId: candidate.id,
+      slotId: candidate.slotId,
+      repetition: 1,
+      providerTrace: "raw",
+      budget: candidate.budget,
+    };
+
+    const observation = await executeLiveRunnerWorkflow({
+      entry,
+      candidate,
+      evalCase: runnerWorkflowCase(entry.caseId),
+      allowMissingUsage: true,
+      expectedAssistantText: "PAPERCLIP_LOCAL_PROVIDER_SMOKE_OK",
+      promptOverride: "Return the smoke marker.",
+    });
+
+    expect(liveSessionMocks.sendMessage).toHaveBeenCalledWith(
+      "Return the smoke marker.",
+      { allowMissingUsage: true },
+    );
+    expect(observation.presentation.checks).toContainEqual(
+      expect.objectContaining({
+        id: "expected-assistant-text",
+        passed: false,
+      }),
+    );
   });
 
   it("fails the candidate budget and stops before a paid continuation", async () => {

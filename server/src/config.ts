@@ -1,10 +1,12 @@
 import { readConfigFile } from "./config-file.js";
+import { parseChatWebhookPublicBaseUrl } from "./chat-webhook-public-url.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
+import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -36,10 +38,14 @@ if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
 }
 
 const CWD_ENV_PATH = resolve(process.cwd(), ".env");
-const isSameFile = existsSync(CWD_ENV_PATH) && existsSync(PAPERCLIP_ENV_FILE_PATH)
+const cwdEnvExists = existsSync(CWD_ENV_PATH);
+const isSameFile = cwdEnvExists && existsSync(PAPERCLIP_ENV_FILE_PATH)
   ? realpathSync(CWD_ENV_PATH) === realpathSync(PAPERCLIP_ENV_FILE_PATH)
   : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
-if (!isSameFile && existsSync(CWD_ENV_PATH)) {
+if (shouldLoadWorkingDirectoryEnv({
+  cwdEnvExists,
+  isPaperclipEnvFile: isSameFile,
+})) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
 
@@ -59,6 +65,7 @@ export interface Config {
   allowedHostnames: string[];
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
+  chatWebhookPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
@@ -315,6 +322,9 @@ export function loadConfig(): Config {
     allowedHostnames,
     authBaseUrlMode,
     authPublicBaseUrl,
+    chatWebhookPublicBaseUrl: parseChatWebhookPublicBaseUrl(
+      process.env.PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL,
+    ),
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,

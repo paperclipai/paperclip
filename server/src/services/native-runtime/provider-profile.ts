@@ -9,7 +9,7 @@ import {
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
 
-export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.17" as const;
+export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.29" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
@@ -403,7 +403,7 @@ export function resolvePaperclipRunnerProviderProfile(
     };
   }
 
-  const acpxAgent = config.acpxAgent;
+  const acpxAgent = config.acpxAgent ?? "claude";
   if (acpxAgent !== "claude" && acpxAgent !== "codex") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
@@ -411,7 +411,7 @@ export function resolvePaperclipRunnerProviderProfile(
     );
   }
   const qualifiedModel = QUALIFIED_ACPX_RUNNER_MODELS[acpxAgent];
-  if (model !== qualifiedModel) {
+  if (acpxAgent === "codex" && model !== qualifiedModel) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
       `Paperclip Runner ACPX ${acpxAgent} requires exact model ${qualifiedModel}.`,
@@ -420,7 +420,7 @@ export function resolvePaperclipRunnerProviderProfile(
   return {
     provider: "acpx",
     backend: "acpx_runtime",
-    model,
+    model: model || qualifiedModel,
     acpxAgent,
   };
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CapabilityFixtureSeed } from "../mock-core/capability-control-plane-types.js";
 import { CapabilityMockControlPlaneAdapter } from "../mock-core/capability-mock-control-plane-adapter.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
+import { CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS } from "./discovery.js";
 import { CapabilitySemanticDispatcher } from "./dispatcher.js";
 import { createCapabilityProviderNeutralBinding } from "./provider-neutral.js";
 
@@ -42,10 +43,17 @@ async function running(
 }
 
 describe("Capability semantic catalog and authorization", () => {
+  it("accepts the conventional ten-result capability discovery limit", () => {
+    expect(
+      CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS[0].inputSchema.properties.limit
+        .maximum,
+    ).toBe(10);
+  });
+
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(28);
+    expect(names).toHaveLength(33);
     expect(names).toContain("get_task_context");
     expect(names).toContain("finish_task");
     expect(names).not.toContain("checkout_task");
@@ -102,6 +110,15 @@ describe("Capability semantic catalog and authorization", () => {
     const found = dispatcher.discoverTools(OPEN.identity.runId, "create child task approval secret admin");
     expect(found.operations).toEqual([]);
     expect(JSON.stringify(found.operations)).not.toMatch(/create_task|approval|secret|administer_company/);
+    const before = adapter.snapshot().revision;
+    for (const operationId of ["create_project", "list_project_repositories", "list_projects"] as const) {
+      expect(dispatcher.listTools(OPEN.identity.runId).map((tool) => tool.name)).not.toContain(operationId);
+      expect(await dispatcher.dispatch({
+        runId: OPEN.identity.runId, callId: `unbound-${operationId}`, operationId,
+        input: operationId === "create_project" ? { name: "Unbound", idempotencyKey: "unbound-project" } : {},
+      })).toMatchObject({ ok: false, denial: { code: "scenario_denied" } });
+    }
+    expect(adapter.snapshot().revision).toBe(before);
   });
 
   it("executes a granted optional operation through the mock port", async () => {

@@ -35,6 +35,7 @@ vi.mock("./AuditFeed", () => ({
       data-agent={props.lockedAgentId}
       data-run={props.lockedRunId}
       data-entity={JSON.stringify(props.lockedEntity ?? null)}
+      data-action={props.actionDomain}
     />
   ),
 }));
@@ -93,7 +94,7 @@ describe("AuditHub", () => {
   }
 
   it("uses one clear section model and passes deep-link scopes to Activity", () => {
-    currentSearch = "mode=agents&agentId=agent-1&runId=run-1";
+    currentSearch = "mode=agents&agentId=agent-1&runId=run-1&action=tool_";
     render("activity");
 
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(5);
@@ -107,6 +108,7 @@ describe("AuditHub", () => {
     expect(feed?.dataset.agent).toBe("agent-1");
     expect(feed?.dataset.run).toBe("run-1");
     expect(feed?.dataset.entity).toBe(JSON.stringify(null));
+    expect(feed?.dataset.action).toBe("tool_");
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Audit" }]);
   });
 

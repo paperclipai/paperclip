@@ -292,6 +292,58 @@ describe("issue attachment routes", () => {
     expect(res.body.contentType).toBe("application/zip");
   });
 
+  it("removes a newly stored object when attachment registration is rejected", async () => {
+    const storage = createStorageService();
+    const { HttpError } = await vi.importActual<
+      typeof import("../errors.js")
+    >("../errors.js");
+    mockIssueService.createAttachment.mockRejectedValue(
+      new HttpError(422, "Attachment selection limit reached", {
+        code: "chat_attachment_selection_limit_exceeded",
+      }),
+    );
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(
+        "/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments",
+      )
+      .attach("file", Buffer.from("overflow"), {
+        filename: "overflow.txt",
+        contentType: "text/plain",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "Attachment selection limit reached",
+      details: { code: "chat_attachment_selection_limit_exceeded" },
+    });
+    expect(storage.deleteObject).toHaveBeenCalledWith(
+      "company-1",
+      "issues/11111111-1111-4111-8111-111111111111/overflow.txt",
+    );
+  });
+
+  it("retains a stored object when attachment registration has an ambiguous server error", async () => {
+    const storage = createStorageService();
+    mockIssueService.createAttachment.mockRejectedValue(
+      new Error("connection lost after commit"),
+    );
+
+    const app = await createApp(storage);
+    await request(app)
+      .post(
+        "/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments",
+      )
+      .attach("file", Buffer.from("ambiguous"), {
+        filename: "ambiguous.txt",
+        contentType: "text/plain",
+      })
+      .expect(500);
+
+    expect(storage.deleteObject).not.toHaveBeenCalled();
+  });
+
   it("accepts default video uploads for issue attachments", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({

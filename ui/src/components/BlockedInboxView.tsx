@@ -349,10 +349,10 @@ function BlockedInboxRow({
 
   const mobileMeta = (
     <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
-      <span data-testid="blocked-row-age-mobile">{stoppedAge}</span>
+      {presentation === "legacy" && <span data-testid="blocked-row-age-mobile">{stoppedAge}</span>}
       {ownerName ? (
         <>
-          <span aria-hidden="true">·</span>
+          {presentation === "legacy" && <span aria-hidden="true">·</span>}
           <span
             className={cn(isAgent ? "font-medium text-foreground/90" : null)}
             data-testid="blocked-row-owner-mobile"
@@ -397,6 +397,7 @@ function BlockedInboxRow({
         />
       }
       mobileMeta={mobileMeta}
+      mobileTitleMeta={presentation === "task" ? <span data-testid="blocked-row-age-mobile">{stoppedAge}</span> : undefined}
       desktopTrailing={desktopTrailing}
       trailingMeta={presentation === "task" && showUpdatedColumn ? stoppedAge : null}
     />

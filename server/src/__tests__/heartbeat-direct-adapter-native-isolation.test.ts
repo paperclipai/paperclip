@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { sql } from "drizzle-orm";
 import {
   agents,
@@ -25,7 +33,9 @@ import {
 import { heartbeatService } from "../services/heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+  ? describe
+  : describe.skip;
 const DIRECT_ADAPTERS = [
   ["codex_local", "codex"],
   ["claude_local", "claude"],
@@ -55,11 +65,15 @@ async function waitForRunToFinish(
 describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let tempDb: Awaited<
+    ReturnType<typeof startEmbeddedPostgresTestDatabase>
+  > | null = null;
   const execute = vi.fn<ServerAdapterModule["execute"]>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-direct-adapter-isolation-");
+    tempDb = await startEmbeddedPostgresTestDatabase(
+      "heartbeat-direct-adapter-isolation-",
+    );
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     for (const [adapterType] of DIRECT_ADAPTERS) {
@@ -79,13 +93,16 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
 
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
-    const runStatuses = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+    const runStatuses = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns);
     const pendingRuns = runStatuses.filter(
       (run) => run.status === "queued" || run.status === "running",
     );
     expect(pendingRuns).toEqual([]);
     vi.clearAllMocks();
-    await db.execute(sql.raw(`
+    await db.execute(
+      sql.raw(`
       TRUNCATE TABLE
         "native_run_finalizations",
         "status_decisions",
@@ -103,11 +120,12 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
         "agents",
         "companies"
       RESTART IDENTITY CASCADE
-    `));
+    `),
+    );
   });
 
   afterAll(async () => {
-    await heartbeat.drainActiveRunExecutions();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     for (const [adapterType] of DIRECT_ADAPTERS) {
       unregisterServerAdapter(adapterType);
     }
@@ -119,7 +137,8 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
     async (adapterType, provider) => {
       const companyId = randomUUID();
       const agentId = randomUUID();
-      const directProofJson = '{"schema":"direct-proof.v1","value":"byte-stable"}';
+      const directProofJson =
+        '{"schema":"direct-proof.v1","value":"byte-stable"}';
       execute.mockResolvedValue({
         exitCode: 0,
         signal: null,
@@ -161,7 +180,10 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
         runtimeMode: "legacy",
         nativePhase: null,
       });
-      const persistedResult = finished?.resultJson as Record<string, unknown> | null;
+      const persistedResult = finished?.resultJson as Record<
+        string,
+        unknown
+      > | null;
       expect(persistedResult?.directProofJson).toBe(directProofJson);
 
       const nativeRows = await Promise.all([

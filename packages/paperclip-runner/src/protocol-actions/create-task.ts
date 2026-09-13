@@ -20,7 +20,7 @@ export const createTaskAction = {
     "idempotency": "required",
     "disabledByDefault": false,
     "realBindingStatus": "live_codex",
-    "realServiceBinding": "issues.createChild",
+    "realServiceBinding": "issues.create / issues.createChild",
     "prpEvidence": "semantic-operation item event plus company-entity state diff and audit record",
     "prpBindingStatus": "bound",
     "legacyAliases": [
@@ -28,8 +28,8 @@ export const createTaskAction = {
     ]
   },
   "documentation": {
-    "title": "Create child task",
-    "description": "Create one durable standard child under the active task.",
+    "title": "Create task",
+    "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution.",
     "note": null
   },
   "examples": {
@@ -76,8 +76,8 @@ export const createTaskAction = {
       "schema": "paperclip.semantic-tool.v1",
       "operationId": "create_task",
       "version": 1,
-      "title": "Create child task",
-      "description": "Create one durable standard child under the active task. Use only when a real ownership, parallelism, dependency, review, or lifecycle boundary justifies delegation.",
+      "title": "Create task",
+      "description": "Create a project task from a conversation, or a child from an ordinary task. Persist initialPlan before execution.",
       "exposure": "optional",
       "requiredClaims": [
         "delegation:tasks:create"
@@ -134,6 +134,21 @@ export const createTaskAction = {
             },
             "maxItems": 200,
             "uniqueItems": true
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project ID for the task."
+          },
+          "initialPlan": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200000,
+            "description": "Relevant markdown plan saved on the new task before execution starts."
           }
         },
         "required": [
@@ -184,13 +199,42 @@ export const createTaskAction = {
           "task": {
             "type": "object",
             "properties": {
-              "id": { "type": "string", "minLength": 1 },
-              "identifier": { "type": ["string", "null"] },
-              "parentId": { "type": "string", "minLength": 1 },
-              "status": { "type": "string", "minLength": 1 },
-              "assigneeActorId": { "type": ["string", "null"] }
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "identifier": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parentId": {
+                "type": ["string", "null"],
+                "minLength": 1
+              },
+              "projectId": {
+                "type": ["string", "null"],
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "minLength": 1
+              },
+              "assigneeActorId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
             },
-            "required": ["id", "identifier", "parentId", "status", "assigneeActorId"],
+            "required": [
+              "id",
+              "identifier",
+              "parentId",
+              "status",
+              "assigneeActorId"
+            ],
             "additionalProperties": false
           }
         },

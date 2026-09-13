@@ -244,7 +244,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     );
     expect(dispatchedRequests).toHaveLength(1);
     const dispatchedRun = runs.find((run) => run.id === dispatchedRequests[0]!.runId);
-    expect(dispatchedRun).toMatchObject({ status: "succeeded", agentId });
+    expect(dispatchedRun).toMatchObject({
+      status: "succeeded",
+      agentId,
+      contextSnapshot: {
+        source: "native_status_decision",
+        statusDecisionSource: "native_status_decision",
+      },
+    });
 
     const persistedIntents = await db.select({
       id: agentWakeupRequests.id,
@@ -363,11 +370,17 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .then((rows) => rows[0]?.count ?? 0);
     expect(blockedRunsBeforeResolution).toBe(0);
 
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId, companyId, issueId: blockedIssueId,
+      authorType: "user", authorUserId: "responsible-user",
+      body: "Explain the current dependency without starting blocked work.",
+    });
     const interactionWake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
-      payload: { issueId: blockedIssueId, commentId: randomUUID() },
+      payload: { issueId: blockedIssueId, commentId },
       contextSnapshot: {
         issueId: blockedIssueId,
         wakeReason: "issue_commented",

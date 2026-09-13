@@ -6,7 +6,7 @@ export interface RuntimeToolsTokenClaims {
   company_id: string;
   run_id: string;
   responsible_user_id: string;
-  scope: "connection_intents";
+  scope: "connection_intents" | "github_credentials";
   iat: number;
   exp: number;
   instance_id: string;
@@ -44,6 +44,7 @@ export function createRuntimeToolsToken(input: {
   companyId: string;
   runId: string;
   responsibleUserId: string;
+  scope?: RuntimeToolsTokenClaims["scope"];
 }) {
   if (!secret()) return null;
   const now = Math.floor(Date.now() / 1000);
@@ -53,9 +54,10 @@ export function createRuntimeToolsToken(input: {
     company_id: input.companyId,
     run_id: input.runId,
     responsible_user_id: input.responsibleUserId,
-    scope: "connection_intents",
+    scope: input.scope ?? "connection_intents",
     iat: now,
-    exp: now + TOKEN_TTL_SECONDS,
+    // Broker tokens remain scoped to a live run, which is rechecked on every use.
+    exp: now + (input.scope === "github_credentials" ? 30 * 24 * 60 * 60 : TOKEN_TTL_SECONDS),
     instance_id: instanceId,
   };
   const signingInput = `${encode({ alg: "HS256", typ: "JWT" })}.${encode(claims)}`;
@@ -65,7 +67,7 @@ export function createRuntimeToolsToken(input: {
     : null;
 }
 
-export function verifyRuntimeToolsToken(token: string): RuntimeToolsTokenClaims | null {
+export function verifyRuntimeToolsToken(token: string, scope: RuntimeToolsTokenClaims["scope"] = "connection_intents"): RuntimeToolsTokenClaims | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   let header: Record<string, unknown>;
@@ -86,7 +88,7 @@ export function verifyRuntimeToolsToken(token: string): RuntimeToolsTokenClaims 
     typeof claims.sub !== "string"
     || typeof claims.run_id !== "string"
     || typeof claims.responsible_user_id !== "string"
-    || claims.scope !== "connection_intents"
+    || claims.scope !== scope
     || typeof claims.iat !== "number"
     || typeof claims.exp !== "number"
     || claims.exp <= Math.floor(Date.now() / 1000)

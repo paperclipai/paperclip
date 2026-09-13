@@ -17,7 +17,7 @@ test("generated Capability inventory has full source coverage", async () => {
     readRows("eval-traceability.yaml"),
   ]);
 
-  assert.equal(capabilities.length, 152);
+  assert.equal(capabilities.length, 155);
   assert.equal(tools.length, 42);
   assert.equal(evals.length, 106);
   assert.equal(new Set(evals.map((row) => row.group)).size, 16);

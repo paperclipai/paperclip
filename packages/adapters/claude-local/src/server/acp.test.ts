@@ -1,9 +1,23 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+
+// Wrap the shared staging seam in a call-recording spy that still delegates to
+// the real implementation (a runner-backed sandbox test exercises it end to
+// end against the local sandbox stand-in). This lets a test assert the exact
+// `assets` the Claude remote managed-home seam sends it without changing any
+// real behavior for the other tests.
+vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
+  const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
+  return {
+    ...actual,
+    prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
+  };
+});
+import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
 import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,
@@ -237,6 +251,28 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("claude_local ACP lane", () => {
+  it("uses the same default model in ACP startup and session identity", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-default-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(root, {
+      onMeta: async (payload) => { meta.push(payload); },
+    }));
+    expect(result.exitCode).toBe(0);
+    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-5");
+  });
+
+  it("keeps ACP model precedence consistent with CLI and provider overrides", () => {
+    expect(buildClaudeAcpConfig({ model: "claude-sonnet-4-5", env: { ANTHROPIC_MODEL: "opus" } }))
+      .toMatchObject({ model: "claude-sonnet-4-5", env: { ANTHROPIC_MODEL: "claude-sonnet-4-5" } });
+    expect(buildClaudeAcpConfig({}, { ANTHROPIC_MODEL: "custom-model" }))
+      .toMatchObject({ model: "custom-model", env: { ANTHROPIC_MODEL: "custom-model" } });
+    expect(buildClaudeAcpConfig({}, { CLAUDE_CODE_USE_BEDROCK: "1" }).model).toBe("");
+    expect(buildClaudeAcpConfig({ env: { CLAUDE_CODE_USE_VERTEX: "1" } }).model).toBe("");
+  });
+
   it("maps Claude config to the ACPX Claude target", () => {
     expect(buildClaudeAcpConfig({
       engine: "acp",
@@ -265,7 +301,7 @@ describe("claude_local ACP lane", () => {
     expect(nodeVersionMeetsClaudeAcpMinimum()).toBe(true);
   });
 
-  it("defaults to ACP when prerequisites pass and falls back to CLI only for auto resolution", async () => {
+  it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-default-");
     const commandPath = path.join(root, "bin", "claude-agent-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
@@ -293,44 +329,44 @@ describe("claude_local ACP lane", () => {
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("Node"),
+      unavailableReason: expect.stringContaining("Node"),
     });
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { engine: "acp", agentCommand: "/missing/claude-agent-acp" },
         executionTarget: null,
       }),
-    ).resolves.toEqual({ engine: "acp", explicit: true });
+    ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
-  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+  it("requires explicit CLI selection for local filesystem or network scope", async () => {
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { filesystemScope: "workspace" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("spawn-level confinement"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { engine: "acp", filesystemScope: "workspace" },
         executionTarget: null,
       }),
-    ).rejects.toThrow("ACP confinement is not supported");
+    ).resolves.toMatchObject({ engine: "acp", unavailableReason: expect.stringContaining("ACP confinement is not supported") });
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { networkScope: "deny" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("network scope"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -366,7 +402,7 @@ describe("claude_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: false });
   });
 
-  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+  it("reports unavailable ACP for one-shot sandbox auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -379,13 +415,13 @@ describe("claude_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
-  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+  it("reports unavailable ACP for non-sandbox remote auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -407,9 +443,9 @@ describe("claude_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+      unavailableReason: expect.stringContaining("sandbox remote targets only"),
     });
   });
 
@@ -512,6 +548,193 @@ describe("claude_local ACP lane", () => {
     const settings = JSON.parse(await fs.readFile(path.join(root, ".claude", "settings.local.json"), "utf8"));
     expect(settings.permissions.defaultMode).toBe("default");
     expect(settings.permissions.allow).toEqual(expect.arrayContaining(["Bash(curl:*)", "Bash(env)"]));
+  });
+
+  it("stages the skill bundle as a no-follow-symlinks asset for a remote ACP run, and points the prompt at the in-sandbox skill root", async () => {
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockClear();
+    const root = await makeTempRoot("paperclip-claude-acp-skills-remote-");
+    const skill = await createRuntimeSkill(root);
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+
+    const runtimes: FakeRuntime[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: { desiredSkills: [skill.key] },
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipTaskMarkdown: "Task context",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+
+    // The real seam sent the bundle to the shared staging call with
+    // `followSymlinks: false`: the bundle holds a plain copy of each skill's
+    // files, so staging never needs to carry a symbolic link's target
+    // content, and a link planted in the bundle after materialization must
+    // not cross into the sandbox.
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    const skillsAsset = stageArgs.assets?.find((asset) => asset.key === "skills");
+    expect(skillsAsset).toMatchObject({ followSymlinks: false });
+
+    // The prompt names the in-sandbox skill root, not the host bundle dir...
+    const prompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
+    const skillRootMatch = prompt.match(/Skill root: (\S+)/);
+    expect(skillRootMatch).toBeTruthy();
+    const inSandboxSkillRoot = skillRootMatch![1]!;
+    expect(inSandboxSkillRoot).not.toBe(skillsAsset!.localDir);
+    expect(prompt).not.toContain(String(skillsAsset!.localDir));
+    // ...and it really landed there (local runner extracts to the asset dir).
+    await expect(
+      fs.readFile(path.join(inSandboxSkillRoot, "review", "SKILL.md"), "utf8"),
+    ).resolves.toContain("review skill");
+  });
+
+  it("stages no skills asset for a remote ACP run with no selected skill", async () => {
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockClear();
+    const root = await makeTempRoot("paperclip-claude-acp-skills-remote-empty-");
+    // An available-but-undesired skill, so the run resolves a real (empty)
+    // selection instead of falling back to the package's own default skill
+    // set (that fallback only fires when `paperclipRuntimeSkills` is absent).
+    const skill = await createRuntimeSkill(root);
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+
+    const runtimes: FakeRuntime[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: { desiredSkills: [] },
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect((stageArgs.assets ?? []).some((asset) => asset.key === "skills")).toBe(false);
+    expect(String(runtimes[0]?.startInputs[0]?.text ?? "")).not.toContain("Skill root:");
+  });
+
+  it("stages the skill bundle inside the sandbox but never syncs it back into the host workspace", async () => {
+    // The staged skill bundle lives under `.paperclip-runtime/claude/skills`,
+    // inside the same in-sandbox directory the workspace restore reads. The
+    // restore excludes the whole `.paperclip-runtime` tree
+    // (`sandbox-managed-runtime.ts`'s `restoreExclude` list) for every asset
+    // key alike, so this proves it for the new "skills" asset specifically.
+    const root = await makeTempRoot("paperclip-claude-acp-skills-no-syncback-");
+    const skill = await createRuntimeSkill(root);
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+
+    const runtimes: FakeRuntime[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          paperclipRuntimeSkills: [skill],
+          paperclipSkillSync: { desiredSkills: [skill.key] },
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    // Positive control: the bundle really did land in the sandbox stand-in
+    // during the run, under the in-sandbox skill root the prompt names.
+    const prompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
+    const inSandboxSkillRoot = prompt.match(/Skill root: (\S+)/)![1]!;
+    expect(inSandboxSkillRoot).toContain(path.join(remoteCwd, ".paperclip-runtime"));
+    await expect(
+      fs.readFile(path.join(inSandboxSkillRoot, "review", "SKILL.md"), "utf8"),
+    ).resolves.toContain("review skill");
+    // After the run's workspace restore, the host worktree carries the file the
+    // run wrote inside the workspace proper...
+    await expect(fs.readFile(path.join(localCwd, "hello.txt"), "utf8")).resolves.toBe("hi");
+    // ...but not the staged runtime directory the skill bundle staged into.
+    await expect(fs.access(path.join(localCwd, ".paperclip-runtime"))).rejects.toThrow();
   });
 
   it("passes the exact configured Fable 5.1 ID through ANTHROPIC_MODEL on the ACP lane", async () => {
@@ -954,7 +1177,7 @@ describe("claude_local ACP lane", () => {
     );
   });
 
-  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+  it("reports unavailable ACP for a runner-less sandbox even when the ACP command is set", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -967,9 +1190,9 @@ describe("claude_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 

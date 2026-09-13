@@ -398,7 +398,7 @@ describe("markdown work product review row", () => {
       expect(container.querySelector('article[data-variant="compact"]')).not.toBeNull();
       expect(container.querySelector(`img[src="${imagePath}"]`)).not.toBeNull();
       expect(container.querySelector('a[aria-label="Open on GitHub: Artifact grouping PR"]')).not.toBeNull();
-      expect(container.querySelector('a[aria-label="Open gallery: Artifacts screenshot"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="Open gallery: Artifacts screenshot"]')).not.toBeNull();
     });
 
     const typeSelect = container.querySelector('select[aria-label="Filter artifacts by type"]') as HTMLSelectElement;

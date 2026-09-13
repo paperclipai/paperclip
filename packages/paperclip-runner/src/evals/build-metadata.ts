@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { PAPERCLIP_RUNNER_COMPATIBILITY } from "../compatibility.js";
-import { PRP_PROTOCOL_NAME, PRP_PROTOCOL_VERSION } from "../protocol/replay-contract.js";
+import {
+  PRP_PROTOCOL_MIN_VERSION,
+  PRP_PROTOCOL_NAME,
+  PRP_PROTOCOL_VERSION,
+} from "../protocol/replay-contract.js";
 import { canonicalCapabilitySemanticCatalog } from "../semantic-tools/catalog.js";
 
 export const PAPERCLIP_RUNNER_BUILD_METADATA_SCHEMA =
@@ -41,7 +45,7 @@ export const PAPERCLIP_RUNNER_BUILD_METADATA = Object.freeze({
   }),
   prp: Object.freeze({
     name: PRP_PROTOCOL_NAME,
-    minimumVersion: PRP_PROTOCOL_VERSION,
+    minimumVersion: PRP_PROTOCOL_MIN_VERSION,
     maximumVersion: PRP_PROTOCOL_VERSION,
   }),
   semanticCatalog: Object.freeze({

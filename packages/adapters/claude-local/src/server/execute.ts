@@ -50,6 +50,7 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
 import {
@@ -92,10 +93,9 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
-  formatClaudeAcpFallbackMessage,
   resolveClaudeExecutionEngineForRun,
 } from "./acp.js";
 
@@ -403,20 +403,20 @@ export async function runClaudeLogin(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
-  if (engineSelection.engine === "acp") {
-    try {
-      return await executeClaudeAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatClaudeAcpFallbackMessage(`Claude ACP startup failed: ${reason}`),
-      );
-    }
+  if (engineSelection.unavailableReason) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_engine_unavailable",
+      errorMessage: engineSelection.unavailableReason,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
   }
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
+  if (engineSelection.engine === "acp") {
+    return executeClaudeAcp(ctx);
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
@@ -429,9 +429,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -490,6 +491,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  const modelEnv = executionTargetIsRemote ? env : effectiveEnv;
+  const model = resolveClaudeModel(config.model, modelEnv);
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
@@ -562,7 +565,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     servers: runtimeMcpServers,
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
-  const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
+  const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -600,9 +603,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
-    !hasExplicitClaudeConfigDir;
+    (!hasExplicitClaudeConfigDir || Boolean(config.managedAiConnection));
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
-    ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
+    ? config.managedAiConnection ? sharedClaudeConfigDir : await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
@@ -845,6 +848,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
     resumedSession: Boolean(sessionId),
+    conversationMode: context.conversationMode === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: taskContextNote.length > 0,
@@ -870,7 +874,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
   const passesConfiguredModel = Boolean(
-    model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model)),
+    model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
   );
 
   const buildClaudeArgs = (
@@ -878,6 +882,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
+    if (config.managedAiConnection) args.push("--setting-sources", "user");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,

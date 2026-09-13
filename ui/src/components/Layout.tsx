@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
@@ -66,6 +66,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "browse",
   "connections",
   "connect",
+  "chat",
   "vercel-connect",
   "review",
   "attention",
@@ -74,7 +75,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "app",
 ]);
 
-export function Layout() {
+export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -200,7 +201,7 @@ export function Layout() {
       />
     )
   ) : null;
-  const secondarySidebar = streamlinedUiEnabled && shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  const secondarySidebar = shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <RoutineContextualSidebar routineId={routineId} />
@@ -209,8 +210,7 @@ export function Layout() {
   ) : sharedSecondarySidebar;
   const hasSecondarySidebar = secondarySidebar != null;
   const keepsPrimarySidebar = streamlinedUiEnabled && hasSecondarySidebar && (
-    shellRoute.builtInContextualSurface === "settings"
-    || shellRoute.builtInContextualSurface === "skills"
+    shellRoute.builtInContextualSurface === "skills"
     || shellRoute.builtInContextualSurface === "agent"
     || shellRoute.builtInContextualSurface === "routine"
     || isAppsRoute
@@ -235,7 +235,7 @@ export function Layout() {
       const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   });
   const keyboardShortcutsEnabled = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -654,14 +654,12 @@ export function Layout() {
                 {hasSecondarySidebar ? (
                   <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
                 ) : (
-                  <Sidebar />
+                  <Sidebar>{sidebarSections}</Sidebar>
                 )}
               </div>
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
-              serverGit={health?.serverInfo?.git}
-              version={health?.version}
               forceExpanded={replacesPrimarySidebar}
             />
           </div>
@@ -680,13 +678,11 @@ export function Layout() {
               {replacesPrimarySidebar ? (
                 <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
               ) : (
-                <Sidebar />
+                <Sidebar>{sidebarSections}</Sidebar>
               )}
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
-              serverGit={health?.serverInfo?.git}
-              version={health?.version}
               forceExpanded={replacesPrimarySidebar}
             />
           </SidebarShell>
@@ -743,7 +739,7 @@ export function Layout() {
                   ? ({
                       "--tc-composer-bottom": mobileNavVisible
                         ? "var(--sz-calc-14)"
-                        : "var(--sz-calc-8)",
+                        : "var(--tc-composer-hidden-nav-offset)",
                     } as CSSProperties)
                   : undefined
               }
@@ -752,12 +748,14 @@ export function Layout() {
                 // The task thread owns its scrollable top spacing. Leaving the
                 // page shell's top padding in place creates a stationary dark
                 // strip below the breadcrumb while messages scroll behind it.
-                !isMobile && useStreamlinedTaskDetailShell && "pt-0 pr-0 md:pt-0 md:pr-0",
+                !isMobile && useStreamlinedTaskDetailShell && "pt-0 md:pt-0",
                 // Reserve the scrollbar gutter on desktop so pages whose height
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
                 isMobile
-                  ? "overflow-visible pb-(--sz-calc-14)"
+                  ? isTaskDetailRoute && !mobileNavVisible
+                    ? "overflow-visible pb-(--tc-composer-hidden-nav-offset)"
+                    : "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >

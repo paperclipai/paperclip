@@ -68,10 +68,11 @@ pnpm test:e2e:runner -- --group native --environment local
 pnpm test:e2e:runner -- --profile runner-codex --case message-marker
 pnpm test:e2e:runner -- --case plan-revise-accept --group local
 pnpm test:e2e:runner -- --case ask-question --group native
+pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains three suites. `core-compatibility` (**Core Runner
+The catalog contains five suites. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -80,9 +81,18 @@ workflows: 42 cells. Its cases are:
   same Plan, browser acceptance of the new revision, and verified execution;
 - `ask-question`: a direct answer from a task created in Ask mode.
 
-`openrouter-model-breadth` (**OpenRouter Model Breadth**) is five models from
-the tracked weekly tool-capable ranking snapshot × native OpenCode × local ×
-three workflows: 15 cells. Its cases are:
+`openrouter-model-breadth` (**OpenRouter Model Breadth**) is four qualified
+models from the tracked weekly tool-capable ranking snapshot × native OpenCode
+× local, with 10 supported model/workflow cells. Xiaomi MiMo V2.5 remains
+recorded in the immutable ranking snapshot but is excluded from paid
+qualification because its latency repeatedly exhausts the cell deadline.
+DeepSeek V4 Flash remains qualified for hello and question/resume, but its Plan
+cell is excluded after three successful semantic completions consistently
+ignored the required exact final response. Tencent HY3 likewise remains
+qualified for hello and question/resume, but its Plan cell is excluded after
+two fresh attempts completed every durable Plan and finalization operation yet
+consistently replaced the required exact visible terminal marker with prose.
+Its cases are:
 
 - `hello-complete`: a basic nonce response and explicit Done transition;
 - `question-resume-complete`: one structured question, browser selection of
@@ -98,9 +108,59 @@ duplicating the final response. The second workflow restarts the isolated
 Paperclip server while the interaction is waiting, reloads that state, and
 then resumes it. The suite has no Daytona cells.
 
-The complete catalog is 71 cells and 123 expected paid agent turns. Follow-up
-steps remain ordered within their cell; all other cells are independent.
-Narrow selectors are strongly recommended while developing fixtures.
+`daytona-warm-continuity` (**Daytona Warm Continuity**) is exactly two paid
+cells: legacy Codex and Runner Codex against one reusable warm Daytona
+configuration. Each cell creates a real project with a primary local-path
+workspace through the API, selects it in the browser task dialog, and performs
+three browser-driven turns on one issue. Every turn reads and extends the same
+nonce file, verifies host copy-back, records scheduler/run/end-to-end timing,
+and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
+Runner Codex additionally proves stable native session, provider session,
+runner instance, PID, and process-start identity. Each turn is bounded to ten
+minutes, the cell to thirty minutes, and cleanup explicitly deletes the
+sandbox rather than waiting for Daytona's idle timeout.
+
+`agent-chat` (**Persistent Agent Chat**) adds six workflows on `legacy-codex`,
+`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **24 local cells**.
+They cover continuity across server restart, fresh context after `/new`,
+Stop/reset/resume, draft/revise/approve/plan handoff, clarification with existing
+project reuse, and a new project with two repository URLs. Each cell opens the
+production chat surface and resolves the backing issue through the chat API.
+The source conversation must settle to `in_review` / `waiting`; handed-off
+execution tasks must finish with their initial Plan and output documents.
+Reset runs are retained separately from the 68 expected provider turns in this
+suite. Cancelled turns and execution-task runs remain included in billing and
+cleanup. The production chat directive is injected normally; fixtures do not
+replace it with completion instructions. Daytona is excluded.
+
+```bash
+# Run these after deterministic checks, with the required provider keys set.
+pnpm test:e2e:runner -- --id agent-chat.legacy-codex.local.continuity-restart
+pnpm test:e2e:runner -- --id agent-chat.legacy-claude.local.continuity-restart
+pnpm test:e2e:runner -- --suite agent-chat
+```
+
+The regular browser suite has deterministic process providers in
+`tests/e2e/fixtures/agent-chat.mjs`. It exercises the real queue, APIs, database,
+MCP project tools, and shared task UI without provider billing. Only upstream
+GitHub discovery is simulated, scoped to a fixture-only credential; repository
+permissions and mutations remain real. Run it with:
+
+```bash
+pnpm --filter @paperclipai/ui build
+pnpm test:e2e tests/e2e/agent-chat.spec.ts
+# Against a dedicated authenticated test instance configured per that suite:
+pnpm test:e2e:multiuser-authenticated --grep 'agent chats'
+```
+
+Both suites save and restore experimental settings. Browser E2E always starts a
+throwaway instance; never point the authenticated suite at the running demo.
+Missing provider credentials fail paid preflight and are not passing coverage.
+
+The complete catalog is 92 cells (69 local and 23 Daytona) and 188 expected
+paid agent turns. Follow-up steps remain ordered within their cell; all other
+cells are independent. Narrow selectors are strongly recommended while
+developing fixtures.
 
 `--suite`, `--group`, `--profile`, `--environment`, and `--case` are repeatable. Repeated
 values in one dimension use OR semantics; dimensions and repeated groups use
@@ -179,9 +239,11 @@ Packaged, access-controlled evidence is written beneath
 outcomes, sanitized fixture/API metadata, a result record, JUnit, HTML, and a
 blob report. Failures additionally retain the Playwright trace/video, browser
 diagnostics, failure screenshot, and sanitized Paperclip/run logs when
-produced. PNG and WebM files are not pixel-inspected, so they are suitable only
-for the local results directory and access-controlled GitHub Actions artifacts.
-SVG is active content and is rejected from the packaged evidence entirely.
+produced. WebM files remain limited to the local results directory and
+access-controlled GitHub Actions artifact. Declared PNG screenshots are also
+published with permanent campaign dashboards; fixture authors must therefore
+keep credentials and other private data out of every captured UI state. SVG is
+active content and is rejected from the packaged evidence entirely.
 
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
@@ -194,16 +256,40 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
-Permanent public history has a narrower boundary. Before uploading to S3 or
-packaging the optional GitHub Pages artifact, the publisher removes raster and
-video evidence, archives, and the generated Playwright/blob/HTML report trees.
-It then regenerates the dashboard against only the remaining allowlisted,
-inert structured per-attempt evidence (`.json`, `.log`, `.md`, and `.txt`).
-Per-attempt XML is excluded because browsers can process XML/XSLT. The root
-`junit.xml` remains public because the report aggregator builds it from fixed
-markup and XML-escaped fields. Public dashboards therefore contain results and
-accounting but no attempt screenshots, videos, traces, or generated Playwright
-reports.
+The trusted publisher discovers display-only entries for selected execution IDs
+absent from its local catalog, so branch-only suites remain visible in the
+dashboard, filters, gallery, and summary image. It validates execution identity
+and escapes display text without loading target-branch executable code. Unknown
+suite cardinality is not treated as proof of full-suite coverage.
+
+Permanent publication uses two explicit bundles. Both retain only normalized
+result PNG files with the explicit `public-runner-fixture` publication marker,
+including marked `failure.png` captures, so every campaign dashboard has its
+screenshot thumbnails and gallery. The capture helper adds this marker only
+for the reviewed runner fixture and blocks public capture outside the exact
+issue route for the fixture that the harness created. A blocked failure capture
+remains private. The CloudFront-backed S3
+history also contains one publisher-generated
+`public-images/campaign-summary.png`.
+Trusted publisher code renders it offline from fixed catalog labels and
+sanitized status/count/duration fields; provider output, error text, comments,
+and target-produced pixels are never inputs. The PNG must pass a 12 MiB bound
+and signature validation before entering the immutable manifest. S3 also
+retains allowlisted inert per-attempt evidence (`.json`, `.log`, `.md`, and
+`.txt`); `.log` copies have already passed exact-value/key-shape scanning and
+redaction. The GitHub Pages bundle is regenerated separately with the same
+declared-screenshot boundary.
+
+Publication fails if any declared public screenshot is missing from the bundle.
+The evidence packager explicitly retains `chat-plan-draft.png` and
+`chat-plan-revised.png`; arbitrary chat-prefixed files remain excluded.
+
+Both public bundles exclude video, archives, raw/unallowlisted logs, SVG or
+other active content, generated Playwright/blob/HTML report trees, and
+undeclared PNG files, and per-attempt XML. The root `junit.xml` remains public
+because the report aggregator builds it from fixed markup and XML-escaped
+fields. Full evidence remains available only in the access-controlled workflow
+artifact.
 
 ### Billing interpretation
 
@@ -227,6 +313,17 @@ same metrics per campaign/suite/execution, source SHA/ref, definition
 fingerprints, completeness, retries, and cleanup. Trend charts compare only
 complete campaigns by default; partial/manual selections remain browsable.
 `summary.md` carries the current totals into the GitHub Actions job summary.
+In CI, its **View results** section links to the exact immutable public campaign
+report, the workflow and per-cell logs, and the access-controlled report
+artifacts. Each cell name links to its exact section in the campaign report.
+The public campaign links become available after the history publisher
+finishes. The artifact links remain available for 30 days.
+
+For a development branch that adds a suite, the trusted default-branch dashboard
+may not yet include that suite's interactive cards. Its published `summary.md`
+and `normalized-results.json` still contain every selected cell. Use those files,
+the GitHub job summary, or `html/index.html` in the merged Playwright artifact
+to inspect branch-only results; an absent dashboard card is not passing coverage.
 
 ### Iterate on a published dashboard without rerunning paid tests
 
@@ -272,18 +369,22 @@ any branch in `paperclipai/paperclip`. The authorization job resolves that
 branch to one immutable commit before any checkout. A separate credential-free
 job checks out the resolved commit and regenerates `pnpm-lock.yaml` once with
 `--ignore-scripts --no-frozen-lockfile --lockfile-only`. It uploads that exact
-lockfile under a run-attempt-scoped artifact ID and records its SHA-256. Catalog,
-image, and paid test jobs download the artifact by ID, verify its digest, and
-restore it before setup or a frozen install. The paid test job disables
+lockfile under a run-attempt-scoped artifact ID and records its SHA-256.
+Catalog, image, shared-build, provider-pack, and paid test jobs download the
+artifact by ID, verify its digest, and restore it before setup or a frozen
+install. The shared-build, provider-pack, and paid test jobs all disable
 dependency lifecycle scripts, and provider secrets are introduced only in the
 final test step. This permits an authorized target branch to exercise an
 intentionally uncommitted workspace patch while keeping every target job on one
-identical dependency resolution. Report sanitization and AWS history
-publication do not consume the target lockfile; they explicitly check out and
-install from the trusted workflow commit. The workflow definition, runner-group
-permission, and protected-environment deployment still come from the default
-branch. Do not select the target branch in GitHub's **Use workflow from**
-control.
+identical dependency resolution. The shared-build job compiles the selected
+campaign's TypeScript outputs and native binaries once, then each paid cell
+verifies and extracts the immutable bundle. Remote native cells similarly reuse
+one verified provider pack. Report
+sanitization and AWS history publication do not consume the target lockfile;
+they explicitly check out and install from the trusted workflow commit. The
+workflow definition, runner-group permission, and protected-environment
+deployment still come from the default branch. Do not select the target branch
+in GitHub's **Use workflow from** control.
 
 Because this repository is public, manual campaigns fail before checkout unless
 the trusted workflow runs from the default branch and both the original actor
@@ -319,10 +420,9 @@ by the repository variable `RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED=true`. Set it
 only after the live acceptance ladder in the architecture plan is green.
 Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
-`runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value retains
-the standard GitHub-hosted `ubuntu-latest` target. Set
-`RUNNER_E2E_MAX_PARALLEL` to an integer from 1–100 on AWS (default 100); use at
-least 71 to run the current
+`runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
+proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
+integer from 1–100 on AWS (default 100); use at least 92 to run the current
 complete catalog in one wave. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
@@ -367,13 +467,13 @@ bundle digest fails closed.
 
 GitHub Pages remains the stable latest dashboard. Enable Pages with GitHub
 Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
-The publisher prunes screenshots, video, archives, and generated report trees,
-then regenerates the public dashboard before either the CloudFront-backed S3
-history or optional Pages artifact is created. Public per-attempt evidence is
-limited to allowlisted inert structured text. Databases, Paperclip homes,
-workspaces, raw/unredacted logs, credentials, and visual evidence are never
-published. Sanitized allowlisted `.log` copies may be public only after
-exact-value/key-shape scanning and redaction.
+The publisher creates an S3 stage with the trusted synthetic summary PNG and a
+separate Pages stage. Both surfaces publish only per-result PNG screenshots
+with the explicit `public-runner-fixture` marker alongside sanitized structured
+evidence. The runner capture helper refuses to mark a screenshot outside the
+exact live fixture issue route. Neither surface publishes video, archives,
+SVG/active content, databases, Paperclip homes, workspaces, raw/unallowlisted
+logs, or credentials.
 
 See [FIXTURES.md](./FIXTURES.md) before adding or changing a profile,
 environment, task, matcher, or future Paperclip object fixture.

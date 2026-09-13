@@ -41,7 +41,7 @@ export function classifyShellRoute(
 
   return {
     companySegments,
-    isTaskDetail: root === "issues" && companySegments.length >= 2,
+    isTaskDetail: (root === "issues" || root === "chats") && companySegments.length >= 2,
     builtInContextualSurface: isCompanySettings
       ? "settings"
       : root === "apps" || root === "tools"

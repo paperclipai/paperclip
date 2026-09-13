@@ -142,7 +142,31 @@ export interface DatabaseClientOptions {
   idleTimeoutSeconds?: number;
   /** postgres.js `connect_timeout` in seconds (driver default: 30). */
   connectTimeoutSeconds?: number;
+  /**
+   * postgres.js `max_lifetime` in seconds. Bounds how long one pooled
+   * connection is reused before the client replaces it (driver default: a
+   * random value between 30 and 60 minutes).
+   */
+  maxLifetimeSeconds?: number;
+  /**
+   * postgres.js `connection.application_name`, shown in
+   * `pg_stat_activity.application_name`. Lets an operator tell Paperclip's
+   * pool apart from other clients of the same database (driver default:
+   * `postgres.js`).
+   */
+  applicationName?: string;
 }
+
+/**
+ * Idle pooled connections close after this many seconds unless
+ * `DATABASE_IDLE_TIMEOUT_SECONDS` says otherwise. The driver default keeps an
+ * idle connection open forever, so a process that stops issuing queries still
+ * holds every backend it ever opened. Set `DATABASE_IDLE_TIMEOUT_SECONDS=0`
+ * to restore the driver default.
+ */
+export const DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS = 60;
+/** `application_name` reported to PostgreSQL unless `DATABASE_APPLICATION_NAME` overrides it. */
+export const DEFAULT_DATABASE_APPLICATION_NAME = "paperclip";
 
 function envBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
   const value = env[name]?.trim().toLowerCase();
@@ -161,12 +185,28 @@ function envPositiveInteger(env: NodeJS.ProcessEnv, name: string): number | unde
   return Number.parseInt(value, 10);
 }
 
+function envNonNegativeInteger(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const value = env[name]?.trim();
+  if (value === undefined || value === "") return undefined;
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`);
+  }
+  return Number.parseInt(value, 10);
+}
+
+function envNonEmptyString(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name]?.trim();
+  if (value === undefined || value === "") return undefined;
+  return value;
+}
+
 /**
  * Database client tuning from the environment, so hosted deployments can
  * adapt to their connection topology (pooled endpoints, network latency)
- * without editing source. Every variable is optional; when unset the
- * driver defaults apply and behavior is identical to a bare
- * `postgres(url)` — self-hosted setups need none of these.
+ * without editing source. Every variable is optional. This function returns
+ * only the values the environment sets; `resolveDatabaseClientOptions` adds
+ * Paperclip's own defaults on top, and the driver defaults apply to the rest
+ * — self-hosted setups need none of these.
  */
 export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): DatabaseClientOptions {
   const options: DatabaseClientOptions = {};
@@ -174,11 +214,31 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (prepare !== undefined) options.prepare = prepare;
   const maxConnections = envPositiveInteger(env, "DATABASE_POOL_MAX");
   if (maxConnections !== undefined) options.maxConnections = maxConnections;
-  const idleTimeoutSeconds = envPositiveInteger(env, "DATABASE_IDLE_TIMEOUT_SECONDS");
+  // `0` is allowed here: it disables idle reaping (the driver default).
+  const idleTimeoutSeconds = envNonNegativeInteger(env, "DATABASE_IDLE_TIMEOUT_SECONDS");
   if (idleTimeoutSeconds !== undefined) options.idleTimeoutSeconds = idleTimeoutSeconds;
   const connectTimeoutSeconds = envPositiveInteger(env, "DATABASE_CONNECT_TIMEOUT_SECONDS");
   if (connectTimeoutSeconds !== undefined) options.connectTimeoutSeconds = connectTimeoutSeconds;
+  const maxLifetimeSeconds = envPositiveInteger(env, "DATABASE_MAX_LIFETIME_SECONDS");
+  if (maxLifetimeSeconds !== undefined) options.maxLifetimeSeconds = maxLifetimeSeconds;
+  const applicationName = envNonEmptyString(env, "DATABASE_APPLICATION_NAME");
+  if (applicationName !== undefined) options.applicationName = applicationName;
   return options;
+}
+
+/**
+ * Fills in Paperclip's defaults for the options the caller left unset: idle
+ * connections are reaped after `DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS`, and the
+ * pool identifies itself as `DEFAULT_DATABASE_APPLICATION_NAME`. Everything
+ * else stays at the driver default. An explicit value (including
+ * `idleTimeoutSeconds: 0`) always wins over the default.
+ */
+export function resolveDatabaseClientOptions(options: DatabaseClientOptions): DatabaseClientOptions {
+  return {
+    ...options,
+    idleTimeoutSeconds: options.idleTimeoutSeconds ?? DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
+    applicationName: options.applicationName ?? DEFAULT_DATABASE_APPLICATION_NAME,
+  };
 }
 
 export function postgresJsOptions(options: DatabaseClientOptions): Record<string, unknown> {
@@ -187,11 +247,15 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   if (options.maxConnections !== undefined) driverOptions.max = options.maxConnections;
   if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
   if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
+  if (options.maxLifetimeSeconds !== undefined) driverOptions.max_lifetime = options.maxLifetimeSeconds;
+  if (options.applicationName !== undefined) {
+    driverOptions.connection = { application_name: options.applicationName };
+  }
   return driverOptions;
 }
 
 export function createDb(url: string, options?: DatabaseClientOptions) {
-  const resolved = options ?? databaseClientOptionsFromEnv();
+  const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);

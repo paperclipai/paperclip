@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "slug": "agentmail",
+  "name": "AgentMail",
+  "description": "Give agents email inboxes and handle each conversation as a task.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/agentmail.svg",
+    "darkLogoUrl": "/brands/apps/agentmail-dark.svg"
+  },
+  "urlPatterns": [
+    "https://console.agentmail.to/*"
+  ],
+  "methods": [
+    {
+      "key": "email-agent",
+      "label": "Email with an agent",
+      "purpose": "channel",
+      "provider": "agentmail",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Assign an inbox to an agent and manage email conversations in tasks.",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "AgentMail API key",
+          "type": "password",
+          "placeholder": "am_…",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "guidanceMd": "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.",
+      "consoleLinks": {
+        "keys": "https://console.agentmail.to",
+        "docs": "https://docs.agentmail.to/inboxes"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "inbox"
+      ]
+    }
+  ]
+}

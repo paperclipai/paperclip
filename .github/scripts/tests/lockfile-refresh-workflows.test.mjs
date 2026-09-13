@@ -6,6 +6,7 @@ const workflows = [
   '.github/workflows/refresh-lockfile.yml',
   '.github/workflows/pr-trusted.yml',
   '.github/workflows/docker.yml',
+  '.github/workflows/docker-cloud.yml',
 ];
 
 test('lockfile repair workflows resolve dependencies instead of updating metadata only', async () => {
@@ -17,6 +18,7 @@ test('lockfile repair workflows resolve dependencies instead of updating metadat
 
     assert.ok(repairCommands.length > 0, `${workflow} must contain a lockfile repair command`);
     for (const command of repairCommands) {
+      assert.match(command, /--resolution-only/);
       assert.match(command, /--ignore-scripts/);
       assert.doesNotMatch(command, /--lockfile-only/);
     }

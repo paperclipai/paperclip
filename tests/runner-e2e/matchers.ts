@@ -116,6 +116,7 @@ export async function evaluateMatcher(
     passed = actual === matcher.expected;
   } else if (
     matcher.kind === "file_exists" ||
+    matcher.kind === "file_exact" ||
     matcher.kind === "file_contains"
   ) {
     try {
@@ -124,7 +125,9 @@ export async function evaluateMatcher(
         (await readFile(matcher.path, "utf8"));
       passed =
         matcher.kind === "file_exists" ||
-        String(actual).includes(matcher.expected);
+        (matcher.kind === "file_exact"
+          ? String(actual) === matcher.expected
+          : String(actual).includes(matcher.expected));
     } catch {
       actual = undefined;
       passed = false;

@@ -336,6 +336,25 @@ To try Paperclip without installing anything permanently:
 npx --registry https://registry.npmjs.org paperclipai onboard --yes
 ```
 
+For an isolated manual test instance that is already initialized with a CEO
+agent, use `test-drive`. It stays in the foreground, never installs a service
+or creates a first task, and opens the browser only after setup succeeds:
+
+```bash
+ANTHROPIC_API_KEY=... npx paperclipai test-drive
+OPENAI_API_KEY=... npx paperclipai test-drive --harness codex
+OPENROUTER_API_KEY=... npx paperclipai test-drive \
+  --harness opencode \
+  --model openrouter/anthropic/claude-sonnet-4.5
+```
+
+Each run without `--data-dir` gets a unique, retained temporary directory; its
+absolute path is printed at startup. Pass `--data-dir` to reuse one, or
+`--no-browser` to leave the initialized instance unopened. When invoked from a
+linked Git worktree, `test-drive` also enables task execution in that worktree.
+See [`doc/CLI.md`](doc/CLI.md#isolated-manual-test-drives) for credential and
+reuse behavior.
+
 > **Troubleshooting: private npm registry `.npmrc`**
 >
 > If this fails with an `E404` for `paperclipai` (or similar) and you use a private npm registry (for example GitHub Packages) via a global `~/.npmrc`, `npx` may be resolving `paperclipai` against that private registry instead of the public npm registry.

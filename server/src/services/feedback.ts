@@ -38,7 +38,7 @@ import {
 } from "@paperclipai/shared";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
-import { agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import {
   createFeedbackRedactionState,
   finalizeFeedbackRedactionSummary,
@@ -1168,12 +1168,23 @@ async function buildAgentContext(
     : [];
 
   const usage = asRecord(run?.usageJson) ?? {};
+  const externalInstructions = agentInstructionsBundleMode({
+    id: agent.id,
+    companyId: agent.companyId,
+    name: agent.name,
+    adapterConfig: agent.adapterConfig,
+  }) === "external";
+  if (externalInstructions) {
+    state.omittedFields.add("bundle.agentContext.runtime.configuredInstructionsFilePath");
+    state.omittedFields.add("bundle.agentContext.runtime.configuredInstructionsRootPath");
+    state.omittedFields.add("bundle.agentContext.instructions");
+  }
   const runtime = {
     configuredModel: asString(adapterConfig.model),
     configuredInstructionsBundleMode: asString(adapterConfig.instructionsBundleMode),
     configuredInstructionsEntryFile: asString(adapterConfig.instructionsEntryFile),
-    configuredInstructionsFilePath: asString(adapterConfig.instructionsFilePath),
-    configuredInstructionsRootPath: asString(adapterConfig.instructionsRootPath),
+    configuredInstructionsFilePath: externalInstructions ? null : asString(adapterConfig.instructionsFilePath),
+    configuredInstructionsRootPath: externalInstructions ? null : asString(adapterConfig.instructionsRootPath),
     heartbeatPolicy: sanitizeFeedbackValue(runtimeConfig.heartbeat ?? null, state, "bundle.agentContext.runtime.heartbeatPolicy", 400),
     provenanceMode: run ? "source_run" : "vote_time_snapshot",
     sourceRun: run
@@ -1218,12 +1229,14 @@ async function buildAgentContext(
       : null,
   };
 
-  const instructionsBundle = await instructionsSvc.getBundle({
-    id: agent.id,
-    companyId: agent.companyId,
-    name: agent.name,
-    adapterConfig: agent.adapterConfig,
-  }).catch(() => null);
+  const instructionsBundle = externalInstructions
+    ? null
+    : await instructionsSvc.getBundle({
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      adapterConfig: agent.adapterConfig,
+    }).catch(() => null);
 
   let entryDigest: string | null = null;
   let entryBody: string | null = null;

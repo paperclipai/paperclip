@@ -12,6 +12,8 @@ import {
 import { createServer, type Server } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 
+import { verifiedRuntimeExecutableHandoff } from "./verified-runtime-executable.js";
+
 const MAX_CODEX_CREDENTIAL_BYTES = 256 * 1024;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_DIRECTORY_SYNC_ATTEMPTS = 8;
@@ -46,6 +48,7 @@ try {
 
 interface CredentialHomeLock {
   assertHeld(): void;
+  candidatePorts(): readonly [number, number, number];
   inheritanceFds(): readonly [number, number];
   activateLifetimeOwner(pid: number): Promise<void>;
   release(): Promise<void>;
@@ -112,6 +115,8 @@ export type ManagedCodexCredentialMode =
   "api_key" | "inline_json" | "managed_file";
 
 export interface AcpxProviderLifetimeLease {
+  /** Exact kernel quorum candidates used to prove this provider has exited. */
+  readonly lifetimeFenceCandidates: readonly [number, number, number];
   /** Duplicate both quorum listeners into the provider lifetime sentinel. */
   readonly lifetimeFenceFds: readonly [number, number];
   /** Validate the guardian while the provider-lifetime quorum is still held. */
@@ -119,8 +124,7 @@ export interface AcpxProviderLifetimeLease {
   close(): Promise<void>;
 }
 
-export interface ManagedCodexCredentialLease
-  extends AcpxProviderLifetimeLease {
+export interface ManagedCodexCredentialLease extends AcpxProviderLifetimeLease {
   readonly path: string;
   readonly mode: ManagedCodexCredentialMode;
 }
@@ -138,6 +142,7 @@ export async function acquireAcpxProviderLifetimeLease(input: {
   let closeAttempt: Promise<void> | null = null;
   let lifetimeOwnerAttempt: Promise<void> | null = null;
   return Object.freeze({
+    lifetimeFenceCandidates: lock.candidatePorts(),
     lifetimeFenceFds: lock.inheritanceFds(),
     async activateLifetimeOwner(pid: number): Promise<void> {
       if (closed || closeAttempt !== null) {
@@ -362,10 +367,11 @@ async function acquireCredentialHomeLock(
   // contenders cannot both reach quorum; one unrelated occupied listener is
   // tolerated without probing or trusting the process behind it.
   const servers: Server[] = [];
+  const candidatePorts = credentialLeasePorts(home);
   let invalid: Error | null = null;
   let released = false;
   try {
-    for (const port of credentialLeasePorts(home)) {
+    for (const port of candidatePorts) {
       const server = createServer((socket) => socket.destroy());
       try {
         await listenForCredentialLease(server, port);
@@ -430,6 +436,9 @@ async function acquireCredentialHomeLock(
         throw new Error("Managed Codex credential ownership was lost");
       }
     },
+    candidatePorts(): readonly [number, number, number] {
+      return candidatePorts;
+    },
     inheritanceFds(): readonly [number, number] {
       this.assertHeld();
       return inheritanceFds;
@@ -465,7 +474,7 @@ async function acquireCredentialHomeLock(
   });
 }
 
-function credentialLeasePorts(home: string): readonly number[] {
+function credentialLeasePorts(home: string): readonly [number, number, number] {
   const userScope =
     typeof process.getuid === "function" ? String(process.getuid()) : "win32";
   const digest = createHash("sha256")
@@ -476,11 +485,13 @@ function credentialLeasePorts(home: string): readonly number[] {
     .digest();
   const start = digest.readUInt16BE(0) % CREDENTIAL_LEASE_PORT_COUNT;
   const step = (digest.readUInt16BE(2) | 1) % CREDENTIAL_LEASE_PORT_COUNT;
-  return Array.from(
-    { length: CREDENTIAL_LEASE_CANDIDATES },
-    (_, index) =>
-      CREDENTIAL_LEASE_PORT_MIN +
-      ((start + index * step) % CREDENTIAL_LEASE_PORT_COUNT),
+  return Object.freeze(
+    Array.from(
+      { length: CREDENTIAL_LEASE_CANDIDATES },
+      (_, index) =>
+        CREDENTIAL_LEASE_PORT_MIN +
+        ((start + index * step) % CREDENTIAL_LEASE_PORT_COUNT),
+    ) as [number, number, number],
   );
 }
 
@@ -652,6 +663,7 @@ function credentialLease(
   return Object.freeze({
     path,
     mode,
+    lifetimeFenceCandidates: lock.candidatePorts(),
     lifetimeFenceFds: lock.inheritanceFds(),
     async activateLifetimeOwner(pid: number): Promise<void> {
       if (closed || closeAttempt !== null) {
@@ -1128,8 +1140,9 @@ async function runDirectorySyncHelper(directory: string): Promise<void> {
   }
   let child: ChildProcess;
   try {
+    const runtimeHandoff = verifiedRuntimeExecutableHandoff(3);
     child = spawn(
-      process.execPath,
+      runtimeHandoff.executable,
       [
         "--input-type=module",
         "--eval",
@@ -1140,7 +1153,10 @@ async function runDirectorySyncHelper(directory: string): Promise<void> {
         // The helper imports only Node built-ins. Do not inherit loader hooks or
         // any credential-bearing process environment into the durability worker.
         env: {},
-        stdio: "ignore",
+        stdio:
+          runtimeHandoff.sourceFd === null
+            ? "ignore"
+            : ["ignore", "ignore", "ignore", runtimeHandoff.sourceFd],
         windowsHide: true,
       },
     );

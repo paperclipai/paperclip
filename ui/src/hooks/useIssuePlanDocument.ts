@@ -14,7 +14,7 @@ import { queryKeys } from "@/lib/queryKeys";
 export function useIssuePlanDocument(issueId: string | null | undefined) {
   return useQuery<IssueDocument | null>({
     queryKey: [...queryKeys.issues.documents(issueId ?? ""), "plan"],
-    enabled: Boolean(issueId),
+    enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
     queryFn: async () => {
       try {
         return await issuesApi.getDocument(issueId!, "plan");

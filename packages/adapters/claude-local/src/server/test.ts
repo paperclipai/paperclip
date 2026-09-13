@@ -34,7 +34,7 @@ import {
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
@@ -69,20 +69,23 @@ export async function testEnvironment(
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
   });
+  if (engineSelection.unavailableReason) {
+    return {
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [{
+        code: "adapter_engine_unavailable",
+        level: "error",
+        message: engineSelection.unavailableReason,
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   if (engineSelection.engine === "acp") {
     return testClaudeAcpEnvironment(ctx);
   }
 
   const checks: AdapterEnvironmentCheck[] = [];
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    checks.push({
-      code: "claude_acp_default_fallback",
-      level: "warn",
-      message: "Claude ACP default is unavailable; testing the Claude CLI fallback lane.",
-      detail: engineSelection.fallbackReason,
-      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
-    });
-  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
@@ -132,6 +135,7 @@ export async function testEnvironment(
     : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
   checks.push(
     ...(await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: Boolean(config.managedAiConnection),
       runId,
       target,
       cwd,
@@ -174,7 +178,7 @@ export async function testEnvironment(
   // reflect what the agent will actually see at runtime. Only consider env
   // vars from the adapter config in that case; the probe itself will surface
   // any auth issues on the remote box.
-  const considerHostEnv = !targetIsRemote;
+  const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
   const hasBedrock =
     env.CLAUDE_CODE_USE_BEDROCK === "1" ||
     env.CLAUDE_CODE_USE_BEDROCK === "true" ||
@@ -203,11 +207,11 @@ export async function testEnvironment(
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
-      level: "warn",
+      level: config.managedAiConnection ? "info" : "warn",
       message:
-        "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
+        config.managedAiConnection ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: config.managedAiConnection ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
@@ -239,7 +243,7 @@ export async function testEnvironment(
         check.code !== "claude_managed_config_dir_failed",
     );
   let configuredModelIsCompatible = true;
-  const configuredModel = asString(config.model, "").trim();
+  const configuredModel = resolveClaudeModel(config.model, considerHostEnv ? { ...process.env, ...env } : env);
   const minimumCliVersion =
     claudeCommandLooksLike(command, "claude") &&
     (!hasBedrock || isBedrockModelId(configuredModel))
@@ -347,6 +351,7 @@ export async function testEnvironment(
       }
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (config.managedAiConnection) args.push("--setting-sources", "user");
       args.push(...buildClaudeProbePermissionArgs({
         dangerouslySkipPermissions,
         targetIsRemote,

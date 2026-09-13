@@ -58,6 +58,7 @@ export function TrustPresetSection({
   projectCandidates = [],
   issueCandidates = [],
   candidatesLoading,
+  allowSingleIssue = true,
 }: {
   permissions: Partial<AgentPermissions> | null | undefined;
   onChange: (permissions: Partial<AgentPermissions>) => void;
@@ -66,6 +67,7 @@ export function TrustPresetSection({
   projectCandidates?: LowTrustBoundaryCandidate[];
   issueCandidates?: LowTrustBoundaryCandidate[];
   candidatesLoading?: boolean;
+  allowSingleIssue?: boolean;
 }) {
   const [policyOpen, setPolicyOpen] = useState(false);
   const preset = getTrustPreset(permissions);
@@ -158,7 +160,7 @@ export function TrustPresetSection({
                       >
                         <option value="project">Project</option>
                         <option value="root_issue">Root issue</option>
-                        <option value="issue">Issue</option>
+                        {allowSingleIssue && <option value="issue">Issue</option>}
                       </select>
                     </Field>
                     <Field label={BOUNDARY_TARGET_LABELS[targetType]}>

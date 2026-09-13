@@ -78,10 +78,11 @@ export function writeRecentTasks(storageKey: string, entries: RecentTaskEntry[])
 }
 
 export function recordRecentTask(
-  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt">,
+  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt" | "conversationAgentId">,
   userId: string | null | undefined,
   recordedAt = new Date(issue.updatedAt).getTime(),
 ) {
+  if (issue.conversationAgentId) return;
   const storageKey = getRecentTasksStorageKey(issue.companyId, userId);
   const current = readRecentTasks(storageKey, issue.companyId);
   const existing = current.find((candidate) => candidate.id === issue.id);
@@ -94,7 +95,8 @@ export function recordRecentTask(
     title: issue.title,
     identifier: issue.identifier,
     status: issue.status,
-    recordedAt: activityAt,
+    // A stale detail query must not undo a newer comment or activity update.
+    recordedAt: Math.max(activityAt, existing?.recordedAt ?? activityAt),
   };
   if (
     existing
@@ -135,7 +137,9 @@ export function updateRecentTaskSnapshots(
     const issue = issueById.get(entry.id);
     if (!issue || issue.companyId !== companyId) return entry;
     const activityAt = new Date(issue.updatedAt).getTime();
-    const nextRecordedAt = Number.isFinite(activityAt) ? activityAt : entry.recordedAt;
+    const nextRecordedAt = Number.isFinite(activityAt)
+      ? Math.max(activityAt, entry.recordedAt)
+      : entry.recordedAt;
     if (
       issue.title === entry.title
       && issue.identifier === entry.identifier

@@ -34,6 +34,13 @@ import {
 } from "@/components/ui/collapsible";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   JsonSchemaForm,
   getDefaultValues,
   validateJsonSchemaForm,
@@ -77,6 +84,126 @@ type TestAgentWithAccess = ToolConnectionTestAgent & {
 
 const TEST_ACCESS_STALE_TIME_MS = 5 * 60_000;
 const TEST_ACCESS_GC_TIME_MS = 30 * 60_000;
+
+/**
+ * Focused action tester used by the combined Permissions page. The modal keeps
+ * the existing schema form and result renderer, but scopes agent selection and
+ * test state to the action the user opened.
+ */
+export function ActionTestDialog({
+  connectionId,
+  appName,
+  entry,
+  open,
+  onOpenChange,
+}: {
+  connectionId: string;
+  appName: string;
+  entry: ToolCatalogEntry;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const testAgentsQuery = useQuery({
+    queryKey: queryKeys.tools.testAgents(connectionId),
+    queryFn: () => toolsApi.listTestAgents(connectionId),
+    enabled: open && !!connectionId,
+  });
+  const agents = useMemo(
+    () => [...(testAgentsQuery.data?.agents ?? [])].sort(
+      (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
+    ),
+    [testAgentsQuery.data],
+  );
+  const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
+  const agentId = requestedAgentId && agents.some((agent) => agent.id === requestedAgentId)
+    ? requestedAgentId
+    : agents[0]?.id ?? null;
+  const selectedAgentBase = agents.find((agent) => agent.id === agentId) ?? null;
+  const accessQuery = useQuery({
+    queryKey: queryKeys.tools.testAgentAccess(connectionId, agentId ?? "__none__"),
+    queryFn: () => toolsApi.getTestAgentAccess(connectionId, agentId!),
+    enabled: open && !!connectionId && !!agentId,
+    staleTime: TEST_ACCESS_STALE_TIME_MS,
+    gcTime: TEST_ACCESS_GC_TIME_MS,
+    refetchOnWindowFocus: false,
+  });
+  const selectedAgent = useMemo<TestAgentWithAccess | null>(() => (
+    selectedAgentBase && accessQuery.data
+      ? { ...selectedAgentBase, effectiveAccess: accessQuery.data.access }
+      : null
+  ), [accessQuery.data, selectedAgentBase]);
+  const decision = useMemo<ToolConnectionTestDecision>(() => {
+    const tool = selectedAgent?.effectiveAccess.tools.find((candidate) => (
+      candidate.toolName === entry.toolName || candidate.gatewayToolName === entry.toolName
+    ));
+    return tool?.decision ?? "off";
+  }, [entry.toolName, selectedAgent]);
+  const title = entry.title ?? entry.toolName;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Test {title}</DialogTitle>
+          <DialogDescription>
+            Run a real action with the same permissions and credentials an agent would use.
+          </DialogDescription>
+        </DialogHeader>
+
+        {testAgentsQuery.isLoading ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading agents…
+          </div>
+        ) : testAgentsQuery.isError ? (
+          <TestLoadError
+            message="We couldn't load the agents available for testing."
+            onRetry={() => { void testAgentsQuery.refetch(); }}
+          />
+        ) : agents.length === 0 ? (
+          <p className="py-6 text-sm text-muted-foreground">No agents are available to test as.</p>
+        ) : accessQuery.isError && !accessQuery.data ? (
+          <TestLoadError
+            message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
+            onRetry={() => { void accessQuery.refetch(); }}
+          />
+        ) : !selectedAgent ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading agent permissions…
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div className="rounded-md border border-border bg-muted/30 p-4">
+              <p className="text-xs font-medium text-muted-foreground">Act as</p>
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                <AgentPicker
+                  agents={agents}
+                  selectedAgent={selectedAgent}
+                  onSelect={setRequestedAgentId}
+                  connectionId={connectionId}
+                  appName={appName}
+                  inline
+                />
+                <DecisionBadge decision={decision} />
+              </div>
+            </div>
+            <ActionTester
+              key={`${entry.id}:${selectedAgent.id}`}
+              entry={entry}
+              decision={decision}
+              connectionId={connectionId}
+              appName={appName}
+              agent={selectedAgent}
+              allAgents={agents}
+              onSelectAgent={setRequestedAgentId}
+            />
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 const DECISION_META: Record<ToolConnectionTestDecision, DecisionMeta> = {
   allowed: {
@@ -357,7 +484,7 @@ function EmptyState({ connectionId, appName }: { connectionId: string; appName: 
         Once {appName} is connected, the actions it offers will show up here so you can try them out.
       </p>
       <Button asChild className="mt-4" variant="outline">
-        <Link to={appTabHref(connectionId, "setup")}>Go to Setup</Link>
+        <Link to={appTabHref(connectionId, "permissions")}>Go to Permissions</Link>
       </Button>
     </div>
   );
@@ -1046,8 +1173,8 @@ function AllowedResult({
 
       <p className="mt-3 text-xs text-muted-foreground">
         This call is in the{" "}
-        <Link className="text-primary hover:underline" to={appTabHref(connectionId, "activity")}>
-          Activity tab
+        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
+          Audit log
         </Link>
         .
       </p>
@@ -1177,8 +1304,8 @@ function ErrorResult({
       <p className="mt-3 text-xs text-muted-foreground">Adjust the input above and try again.</p>
       <p className="mt-1 text-xs text-muted-foreground">
         Also visible in the{" "}
-        <Link className="text-primary hover:underline" to={appTabHref(connectionId, "activity")}>
-          Activity tab
+        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
+          Audit log
         </Link>
         .
       </p>

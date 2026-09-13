@@ -22,9 +22,10 @@ import { assertUsableSubscriptionShape } from "./device-login-export.js";
 //
 // This account's own home is the durable result of a login: the write is fail
 // loud, and the caller names it with a company secret so any agent can bind to
-// it. The company default home is a best-effort fallback: it is seeded only the
-// first time any account logs in for the company (while it holds no usable
-// credential yet), and a write failure there never fails the login.
+// it. The company default home write is best-effort — a failure there never
+// fails the login — and is scoped by the shared decision predicate: it seeds an
+// absent or unusable slot, refreshes a same-identity slot only with a
+// strictly-newer credential, and keeps a slot a different account holds.
 //
 // Two decisions gate the write:
 //   - Decision C: only a user-initiated login seeds a home. An automatic
@@ -99,8 +100,9 @@ export async function checkStagedCredentialReadiness(
  *
  * - `promoted`: the helper wrote this account's own home (a seed for a first
  *   login of this account, or a strictly-newer update for a repeat login). The
- *   helper also seeds the company default home when it holds no usable
- *   credential yet.
+ *   helper also best-effort writes the company default home: a seed when the
+ *   slot is absent or unusable, a refresh when this same account's login is
+ *   strictly newer than what the slot holds.
  * - `kept`: the login carried a credential that is not newer than what this
  *   account's own home already holds, so the home was kept as-is. This is
  *   still a successful authentication: a later run reads the same home.
@@ -263,34 +265,45 @@ export async function promoteDeviceLoginCredential(
     env,
   });
 
-  // 5b. Company default home fallback, for an agent with no bound secret. Seed
-  //     it only the first time any account logs in for the company, i.e. only
-  //     while it holds no usable credential yet; a login for a second account
-  //     must never touch it once some account has claimed it. This write is
-  //     best-effort: this account's own home above is already durable, so a
-  //     failure here (a permission error, a full disk, a lock timeout) must not
-  //     fail the promotion.
+  // 5b. Company default home, for an agent with no bound secret. The write runs
+  //     unconditionally; the shared decision predicate inside the writer scopes
+  //     it. It seeds an absent or unusable slot, refreshes a same-identity slot
+  //     only with a strictly-newer credential, and keeps a slot a different
+  //     account (or an API-key file) holds — so a login for a second account
+  //     still never steals the company slot once some account has claimed it.
+  //
+  //     Unconditional matters: a company home can hold a shape-usable credential
+  //     that no longer authenticates (for example a symlink to a stale host
+  //     login). A shape gate here would skip the write, and every environment
+  //     test after this login would keep staging the failing credential and keep
+  //     reporting authentication as missing — the login the user just completed
+  //     could never change the outcome. The writer's atomic rename replaces a
+  //     symlinked auth.json with a regular file; it never writes through the
+  //     symlink into the host home.
+  //
+  //     This write is best-effort: this account's own home above is already
+  //     durable, so a failure here (a permission error, a full disk, a lock
+  //     timeout) must not fail the promotion.
   const companyHome = resolveManagedCodexHomeDir(env, companyId);
-  if (!(await codexHomeHasUsableAuth(companyHome))) {
-    try {
-      await mkdir(companyHome, { recursive: true, mode: PRIVATE_DIR_MODE });
-      const companyHomeAuthPath = path.join(companyHome, AUTH_FILE_NAME);
-      await writeCredentialSeedOrNewer({
-        sourceBytes: authBytes,
-        destinationPath: companyHomeAuthPath,
-        seedIfDestAbsent: true,
-        log,
-        writtenLine: "[paperclip] Codex device-login promotion: seeded the company default home.",
-        keptLine: "[paperclip] Codex device-login promotion: kept the company default home.",
-        tempPrefix: "auth.json.promotion-home",
-        errorLabel: "codex device-login promotion",
-        env,
-      });
-    } catch {
-      await log(
-        "[paperclip] Codex device-login promotion: seeding the company default home failed; this account's own home is durable, so the login stays successful.",
-      );
-    }
+  try {
+    await mkdir(companyHome, { recursive: true, mode: PRIVATE_DIR_MODE });
+    const companyHomeAuthPath = path.join(companyHome, AUTH_FILE_NAME);
+    await writeCredentialSeedOrNewer({
+      sourceBytes: authBytes,
+      destinationPath: companyHomeAuthPath,
+      seedIfDestAbsent: true,
+      log,
+      writtenLine:
+        "[paperclip] Codex device-login promotion: wrote the company default home (seed or strictly-newer refresh).",
+      keptLine: "[paperclip] Codex device-login promotion: kept the company default home.",
+      tempPrefix: "auth.json.promotion-home",
+      errorLabel: "codex device-login promotion",
+      env,
+    });
+  } catch {
+    await log(
+      "[paperclip] Codex device-login promotion: seeding the company default home failed; this account's own home is durable, so the login stays successful.",
+    );
   }
 
   return {

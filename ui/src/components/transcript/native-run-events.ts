@@ -503,10 +503,58 @@ function timestamp(event: HeartbeatRunEvent, envelope: Record<string, unknown>):
   return Number.isNaN(Date.parse(createdAt)) ? new Date(0).toISOString() : createdAt;
 }
 
-function toolPresentation(payload: Record<string, unknown>): { name: string; input: unknown } {
+interface NativeToolItemDetails {
+  name: string | null;
+  input?: unknown;
+  result?: unknown;
+  isError: boolean;
+}
+
+function nativeToolItemDetails(
+  payload: Record<string, unknown>,
+): {
+  id: string | null;
+  kind: "tooluse" | "toolresult";
+  details: NativeToolItemDetails;
+} | null {
+  const item = normalizedItem(payload);
+  const kind = (text(item.type) ?? "").replaceAll("_", "").toLowerCase();
+  if (kind !== "tooluse" && kind !== "toolresult") return null;
+  const id = kind === "toolresult"
+    ? text(item.tool_use_id) ?? text(item.id)
+    : text(item.id);
+  return {
+    id,
+    kind,
+    details: {
+      name: text(item.name),
+      ...(Object.prototype.hasOwnProperty.call(item, "input")
+        ? { input: item.input }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(item, "result")
+        ? { result: item.result }
+        : {}),
+      isError: item.isError === true || item.is_error === true,
+    },
+  };
+}
+
+function serializedNativeToolResult(item: NativeToolItemDetails): string {
+  if (item.result === undefined) return "";
+  try {
+    return JSON.stringify(item.result) ?? "";
+  } catch {
+    return "Tool result could not be serialized";
+  }
+}
+
+function toolPresentation(
+  payload: Record<string, unknown>,
+  item?: NativeToolItemDetails,
+): { name: string; input: unknown } {
   const transport = text(payload.transport);
   const operation = text(payload.operation);
-  const reportedName = text(payload.name);
+  const reportedName = text(payload.name) ?? item?.name ?? null;
   if (transport === "process") {
     return {
       name: "Bash",
@@ -515,7 +563,7 @@ function toolPresentation(payload: Record<string, unknown>): { name: string; inp
   }
   return {
     name: reportedName ?? operation ?? "Tool",
-    input: {
+    input: item?.input ?? {
       ...(operation ? { operation } : {}),
       ...(text(payload.namespace) ? { namespace: text(payload.namespace) } : {}),
       ...(text(payload.target) ? { target: text(payload.target) } : {}),
@@ -531,6 +579,7 @@ function toolPresentation(payload: Record<string, unknown>): { name: string; inp
 export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
   const startedToolIds = new Set<string>();
+  const completedToolIds = new Set<string>();
   let hasFinalAssistantMessage = false;
   let usageSummary: {
     ts: string;
@@ -566,9 +615,28 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     Extract<TranscriptEntry, { kind: "runtime_request" }>
   >();
   let hasRunResult = false;
+  let responseWakeCandidate: {
+    entry: Extract<TranscriptEntry, { kind: "run_result" }>;
+    runId: string;
+    sourceEventId: string;
+    sourceInstanceId: string;
+    normalizedSessionId: string;
+    turnId: string | null;
+    seq: number;
+  } | null = null;
+  const acceptedResultCounts = new Map<string, number>();
+  const terminalsByRun = new Map<
+    string,
+    {
+      entry: Extract<TranscriptEntry, { kind: "run_terminal" }>;
+      seq: number;
+      envelope: Record<string, unknown>;
+    }
+  >();
   const completedAgentMessageIds = new Set<string>();
   const completedReasoningIds = new Set<string>();
   const completionItemIdentityById = new Map<string, ItemIdentity>();
+  const nativeToolItemsById = new Map<string, NativeToolItemDetails>();
   for (const event of orderedEvents) {
     if (!isItemIdentityEvent(event.eventType)) continue;
     const envelope = record(event.payload?.prpEvent);
@@ -583,6 +651,25 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (!payload) continue;
     const itemId = normalizedItemId(envelope, payload);
     if (!itemId) continue;
+    const toolItem = nativeToolItemDetails(payload);
+    if (toolItem) {
+      const toolId = toolItem.id ?? itemId;
+      const previous = nativeToolItemsById.get(toolId);
+      nativeToolItemsById.set(toolId, {
+        name: toolItem.details.name ?? previous?.name ?? null,
+        ...(toolItem.details.input !== undefined
+          ? { input: toolItem.details.input }
+          : previous?.input !== undefined
+            ? { input: previous.input }
+            : {}),
+        ...(toolItem.details.result !== undefined
+          ? { result: toolItem.details.result }
+          : previous?.result !== undefined
+            ? { result: previous.result }
+            : {}),
+        isError: toolItem.details.isError || previous?.isError === true,
+      });
+    }
     const identity = resolveItemIdentity(
       payload,
       completionItemIdentityById.get(itemId),
@@ -671,6 +758,66 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    // Some provider transports expose their complete dynamic-tool lifecycle
+    // directly as item.started/item.completed events and do not emit the
+    // parallel tool.execution.* activity stream. Project those canonical
+    // tool items at their own stable item boundary so saved documents can be
+    // embedded beside the write that created them instead of falling back to
+    // the end of the run timeline.
+    const nativeToolEvent = isItemIdentityEvent(event.eventType)
+      ? nativeToolItemDetails(payload)
+      : null;
+    if (nativeToolEvent) {
+      const toolId = nativeToolEvent.id ?? itemId;
+      if (!toolId) continue;
+      const nativeToolItem = nativeToolItemsById.get(toolId)
+        ?? nativeToolEvent.details;
+      const presentation = toolPresentation({}, nativeToolItem);
+      if (!startedToolIds.has(toolId)) {
+        startedToolIds.add(toolId);
+        entries.push({
+          kind: "tool_call",
+          ts,
+          name: presentation.name,
+          input: presentation.input,
+          toolUseId: toolId,
+        });
+      }
+      if (
+        event.eventType === "item.completed"
+        && (nativeToolEvent.kind === "toolresult"
+          || nativeToolEvent.details.result !== undefined)
+        && !completedToolIds.has(toolId)
+      ) {
+        completedToolIds.add(toolId);
+        entries.push({
+          kind: "tool_result",
+          ts,
+          toolUseId: toolId,
+          toolName: presentation.name,
+          content: serializedNativeToolResult(nativeToolItem),
+          isError: nativeToolItem.isError,
+        });
+      }
+      continue;
+    }
+
+    // Notices are provider diagnostics, not tool calls. Preserve their message
+    // and category for the shared notice row instead of serializing an input blob.
+    if (event.eventType === "provider.notice.recorded" && payload.schema === "paperclip.provider.notice.v1") {
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "provider_notice",
+        eventType: event.eventType,
+        status: payload.severity === "error" ? "failed" : "informational",
+        title: "Provider notice",
+        summary: text(payload.summary)?.trim() || text(payload.message)?.trim() || "Provider notice",
+        payload,
+      });
+      continue;
+    }
+
     const providerActivity = providerActivityPresentation(event, payload);
     if (providerActivity) {
       if (!startedToolIds.has(providerActivity.id)) {
@@ -700,7 +847,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
       const executionId = text(payload.executionId);
       if (!executionId) continue;
-      const presentation = toolPresentation(payload);
+      const nativeToolItem = nativeToolItemsById.get(executionId);
+      const presentation = toolPresentation(payload, nativeToolItem);
       if (!startedToolIds.has(executionId)) {
         startedToolIds.add(executionId);
         entries.push({
@@ -711,14 +859,19 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
           toolUseId: executionId,
         });
       }
-      if (event.eventType === "tool.execution.completed") {
+      if (event.eventType === "tool.execution.completed" && !completedToolIds.has(executionId)) {
+        completedToolIds.add(executionId);
+        const output = text(payload.output);
+        const content = output ?? (nativeToolItem
+          ? serializedNativeToolResult(nativeToolItem)
+          : "");
         entries.push({
           kind: "tool_result",
           ts,
           toolUseId: executionId,
           toolName: presentation.name,
-          content: text(payload.output) ?? "",
-          isError: payload.status === "failed",
+          content,
+          isError: payload.status === "failed" || nativeToolItem?.isError === true,
         });
       }
       continue;
@@ -783,18 +936,66 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
 
     if (event.eventType === "run.terminal") {
       const terminal = runTerminalEntry(payload, ts);
-      if (terminal) entries.push(terminal);
+      if (terminal) {
+        entries.push(terminal);
+        terminalsByRun.set(event.runId, {
+          entry: terminal,
+          seq: event.seq,
+          envelope,
+        });
+      }
       continue;
     }
 
     if (
-      (event.eventType === "run.result.proposed" || event.eventType === "run.result.accepted")
+      event.eventType === "run.result.proposed" ||
+      event.eventType === "run.result.accepted"
     ) {
-      if (event.eventType === "run.result.proposed" && hasAcceptedResult) continue;
-      const result = event.eventType === "run.result.accepted" ? record(payload.result) : payload;
+      if (event.eventType === "run.result.proposed" && hasAcceptedResult)
+        continue;
+      const result =
+        event.eventType === "run.result.accepted"
+          ? record(payload.result)
+          : payload;
       if (!result || result.schema !== RUN_RESULT_SCHEMA) continue;
+      if (event.eventType === "run.result.accepted") {
+        acceptedResultCounts.set(
+          event.runId,
+          (acceptedResultCounts.get(event.runId) ?? 0) + 1,
+        );
+      }
       if (!hasRunResult) {
-        entries.push(runResultEntry(result, ts));
+        const entry = runResultEntry(result, ts);
+        entries.push(entry);
+        const continuation = record(result.continuation);
+        const sourceEventId = text(envelope.sourceEventId);
+        const sourceInstanceId = text(envelope.sourceInstanceId);
+        const normalizedSessionId = text(envelope.normalizedSessionId);
+        // Never infer this authority from provider prose, a proposed result,
+        // or a similarly named field supplied inside the semantic result.
+        if (
+          event.eventType === "run.result.accepted" &&
+          envelope.sourceKind === "control_plane" &&
+          entry.disposition === "yielded" &&
+          text(result.summary)?.trim() &&
+          continuation?.kind === "response_wake" &&
+          text(continuation.idempotencyKey)?.trim() &&
+          Array.isArray(result.attentionRequests) &&
+          result.attentionRequests.length === 0 &&
+          sourceEventId?.trim() &&
+          sourceInstanceId?.trim() &&
+          normalizedSessionId?.trim()
+        ) {
+          responseWakeCandidate = {
+            entry,
+            runId: event.runId,
+            sourceEventId,
+            sourceInstanceId,
+            normalizedSessionId,
+            turnId: text(envelope.turnId),
+            seq: event.seq,
+          };
+        }
         hasRunResult = true;
       }
       const summary = text(result.summary);
@@ -803,7 +1004,32 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       }
       continue;
     }
+  }
 
+  if (responseWakeCandidate) {
+    const candidate = responseWakeCandidate;
+    const terminal = terminalsByRun.get(candidate.runId);
+    if (
+      acceptedResultCounts.get(candidate.runId) === 1 &&
+      terminal &&
+      terminal.seq > candidate.seq &&
+      terminal.envelope.sourceKind === "control_plane" &&
+      text(terminal.envelope.sourceEventId)?.trim() &&
+      terminal.envelope.sourceInstanceId === candidate.sourceInstanceId &&
+      terminal.envelope.normalizedSessionId === candidate.normalizedSessionId &&
+      text(terminal.envelope.turnId) === candidate.turnId &&
+      terminal.entry.runState === "succeeded" &&
+      terminal.entry.turnState === "completed" &&
+      terminal.entry.disposition === "yielded" &&
+      ![...runtimeRequests.values()].some(
+        (request) => request.status === "pending",
+      )
+    ) {
+      candidate.entry.acceptedResponseWake = {
+        runId: candidate.runId,
+        sourceEventId: candidate.sourceEventId,
+      };
+    }
   }
 
   // A structured result can be proposed before its originating final item is

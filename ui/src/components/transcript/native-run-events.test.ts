@@ -72,7 +72,181 @@ function runResult(summary: string): Record<string, unknown> {
   };
 }
 
+describe("provider notice presentation", () => {
+  it("preserves notice text as a notice rather than a synthetic tool call", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "provider.notice.recorded", {
+        schema: "paperclip.provider.notice.v1", noticeId: "warning-1",
+        severity: "warning", category: "configWarning", summary: "Repository is not trusted",
+      }),
+      event(2, "provider.notice.recorded", {
+        schema: "paperclip.provider.notice.v1", noticeId: "error-1",
+        severity: "error", message: "Provider connection failed",
+      }),
+    ]);
+    expect(entries).toMatchObject([
+      { kind: "provider_activity", family: "provider_notice", status: "informational", summary: "Repository is not trusted" },
+      { kind: "provider_activity", family: "provider_notice", status: "failed", summary: "Provider connection failed" },
+    ]);
+    expect(entries.some((entry) => entry.kind === "tool_call")).toBe(false);
+  });
+});
+
 describe("nativeRunEventsToTranscript", () => {
+  describe("accepted response-wake authority", () => {
+    function fixture() {
+      const result = {
+        ...runResult("The complete answer; the task remains open."),
+        reportedWorkDisposition: "yielded",
+        continuation: {
+          kind: "response_wake",
+          summary: "Wait for the next exact input.",
+          idempotencyKey: "next-input",
+        },
+      };
+      const accepted = event(2, "run.result.accepted", { result });
+      const terminal = event(3, "run.terminal", {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "completed",
+        runTerminalState: "succeeded",
+        reportedWorkDisposition: "yielded",
+      });
+      const acceptedEnvelope = accepted.payload!.prpEvent as Record<
+        string,
+        unknown
+      >;
+      const terminalEnvelope = terminal.payload!.prpEvent as Record<
+        string,
+        unknown
+      >;
+      for (const envelope of [acceptedEnvelope, terminalEnvelope]) {
+        envelope.sourceKind = "control_plane";
+        envelope.sourceInstanceId = "control-1";
+        envelope.turnId = "turn-1";
+      }
+      return { result, accepted, terminal, acceptedEnvelope, terminalEnvelope };
+    }
+
+    it("derives a closed marker only from a same-run accepted result and terminal", () => {
+      const { accepted, terminal } = fixture();
+      const entries = nativeRunEventsToTranscript([
+        accepted,
+        terminal,
+        structuredClone(accepted),
+      ]);
+      expect(
+        entries.find((entry) => entry.kind === "run_result"),
+      ).toMatchObject({
+        summary: "The complete answer; the task remains open.",
+        acceptedResponseWake: { runId: RUN_ID, sourceEventId: "event-2" },
+      });
+      expect(
+        entries.filter((entry) => entry.kind === "run_result"),
+      ).toHaveLength(1);
+    });
+
+    it.each([
+      "provider_acceptance",
+      "provider_terminal",
+      "proposal",
+      "forged_marker",
+      "missing_attention",
+      "attention",
+      "other_continuation",
+      "blank_key",
+      "blank_summary",
+      "missing_source",
+      "wrong_run",
+      "wrong_event_type",
+      "wrong_schema",
+      "terminal_other_run",
+      "terminal_other_owner",
+      "terminal_other_session",
+      "terminal_other_turn",
+      "terminal_earlier",
+      "terminal_failed",
+      "terminal_interrupted",
+      "terminal_other_disposition",
+      "missing_terminal",
+      "conflicting_acceptance",
+      "pending_question",
+      "pending_approval",
+    ])("does not derive response-wake authority from %s", (mode) => {
+      const { result, accepted, terminal, acceptedEnvelope, terminalEnvelope } =
+        fixture();
+      const mutableResult = result as Record<string, unknown>;
+      const terminalPayload = terminalEnvelope.payload as Record<
+        string,
+        unknown
+      >;
+      const events = [accepted, terminal];
+      if (mode === "provider_acceptance")
+        acceptedEnvelope.sourceKind = "runner";
+      if (mode === "provider_terminal") terminalEnvelope.sourceKind = "runner";
+        if (mode === "proposal") {
+          accepted.eventType = "run.result.proposed";
+          acceptedEnvelope.eventType = accepted.eventType;
+          acceptedEnvelope.payload = result;
+        }
+        if (mode === "forged_marker") {
+          result.continuation.kind = "monitor";
+          mutableResult.acceptedResponseWake = {
+          runId: RUN_ID,
+          sourceEventId: "event-2",
+        };
+      }
+      if (mode === "missing_attention") delete mutableResult.attentionRequests;
+      if (mode === "attention")
+        mutableResult.attentionRequests = [{ kind: "ask_user_questions" }];
+      if (mode === "other_continuation")
+        result.continuation.kind = "same_agent";
+      if (mode === "blank_key") result.continuation.idempotencyKey = " ";
+      if (mode === "blank_summary") mutableResult.summary = " ";
+      if (mode === "missing_source") acceptedEnvelope.sourceEventId = " ";
+      if (mode === "wrong_run") acceptedEnvelope.runId = "other-run";
+      if (mode === "wrong_event_type")
+        acceptedEnvelope.eventType = "item.completed";
+      if (mode === "wrong_schema") acceptedEnvelope.schema = "provider.result";
+      if (mode === "terminal_other_run")
+        terminal.runId = terminalEnvelope.runId = "other-run";
+      if (mode === "terminal_other_owner")
+        terminalEnvelope.sourceInstanceId = "other-owner";
+      if (mode === "terminal_other_session")
+        terminalEnvelope.normalizedSessionId = "other-session";
+      if (mode === "terminal_other_turn")
+        terminalEnvelope.turnId = "other-turn";
+      if (mode === "terminal_earlier") terminal.seq = 1;
+      if (mode === "terminal_failed")
+        terminalPayload.runTerminalState = "failed";
+      if (mode === "terminal_interrupted")
+        terminalPayload.turnTerminalState = "interrupted";
+      if (mode === "terminal_other_disposition")
+        terminalPayload.reportedWorkDisposition = "done";
+      if (mode === "missing_terminal") events.pop();
+      if (mode === "conflicting_acceptance") {
+        const other = structuredClone(accepted);
+        other.seq = 4;
+        (other.payload!.prpEvent as Record<string, unknown>).sourceEventId =
+          "other-accepted-result";
+        events.push(other);
+      }
+      if (mode === "pending_question" || mode === "pending_approval")
+        events.push(
+          event(4, "runtime_request.created", {
+            requestId: "pending-request",
+            requestKind:
+              mode === "pending_question" ? "user_input" : "command_approval",
+            status: "pending",
+          }),
+        );
+      expect(
+        nativeRunEventsToTranscript(events).find(
+          (entry) => entry.kind === "run_result",
+        )?.acceptedResponseWake,
+      ).toBeUndefined();
+    });
+  });
+
   it("projects the cross-language duplicate-delivery fixture exactly once", () => {
     const fixture = JSON.parse(readFileSync(
       new URL(
@@ -174,6 +348,144 @@ describe("nativeRunEventsToTranscript", () => {
         outputTokens: 3,
         cachedTokens: 2,
         costUsd: 0.01,
+      }),
+    ]);
+  });
+
+  it("coalesces sparse Codex tool lifecycle events at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "running",
+        output: null,
+      }),
+      itemEvent(2, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan" },
+      }),
+      itemEvent(3, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "exec-write-plan",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(4, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "exec-write-plan",
+          tool_use_id: "exec-write-plan",
+          result: {
+            commandKind: "write_document",
+            revisionId: "revision-1",
+          },
+        },
+      }),
+      event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "completed",
+        output: null,
+      }),
+      itemEvent(6, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan", status: "completed" },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "exec-write-plan",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "exec-write-plan",
+        toolName: "write_document",
+        content: JSON.stringify({
+          commandKind: "write_document",
+          revisionId: "revision-1",
+        }),
+        isError: false,
+      }),
+    ]);
+  });
+
+  it("projects ACPX item-only tool lifecycles at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "2",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(2, "item.completed", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "2",
+          tool_use_id: "2",
+          result: {
+            disposition: "applied",
+            document: {
+              key: "plan",
+              latestRevisionId: "revision-1",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "2",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "2",
+        toolName: "write_document",
+        content: JSON.stringify({
+          disposition: "applied",
+          document: {
+            key: "plan",
+            latestRevisionId: "revision-1",
+          },
+        }),
+        isError: false,
       }),
     ]);
   });

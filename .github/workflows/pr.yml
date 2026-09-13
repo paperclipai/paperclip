@@ -10,4 +10,5 @@ permissions:
 
 jobs:
   ci:
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@f038633bf5b04163ff985ef0542876bd9f455379
+    # Pin: #13300 merge — restore-only dependency caches and parallel native verification.
+    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@44dde2dec42a22746a2f36b595acacc9ccfa1df6

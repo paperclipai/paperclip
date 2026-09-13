@@ -348,6 +348,129 @@ describe("sandbox managed runtime", () => {
     }
   });
 
+  it("adopts a warm remote workspace without inbound overwrite and still merges outbound changes", async () => {
+    const rootDir = await mkdtemp(
+      path.join(os.tmpdir(), "paperclip-sandbox-adopt-"),
+    );
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(
+      path.join(localWorkspaceDir, "continuity.txt"),
+      "host baseline\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(remoteWorkspaceDir, "continuity.txt"),
+      "remote retained\n",
+      "utf8",
+    );
+    const client = makeFilesystemClient();
+    const syncIn = vi.spyOn(client, "syncIn");
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-warm",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      workspaceInboundMode: "adopt_remote",
+    });
+
+    expect(syncIn).not.toHaveBeenCalled();
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, "continuity.txt"), "utf8"),
+    ).resolves.toBe("remote retained\n");
+    expect(prepared.workspaceSyncSnapshot).not.toBeNull();
+
+    await writeFile(
+      path.join(remoteWorkspaceDir, "continuity.txt"),
+      "remote finalized\n",
+      "utf8",
+    );
+    await prepared.restoreWorkspace();
+    await expect(
+      readFile(path.join(localWorkspaceDir, "continuity.txt"), "utf8"),
+    ).resolves.toBe("remote finalized\n");
+  });
+
+  it("reconstructs a replacement workspace from the exact durable pre-turn seed", async () => {
+    const rootDir = await mkdtemp(
+      path.join(os.tmpdir(), "paperclip-sandbox-durable-seed-"),
+    );
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const firstRemoteDir = path.join(rootDir, "first-remote");
+    const replacementRemoteDir = path.join(rootDir, "replacement-remote");
+    const durableSeed = {
+      workspaceArchivePath: path.join(rootDir, "state", "workspace.tar"),
+      gitArchivePath: path.join(rootDir, "state", "git.tar"),
+    };
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(
+      path.join(localWorkspaceDir, "continuity.txt"),
+      "durable pre-turn bytes\n",
+      "utf8",
+    );
+
+    const first = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-first",
+        remoteCwd: firstRemoteDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      workspaceInboundMode: "host_current",
+      workspaceDurableSeed: durableSeed,
+    });
+    expect(first.workspaceSyncSnapshot).not.toBeNull();
+    await expect(stat(durableSeed.workspaceArchivePath)).resolves.toMatchObject(
+      {
+        mode: expect.any(Number),
+      },
+    );
+
+    await writeFile(
+      path.join(localWorkspaceDir, "continuity.txt"),
+      "concurrent host edit must not enter replacement\n",
+      "utf8",
+    );
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-replacement",
+        remoteCwd: replacementRemoteDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      workspaceInboundMode: "durable_seed",
+      workspaceDurableSeed: durableSeed,
+      workspaceBaseline: first.workspaceSyncSnapshot!.baseline,
+      workspaceGitSnapshot: first.workspaceSyncSnapshot!.gitSnapshot,
+    });
+
+    await expect(
+      readFile(path.join(replacementRemoteDir, "continuity.txt"), "utf8"),
+    ).resolves.toBe("durable pre-turn bytes\n");
+  });
+
   it("preserves excluded local workspace artifacts during restore mirroring", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-restore-"));
     cleanupDirs.push(rootDir);

@@ -1,0 +1,2 @@
+ALTER TABLE "chat_publications" DROP CONSTRAINT "chat_publications_state_check";--> statement-breakpoint
+ALTER TABLE "chat_publications" ADD CONSTRAINT "chat_publications_state_check" CHECK ("chat_publications"."state" in ('pending', 'streaming', 'published', 'retry', 'delivery_unknown', 'failed', 'cancelled'));

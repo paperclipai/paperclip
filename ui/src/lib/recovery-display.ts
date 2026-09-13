@@ -48,9 +48,20 @@ export const RECOVERY_CHIP_DEFAULT_TONE: Record<
  * the parent views that list it as a blocker never disagree about whether recovery is
  * quietly running or actually needs a human.
  */
-export type RecoveryDisplayInput = Pick<IssueRecoveryAction, "status" | "kind" | "outcome"> &
+export type RecoveryDisplayInput = Pick<
+  IssueRecoveryAction,
+  "status" | "kind" | "outcome"
+> &
   Partial<
-    Pick<IssueRecoveryAction, "wakePolicy" | "evidence" | "attemptCount" | "maxAttempts" | "timeoutAt">
+    Pick<
+      IssueRecoveryAction,
+      | "ownerType"
+      | "wakePolicy"
+      | "evidence"
+      | "attemptCount"
+      | "maxAttempts"
+      | "timeoutAt"
+    >
   >;
 
 export function deriveRecoveryDisplayState(
@@ -60,7 +71,11 @@ export function deriveRecoveryDisplayState(
   if (action.status === "resolved") return "resolved";
   if (action.status === "escalated") return "escalated";
   if (action.status === "cancelled") return "resolved";
-  if (action.kind === "active_run_watchdog") return "observe_only";
+  if (action.kind === "active_run_watchdog") {
+    // Native terminal failures also use this kind. Board ownership means a
+    // human must choose recovery; it is not evidence of a still-running turn.
+    return action.ownerType === "board" ? "needed" : "observe_only";
+  }
   // A bounded retry lineage still holding a durable path is work the server will do on its
   // own. Shouting "recovery needed" over it would ask a human to fix something nobody has to
   // fix yet, so the calm tone is reserved for a lane with an attempt genuinely still coming.

@@ -16,19 +16,21 @@ import {
   Package,
   Settings,
   FolderOpen,
-  AppWindow,
+  Unplug,
   MessagesSquare,
   GanttChartSquare,
   LayoutGrid,
   Users,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarAgents } from "./SidebarAgents";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarStarredProjects } from "./SidebarStarredProjects";
+import { SidebarAgentChats } from "./SidebarAgentChats";
+import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -46,9 +48,11 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { primarySidebarStyles } from "./primary-sidebar-styles";
 
-export function Sidebar() {
+export function Sidebar({ children }: { children?: ReactNode }) {
   const { openNewIssue } = useDialogActions();
+  const { enabled: agentChatEnabled } = useAgentChatEnabled();
   // Every labeled section is collapsible (session-scoped, default open) —
   // one policy across static nav groups and the data-driven sections.
   const [workOpen, setWorkOpen] = useState(true);
@@ -117,7 +121,7 @@ export function Sidebar() {
       className={cn(
         "w-full h-full min-h-0 flex flex-col",
         streamlinedUiEnabled
-          ? "bg-border/50 dark:bg-muted"
+          ? primarySidebarStyles.surface
           : "border-r border-border bg-background",
       )}
     >
@@ -130,8 +134,8 @@ export function Sidebar() {
         <SidebarCompanyMenu />
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 pointer-coarse:gap-3 px-3 py-2">
-        <div className="flex flex-col gap-0.5">
+      <nav className={primarySidebarStyles.nav}>
+        <div className={primarySidebarStyles.group}>
           {/* New Task button aligned with nav items */}
           {(() => {
             const newTaskButton = (
@@ -140,8 +144,7 @@ export function Sidebar() {
                 data-slot="icon-button"
                 aria-label={rail ? "New Task" : undefined}
                 className={cn(
-                  "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 hover:text-foreground transition-colors",
-                  streamlinedUiEnabled ? "hover:bg-background" : "hover:bg-accent/50",
+                  "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                 )}
               >
                 <SquarePen className="h-4 w-4 shrink-0" />
@@ -239,10 +242,13 @@ export function Sidebar() {
           >
             <SidebarNavItem to="/agents" label="Agents" icon={Users} />
             <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-            <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} />
+            <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
             <SidebarNavItem to="/activity" label="Audit" icon={History} />
           </SidebarSection>
         ) : null}
+
+        {children}
+        {agentChatEnabled && !children && <SidebarAgentChats />}
 
         {streamlinedUiEnabled ? (
           <SidebarRecentTasks companyId={selectedCompanyId} liveIssueIds={liveIssueIds} />
@@ -255,7 +261,7 @@ export function Sidebar() {
               collapsible={{ open: organizationOpen, onOpenChange: setOrganizationOpen }}
             >
               <SidebarNavItem to="/org" label="Org" icon={Network} />
-              <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} />
+              <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
               <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
               <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
               <SidebarNavItem to="/activity" label="Activity" icon={History} />
