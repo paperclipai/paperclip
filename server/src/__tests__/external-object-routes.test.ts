@@ -32,54 +32,52 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
-function registerRouteMocks() {
-  vi.doMock("../services/external-objects.js", () => ({
-    externalObjectService: () => mockExternalObjectsService,
-  }));
+vi.mock("../services/external-objects.js", () => ({
+  externalObjectService: () => mockExternalObjectsService,
+}));
 
-  vi.doMock("../services/instance-settings.js", () => ({
-    instanceSettingsService: () => mockInstanceSettingsService,
-  }));
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
+}));
 
-  vi.doMock("../services/task-watchdog-scope.js", () => ({
-    TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
-    resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
-    taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "none" })),
-  }));
+vi.mock("../services/task-watchdog-scope.js", () => ({
+  TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+  resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+  taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "none" })),
+}));
 
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    companySkillService: () => ({}),
-    companyService: () => ({
-      getById: vi.fn(async () => null),
-    }),
-    companySearchService: () => ({}),
-    documentAnnotationService: () => ({}),
-    documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
-    feedbackService: () => ({}),
-    goalService: () => ({}),
-    heartbeatService: () => ({
-      wakeup: vi.fn(async () => undefined),
-      reportRunActivity: vi.fn(async () => undefined),
-      getRun: vi.fn(async () => null),
-      getActiveRunForAgent: vi.fn(async () => null),
-      cancelRun: vi.fn(async () => null),
-    }),
-    issueApprovalService: () => ({}),
-    issueRecoveryActionService: () => ({}),
-    issueReferenceService: () => ({
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    }),
-    issueService: () => mockIssueService,
-    issueThreadInteractionService: () => ({}),
-    logActivity: vi.fn(async () => undefined),
-    projectService: () => ({}),
-    routineService: () => ({}),
-    workProductService: () => ({}),
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  companySkillService: () => ({}),
+  companyService: () => ({
+    getById: vi.fn(async () => null),
+  }),
+  companySearchService: () => ({}),
+  documentAnnotationService: () => ({}),
+  documentService: () => ({}),
+  executionWorkspaceService: () => ({}),
+  feedbackService: () => ({}),
+  goalService: () => ({}),
+  heartbeatService: () => ({
+    wakeup: vi.fn(async () => undefined),
+    reportRunActivity: vi.fn(async () => undefined),
+    getRun: vi.fn(async () => null),
+    getActiveRunForAgent: vi.fn(async () => null),
+    cancelRun: vi.fn(async () => null),
+  }),
+  issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => ({}),
+  issueReferenceService: () => ({
+    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+  }),
+  issueService: () => mockIssueService,
+  issueThreadInteractionService: () => ({}),
+  logActivity: vi.fn(async () => undefined),
+  projectService: () => ({}),
+  routineService: () => ({}),
+  workProductService: () => ({}),
+}));
 
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
@@ -118,6 +116,12 @@ async function createApp(actor: Express.Request["actor"]) {
     next();
   });
   app.use("/api", issueRoutes(routeDb as any, { provider: "local_disk" } as any));
+  // Keep unexpected route exceptions visible when a status assertion fails.
+  app.locals.routeErrors = [] as string[];
+  app.use((error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    app.locals.routeErrors.push(error instanceof Error ? error.stack ?? error.message : String(error));
+    next(error);
+  });
   app.use(errorHandler);
   return app;
 }
@@ -158,21 +162,14 @@ function peerActor(): Express.Request["actor"] {
 }
 
 describe("external object routes", () => {
-  // Load the real route and middleware modules once before the tests run. The
-  // first import transforms a large module graph. Under the loaded serial shard
-  // (maxWorkers=1) that cold cost crossed the 5s testTimeout of the first test.
-  // The hook has a 30s budget, so it absorbs the transform cost and every later
-  // createApp() call hits the cached modules.
+  // Hoisted service mocks must be installed before this import. Warm the real
+  // route module once within the hook budget; individual tests reset service
+  // behavior without rebuilding the dependency graph or starting real services.
   beforeAll(async () => {
     await createApp(boardActor());
   });
 
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/external-objects.js");
-    registerRouteMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -204,7 +201,7 @@ describe("external object routes", () => {
     const res = await request(app).get(`/api/issues/${issueId}/external-object-summary`);
 
     // Uniform 404 so cross-tenant ids are indistinguishable from missing ones.
-    expect(res.status).toBe(404);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(404);
     expect(res.body.error).toBe("Issue not found");
     expect(mockExternalObjectsService.getIssueSummary).not.toHaveBeenCalled();
   });
@@ -214,7 +211,7 @@ describe("external object routes", () => {
 
     const res = await request(app).get(`/api/issues/${issueId}/external-object-summary`);
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(res.body.total).toBe(1);
     expect(mockExternalObjectsService.getIssueSummary).toHaveBeenCalledWith(issueId);
   });
@@ -242,7 +239,7 @@ describe("external object routes", () => {
       .post(`/api/companies/${companyId}/issues/external-object-summaries`)
       .send({ issueIds: [issueId] });
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(res.body.summaries[issueId].total).toBe(1);
     expect(mockExternalObjectsService.getIssueSummaries).toHaveBeenCalledWith(companyId, [issueId]);
   });
@@ -258,7 +255,7 @@ describe("external object routes", () => {
       .post(`/api/companies/${companyId}/issues/external-object-summaries`)
       .send({ issueIds: [issueId] });
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(res.body.summaries).toEqual({});
     expect(mockExternalObjectsService.getIssueSummaries).toHaveBeenCalledWith(companyId, []);
   });
@@ -270,7 +267,7 @@ describe("external object routes", () => {
       .post(`/api/companies/${companyId}/issues/external-object-summaries`)
       .send({ issueIds: [issueId] });
 
-    expect(res.status).toBe(403);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(403);
     expect(mockExternalObjectsService.getIssueSummaries).not.toHaveBeenCalled();
   });
 
@@ -281,7 +278,7 @@ describe("external object routes", () => {
       .post(`/api/issues/${issueId}/external-objects/refresh`)
       .send({});
 
-    expect(res.status).toBe(409);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(409);
     expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
     expect(mockExternalObjectsService.refreshIssueObjects).not.toHaveBeenCalled();
   });
@@ -293,7 +290,7 @@ describe("external object routes", () => {
       .post(`/api/issues/${issueId}/external-objects/refresh`)
       .send({});
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
     expect(mockExternalObjectsService.refreshIssueObjects).toHaveBeenCalledWith(issueId, expect.objectContaining({
       companyId,

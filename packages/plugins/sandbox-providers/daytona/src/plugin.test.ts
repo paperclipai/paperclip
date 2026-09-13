@@ -1526,6 +1526,92 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sessionId).toMatch(/^paperclip-/);
     });
 
+    const missingSession = () => Object.assign(new MockDaytonaNotFoundError("session not found"), {
+      code: "PROCESS_NOT_FOUND", statusCode: 404,
+    });
+
+    it("redirects empty stdin so a session command receives EOF", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams({ stdin: "" }));
+
+      expect(sandbox.fs.uploadFile).toHaveBeenCalledWith(
+        Buffer.alloc(0), expect.stringMatching(/^\/tmp\/paperclip-stdin-/), 1,
+      );
+      const [, params] = sandbox.process.executeSessionCommand.mock.calls[0]!;
+      expect(params.command).toMatch(/< '\/tmp\/paperclip-stdin-/);
+      expect(sandbox.fs.deleteFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
+    });
+
+    it("replaces a disappeared session only when dispatch was rejected", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      sandbox.process.executeSessionCommand.mockRejectedValueOnce(missingSession());
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams({ stdin: "input" }));
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      const ids = sandbox.process.executeSessionCommand.mock.calls.map(([id]) => id);
+      expect(ids[0]).toBe(ids[1]);
+      expect(ids[2]).not.toBe(ids[1]);
+      expect(sandbox.fs.uploadFile).toHaveBeenCalledTimes(2);
+      expect(sandbox.fs.deleteFile).toHaveBeenCalledTimes(2);
+    });
+
+    it("shares one replacement when concurrent commands find the same missing session", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      const staleId = sandbox.process.createSession.mock.calls[0]![0];
+      sandbox.process.executeSessionCommand.mockImplementation(async (id: string) => {
+        if (id === staleId) throw missingSession();
+        return { cmdId: "accepted" };
+      });
+      await Promise.all([
+        plugin.definition.onEnvironmentExecute?.(sessionExecParams()),
+        plugin.definition.onEnvironmentExecute?.(sessionExecParams()),
+      ]);
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      const replacementId = sandbox.process.createSession.mock.calls[1]![0];
+      expect(sandbox.process.executeSessionCommand.mock.calls.filter(([id]) => id === replacementId)).toHaveLength(2);
+    });
+
+    it("does not replay an accepted command when its session disappears while reading its status", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      const error = missingSession();
+      sandbox.process.getSessionCommand.mockRejectedValue(error);
+      await expect(plugin.definition.onEnvironmentExecute?.(sessionExecParams())).rejects.toBe(error);
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      new Error("session not found"),
+      new MockDaytonaNotFoundError("sandbox not found"),
+    ])("does not retry an unclassified dispatch failure: %s", async (error) => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.process.executeSessionCommand.mockRejectedValueOnce(error);
+      await expect(plugin.definition.onEnvironmentExecute?.(sessionExecParams())).rejects.toBe(error);
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("bounds missing-session recovery to one replacement", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.process.executeSessionCommand.mockRejectedValue(missingSession());
+      await expect(plugin.definition.onEnvironmentExecute?.(sessionExecParams())).rejects.toThrow("before command dispatch");
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+    });
+
     it("opens one session when two first commands overlap", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
@@ -2245,7 +2331,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(mockGet).toHaveBeenCalledTimes(1);
   });
 
-  it("stages stdin in the sandbox filesystem when execution needs redirected input", async () => {
+  it.each(["input payload", ""])("stages redirected stdin, including EOF-only input (%j)", async (stdin) => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
@@ -2263,12 +2349,12 @@ describe("Daytona sandbox provider plugin", () => {
       command: "cat",
       args: [],
       cwd: "/workspace",
-      stdin: "input payload",
+      stdin,
       timeoutMs: 1000,
     });
 
     expect(sandbox.fs.uploadFile).toHaveBeenCalledWith(
-      Buffer.from("input payload", "utf8"),
+      Buffer.from(stdin, "utf8"),
       expect.stringMatching(/^\/tmp\/paperclip-stdin-/),
       1,
     );

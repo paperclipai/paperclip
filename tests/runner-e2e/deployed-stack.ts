@@ -1,5 +1,30 @@
 import fs from "node:fs";
 import assert from "node:assert/strict";
+import type { WorkFolderListing } from "../../packages/shared/src/work-folders.js";
+
+/** Find one entry without assuming a shared folder fits in the first page. */
+export async function findDeployedWorkFile(
+  api: Pick<DeployedStackApi, "json">,
+  folderPath: string,
+  filePath: string,
+  trash = false,
+) {
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const query = new URLSearchParams({ limit: "200", trash: String(trash) });
+    if (cursor) query.set("cursor", cursor);
+    const listing: WorkFolderListing = await api.json(`${folderPath}?${query}`);
+    const file = listing.files.find((entry) => entry.path === filePath);
+    if (file) return file;
+    cursor = listing.nextCursor;
+    if (cursor) {
+      assert(!cursors.has(cursor), "Work-folder listing repeated its cursor");
+      cursors.add(cursor);
+    }
+  } while (cursor);
+  return undefined;
+}
 
 // A separate target contract deliberately has no local-server fallback.
 export function isStagingOrigin(value: string) {

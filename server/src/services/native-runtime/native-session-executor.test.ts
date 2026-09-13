@@ -14,8 +14,9 @@ import {
   truncate,
   writeFile,
 } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   heartbeatRuns,
@@ -34,7 +35,7 @@ import {
   type NativeExecutionInputV1,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
@@ -269,6 +270,7 @@ import {
   normalizeNativeUsage,
   parseRemoteRunnerProcessIdentity,
   readRemoteProviderPackManifest,
+  buildRemoteProviderPackVerificationScript,
   providerSessionIdentityFromDurableProviderState,
   providerSessionIdentityTransitionIsAllowed,
   providerPlanMarkdown,
@@ -671,6 +673,12 @@ describe("native provider usage normalization", () => {
 });
 
 describe("remote provider pack manifest", () => {
+  it("normalizes app and sandbox build layouts in the standard server test lane", () => {
+    execFileSync(process.execPath, ["--test", fileURLToPath(new URL(
+      "../../../../packages/paperclip-runner/scripts/provider-pack-layout.test.mjs", import.meta.url,
+    ))], { stdio: "pipe" });
+  });
+
   const canonical = (value: unknown): string => {
     if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
     if (value && typeof value === "object") {
@@ -730,7 +738,7 @@ describe("remote provider pack manifest", () => {
         pi: "0.84.2",
         piAcp: "0.0.33",
       },
-      target: { platform: "linux", architecture: "x64" },
+      target: { platform: process.platform, architecture: process.arch },
       runnerSourceRevision: "1".repeat(40),
       distDigest: sha256DirectoryTree(join(root, "dist")),
       bridgeDigest: "",
@@ -785,6 +793,116 @@ describe("remote provider pack manifest", () => {
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.29",
     );
+    // Execute the exact source sent to the sandbox, not a mock of its verdict.
+    const expectedManifest = readRemoteProviderPackManifest(root);
+    const expectedArgument = Buffer.from(canonical(expectedManifest)).toString("base64");
+    const verifyRemote = () => spawnSync(process.execPath, [
+      "-e", buildRemoteProviderPackVerificationScript(), root, expectedArgument,
+    ], { encoding: "utf8" });
+    for (const [pkg, version] of Object.entries({
+      acpx: payload.pins.acpx,
+      "@agentclientprotocol/claude-agent-acp": payload.pins.claudeAcp,
+      "@agentclientprotocol/codex-acp": payload.pins.codexAcp,
+      "opencode-ai": payload.pins.opencode,
+    })) {
+      await mkdir(join(root, "node_modules", pkg), { recursive: true });
+      await writeFile(join(root, "node_modules", pkg, "package.json"), JSON.stringify({ version }));
+    }
+    expect(verifyRemote().status).toBe(0);
+    payload.runnerSourceRevision = "2".repeat(40);
+    await writeManifest();
+    expect(verifyRemote().status).toBe(0); // Revision-only provenance allows image reuse.
+
+    // Exercise the production selection branch too: a different revision with
+    // verified identical bytes must link the installed pack without syncIn.
+    payload.runnerSourceRevision = "1".repeat(40);
+    await writeManifest();
+    const syncIn = vi.fn(async () => { throw new Error("unexpected-provider-pack-upload"); });
+    const logs: string[] = [];
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      let stdout = "";
+      const script = command.args?.[1] ?? "";
+      if (command.args?.[0] === "--build-metadata") {
+        stdout = JSON.stringify({
+          schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+          packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+          capabilities: ["codex.warm-attachment.passive-notices.v1"], prpTransportModes: ["listen_ws"],
+        });
+      } else if (script.includes("command -v paperclip-runnerd")) {
+        stdout = "/opt/paperclip-runner/bin/paperclip-runnerd\n";
+      } else if (script.includes("for candidate in /opt/paperclip-runner/provider-pack")) {
+        stdout = "/opt/paperclip-runner/provider-pack\n";
+      } else if (command.args?.[0] === "-e") {
+        const verified = spawnSync(process.execPath, ["-e", script, root, command.args![3]!], { encoding: "utf8" });
+        return { exitCode: verified.status, signal: null, timedOut: false, stdout: verified.stdout, stderr: verified.stderr };
+      } else if (command.command.endsWith("/node_modules/.bin/opencode") && command.args?.[0] === "--version") {
+        stdout = payload.pins.opencode;
+      } else if (!script.includes("ln -s")) {
+        throw new Error("after-provider-pack-verification");
+      }
+      return { exitCode: 0, signal: null, timedOut: false, stdout, stderr: "" };
+    });
+    const providerExecution = {
+      ...execution,
+      provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+      session: { ...execution.session, normalizedSessionId: `revision-only-${randomUUID()}`, driverKind: "opencode_server" },
+    } as NativeExecutionInputV1;
+    await createRunnerdBackend({
+      db: leaseDb(providerExecution), execution: providerExecution,
+      runnerInstanceId: "runner-revision-only-provider-pack", runnerIngressAuthorized: true,
+      runnerRemoteProviderPackPath: root,
+      onLog: async (_stream, chunk) => { logs.push(chunk); },
+      runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment",
+        leaseId: "lease", providerKey: "daytona", effectiveCapabilities: { runnerWebSocketIngress: true },
+        runner: { execute: remoteExecute, syncIn },
+      } as never,
+    });
+    payload.runnerSourceRevision = "2".repeat(40);
+    await writeManifest();
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const transport = state.createTransport.mock.calls[0]![0] as RunnerTransportOptions & {
+      controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
+    };
+    await expect(transport.controlPlaneRegistration({})).rejects.toThrow();
+    expect(logs.join("")).toContain("using content-matched provider pack");
+    expect(syncIn).not.toHaveBeenCalled();
+    const revisionManifest = JSON.parse(await readFile(join(root, "provider-pack.json"), "utf8"));
+    await writeFile(join(root, "provider-pack.json"), JSON.stringify({ ...revisionManifest, digest: `sha256:${"0".repeat(64)}` }));
+    expect(verifyRemote().stderr).toContain("manifest digest mismatch");
+    await writeManifest();
+    for (const [relativePath, bytes] of [
+      ["node_modules/node/bin/node", node],
+      ["pnpm-lock.yaml", lockfile],
+      ["dist/cli/acpx-runtime-sidecar.cjs", sidecar],
+    ]) {
+      await writeFile(join(root, relativePath), "tampered bytes");
+      expect(verifyRemote().status).not.toBe(0);
+      await writeFile(join(root, relativePath), bytes);
+    }
+    await writeFile(join(root, "dist", "extra-runtime.js"), "unexpected runtime code");
+    expect(verifyRemote().stderr).toContain("dist tree digest mismatch");
+    await rm(join(root, "dist", "extra-runtime.js"));
+    for (const change of [
+      (value: typeof payload) => { value.pins.opencode = "0.0.0"; },
+      (value: typeof payload) => { value.target.architecture = "unexpected" as typeof process.arch; },
+      (value: typeof payload) => { value.artifacts.nodeCommand = { ...value.artifacts.productionLock }; },
+    ]) {
+      const changed = structuredClone(payload);
+      change(changed);
+      await writeFile(join(root, "provider-pack.json"), JSON.stringify({
+        schema: expectedManifest.schema,
+        digest: digest(canonical(changed)), payload: changed,
+      }));
+      expect(verifyRemote().stderr).toContain("manifest content mismatch");
+    }
+    await writeManifest();
+    await writeFile(join(root, "node_modules", "acpx", "package.json"), JSON.stringify({ version: "0.0.0" }));
+    expect(verifyRemote().stderr).toContain("acpx version mismatch");
+    await writeFile(join(root, "node_modules", "acpx", "package.json"), JSON.stringify({ version: payload.pins.acpx }));
+    expect(verifyRemote().status).toBe(0);
+
     for (const [artifactName, substituteName] of [
       ["nodeCommand", "productionLock"],
       ["opencodeExecutable", "opencodeCommand"],
@@ -4254,6 +4372,7 @@ function leaseDb(
   runResultJson: Record<string, unknown> = {},
   updates: Array<{ table: unknown; values: Record<string, unknown> }> = [],
   runnerProfileJson: Record<string, unknown> = {},
+  loseCancellationLease = false,
   runStatus = "running",
 ): Db {
   const coordinator: LeaseCoordinator = {
@@ -4272,13 +4391,13 @@ function leaseDb(
       return {
         where: () => {
           updates.push({ table, values });
-          const result = Promise.resolve([]) as unknown as Promise<
-            unknown[]
-          > & {
+          const result = Promise.resolve([]) as unknown as Promise<unknown[]> & {
             returning: () => Promise<Array<{ runId: string }>>;
           };
-          result.returning = () =>
-            Promise.resolve([{ runId: coordinator.runId, nextEventSeq: 2 }]);
+          result.returning = () => Promise.resolve(
+            loseCancellationLease && values.nextAttemptAt === null && values.leaseOwner === null
+              ? [] : [{ runId: coordinator.runId, nextEventSeq: 2 }],
+          );
           return result;
         },
       };
@@ -4635,6 +4754,47 @@ describe("native session cancellation", () => {
       cancelNativeSession(execution.binding.runId, "late cancel"),
     ).resolves.toBe(false);
   });
+
+  it.each([
+    { dispatchState: "pending", leaseLost: false },
+    { dispatchState: "acknowledged", leaseLost: false },
+    { dispatchState: "pending", leaseLost: true },
+    { dispatchState: "acknowledged", leaseLost: true },
+  ])(
+    "fences recovery for $dispatchState cancellation during a provider turn (leaseLost=$leaseLost)",
+    async ({ dispatchState, leaseLost }) => {
+      const resultJson: Record<string, unknown> = {};
+      const writes: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      state.execute.mockImplementationOnce(async (options) => {
+        options.onSession?.({ cancel: state.cancel });
+        // The claim saw no cancellation. The durable intent arrives while the
+        // provider is running, before its interruption surfaces as a failure.
+        resultJson.nativeCancellation = {
+          schema: "paperclip.native-cancellation.v1",
+          scope: "run",
+          companyId: execution.binding.companyId,
+          runId: execution.binding.runId,
+          issueId: execution.binding.issueId,
+          dispatchState,
+        };
+        options.onSession?.(null);
+        throw new Error("native_finalization_missing: session returned no semantic result");
+      });
+      const failure = await executePaperclipNativeSession({
+        db: leaseDb(execution, {}, resultJson, writes, {}, leaseLost),
+        execution,
+        runnerInstanceId: "runner",
+      }).catch((error: unknown) => error);
+      expect(writes.some(({ values }) => values.phase === "retryable_failure")).toBe(false);
+      expect(writes.some(({ values }) => values.errorCode === "native_session_interrupted")).toBe(false);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe(leaseLost ? "native_session_lease_lost" : "native_cancellation_pending_recovery");
+      expect(writes).toContainEqual({
+        table: nativeRunFinalizations,
+        values: expect.objectContaining({ leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null }),
+      });
+    },
+  );
 
   it("allows cancellation to be retried when the session dispatch fails", async () => {
     state.cancel.mockImplementationOnce(() => {
@@ -6822,7 +6982,7 @@ describe("native process ownership", () => {
       const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
       state.createBackend.mockClear();
       await expect(executePaperclipNativeSession({
-        db: leaseDb(execution, {}, {}, updates, {}, status), execution, runnerInstanceId: "late-startup",
+        db: leaseDb(execution, {}, {}, updates, {}, false, status), execution, runnerInstanceId: "late-startup",
       })).rejects.toThrow();
       expect(state.createBackend).not.toHaveBeenCalled();
       expect(updates.some(update => update.table === nativeRunFinalizations)).toBe(false);

@@ -65,7 +65,7 @@ export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
 export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
   return {
     body:
-      "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
+      "Paperclip stopped before launching the adapter because the issue workspace failed validation. " +
       "Moving it to `blocked` so the workspace link, cwd, or git checkout can be repaired before resuming.",
     title: "Workspace validation failed",
     tone: "danger",

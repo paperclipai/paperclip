@@ -132,10 +132,76 @@ This document also holds three local instrumentation contracts: native runner
 traces, sandbox startup traces, and sandbox duplex transport instrumentation.
 Those sections follow below.
 
+## Full sandbox lifecycle diagnostics
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` configured, `sandbox.run` measures the host
+execution path for both runner generations. Its children cover authorization
+and database work, workspace/environment acquisition, scoped work-folder
+preparation, runtime context and launchers, dispatch, final saving and cleanup.
+The Cloud image includes the exact optional OTel peers declared by the server;
+self-hosted images retain the optional installation procedure above. The
+endpoint gate remains required in both cases.
+
+`heartbeat.*` operations surround the actual awaited calls. Repeated database
+calls share a name and have a numeric `operationIndex` for source correlation.
+`work_folder.*` operations split binding checks, scope and history lookups,
+attachment seeding/import, manifests, incoming/outgoing scans, metadata queries,
+object GET response acquisition, body consumption, transport batches, repository
+credentials/clone/checkout/setup, and checkpoint publication. Checkpoints also
+measure object journal queries, existence checks, uploads, both repository
+scans, manifest storage, and the final pointer transaction. A completed request
+is not a completed body transfer: those are separate spans.
+
+The live host dispatch context parents native `task.run` when these diagnostics
+are active. Native startup and agent spans remain beneath it. Previously
+collected aggregate preparation durations are not backdated into a second
+overlapping native preparation tree in this mode. Without the endpoint, native
+local run-log behavior and its historical preparation tree remain unchanged.
+Active contexts also propagate through the OpenTelemetry context manager, so
+HTTP and database auto-instrumentation inherits the closest operation.
+
+Names and attributes are fixed operation labels, numeric indices/counts, finite
+durations, byte counts, retry attempts, and boolean outcomes. Raw run identifiers
+are hashed. New diagnostic attributes exclude paths, file contents, repository
+URLs, credentials, commands, and exception messages. An operation's `failed`
+outcome means that operation threw; the authoritative task outcome still comes
+from its run row, since execution can catch an error and return normally.
+
+Filesystem helpers report their own monotonic phase offsets. These become
+events on the measured host command span, with `clock=remote_relative`,
+`startOffsetMs` and `durationMs`. They are **not** host-clock child spans: there
+is no measured clock alignment. Compare host round-trip time and remote
+execution time without labeling the difference pure network latency; it also
+contains queueing and transport overhead. Body `readWaitMs` measures waits for
+the next iterator result; `bodyNonReadMs` includes consumer processing and
+backpressure. Neither is a direct network measurement.
+
+Startup, agent execution, checkpointing, and total task duration must be
+reported separately. For a waterfall, subtract the **union** of child intervals
+to find unattributed time; summing nested or parallel spans double counts work.
+Keep remote-relative phases in their own lane and identify missing intervals
+explicitly. A warm scoped folder means a prior manifest exists for the same
+physical sandbox, not that the provider was already running. Repository reuse
+means a usable checkout was found; restoring a checkpoint in a replacement
+sandbox is distinct from finding an existing checkout.
+
+The SDK batches exports. The helper also keeps at most 20,000 local records
+per run, writes them in batches of at most 250 after measured execution, and
+reports discarded records in `dropped` (also on the exported root span).
+Remote helpers cap detailed phases at 256 per command and report dropped
+phases separately. No per-file synchronous logging or exporter call is added.
+The local batch-write tail is outside `sandbox.run`; include it separately
+when comparing whole-process completion. Exporter queue drops and collector
+failures can still make exported traces incomplete: verify actual collector
+records and limits before using a trace as performance evidence. Diagnostic
+sink failures do not fail the task. See the local
+[`sandbox.performance.batch` contract](run-log-events.md#sandbox-performance-batches).
+
 ## Native Runner Trace Spans
 
 Paperclip Runner task runs emit a single foldable OpenTelemetry trace. This is
-the native-run trace schema version `2`. `task.run` is the only full-run root;
+the native-run trace schema version `2`. `task.run` is the native subtree root
+(parented to live host dispatch in full lifecycle diagnostics);
 every other native span carries a real OpenTelemetry parent context rather than
 only a descriptive `parentName` field.
 
@@ -452,6 +518,14 @@ Two controls belong to the operator. This feature ships neither one.
    works for the server.
 
 ## Sandbox Startup Trace Spans
+
+The optional `paperclip.sandbox` performance trace accounts for one heartbeat
+run. A reused native session may deliver a callback with a previous run's
+startup context; performance spans fall back to the current run's open scope
+when that context belongs to another trace. Startup-step parents in the same
+trace are preserved. The root's `paperclip.sandbox.runtime` is `unresolved`
+until runtime selection is persisted, then becomes `legacy` or `native`.
+Database runtime selection remains authoritative when inspecting older traces.
 
 Paperclip opens OpenTelemetry spans on the sandbox start path. These spans are
 an Observability surface. They are not Paperclip Telemetry events. The

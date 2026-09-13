@@ -426,7 +426,8 @@ export interface VerifiedAcpxInstallation {
   readonly commandDigest: string;
   readonly agentServerPackageJsonPath: string;
   readonly agentRuntimePackageJsonPath: string | null;
-  openCommand(): Promise<VerifiedAcpxCommandLease>;
+  /** Reusable leases retain verified bytes and descriptors until explicitly closed. */
+  openCommand(options?: { reusable?: boolean }): Promise<VerifiedAcpxCommandLease>;
 }
 
 export interface VerifiedAcpxCommandLease {
@@ -726,7 +727,7 @@ export async function verifyQualifiedAcpxInstallation(
     commandDigest,
     agentServerPackageJsonPath: serverPackageJsonPath,
     agentRuntimePackageJsonPath: runtimePackageJsonPath,
-    async openCommand(): Promise<VerifiedAcpxCommandLease> {
+    async openCommand(options: { reusable?: boolean } = {}): Promise<VerifiedAcpxCommandLease> {
       const currentDirectory = await openVerifiedCommandDirectory(
         commandDirectory,
         "provider",
@@ -805,6 +806,7 @@ export async function verifyQualifiedAcpxInstallation(
           dependencyAncestorFormats,
           currentRuntimeExecutable,
           runtimeExecutable?.environmentVariable ?? null,
+          options.reusable === true,
           privateSnapshot,
         );
       } catch (error) {
@@ -1319,9 +1321,18 @@ function commandLease(
   providerRuntimeExecutable: FileHandle | null,
   providerRuntimeEnvironmentVariable:
     VerifiedAcpxRuntimeExecutable["environmentVariable"] | null,
+  reusable: boolean,
   privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
+  let closed = false;
+  let activeChildren = 0;
+  // A spawned child still needs the verified private snapshot while its
+  // bootstrap loads. Closing the reusable lease prevents new launches, but
+  // must not unlink bytes already handed to an existing child.
+  const closeSnapshotIfIdle = async (): Promise<void> => {
+    if (activeChildren === 0 && (closed || !reusable)) await privateSnapshot?.close();
+  };
   let directoriesReleased = false;
   const releaseDirectories = async (): Promise<void> => {
     if (directoriesReleased) return;
@@ -1338,11 +1349,12 @@ function commandLease(
     void releaseDirectories().catch(() => undefined);
   };
   const close = async (): Promise<void> => {
-    if (consumed) return;
+    if (closed) return;
+    closed = true;
     consumed = true;
     verifiedBytes.fill(0);
     await releaseDirectories();
-    await privateSnapshot?.close();
+    await closeSnapshotIfIdle();
   };
   return {
     spawn(
@@ -1351,7 +1363,11 @@ function commandLease(
       lifetime?: VerifiedAcpxProviderLifetime,
     ): ChildProcess {
       if (consumed) throw new Error("Verified ACPX command lease is closed");
-      consumed = true;
+      // ACPX may launch once for model selection and reconnect for the turn.
+      // Reuse only the already verified snapshot and pinned descriptors, never
+      // the mutable installation path. The runtime host closes this lease.
+      if (!reusable) consumed = true;
+      const launchBytes = reusable ? Buffer.from(verifiedBytes) : verifiedBytes;
       let child: ChildProcess;
       try {
         const guarded = lifetime !== undefined;
@@ -1487,6 +1503,16 @@ function commandLease(
                 ],
           },
         );
+        activeChildren++;
+        let childSettled = false;
+        const settleChild = (): void => {
+          if (childSettled) return;
+          childSettled = true;
+          activeChildren--;
+          void closeSnapshotIfIdle().catch(() => undefined);
+        };
+        child.once("exit", settleChild);
+        child.once("error", settleChild);
         if (guarded) {
           const guardianOwnerPipe = child.stdio[
             providerOwnershipFd - 1
@@ -1514,25 +1540,30 @@ function commandLease(
           providerGuardianOwnership.set(child, ownership);
         }
       } catch (error) {
+        consumed = true;
+        launchBytes.fill(0);
         verifiedBytes.fill(0);
         releaseDirectoriesBestEffort();
-        void privateSnapshot?.close();
+        closed = true;
+        void closeSnapshotIfIdle().catch(() => undefined);
         throw error;
       }
-      releaseDirectoriesBestEffort();
-      child.once("exit", () => { void privateSnapshot?.close(); });
-      child.once("error", () => { void privateSnapshot?.close(); });
+      if (!reusable) releaseDirectoriesBestEffort();
       const sourceInput = child.stdio[COMMAND_SOURCE_FD] as Writable | null;
       if (sourceInput === null) {
+        closed = true;
+        consumed = true;
+        launchBytes.fill(0);
         verifiedBytes.fill(0);
+        releaseDirectoriesBestEffort();
         child.kill();
         throw new Error("Verified ACPX command source pipe was not created");
       }
       const release = (): void => {
-        verifiedBytes.fill(0);
+        launchBytes.fill(0);
       };
       sourceInput.once("error", release);
-      sourceInput.end(verifiedBytes, release);
+      sourceInput.end(launchBytes, release);
       return child;
     },
     close,

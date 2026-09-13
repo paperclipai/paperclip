@@ -66,6 +66,30 @@ function createRecordingTraceContext(): {
 }
 
 describe("native runner performance trace", () => {
+  it("parents to live host dispatch and activates its context for instrumented clients", async () => {
+    const { traceContext, spans } = createRecordingTraceContext();
+    let activeContext: unknown;
+    traceContext.withContext = (context, work) => {
+      const previous = activeContext;
+      activeContext = context;
+      try { return work(); } finally { activeContext = previous; }
+    };
+    const host = traceContext.tracer.startSpan("heartbeat.native_dispatch");
+    const trace = createNativeRunTrace({ runId: "run", traceContext,
+      parentContext: traceContext.contextWithSpan(host) });
+    const startup = trace.start("runner.session.startup");
+    trace.run(startup, () => {
+      const context = activeContext as { span?: RecordedSpan };
+      expect(context.span?.name).toBe("runner.session.startup");
+      traceContext.tracer.startSpan("http.request", {}, activeContext).end();
+    });
+    await trace.end(startup);
+    await trace.finish("ok");
+    expect(spans.find((span) => span.name === "task.run")?.parentName).toBe("heartbeat.native_dispatch");
+    expect(spans.find((span) => span.name === "http.request")?.parentName).toBe("runner.session.startup");
+    expect(activeContext).toBeUndefined();
+  });
+
   it.each([7_200_000, 10_800_000])(
     "times the current answer after %i ms without charging prior questions or human wait",
     async (answeredAtMs) => {

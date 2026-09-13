@@ -53,6 +53,20 @@ afterEach(async () => {
   await act(async () => root.unmount()); client.clear(); container.remove(); vi.clearAllMocks();
 });
 describe("cached file selection and retained trash", () => {
+  it("does not report empty trash or no saved files while loading or after a list failure", async () => {
+    let rejectList!: (error: Error) => void;
+    api.list.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectList = reject; }));
+    await click(button("Trash")!);
+    expect(container.textContent).toContain("Loading trash…");
+    expect(container.textContent).not.toContain("Trash is empty.");
+    expect(container.textContent).not.toContain("No saved files");
+    await act(async () => { rejectList(new Error("Storage unavailable")); });
+    await settle();
+    expect(container.textContent).toContain("Trash could not be loaded.");
+    expect(container.textContent).toContain("Storage unavailable");
+    expect(container.textContent).not.toContain("Trash is empty.");
+    expect(container.textContent).not.toContain("No saved files");
+  });
   it("does not flash an old preview error while retrying a cached file", async () => {
     const row = (path: string) => container.querySelector<HTMLElement>(`[data-file-tree-path="${path}"]`)!;
     await click(row("a.txt"));

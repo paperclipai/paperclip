@@ -1,9 +1,12 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   computeDaytonaImageContentId,
+  DAYTONA_IMAGE_CONTENT_SCHEMA,
   DAYTONA_IMAGE_DOCKERFILE_PATH,
   DAYTONA_IMAGE_INPUT_PATHS,
   extractDaytonaBaseImages,
@@ -13,6 +16,43 @@ import {
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 describe("runner E2E Daytona image contract", () => {
+  it("accepts the frozen provider lock and rejects copied manifest drift offline", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-provider-lock-contract-"));
+    try {
+      for (const relative of [
+        ...DAYTONA_IMAGE_INPUT_PATHS.filter((entry) => entry.endsWith("package.json")),
+        ".npmrc", "pnpm-workspace.yaml", "patches",
+      ]) {
+        await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+        await cp(path.join(repositoryRoot, relative), path.join(root, relative), { recursive: true });
+      }
+      await cp(
+        path.join(repositoryRoot, "docker/daytona-runner/provider-dependencies.lock.yaml"),
+        path.join(root, "pnpm-lock.yaml"),
+      );
+      const validate = () => spawnSync("pnpm", [
+        "install", "--lockfile-only", "--ignore-scripts", "--frozen-lockfile", "--offline",
+        "--store-dir", path.join(root, "empty-store"),
+        "--filter", "@paperclipai/paperclip-runner...",
+      ], { cwd: root, encoding: "utf8", stdio: "pipe", timeout: 30_000 });
+      const valid = validate();
+      expect(valid.error).toBeUndefined();
+      expect(valid.status, valid.stdout + valid.stderr).toBe(0);
+
+      // pnpm validates copied workspace manifests even outside the install filter.
+      const serverPath = path.join(root, "server/package.json");
+      const server = JSON.parse(await readFile(serverPath, "utf8"));
+      server.dependencies["paperclip-lock-drift-fixture"] = "0.0.0";
+      await writeFile(serverPath, JSON.stringify(server));
+      const drift = validate();
+      expect(drift.error).toBeUndefined();
+      expect(drift.status).toBe(1);
+      expect(drift.stdout).toContain("ERR_PNPM_OUTDATED_LOCKFILE");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("builds runnerd and the provider pack and verifies every required transport", async () => {
     const [dockerfile, dockerignore, workflow] = await Promise.all([
       readFile(
@@ -30,19 +70,21 @@ describe("runner E2E Daytona image contract", () => {
     ]);
     const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
     expect(dockerfile).toContain("--bin paperclip-runnerd");
-    expect(dockerfile).toContain("build-provider-pack.mjs /provider-pack");
+    expect(dockerfile).toContain("assemble-provider-pack.mjs /provider-pack");
     expect(normalizedDockerfile).not.toContain(
       "COPY packages/paperclip-eval-kernel ./packages/paperclip-eval-kernel",
     );
     expect(normalizedDockerfile).not.toContain(
       "COPY packages/paperclip-runner ./packages/paperclip-runner",
     );
-    // Branch images need the full manifest graph for workspace patches. The
-    // resolved lock is verified before the frozen provider dependency install.
+    // Both provider builds consume the dedicated immutable resolution. Image
+    // creation must not refresh transitive packages from the registry.
     expect(dockerfile).toContain("COPY packages ./packages");
     expect(dockerfile).toContain(
-      "pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile",
+      "COPY docker/daytona-runner/provider-dependencies.lock.yaml ./pnpm-lock.yaml",
     );
+    expect(dockerfile).not.toContain("--resolution-only");
+    expect(dockerfile).not.toContain("--no-frozen-lockfile");
     expect(dockerfile).toContain("sha256sum -c /tmp/provider-lock.sha256");
     expect(dockerfile).toContain(
       "/opt/paperclip-runner/provider-pack/provider-pack.json",
@@ -161,11 +203,130 @@ describe("runner E2E Daytona image contract", () => {
     expect(cliInstall).toBeLessThan(finalMetadataArgs);
   });
 
+  it("exports the canonical provider stage without a mutable base or recursive builder", async () => {
+    const dockerfile = await readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8");
+    const exportStage = dockerfile.split(/^FROM /m).find((stage) => stage.startsWith("scratch AS provider-pack-export\n"));
+    expect(exportStage).toMatch(/^COPY --from=provider-pack-build \/provider-pack \/provider-pack$/m);
+    expect(extractDaytonaBaseImages(dockerfile)).not.toContain("scratch");
+    expect(() => extractDaytonaBaseImages("FROM node:latest\nFROM scratch AS exported")).toThrow("immutable");
+    const builder = await readFile(path.join(repositoryRoot, "packages/paperclip-runner/scripts/build-provider-pack.mjs"), "utf8");
+    expect(builder).toContain('"--target", "provider-pack-export"');
+    expect(builder).toContain('"--platform", "linux/amd64"');
+    expect(builder).toContain("verifyProviderPack(exported");
+    expect(dockerfile).not.toContain("build-provider-pack.mjs /provider-pack");
+    for (const file of ["assemble-provider-pack.mjs", "provider-pack-integrity.mjs"]) {
+      expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(`packages/paperclip-runner/scripts/${file}`);
+    }
+  });
+
+  it("builds both provider packs from the same verified dedicated lock before compiling", async () => {
+    const lockPath = "docker/daytona-runner/provider-dependencies.lock.yaml";
+    const lock = await readFile(path.join(repositoryRoot, lockPath));
+    const lockDigest = createHash("sha256").update(lock).digest("hex");
+    for (const [file, stageName] of [
+      ["docker/daytona-runner/Dockerfile", "provider-pack-build"],
+      ["Dockerfile", "cloud-provider-pack"],
+    ] as const) {
+      const dockerfile = await readFile(path.join(repositoryRoot, file), "utf8");
+      const stage = dockerfile
+        .split(/^FROM /m)
+        .find((part) => part.split("\n", 1)[0]!.endsWith(` AS ${stageName}`));
+      expect(stage, file).toBeDefined();
+      const normalized = stage!.replace(/\\\r?\n\s*/g, " ");
+      const copy = normalized.indexOf(`COPY ${lockPath} ./pnpm-lock.yaml`);
+      const verify = normalized.indexOf("sha256sum -c /tmp/provider-lock.sha256");
+      const install = normalized.indexOf(
+        "pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
+      );
+      const build = normalized.indexOf(
+        "pnpm --filter @paperclipai/paperclip-runner build:typescript",
+      );
+      const pack = normalized.indexOf(
+        "node packages/paperclip-runner/scripts/assemble-provider-pack.mjs /provider-pack",
+      );
+      expect(normalized).toContain(`ARG PAPERCLIP_RUNNER_LOCK_SHA256=${lockDigest}`);
+      expect(copy).toBeGreaterThan(0);
+      expect(verify).toBeGreaterThan(copy);
+      expect(install).toBeGreaterThan(verify);
+      expect(build).toBeGreaterThan(install);
+      expect(pack).toBeGreaterThan(build);
+      expect(normalized).not.toContain("--resolution-only");
+      expect(normalized).not.toContain("--no-frozen-lockfile");
+      expect(normalized).not.toMatch(/COPY --from=.*(?:node_modules|packages)/);
+      for (const input of [
+        "COPY packages ./packages",
+        "COPY server/package.json",
+        "COPY ui/package.json",
+        "COPY cli/package.json",
+      ]) {
+        expect(normalized).toContain(input);
+      }
+    }
+  });
+
+  it("tracks dedicated transitive resolution and copied manifests but ignores CI root-lock churn", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "paperclip-provider-lock-inputs-"),
+    );
+    const lockPath = "docker/daytona-runner/provider-dependencies.lock.yaml";
+    const manifestPath = "packages/adapters/codex-local/package.json";
+    // Select actual contract paths, so silently removing one breaks this test.
+    const inputPaths = DAYTONA_IMAGE_INPUT_PATHS.filter((entry) =>
+      [lockPath, manifestPath, "ui/package.json", "pnpm-lock.yaml"].includes(entry),
+    );
+    const options = {
+      repositoryRoot: root,
+      inputPaths,
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+    };
+    try {
+      for (const file of [lockPath, manifestPath, "ui/package.json"]) {
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      }
+      const resolution =
+        "lockfileVersion: '9.0'\npackages:\n  '@aws-sdk/client-s3@3.999.0':\n    resolution: {integrity: sha512-reviewed}\n";
+      await writeFile(path.join(root, lockPath), resolution);
+      await writeFile(
+        path.join(root, manifestPath),
+        '{"dependencies":{"codex-acp":"1.6.2"}}',
+      );
+      await writeFile(
+        path.join(root, "ui/package.json"),
+        '{"dependencies":{"react":"19.2.8"}}',
+      );
+      await writeFile(path.join(root, "pnpm-lock.yaml"), "CI lock before refresh");
+      const original = await computeDaytonaImageContentId(options);
+      await writeFile(
+        path.join(root, "pnpm-lock.yaml"),
+        "CI lock after unrelated refresh",
+      );
+      expect(await computeDaytonaImageContentId(options)).toBe(original);
+      await writeFile(
+        path.join(root, lockPath),
+        resolution.replace("sha512-reviewed", "sha512-different"),
+      );
+      expect(await computeDaytonaImageContentId(options)).not.toBe(original);
+      await writeFile(path.join(root, lockPath), resolution);
+      for (const file of [manifestPath, "ui/package.json"]) {
+        const originalManifest = await readFile(path.join(root, file), "utf8");
+        await writeFile(
+          path.join(root, file),
+          originalManifest.replace(/1\.6\.2|19\.2\.8/, "99.0.0"),
+        );
+        expect(await computeDaytonaImageContentId(options)).not.toBe(original);
+        await writeFile(path.join(root, file), originalManifest);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("hashes the audited image dependency closure rather than the repository revision", async () => {
     for (const requiredPath of [
       ".dockerignore",
       "docker/daytona-runner/Dockerfile",
-      "pnpm-lock.yaml",
+      "docker/daytona-runner/provider-dependencies.lock.yaml",
       "patches",
       "packages/paperclip-eval-kernel/src",
       "packages/paperclip-runner/package.json",
@@ -173,6 +334,28 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/src",
     ]) {
       expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(requiredPath);
+    }
+    expect(DAYTONA_IMAGE_CONTENT_SCHEMA).toBe(
+      "paperclip-daytona-runner-image-content/v6",
+    );
+    expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain("pnpm-lock.yaml");
+    // COPY packages ./packages includes every committed manifest, including
+    // nested adapter/plugin packages. A new package must update this contract.
+    const packageManifests = execFileSync(
+      "git",
+      ["ls-files", "--", "packages/**/package.json"],
+      { cwd: repositoryRoot, encoding: "utf8" },
+    )
+      .trim()
+      .split("\n");
+    expect(packageManifests.length).toBeGreaterThan(0);
+    for (const manifest of [
+      ...packageManifests,
+      "server/package.json",
+      "ui/package.json",
+      "cli/package.json",
+    ]) {
+      expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(manifest);
     }
     expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain(
       "packages/paperclip-eval-kernel",
@@ -195,7 +378,7 @@ describe("runner E2E Daytona image contract", () => {
     const inputPaths = [
       "docker/daytona-runner/Dockerfile",
       "package.json",
-      "pnpm-lock.yaml",
+      "docker/daytona-runner/provider-dependencies.lock.yaml",
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/src",
       "packages/paperclip-runner/runner/crates",
@@ -226,7 +409,7 @@ describe("runner E2E Daytona image contract", () => {
       );
       await writeFile(path.join(root, "package.json"), '{"private":true}\n');
       await writeFile(
-        path.join(root, "pnpm-lock.yaml"),
+        path.join(root, "docker/daytona-runner/provider-dependencies.lock.yaml"),
         "lockfileVersion: 9\n",
       );
       await writeFile(
@@ -265,10 +448,16 @@ describe("runner E2E Daytona image contract", () => {
       );
       expect(await computeDaytonaImageContentId(options)).toBe(baseline);
 
+      await writeFile(
+        path.join(root, "pnpm-lock.yaml"),
+        "unrelated root resolution\n",
+      );
+      expect(await computeDaytonaImageContentId(options)).toBe(baseline);
+
       for (const relativePath of [
         "docker/daytona-runner/Dockerfile",
         "package.json",
-        "pnpm-lock.yaml",
+        "docker/daytona-runner/provider-dependencies.lock.yaml",
         "packages/paperclip-runner/package.json",
         "packages/paperclip-runner/src/runner.ts",
         "packages/paperclip-runner/runner/crates/runner-core/src/lib.rs",

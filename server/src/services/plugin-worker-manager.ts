@@ -1548,7 +1548,14 @@ export function createPluginWorkerHandle(
     if (loginPtyRoutesByHostRouteId.size !== 1) return null;
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId) return null;
-    return loginPtyRoutesByWorkerSessionId.get(workerSessionId) ?? null;
+    const bound = loginPtyRoutesByWorkerSessionId.get(workerSessionId);
+    if (bound) return bound;
+    // The open reply and a legacy notification can share one stdout chunk,
+    // before the await continuation binds the session ID. Queue against the
+    // sole opening route; bounded replay still checks the claimed ID against
+    // the validated reply. Never guess between concurrent or bound routes.
+    const opening = loginPtyRoutesByHostRouteId.values().next().value;
+    return opening?.state === "opening" ? opening : null;
   }
 
   // Route one login pseudo-terminal output notification to the per-session

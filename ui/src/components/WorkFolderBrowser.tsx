@@ -100,6 +100,8 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
     : saving ? "Saving…"
     : failures.length > 0 ? "Run save failed"
     : !lastSaved && statuses.some((status) => status.active) ? "Waiting for first save"
+    : !lastSaved && !exampleFiles && filesQuery.isPending ? "Loading files…"
+    : !lastSaved && filesQuery.isError && !filesQuery.data ? "File list unavailable"
     : lastSaved || lastOperation || files.length > 0 ? "Saved"
     : "No saved files";
   const disabled = mutation.isPending || Boolean(exampleFiles);
@@ -135,7 +137,7 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
       </ul>
     </div>}
     <p className="sr-only" aria-live="polite">{announcement}</p>
-    {trash ? <TabsContent value="trash" className={cn("overflow-auto", fillHeight ? "min-h-0 flex-1" : "max-h-96")}><p className="mb-3 text-sm text-muted-foreground">Deleted cached files are retained here. Restore them to return them to Files.</p>{files.length === 0 ? <p className="text-sm text-muted-foreground">Trash is empty.</p> : files.map((file) => <div key={file.id} className="flex items-center gap-2 border-b py-2">
+    {trash ? <TabsContent value="trash" className={cn("overflow-auto", fillHeight ? "min-h-0 flex-1" : "max-h-96")}><p className="mb-3 text-sm text-muted-foreground">Deleted cached files are retained here. Restore them to return them to Files.</p>{!exampleFiles && filesQuery.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading trash…</p> : filesQuery.isError && !filesQuery.data ? <p className="text-sm text-muted-foreground">Trash could not be loaded.</p> : files.length === 0 ? <p className="text-sm text-muted-foreground">Trash is empty.</p> : files.map((file) => <div key={file.id} className="flex items-center gap-2 border-b py-2">
       <span className="min-w-0 flex-1 truncate text-sm">{file.path}</span>{canManageTrash && <Button size="sm" variant="outline" disabled={disabled} onClick={() => mutation.mutate({ type: "restore", fileId: file.id })}><RotateCcw aria-hidden />Restore</Button>}
       {!readOnly && <AlertDialog><AlertDialogTrigger asChild><Button size="sm" variant="ghost" disabled={disabled}>Purge…</Button></AlertDialogTrigger>
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Permanently delete {file.path}?</AlertDialogTitle>

@@ -102,7 +102,10 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
-  it.each([["claude" as const, "claude-sonnet-5", "claude-sonnet-5"]])(
+  it.each([
+    ["claude" as const, "claude-sonnet-5", "claude-sonnet-5"],
+    ["claude" as const, "custom-claude-model", "custom-claude-model"],
+  ])(
     "opens the qualified %s session through the verified lease",
     async (agent, model, providerModel) => {
       const runtime = fakeRuntime();
@@ -110,7 +113,7 @@ describe("Codex ACPX runtime adapter", () => {
       const options = openOptions(command);
       let runtimeOptions: AcpRuntimeOptions | undefined;
       options.profile = resolveQualifiedAcpxProfile(agent, model);
-      options.launchEnvironment = { PATH: "/verified/bin" };
+      options.launchEnvironment = { PATH: "/verified/bin", ANTHROPIC_CUSTOM_MODEL_OPTION: "stale-model" };
 
       await openCodexAcpxRuntime(options, {
         createRegistry: ({ overrides }) => {
@@ -129,6 +132,7 @@ describe("Codex ACPX runtime adapter", () => {
       expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
         PATH: "/verified/bin",
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        ANTHROPIC_CUSTOM_MODEL_OPTION: providerModel,
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "",
       });
       expect(runtime.ensureSession).toHaveBeenCalledWith(
@@ -1299,6 +1303,70 @@ describe("Codex ACPX runtime adapter", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("verifies a provider lazily started by recovered model selection before admitting it", async () => {
+    const runtime = fakeRuntime();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(fakeChild());
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let confirmOwnership!: () => void;
+    const ownership = new Promise<void>((resolve) => { confirmOwnership = resolve; });
+    const observedOwnership = vi.fn(() => ownership);
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
+      await Promise.resolve();
+      runtimeOptions!.spawnAgent!({ command: "ignored", args: ["--stdio"], options: {} });
+    });
+    const port = await openCodexAcpxRuntime(openOptions(command), {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: observedOwnership,
+      awaitProviderExit: providerOwnershipEstablished,
+      createRuntime: (options) => { runtimeOptions = options; return runtime; },
+    });
+    let admitted = false;
+    const selection = port.setModel!("gpt-5.6-sol").then(() => { admitted = true; });
+    await vi.waitFor(() => expect(observedOwnership).toHaveBeenCalledOnce());
+    expect(admitted).toBe(false);
+    confirmOwnership();
+    await selection;
+    expect(admitted).toBe(true);
+    expect(command.spawn).toHaveBeenCalledOnce();
+    expect(() => runtimeOptions!.spawnAgent!({ command: "ignored", args: [], options: {} }))
+      .toThrow("provider spawned after ownership admission was sealed");
+    await port.close({ reason: "model selection verified" });
+  });
+
+  it("reseals model admission after a rejected config operation", async () => {
+    const runtime = fakeRuntime();
+    const failure = new Error("model selection rejected");
+    vi.mocked(runtime.setConfigOption!).mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined as never);
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    });
+    await expect(port.setModel!("gpt-5.6-sol")).rejects.toBe(failure);
+    await expect(port.setModel!("gpt-5.6-sol")).resolves.toBeUndefined();
+    await port.close({ reason: "selection error verified" });
+    await expect(port.setModel!("gpt-5.6-sol")).rejects.toThrow("ownership admission is closed");
+    expect(runtime.setConfigOption).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects model admission when the lazily started provider cannot prove ownership", async () => {
+    const runtime = fakeRuntime();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(fakeChild());
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const failure = new Error("provider ownership unavailable");
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
+      runtimeOptions!.spawnAgent!({ command: "ignored", args: [], options: {} });
+    });
+    const port = await openCodexAcpxRuntime(openOptions(command), {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: async () => { throw failure; },
+      awaitProviderExit: providerOwnershipEstablished,
+      createRuntime: (options) => { runtimeOptions = options; return runtime; },
+    });
+    await expect(port.setModel!("gpt-5.6-sol")).rejects.toBe(failure);
+    await port.close({ reason: "unverified model process rejected" });
   });
 
   it("maps prompt turns to the admitted ACPX handle", async () => {

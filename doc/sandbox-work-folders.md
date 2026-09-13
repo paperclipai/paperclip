@@ -7,6 +7,12 @@ publication. Repeated error cleanup keeps the original failure visible. A later
 authorized run recovers unsaved edits from the retained sandbox before loading
 incoming shared files; it does not rewrite the failed run as successful.
 
+Reusable sandbox resume resolves provider configuration from the recorded lease,
+as workspace operations and cleanup do. This preserves provider-selected defaults
+such as Daytona's region when the environment leaves them unspecified. Existing
+configuration and identity checks still reject incompatible reuse; stopping and
+resuming a compatible lease must reopen the same account-scoped provider handle.
+
 The deployed acceptance entry point is `pnpm test:e2e:work-folders:deployed`.
 Set `PAPERCLIP_DEPLOYED_STACK_MANIFEST` to a JSON manifest matching
 `tests/runner-e2e/deployed-stack.ts`, `PAPERCLIP_DEPLOYED_STACK_AUTH` to a private
@@ -100,10 +106,34 @@ An incomplete resume keeps a provisional lease marker until provider verificatio
 succeeds. Failed-run cleanup retains that exact lease without stopping or deleting
 its sandbox, so a retry cannot silently create a replacement. Daytona refreshes
 the live sandbox state on explicit resume, including externally stopped resources
-whose cached handles still say running. Failure to stop a reusable sandbox is
-reported and retained for retry; it never falls back to deletion or orphan cleanup.
+whose cached handles still say running. Terminal sandbox release claims ownership
+in Postgres before provider calls; duplicate completion paths and an old run's
+stale lease snapshot cannot stop a newer owner. Native runs persist their selected
+resource disposition independently of workspace copy-back, so recovery retains a
+successful warm sandbox consistently.
+
+An uncertain provider stop leaves a durable release claim and reports
+`sandbox_release_recovery_required`. Startup cannot resume that resource or create
+a replacement while its stop may still be in flight. Recovery requires verifying
+that the original provider operation settled before resolving the matching claim;
+time passing or an application restart never clears it automatically. The working
+copy remains retained, and deletion or orphan cleanup is not a fallback.
 This applies to both runner generations and leaves distinct task/user bindings
 isolated.
+If Daytona rejects a command because its cached shell session no longer exists,
+the provider creates one replacement session and retries within the original
+command deadline. This applies only to a confirmed rejection before dispatch;
+errors while polling or reading output never replay a potentially executed
+command. Concurrent callers share the replacement session.
+Native ACPX recovery also admits a provider started lazily by model selection.
+Selection waits for verified process ownership before accepting the configured
+model; cleanup and out-of-band process launches remain fenced. This matters
+when reopening a persisted Codex session after stopping its sandbox.
+The host retains the verified command snapshot and its pinned descriptors until
+runtime cleanup, so reconnecting for the first turn after model selection can
+launch again without reopening a mutable executable path. A failed turn-start
+signal remains observable without crashing a sidecar that consumes only the
+turn's event stream and result.
 The new scoped-shell startup setting is not added to an existing unscoped Codex
 session's protected launch arguments. Its durable provider profile remains
 unchanged during attachment.
@@ -166,9 +196,10 @@ Sandbox Codex tool commands preserve the environment initialized by the adapter:
 login-shell execution and shell snapshots are disabled so image profiles cannot
 replace the managed Git PATH. This applies to CLI and ACP execution in both
 runner generations; local execution keeps its existing settings.
-Native Codex ACP selects the provider's `agent-full-access` initial mode only
+Legacy and native Codex ACP select the provider's `agent-full-access` initial mode only
 inside a validated external work-folder sandbox with an explicit `approve-all`
-binding. This avoids starting an unsupported nested network namespace. Local
+binding. This avoids an inner network namespace that prevents tools from reaching
+the sandbox's loopback API and Git-credential callback bridge. Local
 execution and the `approve-reads` / `deny-all` modes retain their existing policy.
 CLI state is separate from the four shared collections. A change of task,
 agent, responsible user, or project cannot reuse a sandbox with another binding.
@@ -195,6 +226,52 @@ transfer uses the downloaded version's size, hash, and executable bit. Its sync
 baseline records those same bytes, so an unchanged copy cannot overwrite a later
 shared edit.
 
+Providers with native file synchronization or explicit streaming-stdin support
+hydrate files through bounded stdin batches instead of one remote command per
+small chunk. A batch carries at most 4 MiB of file bytes and 256 operations;
+each file still uses confined paths, SHA-256 validation, and atomic publication.
+Before publishing an incoming batch or applying incoming deletions, the host
+persists the intended versions in Postgres. After a failed or lost response,
+the next run reconciles those intents against observed disk contents before
+saving outgoing changes. Imported bytes therefore cannot overwrite a newer
+shared version by being mistaken for an agent edit; actual subsequent edits
+still synchronize normally. Failed explicit refreshes retain the same intent.
+Other providers keep the small-argument transport. Incoming storage responses
+are prefetched sixteen at a time without consuming queued response bodies, and
+closed if transfer fails. The transport keeps its separate bounded batch buffer.
+Repository restores use the same path, then recreate confined repository links.
+
+Read-only sandbox commands retry transient connection failures and HTTP
+502/503/504 responses up to three attempts within one 120-second deadline.
+Script failures, invalid responses, and authorization failures are not retried.
+An incoming bulk batch has a unique ID and a signed receipt in its private
+staging directory. If the provider loses the response, the host checks that
+receipt: a completed batch is acknowledged without publishing its files again;
+only a missing claim permits resubmitting the same batch ID. An atomic claim
+prevents two concurrent submissions from applying the same batch twice. A
+running or interrupted batch is never replayed. Its bounded outcome check
+either observes completion or fails visibly and retains the working copy for
+the next run's existing intent reconciliation. This does not make arbitrary
+sandbox commands or repository mutations retryable.
+
+Host-owned GitHub launcher staging also retries transient transport failures up
+to three times within a single 15-second deadline per file or permission step.
+The same run-specific file is locked, hash-checked, and atomically replaced, so
+a lost reply after a successful upload does not rewrite the file on retry.
+Cancellation, script failures, and invalid responses stop setup. This retry is
+limited to launcher preparation; it never replays an agent or Git command.
+
+Repository checkpoints transfer up to sixteen distinct batch-readable blobs
+of at most 1 MiB concurrently, plus at most four larger streaming blobs.
+Transports without batched reads retain the four-stream limit. Identical files
+share one content-addressed upload. Small-file reads are grouped into at most
+1 MiB and 64 files per remote command, with at most four read batches cached
+per checkpoint and sixteen additional batches held by active readers.
+Retries bypass that cache and reopen the actual file. All active transfers
+must settle, and a second filesystem scan must match, before the
+complete checkpoint reference can advance. Scoped-file retry receipts and
+last-write-wins publication remain ordered.
+
 Outgoing checkpoints run every **180 seconds**, with at most one in flight,
 and a final flush when execution stops. File signatures include content and
 executable state. Unchanged stale working copies do not overwrite newer shared
@@ -210,6 +287,12 @@ success. Optional SDK streaming checksums are disabled to avoid an unhandled
 digest rejection when a source file changes during transfer. Work-folder SHA-256
 verification and complete-checkpoint publication remain required. A changing
 source must fail its save without stopping the application or another run.
+Scoped-file and repository-blob uploads retry transient network errors and
+retryable HTTP responses up to three attempts, using the same object key. Each
+attempt opens a fresh source and verifies its complete size and SHA-256; the
+previous request and reader must settle before another attempt starts. Changed
+content, ownership errors, and authentication failures are not retried. Exhausted
+retries retain the previous complete checkpoint and the recoverable working copy.
 
 Deletion moves files to recoverable trash. Restore rejects path collisions.
 Explicit purge and permanent owner deletion schedule object cleanup through a
@@ -290,12 +373,79 @@ All routes start at
 The Cloud app image includes a build-owned remote provider pack at
 `/opt/paperclip-runner/provider-pack` and configures
 `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` to that directory. Native OpenCode
-and ACPX runs verify the sandbox's installed pack against this manifest; if it
-differs, the host stages its complete pack before launch. The pack is built
+and ACPX runs verify the sandbox's installed pack against this manifest. Reuse
+requires a valid full manifest digest and matching content, including artifact
+hashes, the distribution tree, dependency pins, platform, and Node requirements.
+The source revision remains provenance; a revision-only difference does not
+require retransferring identical contents. App and sandbox builds omit the
+redundant `dist/bin/paperclip-runnerd` from the pack because that executable is
+shipped and verified separately. If content differs, the host stages its
+complete pack before launch. The pack is built
 from the app revision, includes the production lockfile and artifact hashes,
 and must pass its provider-launch checks during the image build. It belongs to
 the app image, not the workspace volume or a scoped file collection. Ordinary
 local execution is unchanged.
+
+When diagnosing startup delays, distinguish scoped-file hydration from native
+runtime preparation. `work_folder.prepared` records the intended layout before
+hydration completes. `provider_pack.verify_preinstalled` reports installed-pack
+verification; a fallback within `runner.artifact.prepare` can transfer gigabytes
+independently of task files. Acceptance must prove that a matching image uses
+its installed pack instead of silently relying on that fallback.
+
+Both provider-pack build stages install from the immutable
+`docker/daytona-runner/provider-dependencies.lock.yaml` using pnpm 9.15.4 and a
+frozen install. This deployment input is separate from the CI-owned app
+lockfile. Each stage checks its SHA-256 before installing, builds the provider
+entrypoints under that graph, and records the installed lock in the pack.
+Refresh this lock from a reviewed CI-resolved artifact when provider manifests
+or patches change, update both expected hashes, and qualify a new sandbox image.
+Matching source files alone does not prove matching dependencies: acceptance
+also compares the actual app and sandbox production-lock hashes.
+
+The qualification entry `build-provider-pack.mjs` (also exposed as
+`pnpm --filter @paperclipai/paperclip-runner build:provider-pack`) requires
+Docker with BuildKit and builds the canonical `linux/amd64` provider stage.
+It uses the same digest-pinned Node interpreter, dedicated dependency graph,
+and fresh TypeScript compilation as the sandbox image; host `node_modules`,
+CI's root lock and previously compiled outputs are not assembly inputs.
+Both Docker stages call the low-level assembler directly, avoiding recursion.
+The entry verifies exported manifest and artifact bytes before atomically
+replacing its output. Failed builds or validation preserve the previous pack.
+This produces a local artifact and does not publish an image or release.
+
+Native and legacy Git credential callbacks honor the same experimental duplex
+setting and provider capability gates. When streaming is disabled or unavailable,
+the file bridge remains supported. Credential acquisition allows 35 seconds per
+request so the bridge can return its response within its 30-second window.
+Transient transport failures receive at most three attempts within a 75-second
+overall budget; authorization denials and invalid responses are not retried.
+Only credential acquisition is retried, before starting Git or `gh`; repository
+operations are never replayed. Acceptance must exercise both transport paths
+and record which one was actually selected.
+
+Controller-requested bridge shutdown marks the transport complete before closing
+its provider channel. A connection loss observed earlier remains latched; closing
+the native Git bridge after execution must not invent a transport failure.
+
+Legacy sandbox cancellation stops the owned remote CLI process group or ACP
+process session before waiting for run teardown and the final file flush. The
+host sends a command-scoped cancellation marker for CLI execution; remote PIDs
+are never passed to the host process killer. Cancellation is persisted before
+stopping execution so its exit cannot admit an automatic retry. Scope registration
+rechecks durable run status, and cancellation rechecks newly registered scopes
+before acknowledgement, preventing cancelled startup work from dispatching.
+The supervisor preserves externally delivered child termination signals. Failed stop
+requests remain visible and can be retried explicitly. Local and native runner
+cancellation retain their existing authorities.
+Immediate recovery honors the same operator-cancellation attribution as periodic
+recovery, so cancelling a run does not synthesize a continuation that restarts its
+sandbox. Explicitly queued work can still run through normal promotion.
+Native failure recovery also checks the durable cancellation intent under the run
+lock before scheduling a retry. An interrupted turn without a semantic result
+must preserve cancellation instead of reporting a provider failure. Terminal
+cancellation clears stale retry retention flags so final flushing and sandbox
+release still run.
 
 Automated tests do not qualify a deployed runner image. Before merging, use a
 new pinned staging stack with the branch's Cloud image and matching migrator.
@@ -404,3 +554,9 @@ requires an explicit controller rotation event for that exact transition before
 accepting a changed PID/process fingerprint; other process changes still fail.
 See [GitHub execution identity](execution-github-identity.md) and the
 [run-log contract](run-log-events.md#native-process-rotation).
+
+Process metadata updates apply only while their run is active and unfinished.
+Late callbacks from warm-session inspection or maintenance cannot rewrite a
+completed run's process identity. Remote native process timestamps come from
+the validated remote marker; an unrelated host process with the same PID must
+not replace them. Active local execution retains its host process lookup.

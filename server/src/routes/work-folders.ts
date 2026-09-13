@@ -102,6 +102,9 @@ export function workFolderRoutes(db: Db, provider?: StorageProvider) {
     const statuses = rows.flatMap((entry) => {
       const row = entry.folderRun;
       if (leases.has(row.manifest.sandboxKey)) return [];
+      // A newer successful save on this sandbox resolves its older failure,
+      // even when another sandbox owns the folder's latest checkpoint. Mark
+      // it represented before omitting redundant successful status rows.
       leases.add(row.manifest.sandboxKey);
       if (!isActive(entry.status) && row.state === "saved" && row.runId !== latestCheckpoint?.folderRun.runId) return [];
       return [projectStatus(entry)];

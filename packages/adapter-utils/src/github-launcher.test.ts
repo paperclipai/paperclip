@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -141,4 +141,47 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
   });
+  it("retries acquisition before spawning once, but never retries denied access or the Git command", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-retry-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    const countPath = path.join(root, "spawn-count");
+    await writeFile(path.join(bin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(process.env.SPAWN_COUNT_PATH, 'spawn\\n');
+process.stdout.write(process.env.GH_TOKEN || 'no-token');
+process.exit(Number(process.env.CHILD_EXIT_CODE || '0'));
+`, { mode: 0o700 });
+    let calls = 0, denied = false;
+    const server = createServer((req, res) => {
+      calls++;
+      expect(req.headers["x-paperclip-github-capability"]).toBe("fixture-capability");
+      if (denied) { res.writeHead(403); res.end("secret denial body"); return; }
+      if (calls === 1) { req.socket.destroy(); return; }
+      if (calls === 2) { res.writeHead(503); res.end("secret transient body"); return; }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: "current-fixture-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+    const env = { ...process.env, ...githubBrokerEnvironment({}, {
+      url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, token: "fixture-capability",
+    }), PATH: `${bin}:${realBin}:${process.env.PATH}`, SPAWN_COUNT_PATH: countPath };
+    expect((await exec(path.join(bin, "gh"), [], { env })).stdout).toBe("current-fixture-token");
+    expect(calls).toBe(3);
+    expect(await readFile(countPath, "utf8")).toBe("spawn\n");
+    denied = true;
+    await expect(exec(path.join(bin, "gh"), [], { env })).rejects.toMatchObject({
+      code: 1, stderr: "Paperclip: GitHub credential context unavailable (denied); retry this operation.\n",
+    });
+    expect(calls).toBe(4);
+    expect(await readFile(countPath, "utf8")).toBe("spawn\n");
+    denied = false;
+    await expect(exec(path.join(bin, "gh"), [], { env: { ...env, CHILD_EXIT_CODE: "17" } })).rejects.toMatchObject({ code: 17 });
+    expect(calls).toBe(5);
+    expect(await readFile(countPath, "utf8")).toBe("spawn\nspawn\n");
+  });
+
 });

@@ -1,3 +1,4 @@
+import { measureSandboxOperation, measureSandboxStream } from "./sandbox-performance.js";
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -10,39 +11,39 @@ export interface ManagedAgentFile { path: string; kind: "file" | "directory"; ex
 export async function* managedAgentFiles(root: string): AsyncGenerator<ManagedAgentFile> {
   const absolute = path.resolve(root);
   let current = path.parse(absolute).root;
-  let parent = await fs.open(current, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  let parent = await measureSandboxOperation("work_folder.agent_import.disk", { operation: "open" }, async () => (fs.open(current, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)));
   const anchored = (fd: number, fallback: string) => process.platform === "linux" ? `/proc/self/fd/${fd}` : fallback;
   try {
     for (const segment of absolute.slice(current.length).split(path.sep).filter(Boolean)) {
       const next = path.join(anchored(parent.fd, current), segment);
-      const child = await fs.open(next, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch((error) => {
+      const child = await measureSandboxOperation("work_folder.agent_import.disk", { operation: "open" }, async () => (fs.open(next, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch((error) => {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
-      });
+      })));
       if (!child) return;
-      await parent.close(); parent = child; current = path.join(current, segment);
+      await measureSandboxOperation("work_folder.agent_import.disk", { operation: "close" }, async () => (parent.close())); parent = child; current = path.join(current, segment);
     }
     let entries = 0;
     async function* visit(directory: typeof parent, fallback: string, relative: string): AsyncGenerator<ManagedAgentFile> {
-      for (const name of (await fs.readdir(anchored(directory.fd, fallback))).sort()) {
+      for (const name of (await measureSandboxOperation("work_folder.agent_import.disk", { operation: "list" }, async () => (fs.readdir(anchored(directory.fd, fallback))))).sort()) {
         if (excluded.has(name)) continue;
         if (++entries > 100_000) throw new Error("Managed agent import exceeds its file limit");
         const filename = relative ? `${relative}/${name}` : name;
         const source = path.join(anchored(directory.fd, fallback), name);
-        const handle = await fs.open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const handle = await measureSandboxOperation("work_folder.agent_import.disk", { operation: "open" }, async () => (fs.open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)));
         try {
-          const stat = await handle.stat();
+          const stat = await measureSandboxOperation("work_folder.agent_import.disk", { operation: "metadata" }, async () => (handle.stat()));
           if (stat.isDirectory()) {
             yield { path: filename, kind: "directory", executable: false };
             yield* visit(handle, path.join(fallback, name), filename);
           } else if (stat.isFile() && stat.nlink === 1 && stat.size <= 1024 ** 3) {
-            const body = handle.createReadStream({ autoClose: false, highWaterMark: 256 * 1024 });
+            const body = measureSandboxStream("work_folder.agent_import.body", { fileIndex: entries - 1, bytes: stat.size }, handle.createReadStream({ autoClose: false, highWaterMark: 256 * 1024 }));
             try { yield { path: filename, kind: "file", executable: Boolean(stat.mode & 0o111), body }; }
             finally { body.destroy(); }
           } else throw new Error("Managed agent files cannot contain hard links or special files");
-        } finally { await handle.close(); }
+        } finally { await measureSandboxOperation("work_folder.agent_import.disk", { operation: "close" }, async () => (handle.close())); }
       }
     }
     yield* visit(parent, absolute, "");
-  } finally { await parent.close(); }
+  } finally { await measureSandboxOperation("work_folder.agent_import.disk", { operation: "close" }, async () => (parent.close())); }
 }

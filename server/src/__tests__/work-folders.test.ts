@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { runWithSandboxPerformanceTrace, type SandboxPerformanceRecord } from "../services/sandbox-performance.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -39,6 +40,29 @@ describe("durable work folders", () => {
     for await (const chunk of stream) buffers.push(Buffer.from(chunk));
     return Buffer.concat(buffers).toString();
   }
+  it("measures metadata, response wait, body bytes and progress without private paths", async () => {
+    const records: SandboxPerformanceRecord[] = [];
+    await runWithSandboxPerformanceTrace({ runId: randomUUID(), enabled: true,
+      onBatch: async (batch) => { records.push(...batch.records); } }, async () => {
+      const f = await folder();
+      await svc.write(f, { path: "private-observed-file", body: Buffer.from("private-observed-content"), operationId: "private-operation-id" });
+      const opened = await svc.content(f, "private-observed-file", 7);
+      let text = ""; for await (const chunk of opened.stream) text += String(chunk);
+      expect(text).toBe("private-observed-content");
+      await svc.list(f);
+    });
+    const names = records.map((record) => record.name);
+    for (const name of ["work_folder.scope.ensure", "work_folder.metadata.get", "work_folder.object.get_response", "work_folder.object.body", "work_folder.spool.consume", "work_folder.metadata.mutate", "work_folder.db.query"]) expect(names).toContain(name);
+    const response = records.find((record) => record.name === "work_folder.object.get_response")!;
+    const body = records.find((record) => record.name === "work_folder.object.body")!;
+    expect(response.attributes.requestCount).toBe(1);
+    expect(body.attributes.bytes).toBe(Buffer.byteLength("private-observed-content"));
+    expect(body.attributes.fileIndex).toBe(7);
+    expect(response.attributes.fileIndex).toBe(7);
+    expect(body.startedAtMs).toBeGreaterThanOrEqual(response.startedAtMs);
+    expect(records.filter((record) => record.name === "work_folder.db.query").every((record) => typeof record.attributes.operation === "string")).toBe(true);
+    for (const secret of [companyId, root, "private-observed-file", "private-observed-content", "private-operation-id"]) expect(JSON.stringify(records)).not.toContain(secret);
+  });
   it("streams nested executable and empty files into durable storage", async () => {
     const f = await folder();
     await svc.write(f, { path: "bin/run", body: Readable.from(["#!/bin/sh\n", "true\n"]), executable: true, operationId: "first" });
@@ -96,6 +120,36 @@ describe("durable work folders", () => {
     await expect(svc.write(f, { path: "partial", body, operationId: "partial" })).rejects.toThrow("Disconnected");
     await expect(svc.write(f, { path: "large", body: Buffer.from("large"), maxBytes: 2, operationId: "large" })).rejects.toMatchObject({ status: 413 });
     expect((await svc.list(f)).files).toHaveLength(0);
+  });
+  it("replays a failed spool upload without publishing a receipt or replacing the previous file", async () => {
+    const f = await folder();
+    await svc.write(f, { path: "note", body: Buffer.from("old"), operationId: "old" });
+    const old = await svc.get(f, "note");
+    const put = storage.putObject.bind(storage);
+    const bodies: Readable[] = [];
+    const failed = vi.spyOn(storage, "putObject").mockImplementation(async (input) => {
+      bodies.push(input.body as Readable);
+      for await (const _chunk of input.body as Readable) { /* Consume the uncertain request. */ }
+      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    });
+    try {
+      await expect(svc.write(f, { path: "note", body: Buffer.from("new"), operationId: "new" })).rejects.toThrow("socket hang up");
+      expect(failed).toHaveBeenCalledTimes(3);
+      expect(new Set(bodies).size).toBe(3);
+      expect(bodies.every((body) => body.destroyed)).toBe(true);
+      expect((await svc.get(f, "note")).objectKey).toBe(old.objectKey);
+      expect(await textContent(f, "note")).toBe("old");
+    } finally { failed.mockRestore(); }
+    let attempts = 0;
+    const recovered = vi.spyOn(storage, "putObject").mockImplementation(async (input) => {
+      await put(input);
+      if (++attempts === 1) throw Object.assign(new Error("lost response"), { code: "ECONNRESET" });
+    });
+    try {
+      expect(await svc.write(f, { path: "note", body: Buffer.from("new"), operationId: "new" })).toEqual({ applied: true });
+      expect(recovered).toHaveBeenCalledTimes(2);
+      expect(await textContent(f, "note")).toBe("new");
+    } finally { recovered.mockRestore(); }
   });
   it("serializes conflicting parent/file creation", async () => {
     const f = await folder();

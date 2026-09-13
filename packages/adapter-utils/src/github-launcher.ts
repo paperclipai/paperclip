@@ -17,6 +17,77 @@ if (!['git', 'gh'].includes(program) || !executable) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
   process.exit(127);
 }
+// The file gateway owns a 30s response window. Let it report its result before
+// retrying only this repeat-safe acquisition; the Git command has not started.
+const credentialRequestTimeoutMs = 35000;
+const credentialAcquisitionTimeoutMs = 75000;
+function credentialError(category) {
+  const error = new Error('GitHub credential acquisition failed');
+  error.credentialCategory = category;
+  return error;
+}
+function transientCredentialError(error) {
+  if (error && error.name === 'TimeoutError') return true;
+  const codes = new Set(['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN',
+    'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
+  return Boolean(error && (codes.has(error.code) || (error.cause && codes.has(error.cause.code))));
+}
+async function acquireCredentials(url, headers) {
+  const deadline = Date.now() + credentialAcquisitionTimeoutMs;
+  let transientFailures = 0;
+  let conflicts = 0;
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw credentialError('timeout');
+    return ms;
+  };
+  const pause = async (ms) => {
+    await new Promise(resolve => setTimeout(resolve, Math.min(ms, remaining())));
+    remaining();
+  };
+  while (true) {
+    let response;
+    const requestSignal = AbortSignal.timeout(Math.min(credentialRequestTimeoutMs, remaining()));
+    try {
+      response = await fetch(url, {
+        method: 'POST', redirect: 'error',
+        signal: requestSignal,
+        headers, body: '{}',
+      });
+      if (response.ok) {
+        const result = await response.json();
+        remaining(); // A late credential must never start a command.
+        if (!result || !['available', 'absent', 'unavailable'].includes(result.status) ||
+            (result.status === 'available' && (!result.env || typeof result.env !== 'object' || Array.isArray(result.env)))) {
+          throw credentialError('invalidresponse');
+        }
+        return result;
+      }
+    } catch (error) {
+      if (error && error.credentialCategory) throw error;
+      const timedOut = requestSignal.aborted && requestSignal.reason?.name === 'TimeoutError';
+      if (timedOut) error = requestSignal.reason;
+      if (error instanceof SyntaxError) throw credentialError('invalidresponse');
+      if (!transientCredentialError(error)) throw credentialError('unavailable');
+      transientFailures++;
+      if (transientFailures >= 3) throw credentialError(error.name === 'TimeoutError' ? 'timeout' : 'unavailable');
+      await pause(250 * transientFailures);
+      continue;
+    }
+    // Discard credentials/error bodies without printing or retaining them.
+    await response.body?.cancel().catch(() => {});
+    if (response.status === 401 || response.status === 403) throw credentialError('denied');
+    if (response.status === 409) {
+      if (++conflicts >= 30) throw credentialError('unavailable');
+      await pause(1000);
+      continue;
+    }
+    if (![502, 503, 504].includes(response.status) || ++transientFailures >= 3) {
+      throw credentialError('unavailable');
+    }
+    await pause(250 * transientFailures);
+  }
+}
 async function main() {
   let env = { ...process.env };
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
@@ -48,24 +119,14 @@ async function main() {
     });
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     try {
-    let response;
     if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
       const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
-      for (let attempt = 0; attempt < 30; attempt++) {
-        response = await fetch(url, {
-          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
-          headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
-            'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
-          body: '{}',
-        });
-        if (response.status !== 409) break;
-        await response.arrayBuffer();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-      if (!response.ok) {
-        diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
-      } else {
-      const result = await response.json();
+      const result = await acquireCredentials(url, {
+        authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
+        'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN,
+        'content-type': 'application/json',
+      });
+      {
       if (result.status === 'unavailable') {
         const reason = typeof result.reason === 'string'
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)
@@ -73,13 +134,17 @@ async function main() {
         process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
       if (result.status === 'available' && configReady) {
+
         for (const [key, value] of Object.entries(result.env || {})) {
           if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
         }
       }
       }
     } else { diagnostic('capability_missing'); }
-    } catch { diagnostic('broker_transport_unavailable'); }
+    } catch (error) {
+      if (program === 'gh') throw error;
+      diagnostic(error && error.credentialCategory === 'denied' ? 'capability_rejected' : 'broker_transport_unavailable');
+    }
   }
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
@@ -94,7 +159,12 @@ async function main() {
   child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
 }
-main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+main().catch((error) => {
+  const category = ['timeout', 'unavailable', 'denied', 'invalidresponse'].includes(error && error.credentialCategory)
+    ? error.credentialCategory : 'unavailable';
+  process.stderr.write('Paperclip: GitHub credential context unavailable (' + category + '); retry this operation.\n');
+  process.exitCode = 1;
+});
 `;
 }
 

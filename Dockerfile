@@ -244,6 +244,9 @@ RUN set -eu; \
 # doc/observability.md).
 #
 # CLOUD_BUNDLED_SERVER_DEPS names the optional peer packages to install.
+# CLOUD_BUNDLED_OTEL_DEPS adds the tracing peers independently because release
+# workflows explicitly override the former with the Sentry package. Installing
+# tracing support does not enable it: an operator must still set an OTLP endpoint.
 # The value is a space-separated list, the same shape as
 # CLOUD_BUNDLED_PLUGINS above. The stage reads each package's version
 # from the `peerDependencies` block of `server/package.json` at build
@@ -280,17 +283,19 @@ RUN set -eu; \
 FROM build AS cloud-server-deps
 WORKDIR /app/.cloud-server-deps
 ARG CLOUD_BUNDLED_SERVER_DEPS="@sentry/node"
+ARG CLOUD_BUNDLED_OTEL_DEPS="@opentelemetry/sdk-node @opentelemetry/auto-instrumentations-node @opentelemetry/resources @opentelemetry/semantic-conventions @opentelemetry/exporter-trace-otlp-grpc @opentelemetry/exporter-trace-otlp-proto @opentelemetry/exporter-trace-otlp-http"
 RUN set -eu; \
   test -n "$CLOUD_BUNDLED_SERVER_DEPS" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS is empty; name at least one optional peer package to install" >&2; exit 1; }; \
   echo '{"name":"paperclip-cloud-server-deps","private":true}' > package.json; \
   specifiers=""; \
-  for name in $CLOUD_BUNDLED_SERVER_DEPS; do \
+  for name in $CLOUD_BUNDLED_SERVER_DEPS $CLOUD_BUNDLED_OTEL_DEPS; do \
     version="$(node -e "const pkg=require('/app/server/package.json'); const name=process.argv[1]; const version=(pkg.peerDependencies||{})[name]; if(!version){console.error('ERROR: server/package.json declares no peerDependencies version for '+JSON.stringify(name));process.exit(1);} const meta=(pkg.peerDependenciesMeta||{})[name]; if(!meta||meta.optional!==true){console.error('ERROR: '+JSON.stringify(name)+' is not declared as an optional peer dependency in server/package.json; CLOUD_BUNDLED_SERVER_DEPS may name only optional peer packages');process.exit(1);} process.stdout.write(version);" "$name")"; \
     test -n "$version" || { echo "ERROR: could not resolve a version for '$name'" >&2; exit 1; }; \
     specifiers="$specifiers ${name}@${version}"; \
   done; \
   test -n "$specifiers" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS names no package" >&2; exit 1; }; \
-  pnpm add --ignore-workspace --no-lockfile $specifiers
+  pnpm add --ignore-workspace --no-lockfile $specifiers \
+  && node -e "const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');const peers=require('/app/server/package.json').peerDependencies;for(const name of process.argv.slice(1)){let dir=path.dirname(require.resolve(name)),found=false;for(let depth=0;depth<12;depth++,dir=path.dirname(dir)){const file=path.join(dir,'package.json');if(!fs.existsSync(file))continue;const pkg=JSON.parse(fs.readFileSync(file,'utf8'));if(pkg.name!==name)continue;assert.equal(pkg.version,peers[name],name+' must match the server optional peer version');found=true;break;}assert(found,'Cannot verify installed optional peer '+name);}" $CLOUD_BUNDLED_SERVER_DEPS $CLOUD_BUNDLED_OTEL_DEPS
 
 # Use the same qualified interpreter as the Daytona provider-pack build.
 # The controller owns this pack and its manifest; remote OpenCode/ACPX launches
@@ -298,15 +303,31 @@ RUN set -eu; \
 # Keep it Cloud-only so ordinary local execution and the production target do
 # not acquire remote-provider configuration.
 FROM node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b AS cloud-provider-pack
-RUN corepack enable
-WORKDIR /app
-COPY --from=build /app /app
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+WORKDIR /workspace
+# Install the same immutable dependency graph as the qualified sandbox, in a
+# fresh stage. Never inherit the app build's independently resolved node_modules
+# or merely replace the manifest lock after installing a different graph.
+COPY package.json pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+COPY docker/daytona-runner/provider-dependencies.lock.yaml ./pnpm-lock.yaml
+COPY patches ./patches
+COPY scripts/link-plugin-dev-sdk.mjs ./scripts/link-plugin-dev-sdk.mjs
+COPY packages ./packages
+COPY server/package.json ./server/package.json
+COPY ui/package.json ./ui/package.json
+COPY cli/package.json ./cli/package.json
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=3d4577e64214452e3c1f65e32c9223cf34d17d5cf84aa4658f0fefa158fe6de5
+RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
+    && sha256sum -c /tmp/provider-lock.sha256 \
+    && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
 ARG PAPERCLIP_BUILD_COMMIT
 RUN test -n "${PAPERCLIP_BUILD_COMMIT}" \
+  && pnpm --filter @paperclipai/paperclip-runner build:typescript \
   && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" \
-    node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+    node packages/paperclip-runner/scripts/assemble-provider-pack.mjs /provider-pack \
   && node packages/paperclip-runner/scripts/verify-pi-provider-launch.mjs /provider-pack \
-  && chmod -R a+rX /provider-pack
+  && PATH=/provider-pack/node_modules/.bin:$PATH sh -ec 'for cli in node acpx claude-agent-acp codex-acp pi-acp pi claude codex opencode; do test -x "/provider-pack/node_modules/.bin/$cli"; done; test "$(acpx --version)" = "0.13.1"; test "$(claude-agent-acp --version)" = "0.73.0"; test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"' \
+    && node --input-type=module -e "import {verifyProviderPack} from './packages/paperclip-runner/scripts/provider-pack-integrity.mjs'; verifyProviderPack('/provider-pack', {revision: '${PAPERCLIP_BUILD_COMMIT}', lockSha256: '${PAPERCLIP_RUNNER_LOCK_SHA256}'});"
 
 FROM production AS cloud
 COPY --from=cloud-provider-pack /provider-pack /opt/paperclip-runner/provider-pack

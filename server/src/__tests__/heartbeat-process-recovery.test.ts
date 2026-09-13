@@ -1,3 +1,8 @@
+import * as sandboxFolders from "../services/sandbox-work-folders.js";
+import * as environmentOrchestration from "../services/environment-run-orchestrator.js";
+import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import type { SandboxWorkFolderManifest } from "@paperclipai/shared";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
@@ -75,6 +80,7 @@ import {
   toolConnections,
   workAssessments,
   workspaceOperations,
+  workFolderRuns,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -227,6 +233,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { WorkspaceRuntimeValidationFailure } from "../services/workspace-runtime.js";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -2604,6 +2611,152 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(coordinator).toMatchObject({ attempt: 0, leaseOwner: null });
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(task.executionRunId).toBeNull();
+    });
+  });
+
+  it.each(["before", "after"] as const)("retains failed sandbox saves when cancellation wins %s native selection", async (boundary) => {
+    await withTempPaperclipHome(async (home) => {
+      const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(agents).set({ adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
+      }).where(eq(agents.id, agentId));
+      await db.update(heartbeatRuns).set({ invocationSource: "automation" }).where(eq(heartbeatRuns.id, runId));
+      const sandboxHome = path.join(home, "test-sandbox");
+      await fs.mkdir(path.join(sandboxHome, "task"), { recursive: true });
+      const workingFile = path.join(sandboxHome, "task", "unsaved.txt");
+      const checkpointFile = path.join(home, "accepted-checkpoint.txt");
+      await fs.writeFile(workingFile, "work from before cancellation");
+      let lease: typeof environmentLeases.$inferSelect;
+      let manifest: SandboxWorkFolderManifest;
+      let storageAvailable = false;
+      const stop = vi.fn(async () => {
+        if (!storageAvailable) {
+          await db.update(workFolderRuns).set({ state: "failed", error: "Injected storage outage" }).where(eq(workFolderRuns.runId, runId));
+          throw new Error("Injected storage outage");
+        }
+        await fs.copyFile(workingFile, checkpointFile);
+        manifest.finalCheckpointAt = new Date().toISOString();
+        await db.update(workFolderRuns).set({ state: "saved", manifest, error: null, lastSavedAt: new Date() }).where(eq(workFolderRuns.runId, runId));
+      });
+      const provider = vi.fn(() => { throw new Error("cancelled provider must not start"); });
+      const remoteCommand = vi.fn(async () => { throw new Error("test must not contact a sandbox provider"); });
+      const release = vi.fn(async () => ({ released: [], errors: [] }));
+      const originalOrchestrator = environmentOrchestration.environmentRunOrchestrator;
+      const orchestrator = vi.spyOn(environmentOrchestration, "environmentRunOrchestrator").mockImplementation((database, options) => {
+        const actual = originalOrchestrator(database, options);
+        return { ...actual, releaseForRun: release, realizeForRun: async (input) => {
+          const realized = await actual.realizeForRun(input);
+          [lease] = await db.update(environmentLeases).set({ provider: "daytona", providerLeaseId: `cancel-save-${runId}`,
+            metadata: { ...realized.lease.metadata, remoteCwd: sandboxHome },
+          }).where(eq(environmentLeases.id, realized.lease.id)).returning();
+          return { ...realized, lease: lease as typeof realized.lease, remoteExecution: null,
+            executionTarget: { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", remoteCwd: sandboxHome,
+              runner: { execute: remoteCommand } } };
+        } };
+      });
+      // Only provider/filesystem boundaries are controlled. The actual
+      // heartbeat finally block must flush, retain the DB lease, and fence
+      // saved-message admission. The coordinator's real storage is covered
+      // separately in sandbox-work-folders.test.ts.
+      const folders = vi.spyOn(sandboxFolders, "prepareSandboxWorkFolders").mockImplementation(async input => {
+        manifest = { version: 1, companyId, runId, taskId: issueId, agentId,
+          responsibleUserId: "responsible-user", projectId: null, leaseId: lease.id,
+          sandboxKey: input.sandboxKey, home: sandboxHome,
+          folders: { task: null, agent: null, user: null, project: null }, repositories: [] };
+        await db.insert(workFolderRuns).values({ runId, companyId, manifest, state: "starting" });
+        return { manifest, home: sandboxHome, identityChanged: false, primaryRepo: sandboxHome,
+          env: { HOME: sandboxHome, AGENT_HOME: sandboxHome, PAPERCLIP_PRIMARY_REPO: sandboxHome,
+            PAPERCLIP_TASK_DIR: sandboxHome, PAPERCLIP_AGENT_DIR: sandboxHome, PAPERCLIP_USER_DIR: sandboxHome,
+            PAPERCLIP_PROJECT_DIR: sandboxHome, PAPERCLIP_REPOS_DIR: sandboxHome }, flush: stop, stop };
+      });
+      const gitEnvironment = vi.spyOn(executionTargets, "prepareGitHubExecutionEnvironment").mockImplementation(async input => input.env);
+      const gitLaunchers = vi.spyOn(executionTargets, "prepareGitHubOperationLaunchers").mockImplementation(async input => {
+        const { PAPERCLIP_GITHUB_BROKER_TOKEN: _unusedToken, ...env } = input.env;
+        return env;
+      });
+      const cleanupLaunchers = vi.spyOn(executionTargets, "cleanupGitHubOperationLaunchers").mockResolvedValue(undefined);
+      let reachedBoundary = false;
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: provider,
+        beforeNativeRuntimeSelection: async id => {
+          if (boundary !== "before") return;
+          reachedBoundary = true;
+          await heartbeat.cancelRun(id);
+        },
+        beforeChatControlRecoveryCheck: async ({ stage, runId: id }) => {
+          if (boundary !== "after" || stage !== "dispatch") return;
+          reachedBoundary = true;
+          expect((await heartbeat.getRun(id))?.runtimeMode).toBe("native");
+          await heartbeat.cancelRun(id);
+        },
+      });
+      let busyRunId: string | undefined;
+      try {
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        expect(reachedBoundary).toBe(true);
+        expect(folders).toHaveBeenCalledOnce();
+        expect(stop).toHaveBeenCalledOnce();
+        expect(provider).not.toHaveBeenCalled();
+        expect(remoteCommand).not.toHaveBeenCalled();
+        expect(release).not.toHaveBeenCalled();
+        const cancelled = await heartbeat.getRun(runId);
+        expect(cancelled).toMatchObject({ status: "cancelled", resultJson: { startupPreparationSettledAt: expect.any(String) } });
+        const [retained] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id));
+        expect(retained).toMatchObject({ status: "retained", expiresAt: null, releasedAt: null,
+          cleanupStatus: "failed", failureReason: "work_folder_save_required", metadata: { workFolderRecoveryRequired: true } });
+        expect(await fs.readFile(workingFile, "utf8")).toBe("work from before cancellation");
+        expect(await fs.stat(checkpointFile).catch(() => null)).toBeNull();
+        const [failedSave] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, runId));
+        expect(failedSave).toMatchObject({ state: "failed", error: "Injected storage outage" });
+        expect(failedSave.manifest.finalCheckpointAt).toBeUndefined();
+
+        // Cancellation already records a recovery hold for unfinished cleanup.
+        // Keep the agent occupied so resumption can be inspected without ever
+        // starting a provider or running another heartbeat teardown.
+        expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId });
+        busyRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: busyRunId, companyId, agentId, status: "running", processPid: process.pid });
+        const commentId = randomUUID();
+        await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user",
+          authorUserId: "responsible-user", body: "Continue after the workspace is safe.",
+          createdAt: new Date(cancelled!.finishedAt!.getTime() + 1) });
+        await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+          requestedByActorType: "user", requestedByActorId: "responsible-user", payload: { issueId, commentId },
+          contextSnapshot: { issueId, wakeCommentId: commentId } });
+        const [waiting] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution")));
+        expect(waiting).toMatchObject({ runId: null });
+        const retry = async () => {
+          await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
+          await heartbeat.resumeExecutionWaitComments();
+        };
+        await retry();
+        expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id)))[0].status).toBe("deferred_issue_execution");
+        storageAvailable = true;
+        await stop();
+        expect(await fs.readFile(checkpointFile, "utf8")).toBe("work from before cancellation");
+        await retry();
+        // A successful checkpoint alone is not evidence of provider cleanup.
+        expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id)))[0].status).toBe("deferred_issue_execution");
+        await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date(),
+          metadata: { ...retained.metadata, remoteExecutionTermination: remoteTerminationReceipt(retained,
+            { providerLeaseId: retained.providerLeaseId, state: "stopped" }) },
+        }).where(eq(environmentLeases.id, retained.id));
+        await retry();
+        const [resumed] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+        expect(resumed).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+        const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+        expect(successors).toHaveLength(1);
+        expect(successors[0].id).toBe(resumed.runId);
+        expect(release).not.toHaveBeenCalled();
+      } finally {
+        if (busyRunId) await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), processPid: null }).where(eq(heartbeatRuns.id, busyRunId));
+        await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+        await db.delete(workFolderRuns).where(eq(workFolderRuns.runId, runId));
+        cleanupLaunchers.mockRestore(); gitLaunchers.mockRestore(); gitEnvironment.mockRestore();
+        folders.mockRestore(); orchestrator.mockRestore();
+      }
     });
   });
 
@@ -5126,6 +5279,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     });
     expect(validationComment).toBeTruthy();
+  });
+
+  it.each([false, true])("blocks repository preparation without an automatic continuation (resolved interaction: %s)", async (resolvedInteraction) => {
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    if (resolvedInteraction) {
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId,
+        kind: "request_confirmation", status: "accepted", continuationPolicy: "wake_assignee_on_accept",
+        createdByAgentId: agentId, resolvedByUserId: "responsible-user", resolvedAt: new Date(),
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() } },
+        result: { version: 1, outcome: "accepted" } });
+      const context = { issueId, taskId: issueId, wakeReason: "issue_commented", mutation: "interaction",
+        interactionId, interactionKind: "request_confirmation", interactionStatus: "accepted" };
+      await db.update(agentWakeupRequests).set({ source: "automation", reason: "issue_commented", payload: context }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      await db.update(heartbeatRuns).set({ invocationSource: "automation", contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
+    }
+    const payload = { workspaceValidation: { reason: "sandbox_repository_preparation_failed", operation: "clone",
+      issueId, repositoryName: "missing-required-repository", fingerprint: `sandbox_repository:${randomUUID()}:clone` } };
+    // Exercise terminal recovery with the structured failure emitted by the
+    // shared sandbox coordinator; the lifecycle test exercises the real clone.
+    mockAdapterExecute.mockRejectedValueOnce(new WorkspaceRuntimeValidationFailure("Required repository missing-required-repository could not be cloned", payload));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await heartbeat.waitForRunExecutionDrain(runId);
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed", resultJson: payload });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map((run) => run.id)).toEqual([runId]);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "blocked", executionRunId: null, assigneeAgentId: agentId });
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({ status: "active", ownerType: "board", recoveryIssueId: null });
+    if (!resolvedInteraction) expect(action?.nextAction).toContain("Completed checkouts and unsaved files remain");
   });
 
   it("blocks before dispatch when a declared secret ref has no binding instead of emitting an opaque setup failure", async () => {
@@ -7858,6 +8046,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       { forceAfterMs: 3000 },
     );
     expect(runningProcesses.has(runId)).toBe(false);
+  });
+
+  it.each(["user", "board", "interrupt"])("does not immediately recover an operator-cancelled run (%s)", async (actor) => {
+    const { companyId, agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running", includeIssue: true,
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      const cancelled = await heartbeat.cancelRun(runId, "Operator stopped this run", actor === "interrupt"
+        ? { errorCode: "operator_interrupted" }
+        : { resultJson: { cancelledByActorType: actor } });
+      expect(cancelled?.status).toBe("cancelled");
+      const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeups.map((wake) => wake.id)).toEqual([wakeupRequestId]);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs.map((run) => run.id)).toEqual([runId]);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "in_progress", executionRunId: null, checkoutRunId: null });
+    } finally { await heartbeat.drainActiveRunExecutions(); }
   });
 
   it("records manual cancellation stop metadata", async () => {

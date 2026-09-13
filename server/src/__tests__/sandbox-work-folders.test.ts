@@ -1,6 +1,8 @@
+import { runWithSandboxPerformanceTrace, type SandboxPerformanceRecord } from "../services/sandbox-performance.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { Readable } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
 import fs from "node:fs/promises";
@@ -16,6 +18,7 @@ import * as activityLog from "../services/activity-log.js";
 import { workFolderService } from "../services/work-folders.js";
 import * as workFolderServices from "../services/work-folders.js";
 import { collectWorkFolderGarbage } from "../services/work-folder-garbage.js";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { localTestWorkFolderRunner } from "./helpers/work-folder-runner.js";
 const exec = promisify(execFile);
 
@@ -145,7 +148,7 @@ describe("shared sandbox work-folder lifecycle", () => {
     await expect(bindWarmSandboxWorkspace(db, input)).rejects.toThrow("active task run");
   });
   async function prepare(home: string, leaseId: string, physicalId = leaseId, responsibleUserId: string | null = null,
-    options: { taskId?: string; branchName?: string; agentId?: string } = {}) {
+    options: { taskId?: string; branchName?: string; agentId?: string; bulkStdin?: boolean } = {}) {
     await fs.mkdir(home, { recursive: true });
     const runId = randomUUID();
     const boundAgentId = options.agentId ?? agentId;
@@ -156,9 +159,119 @@ describe("shared sandbox work-folder lifecycle", () => {
     const run = await prepareSandboxWorkFolders({ db, companyId, agentId: boundAgentId, projectId, taskId: options.taskId ?? taskId, runId,
       primaryWorkspaceId: primary!.id, primaryBranchName: options.branchName,
       responsibleUserId, storage, sandboxKey: workFolderSandboxKey(lease), target: { kind: "remote", transport: "sandbox", leaseId, remoteCwd: home,
-        runner: { execute: (input) => localTestWorkFolderRunner.execute({ ...input, env: { ...input.env, HOME: home } }) } } });
+        runner: { supportsSingleStreamStdinProgress: options.bulkStdin, execute: (input) => localTestWorkFolderRunner.execute({ ...input, env: { ...input.env, HOME: home } }) } } });
     active.push(run); return run;
   }
+  it("blocks a required clone failure and reuses completed checkouts on explicit retry", async () => {
+    const task = randomUUID(), leaseId = randomUUID(), invalidWorkspaceId = randomUUID();
+    const home = path.join(root, `failed-clone-${task}`);
+    await db.insert(issues).values({ id: task, companyId, projectId, title: "Required clone failure", assigneeAgentId: agentId });
+    await db.insert(projectWorkspaces).values({ id: invalidWorkspaceId, companyId, projectId,
+      name: "Missing required repository", repoUrl: path.join(root, "missing-required-repository"),
+      sourceType: "git_repo", isPrimary: false });
+    try {
+      const error = await prepare(home, leaseId, leaseId, null, { taskId: task }).catch((failure: unknown) => failure);
+      expect(error).toMatchObject({
+        message: expect.stringContaining("could not be cloned"),
+        code: "workspace_validation_failed",
+        resultJson: { workspaceValidation: {
+          reason: "sandbox_repository_preparation_failed", operation: "clone",
+          issueId: task, projectId, projectWorkspaceId: invalidWorkspaceId,
+          fingerprint: expect.stringMatching(/^sandbox_repository:/),
+        } },
+      });
+      const primary = path.join(home, "repos", "repo-one");
+      expect(await fs.readFile(path.join(primary, ".setup-count"), "utf8")).toBe("initialized\n");
+      await fs.writeFile(path.join(primary, "retained-staged"), "staged");
+      await exec("git", ["-C", primary, "add", "retained-staged"]);
+      await fs.writeFile(path.join(primary, "retained-staged"), "dirty");
+      await fs.writeFile(path.join(primary, "retained-untracked"), "untracked");
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, invalidWorkspaceId));
+      const retry = await prepare(home, leaseId, leaseId, null, { taskId: task });
+      expect(await fs.readFile(path.join(primary, ".setup-count"), "utf8")).toBe("initialized\n");
+      expect((await exec("git", ["-C", primary, "show", ":retained-staged"])).stdout).toBe("staged");
+      expect(await fs.readFile(path.join(primary, "retained-staged"), "utf8")).toBe("dirty");
+      expect(await fs.readFile(path.join(primary, "retained-untracked"), "utf8")).toBe("untracked");
+      await retry.stop(); active.splice(active.indexOf(retry), 1);
+    } finally {
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, invalidWorkspaceId));
+    }
+  }, 120_000);
+  it.each([
+    { operation: "checkout", repoRef: "missing-required-ref", setupCommand: null, branchName: undefined },
+    { operation: "setup", repoRef: null, setupCommand: "exit 7", branchName: undefined },
+    { operation: "branch", repoRef: null, setupCommand: null, branchName: "invalid branch name" },
+  ])("classifies required repository $operation failures as workspace blockers", async ({ operation, repoRef, setupCommand, branchName }) => {
+    const task = randomUUID(), workspaceId = randomUUID();
+    await db.insert(issues).values({ id: task, companyId, projectId, title: "Required repository preparation", assigneeAgentId: agentId });
+    await db.insert(projectWorkspaces).values({ id: workspaceId, companyId, projectId,
+      name: "Additional required repository", repoUrl: path.join(root, "repo-one"), repoRef, setupCommand,
+      sourceType: "git_repo", isPrimary: false });
+    try {
+      await expect(prepare(path.join(root, `repository-${task}`), randomUUID(), undefined, null, { taskId: task, branchName }))
+        .rejects.toMatchObject({ code: "workspace_validation_failed",
+          resultJson: { workspaceValidation: { reason: "sandbox_repository_preparation_failed", operation, issueId: task } } });
+    } finally {
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, workspaceId));
+    }
+  });
+  it("records scoped startup and final checkpoint stages without private identities", async () => {
+    const task = randomUUID();
+    await db.insert(issues).values({ id: task, companyId, projectId, title: "Instrumented task", assigneeAgentId: agentId });
+    const home = path.join(root, "private-instrumented-home");
+    const physicalId = randomUUID();
+    const records: SandboxPerformanceRecord[] = [];
+    const intervals = vi.spyOn(globalThis, "setInterval");
+    try { await runWithSandboxPerformanceTrace({ runId: randomUUID(), enabled: true,
+      onBatch: async (batch) => { records.push(...batch.records); } }, async () => {
+      const run = await prepare(home, randomUUID(), physicalId, null, { taskId: task });
+      await fs.writeFile(path.join(home, "task", "private-file-name"), "private-file-content");
+      const tick = intervals.mock.calls.find((call) => call[1] === 180_000)?.[0];
+      expect(typeof tick).toBe("function");
+      if (typeof tick !== "function") throw new Error("Missing periodic checkpoint callback");
+      tick();
+      await run.flush();
+      await run.stop();
+    }); } finally { intervals.mockRestore(); }
+    const prepared = records.find((record) => record.name === "work_folder.prepare")!;
+    expect(prepared.outcome).toBe("ok");
+    expect(prepared.attributes).toMatchObject({ cold: true, warm: false, reused: false });
+    for (const repo of records.filter((record) => record.name === "work_folder.repository.prepare")) {
+      expect(repo.attributes).toMatchObject({ exists: false, reused: false, cold: true, warm: false, cacheHit: false });
+    }
+    const periodic = records.find((record) => record.name === "work_folder.checkpoint" && record.attributes.phase === "periodic")!;
+    expect(periodic.parentId).toBe(prepared.parentId);
+    expect(periodic.outcome).toBe("ok");
+    expect(records.filter((record) => record.name === "work_folder.scope.incoming").map((record) => record.attributes.scope).sort()).toEqual(["agent", "project", "task", "user"]);
+    expect(records.filter((record) => record.name === "work_folder.repository.clone")).toHaveLength(2);
+    expect(records.filter((record) => record.name === "work_folder.repository.setup")).toHaveLength(2);
+    const finalized = records.find((record) => record.name === "work_folder.finalize")!;
+    const finalCheckpoint = records.find((record) => record.name === "work_folder.checkpoint" && record.attributes.phase === "final")!;
+    expect(finalCheckpoint.parentId).toBe(finalized.id);
+    expect(finalCheckpoint.outcome).toBe("ok");
+    expect(records.some((record) => record.name === "work_folder.db.query" && record.attributes.requestCount === 1)).toBe(true);
+    expect(records.some((record) => record.name === "work_folder.progress.save")).toBe(true);
+    for (const secret of [task, companyId, agentId, home, "private-file-name", "private-file-content"]) expect(JSON.stringify(records)).not.toContain(secret);
+    // A new lease of the same physical sandbox is warm regardless of provider
+    // power state. A fresh physical sandbox restores saved repositories cold.
+    for (const samePhysicalSandbox of [true, false]) {
+      const observed: SandboxPerformanceRecord[] = [];
+      await runWithSandboxPerformanceTrace({ runId: randomUUID(), enabled: true,
+        onBatch: async (batch) => { observed.push(...batch.records); } }, async () => {
+        const resumed = await prepare(samePhysicalSandbox ? home : path.join(root, "instrumented-replacement"),
+          randomUUID(), samePhysicalSandbox ? physicalId : randomUUID(), null, { taskId: task });
+        await resumed.stop();
+      });
+      expect(observed.find((record) => record.name === "work_folder.prepare")!.attributes)
+        .toMatchObject({ cold: !samePhysicalSandbox, warm: samePhysicalSandbox, reused: samePhysicalSandbox });
+      const repositories = observed.filter((record) => record.name === "work_folder.repository.prepare");
+      expect(repositories).toHaveLength(2);
+      for (const repo of repositories) expect(repo.attributes).toMatchObject({ exists: samePhysicalSandbox,
+        reused: samePhysicalSandbox, cold: !samePhysicalSandbox, warm: samePhysicalSandbox, cacheHit: !samePhysicalSandbox });
+      expect(observed.filter((record) => record.name === "work_folder.repository.clone")).toHaveLength(0);
+    }
+
+  }, 60_000);
   it("uses downloaded metadata when a shared file changes after the startup listing", async () => {
     const svc = workFolderService(db, storage);
     const folder = await svc.ensure({ companyId, scope: "project", ownerId: projectId });
@@ -247,11 +360,11 @@ describe("shared sandbox work-folder lifecycle", () => {
     active.splice(active.indexOf(run), 1);
   }, 120_000);
 
-  it("reuses clones and restores saved unpushed work, staged changes, and task files after losing the sandbox", async () => {
+  it.each([false, true])("reuses clones and restores saved unpushed work, staged changes, and task files after losing the sandbox (bulk stdin: %s)", async (bulkStdin) => {
     const repositoryTaskId = randomUUID();
     await db.insert(issues).values({ id: repositoryTaskId, companyId, projectId, title: "Repository recovery", assigneeAgentId: agentId });
-    const task = { taskId: repositoryTaskId };
-    const home = path.join(root, "sandbox");
+    const task = { taskId: repositoryTaskId, bulkStdin };
+    const home = path.join(root, `sandbox-${bulkStdin}`);
     const leaseId = randomUUID();
     const first = await prepare(home, leaseId, leaseId, null, task);
     expect(first.home).toBe(home);
@@ -277,7 +390,7 @@ describe("shared sandbox work-folder lifecycle", () => {
     await warm.stop(); active.splice(active.indexOf(warm), 1);
     await fs.rm(home, { recursive: true });
     const replacementId = randomUUID();
-    const restored = await prepare(path.join(root, "replacement"), replacementId, replacementId, null, task);
+    const restored = await prepare(path.join(root, `replacement-${bulkStdin}`), replacementId, replacementId, null, task);
     expect(await fs.readFile(path.join(restored.primaryRepo, ".setup-count"), "utf8")).toBe("initialized\ninitialized\n");
     expect(await fs.readFile(path.join(restored.primaryRepo, "node_modules/acceptance/installed"), "utf8")).toBe("ready");
     await expect(fs.stat(path.join(restored.primaryRepo, "node_modules/acceptance/warm-cache"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -289,6 +402,120 @@ describe("shared sandbox work-folder lifecycle", () => {
     expect(await fs.readlink(path.join(restored.primaryRepo, "link"))).toBe("tracked");
     await restored.stop(); active.splice(active.indexOf(restored), 1);
   }, 120_000);
+  it.each([
+    { bulk: true, refresh: false, edit: false, apply: true },
+    { bulk: true, refresh: false, edit: false, apply: false },
+    { bulk: false, refresh: false, edit: false, apply: true },
+    { bulk: true, refresh: false, edit: true, apply: true },
+    { bulk: true, refresh: true, edit: false, apply: true },
+  ])("reconciles imported files after a lost response (bulk=$bulk refresh=$refresh edit=$edit apply=$apply)", async ({ bulk, refresh, edit, apply }) => {
+    const scopedAgent = randomUUID(), sandboxKey = randomUUID();
+    await db.insert(agents).values({ id: scopedAgent, companyId, name: "Inbound recovery" });
+    const svc = workFolderService(db, storage);
+    const folder = await svc.ensure({ companyId, scope: "agent", ownerId: scopedAgent });
+    const home = path.join(root, `incoming-${sandboxKey}`);
+    await fs.mkdir(home);
+    let loseResponse = false;
+    let failedRunId = "";
+    const runner: CommandManagedRuntimeRunner = {
+      supportsSingleStreamStdinProgress: bulk,
+      execute: async (input) => {
+        const request = input.command === "node" ? JSON.parse(Buffer.from(input.args!.at(-1)!, "base64").toString()) : {};
+        const fail = loseResponse && request.root === path.join(home, "agent")
+          && (request.operation === "publish" || request.operation === "batch");
+        if (fail && !apply) { loseResponse = false; throw new Error("Injected lost incoming response"); }
+        const result = await localTestWorkFolderRunner.execute({ ...input, env: { ...input.env, HOME: home } });
+        if (fail) {
+          expect(result.exitCode).toBe(0);
+          loseResponse = false;
+          throw new Error("Injected lost incoming response");
+        }
+        return result;
+      },
+    };
+    async function start() {
+      const runId = randomUUID(); failedRunId = runId;
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: scopedAgent, status: "running" });
+      const run = await prepareSandboxWorkFolders({ db, companyId, agentId: scopedAgent, responsibleUserId: null,
+        projectId: null, taskId: null, runId, storage, sandboxKey,
+        target: { kind: "remote", transport: "sandbox", leaseId: randomUUID(), remoteCwd: home, runner } });
+      active.push(run); return run;
+    }
+    await svc.write(folder, { path: "nested/shared.txt", body: Buffer.from("v0"), operationId: randomUUID() });
+    const first = await start();
+    if (!refresh) { await first.stop(); active.splice(active.indexOf(first), 1); }
+    await svc.write(folder, { path: "nested/shared.txt", body: Buffer.from("v1-imported"), executable: true, operationId: randomUUID() });
+    loseResponse = true;
+    if (refresh) {
+      await db.update(workFolderRuns).set({ refreshRequested: true }).where(eq(workFolderRuns.runId, first.manifest.runId));
+      await expect(first.stop()).rejects.toThrow("Injected lost incoming response");
+      active.splice(active.indexOf(first), 1);
+    } else {
+      await expect(start()).rejects.toThrow("Injected lost incoming response");
+    }
+    expect(await fs.readFile(path.join(home, "agent/nested/shared.txt"), "utf8")).toBe(apply ? "v1-imported" : "v0");
+    const [failed] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, failedRunId));
+    expect(failed?.state).toBe("failed");
+    expect(failed?.baselines["incoming:agent"]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "nested/shared.txt", executable: true }),
+      expect.objectContaining({ path: "nested", kind: "directory" }),
+    ]));
+    await svc.write(folder, { path: "nested/shared.txt", body: Buffer.from("v2-newer-shared"), operationId: randomUUID() });
+    if (edit) await fs.writeFile(path.join(home, "agent/nested/shared.txt"), "v3-actual-local-edit");
+    const retry = await start();
+    const expected = edit ? "v3-actual-local-edit" : "v2-newer-shared";
+    expect(await fs.readFile(path.join(home, "agent/nested/shared.txt"), "utf8")).toBe(expected);
+    const content = await svc.content(folder, "nested/shared.txt");
+    expect(await content.stream.toArray().then((chunks) => Buffer.concat(chunks).toString())).toBe(expected);
+    const [recovered] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, retry.manifest.runId));
+    expect(recovered?.baselines["incoming:agent"]).toBeUndefined();
+    expect(recovered?.baselines["incomingRemoved:agent"]).toBeUndefined();
+    await retry.stop(); active.splice(active.indexOf(retry), 1);
+  }, 60_000);
+
+  it("does not repeat an imported deletion against a newer shared file after a lost remove response", async () => {
+    const scopedAgent = randomUUID(), sandboxKey = randomUUID();
+    await db.insert(agents).values({ id: scopedAgent, companyId, name: "Deletion recovery" });
+    const svc = workFolderService(db, storage);
+    const folder = await svc.ensure({ companyId, scope: "agent", ownerId: scopedAgent });
+    const home = path.join(root, `incoming-delete-${sandboxKey}`);
+    await fs.mkdir(home);
+    let loseResponse = false, failedRunId = "";
+    const runner: CommandManagedRuntimeRunner = {
+      supportsSingleStreamStdinProgress: true,
+      execute: async (input) => {
+        const result = await localTestWorkFolderRunner.execute({ ...input, env: { ...input.env, HOME: home } });
+        const request = input.command === "node" ? JSON.parse(Buffer.from(input.args!.at(-1)!, "base64").toString()) : {};
+        if (loseResponse && request.root === path.join(home, "agent") && request.operation === "remove") {
+          expect(result.exitCode).toBe(0); loseResponse = false;
+          throw new Error("Injected lost removal response");
+        }
+        return result;
+      },
+    };
+    async function start() {
+      const runId = randomUUID(); failedRunId = runId;
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: scopedAgent, status: "running" });
+      const run = await prepareSandboxWorkFolders({ db, companyId, agentId: scopedAgent, responsibleUserId: null,
+        projectId: null, taskId: null, runId, storage, sandboxKey,
+        target: { kind: "remote", transport: "sandbox", leaseId: randomUUID(), remoteCwd: home, runner } });
+      active.push(run); return run;
+    }
+    await svc.write(folder, { path: "nested/shared.txt", body: Buffer.from("old"), operationId: randomUUID() });
+    const first = await start(); await first.stop(); active.splice(active.indexOf(first), 1);
+    await svc.remove(folder, "nested", randomUUID());
+    loseResponse = true;
+    await expect(start()).rejects.toThrow("Injected lost removal response");
+    await expect(fs.stat(path.join(home, "agent/nested/shared.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    const [failed] = await db.select().from(workFolderRuns).where(eq(workFolderRuns.runId, failedRunId));
+    expect(failed?.baselines["incomingRemoved:agent"].map((entry) => entry.path)).toEqual(["nested/shared.txt", "nested"]);
+    await svc.write(folder, { path: "nested/shared.txt", body: Buffer.from("new shared after deletion"), operationId: randomUUID() });
+    const retry = await start();
+    expect(await fs.readFile(path.join(home, "agent/nested/shared.txt"), "utf8")).toBe("new shared after deletion");
+    const content = await svc.content(folder, "nested/shared.txt");
+    expect(await content.stream.toArray().then((chunks) => Buffer.concat(chunks).toString())).toBe("new shared after deletion");
+    await retry.stop(); active.splice(active.indexOf(retry), 1);
+  }, 60_000);
   it("does not let an unchanged stale shared file overwrite a newer durable value", async () => {
     const svc = workFolderService(db, storage);
     const folder = await svc.ensure({ companyId, scope: "project", ownerId: projectId });
@@ -345,6 +572,57 @@ describe("shared sandbox work-folder lifecycle", () => {
     const retry = await prepare(run.home, randomUUID(), leaseId, userId);
     await retry.stop(); active.splice(active.indexOf(retry), 1);
     expect((await svc.list(folder)).files.map((file) => file.path)).toContain("private");
+  }, 120_000);
+
+  it.each([false, true])("reopens repository blobs after transient PUT failures and retains the previous checkpoint when retries exhaust (bulk stdin: %s)", async (bulkStdin) => {
+    const leaseId = randomUUID();
+    const repositoryTaskId = randomUUID();
+    await db.insert(issues).values({ id: repositoryTaskId, companyId, projectId, title: "Repository retry", assigneeAgentId: agentId });
+    const run = await prepare(path.join(root, `replayed-repository-upload-${bulkStdin}`), leaseId, leaseId, null,
+      { bulkStdin, taskId: repositoryTaskId });
+    await run.flush();
+    const filename = path.join(run.primaryRepo, "retry-upload");
+    const content = "replay the entire repository file";
+    await fs.writeFile(filename, content);
+    const targetHash = createHash("sha256").update(content).digest("hex");
+    const put = storage.putObject.bind(storage);
+    const streams: Readable[] = [];
+    let attempts = 0;
+    const recover = vi.spyOn(storage, "putObject").mockImplementation(async (input) => {
+      if (input.objectKey.endsWith("/" + targetHash)) {
+        streams.push(input.body as Readable);
+        if (++attempts === 1) {
+          await (input.body as Readable).iterator({ destroyOnReturn: false }).next();
+          throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+        }
+      }
+      return put(input);
+    });
+    try { await run.flush(); } finally { recover.mockRestore(); }
+    expect(attempts).toBe(2);
+    expect(new Set(streams).size).toBe(2);
+    expect(streams.every((stream) => stream.destroyed)).toBe(true);
+    const bindingId = run.manifest.repositories[0]!.bindingId;
+    const [before] = await db.select().from(taskRepositoryBindings).where(eq(taskRepositoryBindings.id, bindingId));
+    await fs.writeFile(filename, "retain this unsaved edit");
+    const nextHash = createHash("sha256").update("retain this unsaved edit").digest("hex");
+    let failedAttempts = 0;
+    const fail = vi.spyOn(storage, "putObject").mockImplementation(async (input) => {
+      if (input.objectKey.endsWith("/" + nextHash)) {
+        failedAttempts++;
+        for await (const _chunk of input.body as Readable) { /* Lost response after consuming the body. */ }
+        throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+      }
+      return put(input);
+    });
+    try {
+      await expect(run.stop()).rejects.toThrow("socket hang up");
+      expect(failedAttempts).toBe(3);
+      const [after] = await db.select().from(taskRepositoryBindings).where(eq(taskRepositoryBindings.id, bindingId));
+      expect(after!.checkpointKey).toBe(before!.checkpointKey);
+      expect(await fs.readFile(filename, "utf8")).toBe("retain this unsaved edit");
+      expect(await retainUnsavedWorkFolderLease(db, { id: leaseId, companyId })).toBe(true);
+    } finally { fail.mockRestore(); active.splice(active.indexOf(run), 1); }
   }, 120_000);
 
   it("does not publish a partial repository checkpoint and recovers a failed final save in a new run", async () => {

@@ -1414,8 +1414,11 @@ const sandboxHandleSessionStore = (() => {
     idByKey.set(sandboxHandleCacheKey(scope), sessionId);
   }
 
-  function clear(scope: SandboxScope): void {
-    idByKey.delete(sandboxHandleCacheKey(scope));
+  function clear(scope: SandboxScope, expectedSessionId?: string): void {
+    const key = sandboxHandleCacheKey(scope);
+    if (expectedSessionId === undefined || idByKey.get(key) === expectedSessionId) {
+      idByKey.delete(key);
+    }
   }
 
   // Single-flight guard for the first-command session create. Two overlapping
@@ -1795,6 +1798,12 @@ async function readSessionExitCode(
   return null;
 }
 
+class MissingSessionBeforeDispatchError extends Error {
+  constructor(cause: Error) {
+    super("Daytona session was unavailable before command dispatch", { cause });
+  }
+}
+
 // Dispatch one user command into the persistent session and return its true
 // stdout and stderr.
 //
@@ -1851,7 +1860,17 @@ async function executeInSession(
       sessionId,
       { command, runAsync: true },
       timeoutSeconds,
-    );
+    ).catch((error: unknown) => {
+      // The daemon rejected the session lookup before accepting a command.
+      // Never classify errors from polling/logs this way: that command may
+      // already have executed and must not be replayed.
+      if (error instanceof DaytonaNotFoundError
+        && error.code === "PROCESS_NOT_FOUND"
+        && error.message.trim().toLowerCase() === "session not found") {
+        throw new MissingSessionBeforeDispatchError(error);
+      }
+      throw error;
+    });
     const commandId = dispatched.cmdId;
 
     // Log-stream path. A session command always tries the stream first: it
@@ -2712,7 +2731,23 @@ const plugin = definePlugin({
       let result: PluginEnvironmentExecuteResult;
       if (!params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);
-        result = await executeInSession(sandbox, sessionId, params, config);
+        const configuredTimeout = resolveTimeoutMs(params.timeoutMs, config);
+        const dispatchDeadline = Date.now() + (isGitNetworkCommand(params.command, params.args ?? [])
+          ? Math.min(configuredTimeout, GIT_NETWORK_TIMEOUT_MS) : configuredTimeout);
+        try {
+          result = await executeInSession(sandbox, sessionId, params, config);
+        } catch (error) {
+          if (!(error instanceof MissingSessionBeforeDispatchError)) throw error;
+          // A stopped/restarted provider can lose its shell independently of
+          // this worker's cache. Replace only the rejected id; overlapping
+          // callers must share, rather than invalidate, its replacement.
+          sandboxHandleSessionStore.clear(scope, sessionId);
+          if (Date.now() >= dispatchDeadline) throw error;
+          const replacementId = await getOrCreateSession(sandbox, scope);
+          const remainingMs = dispatchDeadline - Date.now();
+          if (remainingMs <= 0) throw error;
+          result = await executeInSession(sandbox, replacementId, { ...params, timeoutMs: remainingMs }, config);
+        }
       } else {
         result = await executeOneShot(sandbox, params, config);
       }

@@ -533,10 +533,17 @@ describe("ACPX engine startup characterization", () => {
       expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
     });
 
-    it("preserves the Codex tool environment for work-folder sandboxes without changing other features", async () => {
+    it.each(["approve-all", "approve-reads", "deny-all"])("preserves the Codex sandbox tool environment with %s permissions", async (permissionMode) => {
       const { stateDir, executionTarget, remoteCwd } = await setupRemoteSandbox();
+      let launchEnvironment: Record<string, string> = {};
+      (executionTarget as { runner: unknown }).runner = createLocalSandboxRunner((input) => {
+        const match = input.args?.[1]?.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+        if (match) {
+          launchEnvironment = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")).env;
+        }
+      });
       const { meta } = await runExecutor({
-        agent: "codex", stateDir, cwd: remoteCwd,
+        agent: "codex", stateDir, cwd: remoteCwd, permissionMode,
         env: { CODEX_CONFIG: JSON.stringify({ features: { shell_snapshot: true, existing_feature: true } }) },
       }, {
         authToken: "real-run-jwt",
@@ -545,6 +552,10 @@ describe("ACPX engine startup characterization", () => {
       expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
         allow_login_shell: false, features: { shell_snapshot: false, existing_feature: true },
       });
+      const expectedMode = permissionMode === "approve-all" ? "agent-full-access" : undefined;
+      expect((meta[0]?.env as Record<string, string>).INITIAL_AGENT_MODE).toBe(expectedMode);
+      expect(launchEnvironment.PAPERCLIP_API_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(launchEnvironment.INITIAL_AGENT_MODE).toBe(expectedMode);
     });
 
     it("keeps sandbox work folders remote while spawning the ACP proxy on the host", async () => {
@@ -554,7 +565,7 @@ describe("ACPX engine startup characterization", () => {
       await fs.mkdir(primary, { recursive: true });
       await fs.writeFile(path.join(primary, "keep.txt"), "sandbox work");
       const mkdir = vi.spyOn(fs, "mkdir");
-      const { sessionInputs, runtimeOptions } = await runExecutor(
+      const { sessionInputs, runtimeOptions, meta } = await runExecutor(
         { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: primary },
         {
           authToken: "real-run-jwt",
@@ -565,6 +576,7 @@ describe("ACPX engine startup characterization", () => {
       expect(mkdir.mock.calls.some(([directory]) => directory === primary)).toBe(false);
       expect(sessionInputs[0]?.cwd).toBe(home);
       expect(runtimeOptions[0]?.spawnCwd).toBe(path.join(stateDir, "work-folder-proxy"));
+      expect((meta[0]?.env as Record<string, string>).INITIAL_AGENT_MODE).toBeUndefined();
       await expect(fs.readFile(path.join(primary, "keep.txt"), "utf8")).resolves.toBe("sandbox work");
       expect(vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0].workspaceLocalDir)
         .toBe(path.join(stateDir, "work-folder-proxy"));

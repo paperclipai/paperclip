@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { test, expect } from "@playwright/test";
 import type { EnvironmentCapabilities } from "../../packages/shared/src/environment-support.js";
-import type { SandboxWorkFolderManifest, WorkFolderListing, WorkFolderSyncStatus } from "../../packages/shared/src/work-folders.js";
+import type { SandboxWorkFolderManifest, WorkFolderSyncStatus } from "../../packages/shared/src/work-folders.js";
 import { QUALIFIED_ACPX_RUNNER_MODELS } from "../../server/src/services/native-runtime/provider-profile.js";
 import { pollUntil } from "./api.js";
-import { DeployedStackApi, deployedAgentEngine, loadDeployedStack } from "./deployed-stack.js";
+import { DeployedStackApi, deployedAgentEngine, findDeployedWorkFile, loadDeployedStack } from "./deployed-stack.js";
 
 import { repoAcceptancePrompt } from "./work-folder-acceptance-prompts.js";
 
@@ -60,15 +60,13 @@ for (const [scope, owner] of [["task", stack.taskId], ["agent", stack.agentId], 
     });
     expect((await write()).ok).toBe(true);
     expect((await write()).ok).toBe(true);
-    const listing = await api.json<WorkFolderListing>(base);
-    const file = listing.files.find((entry) => entry.path === filename)!;
+    const file = (await findDeployedWorkFile(api, base, filename))!;
     expect(file).toMatchObject({ byteSize: 0, executable: true, deletedAt: null });
     const download = await api.request(`${base}/content?path=${encodeURIComponent(filename)}`);
     expect(download.status).toBe(200); expect((await download.arrayBuffer()).byteLength).toBe(0);
     await api.json(`${base}/operations`, "POST", { action: "delete", path: filename });
     expect((await api.request(`${base}/content?path=${encodeURIComponent(filename)}`)).status).toBe(404);
-    const trash = await api.json<WorkFolderListing>(`${base}?trash=true`);
-    expect(trash.files.some((entry) => entry.id === file.id)).toBe(true);
+    expect((await findDeployedWorkFile(api, base, filename, true))?.id).toBe(file.id);
     await api.json(`${base}/operations`, "POST", { action: "restore", fileId: file.id });
     expect((await api.request(`${base}/content?path=${encodeURIComponent(filename)}`)).status).toBe(200);
   });
@@ -109,8 +107,7 @@ for (const profile of stack.profiles) {
       const read = await api.request(`${scoped}/content?path=${encodeURIComponent(`roundtrip-${nonce}/message.txt`)}`);
       expect(read.status, `${profile.id} ${scope} durable bytes`).toBe(200);
       expect(await read.text()).toBe(nonce);
-      const listing = await api.json<WorkFolderListing>(scoped);
-      expect(listing.files.find(file => file.path === `roundtrip-${nonce}/empty.sh`)).toMatchObject({byteSize:0, executable:true});
+      expect(await findDeployedWorkFile(api, scoped, `roundtrip-${nonce}/empty.sh`)).toMatchObject({byteSize:0, executable:true});
     }
 
     await api.json(`/api/issues/${issue.id}`, "PATCH", { status: "todo", description: repoAcceptancePrompt(nonce, true) });

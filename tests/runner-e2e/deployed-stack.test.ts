@@ -1,5 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { isStagingOrigin, assertDeployedAdapterExclusions, deployedAgentEngine } from "./deployed-stack.js";
+import { describe, expect, it, vi } from "vitest";
+import { isStagingOrigin, assertDeployedAdapterExclusions, deployedAgentEngine, findDeployedWorkFile } from "./deployed-stack.js";
+
+describe("deployed work-file pagination", () => {
+  it.each([false, true])("finds a later-page entry while preserving trash=%s", async (trash) => {
+    const file = { path: "nested/empty.sh", byteSize: 0, executable: true };
+    const json = vi.fn().mockResolvedValueOnce({ files: [{ path: "unrelated" }], nextCursor: "next-page" })
+      .mockResolvedValueOnce({ files: [file], nextCursor: null });
+    expect(await findDeployedWorkFile({ json }, "/api/folder", file.path, trash)).toEqual(file);
+    expect(json.mock.calls.map(([url]) => url)).toEqual([
+      `/api/folder?limit=200&trash=${trash}`,
+      `/api/folder?limit=200&trash=${trash}&cursor=next-page`,
+    ]);
+  });
+
+  it("returns missing only after the final page", async () => {
+    const json = vi.fn().mockResolvedValueOnce({ files: [], nextCursor: "next-page" })
+      .mockResolvedValueOnce({ files: [], nextCursor: null });
+    expect(await findDeployedWorkFile({ json }, "/api/folder", "missing")).toBeUndefined();
+    expect(json).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a repeated cursor instead of looping", async () => {
+    const json = vi.fn().mockResolvedValue({ files: [], nextCursor: "same-page" });
+    await expect(findDeployedWorkFile({ json }, "/api/folder", "missing")).rejects.toThrow("repeated its cursor");
+    expect(json).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("deployed stack target", () => {
   it("requires an explicit HTTPS staging tenant and rejects credential-bearing URLs", () => {

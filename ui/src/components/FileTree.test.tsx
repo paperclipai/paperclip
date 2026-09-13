@@ -85,6 +85,8 @@ describe("FileTree", () => {
     const input = row("docs")?.querySelector("input[type='checkbox']") as HTMLInputElement | null;
     expect(input?.checked).toBe(false);
     expect(input?.indeterminate).toBe(true);
+    expect(input?.getAttribute("aria-label")).toBe("Select docs");
+    expect(row("docs/a.md")?.querySelector("input")?.getAttribute("aria-label")).toBe("Select docs/a.md");
     expect(row("docs")?.getAttribute("aria-checked")).toBe("mixed");
   });
 

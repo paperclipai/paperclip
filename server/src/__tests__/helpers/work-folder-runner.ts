@@ -5,8 +5,10 @@ const exec = promisify(execFile);
 export const localTestWorkFolderRunner: CommandManagedRuntimeRunner = {
   async execute(input) {
     try {
-      const { stdout, stderr } = await exec(input.command, input.args ?? [], { cwd: input.cwd,
+      const execution = exec(input.command, input.args ?? [], { cwd: input.cwd,
         env: { ...process.env, ...input.env }, timeout: input.timeoutMs, maxBuffer: 32 * 1024 * 1024 });
+      execution.child.stdin?.end(input.stdin);
+      const { stdout, stderr } = await execution;
       return { stdout, stderr, exitCode: 0, signal: null, timedOut: false };
     } catch (error) {
       const value = error as Error & { stdout?: string; stderr?: string };

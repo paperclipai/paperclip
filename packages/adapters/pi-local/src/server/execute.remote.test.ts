@@ -135,6 +135,9 @@ describe("pi remote execution", () => {
       const options = processSpy.mock.calls[0][4];
       expect(options.env.HOME).toBe(workFolderHome ?? runtimeRootDir);
       expect(options.env.PAPERCLIP_WORKSPACE_CWD).toBe("/home/daytona/repos/main");
+      // Pi consumes piped stdin before starting its turn, even with a prompt argument.
+      // An empty input asks the sandbox transport to deliver EOF instead of an open pipe.
+      expect(options.stdin).toBe("");
     } finally {
       vi.restoreAllMocks();
     }

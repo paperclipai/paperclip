@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   providerResourceDispositionForTerminalRun,
+  recoveredNativeProviderResourceDisposition,
+  readNativeProviderResourceDisposition,
   resolveNativeSandboxLifecycle,
   resolveReusableSandboxLifecycle,
 } from "../services/heartbeat.js";
@@ -117,5 +119,28 @@ describe("paperclip_runner sandbox lifecycle", () => {
     expect(providerResourceDispositionForTerminalRun("destroy", "failed")).toBe(
       "destroy",
     );
+  });
+});
+
+
+describe("recovered native scoped-folder disposition", () => {
+  it("keeps the selected warm lease without an obsolete workspace copy-back reference", () => {
+    expect(recoveredNativeProviderResourceDisposition({ nativeProviderResourceDisposition: "keep_running" }, "succeeded", true)).toBe("keep_running");
+  });
+  it.each(["failed", "cancelled", "timed_out", "running", null])("does not retain a warm process for %s", (status) => {
+    expect(recoveredNativeProviderResourceDisposition({ nativeProviderResourceDisposition: "keep_running" }, status, true)).toBe("stop_and_retain");
+  });
+  it("uses an older persisted workspace-sync disposition when no independent stamp exists", () => {
+    const reference = { schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+      descriptorSha256: "a".repeat(64), baselineSha256: "a".repeat(64), finalHostSha256: null,
+      workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox", remoteCwd: "/workspace", resourceDisposition: "keep_running" };
+    expect(recoveredNativeProviderResourceDisposition({ nativeWorkspaceSync: reference }, "succeeded", true)).toBe("keep_running");
+  });
+  it("preserves per-turn policies and conservative failure/unknown behavior", () => {
+    expect(recoveredNativeProviderResourceDisposition({ nativeProviderResourceDisposition: "destroy" }, "succeeded", true)).toBe("destroy");
+    expect(recoveredNativeProviderResourceDisposition({ nativeProviderResourceDisposition: "stop_and_retain" }, "succeeded", true)).toBe("stop_and_retain");
+    expect(recoveredNativeProviderResourceDisposition({ nativeProviderResourceDisposition: "destroy" }, "succeeded", false)).toBe("stop_and_retain");
+    expect(recoveredNativeProviderResourceDisposition({}, "succeeded", true)).toBe("stop_and_retain");
+    expect(readNativeProviderResourceDisposition("invalid")).toBeUndefined();
   });
 });

@@ -1,348 +1,74 @@
-import { portableProviderShim } from "./portable-provider-shim.mjs";
-import { createHash } from "node:crypto";
+// The trusted qualification workflow invokes this target-owned entry point.
+// Never assemble from that job's CI-resolved lock, node_modules, shared dist,
+// or setup-node interpreter: the image's isolated stage is the source of truth.
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
-import { createRequire } from "node:module";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { materializePiBinary } from "./materialize-pi-binary.mjs";
+import { sha256File, verifyProviderPack } from "./provider-pack-integrity.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workspaceRoot = resolve(packageRoot, "../..");
-const outputArgument = process.argv.slice(2).find((value) => value !== "--");
-const outputRoot = resolve(
-  process.cwd(),
-  outputArgument ?? join(packageRoot, "provider-pack"),
-);
-if (
-  outputRoot === workspaceRoot ||
-  outputRoot === packageRoot ||
-  outputRoot === "/"
-) {
-  throw new Error(`Refusing unsafe provider-pack output path: ${outputRoot}`);
+const defaultWorkspaceRoot = resolve(packageRoot, "../..");
+
+export function buildProviderPack({ workspaceRoot = defaultWorkspaceRoot, outputRoot = join(packageRoot, "provider-pack"),
+  revision = process.env.PAPERCLIP_RUNNER_SOURCE_REVISION?.trim(), run = spawnSync } = {}) {
+  workspaceRoot = realpathSync(workspaceRoot);
+  outputRoot = resolve(outputRoot);
+  const missingSegments = [];
+  let existingParent = outputRoot;
+  while (!existsSync(existingParent)) { missingSegments.unshift(basename(existingParent)); existingParent = dirname(existingParent); }
+  outputRoot = join(realpathSync(existingParent), ...missingSegments);
+  const sourcePackage = join(workspaceRoot, "packages/paperclip-runner");
+  function contains(base, target) {
+    const child = relative(base, target);
+    return !isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`);
+  }
+  if (outputRoot === dirname(outputRoot) || contains(outputRoot, workspaceRoot)
+    || (contains(workspaceRoot, outputRoot) && outputRoot !== join(sourcePackage, "provider-pack"))) {
+    throw new Error("Refusing unsafe provider-pack output path");
+  }
+  if (revision === undefined) {
+    // CI supplies an authorized revision explicitly and may refresh only its
+    // root lock. Local implicit HEAD must not mislabel changed image inputs.
+    const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=all", "--",
+      ".dockerignore", "docker/daytona-runner", "package.json", "pnpm-workspace.yaml", ".npmrc", "tsconfig.base.json",
+      "patches", "scripts/link-plugin-dev-sdk.mjs", "packages", "server/package.json", "ui/package.json", "cli/package.json",
+      ":(exclude)packages/paperclip-runner/provider-pack", ":(glob,exclude)packages/paperclip-runner/.paperclip-provider-pack-*/**"],
+    { cwd: workspaceRoot, encoding: "utf8" });
+    if (dirty.trim()) throw new Error("Canonical provider inputs are dirty; an implicit HEAD revision would be misleading");
+    revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspaceRoot, encoding: "utf8" }).trim();
+  }
+  if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("PAPERCLIP_RUNNER_SOURCE_REVISION must be a full Git SHA");
+  const dockerfile = join(workspaceRoot, "docker/daytona-runner/Dockerfile");
+  const expectedLock = readFileSync(dockerfile, "utf8").match(/^ARG PAPERCLIP_RUNNER_LOCK_SHA256=([a-f0-9]{64})$/m)?.[1];
+  if (!expectedLock) throw new Error("Canonical provider lock pin is missing");
+  const actualLock = sha256File(join(workspaceRoot, "docker/daytona-runner/provider-dependencies.lock.yaml"));
+  if (actualLock !== `sha256:${expectedLock}`) throw new Error("Canonical provider lock integrity mismatch");
+  mkdirSync(dirname(outputRoot), { recursive: true });
+  // Same filesystem as OUTPUT, so successful publication is an atomic rename.
+  // Docker reads its inputs before this empty directory receives exported files.
+  const temporaryParent = mkdtempSync(join(dirname(outputRoot), ".paperclip-provider-pack-"));
+  const exportRoot = join(temporaryParent, "exported"), exported = join(exportRoot, "provider-pack"), backup = join(temporaryParent, "previous");
+  let previousMoved = false, published = false;
+  try {
+    const build = run("docker", ["build", "--platform", "linux/amd64", "--target", "provider-pack-export",
+      "--file", dockerfile, "--build-arg", `PAPERCLIP_RUNNER_SOURCE_REVISION=${revision}`,
+      "--output", `type=local,dest=${exportRoot}`, workspaceRoot],
+    { cwd: workspaceRoot, stdio: "inherit", timeout: 12 * 60 * 1000, killSignal: "SIGTERM" });
+    if (build.error || build.status !== 0) throw new Error("Canonical provider-pack build failed");
+    const manifest = verifyProviderPack(exported, { revision, lockSha256: expectedLock });
+    if (existsSync(outputRoot)) { renameSync(outputRoot, backup); previousMoved = true; }
+    try { renameSync(exported, outputRoot); published = true; }
+    catch (error) { if (previousMoved) { renameSync(backup, outputRoot); previousMoved = false; } throw error; }
+    return { outputRoot, manifest };
+  } finally {
+    // If even rollback fails, leave the prior pack in its recoverable backup.
+    if (!previousMoved || published) rmSync(temporaryParent, { recursive: true, force: true });
+  }
 }
 
-const temporaryParent = mkdtempSync(join(tmpdir(), "paperclip-provider-pack-"));
-const temporaryRoot = join(temporaryParent, "pack");
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sha256File(path) {
-  return `sha256:${createHash("sha256")
-    .update(readFileSync(path))
-    .digest("hex")}`;
-}
-
-function sha256Tree(root) {
-  const hash = createHash("sha256");
-  const visit = (directory, prefix = "") => {
-    const entries = readdirSync(directory, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name),
-    );
-    for (const entry of entries) {
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const absolutePath = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        hash.update(`directory\0${relativePath}\n`);
-        visit(absolutePath, relativePath);
-      } else if (entry.isFile()) {
-        hash.update(`file\0${relativePath}\0${sha256File(absolutePath)}\n`);
-      } else if (entry.isSymbolicLink()) {
-        hash.update(
-          `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
-        );
-      } else {
-        throw new Error(
-          `Provider pack tree contains unsupported entry ${relativePath}`,
-        );
-      }
-    }
-  };
-  visit(root);
-  return `sha256:${hash.digest("hex")}`;
-}
-
-function writePortableNodeShim(name, entrypoint) {
-  const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(shimPath, portableProviderShim(entrypoint, { node: true }));
-  chmodSync(shimPath, 0o755);
-}
-
-function writePortableExecutableShim(name, executable) {
-  const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(shimPath, portableProviderShim(executable));
-  chmodSync(shimPath, 0o755);
-}
-
-try {
-  const deployed = spawnSync(
-    "pnpm",
-    [
-      "--filter",
-      "@paperclipai/paperclip-runner",
-      "deploy",
-      "--prod",
-      temporaryRoot,
-    ],
-    { cwd: workspaceRoot, encoding: "utf8", stdio: "inherit" },
-  );
-  if (deployed.status !== 0) {
-    throw new Error(`pnpm deploy failed with exit code ${deployed.status}`);
-  }
-
-  // Fail the image build if a bridge silently brings back an older/private
-  // provider CLI. A direct dependency alone does not deduplicate pnpm's graph.
-  const packRequire = createRequire(join(temporaryRoot, "package.json"));
-  const codexAcpRequire = createRequire(packRequire.resolve("@agentclientprotocol/codex-acp/package.json"));
-  if (realpathSync(codexAcpRequire.resolve("@openai/codex/package.json")) !==
-      realpathSync(packRequire.resolve("@openai/codex/package.json"))) {
-    throw new Error("Codex ACP must share the image's Codex installation");
-  }
-
-  // Reuse the already-qualified build interpreter instead of introducing a
-  // package-manager lifecycle hook or a second binary supply chain. The pack
-  // manifest binds the copied bytes, platform, architecture, and minimum
-  // version before any provider is launched.
-  const minimumNodeVersion = [24, 11, 0];
-  const actualNodeVersion = process.versions.node.split(".").map(Number);
-  if (
-    actualNodeVersion[0] < minimumNodeVersion[0] ||
-    (actualNodeVersion[0] === minimumNodeVersion[0] &&
-      (actualNodeVersion[1] < minimumNodeVersion[1] ||
-        (actualNodeVersion[1] === minimumNodeVersion[1] &&
-          actualNodeVersion[2] < minimumNodeVersion[2])))
-  ) {
-    throw new Error("Provider pack build Node is older than 24.11.0");
-  }
-  const stableNodeRoot = join(temporaryRoot, "node_modules", "node");
-  if (existsSync(stableNodeRoot)) {
-    throw new Error(
-      "Provider pack deployment unexpectedly claimed the stable Node path",
-    );
-  }
-  const stableNodeCommand = join(stableNodeRoot, "bin", "node");
-  mkdirSync(dirname(stableNodeCommand), { recursive: true, mode: 0o755 });
-  copyFileSync(process.execPath, stableNodeCommand);
-  chmodSync(stableNodeCommand, 0o755);
-
-  // pnpm's generated .bin shims embed the temporary deployment directory in
-  // NODE_PATH. That makes an otherwise identical provider pack hash differ on
-  // every build and leaks a nonexistent host path after relocation. Replace
-  // every provider-facing shim with a pack-relative launcher that always uses
-  // the pinned Node executable owned by this pack.
-  // The image exposes these same installations to every adapter. Never add a
-  // separate global/runner-only CLI version; refresh these packages and their
-  // qualification digests together to the latest stable releases.
-  writePortableNodeShim("codex", "@openai/codex/bin/codex.js");
-  const claudeAcpRequire = createRequire(
-    packRequire.resolve("@agentclientprotocol/claude-agent-acp/package.json"),
-  );
-  // Use the ACP bridge's SDK dependency directly, avoiding a second peer-
-  // resolved SDK installation just to expose its CLI on the global PATH.
-  const sdkRequire = createRequire(claudeAcpRequire.resolve("@anthropic-ai/claude-agent-sdk"));
-  const claudeExecutable = sdkRequire.resolve(
-    `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
-  );
-  writePortableExecutableShim(
-    "claude",
-    relative(realpathSync(join(temporaryRoot, "node_modules")), realpathSync(claudeExecutable)),
-  );
-  writePortableExecutableShim("node", "node/bin/node");
-  writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
-  writePortableNodeShim("acpx", "acpx/dist/cli.js");
-  const piPackageRoot = realpathSync(join(temporaryRoot, "node_modules", "@earendil-works", "pi-coding-agent"));
-  await materializePiBinary(piPackageRoot);
-  writePortableExecutableShim("pi", "@earendil-works/pi-coding-agent/vendor/standalone/pi");
-  writePortableNodeShim("pi-acp", "pi-acp/dist/index.js");
-  writePortableNodeShim(
-    "claude-agent-acp",
-    "@agentclientprotocol/claude-agent-acp/dist/index.js",
-  );
-  writePortableNodeShim(
-    "codex-acp",
-    "@agentclientprotocol/codex-acp/dist/index.js",
-  );
-
-  // pnpm deploy may retain a workspace self-link under its virtual store. It
-  // points outside the immutable pack and is not needed by the deployed
-  // package, so it must not be staged or captured.
-  rmSync(
-    join(
-      temporaryRoot,
-      "node_modules",
-      ".pnpm",
-      "node_modules",
-      "@paperclipai",
-      "paperclip-runner",
-    ),
-    { recursive: true, force: true },
-  );
-
-  for (const shimName of readdirSync(
-    join(temporaryRoot, "node_modules", ".bin"),
-  )) {
-    const shimPath = join(temporaryRoot, "node_modules", ".bin", shimName);
-    const contents = readFileSync(shimPath, "utf8");
-    if (contents.includes(temporaryParent)) {
-      throw new Error(
-        `Provider pack shim ${shimName} retains its temporary build path`,
-      );
-    }
-  }
-
-  // Exercise a clean import from the deployed dependency graph. This catches
-  // malformed patch hunks that can look correct in an existing pnpm store but
-  // land inside the wrong function when applied to a fresh acpx tarball.
-  const acpxImport = spawnSync(
-    join(temporaryRoot, "node_modules", "node", "bin", "node"),
-    ["--input-type=module", "-e", 'await import("acpx/runtime")'],
-    {
-      cwd: temporaryRoot,
-      encoding: "utf8",
-      timeout: 30_000,
-    },
-  );
-  if (acpxImport.status !== 0) {
-    throw new Error(
-      `Provider pack ACPX import failed: ${String(acpxImport.stderr ?? "")
-        .trim()
-        .slice(-2_000)}`,
-    );
-  }
-
-  const opencodeProxyPath = "dist/cli/opencode-app-server-proxy.cjs";
-  const acpxSidecarPath = "dist/cli/acpx-runtime-sidecar.cjs";
-  const opencodeCommand = "node_modules/.bin/opencode";
-  const opencodeExecutable = "node_modules/opencode-ai/bin/opencode.exe";
-  const nodeCommand = "node_modules/node/bin/node";
-  const productionLock = "pnpm-lock.yaml";
-  copyFileSync(
-    join(workspaceRoot, "pnpm-lock.yaml"),
-    join(temporaryRoot, productionLock),
-  );
-  for (const relativePath of [
-    nodeCommand,
-    productionLock,
-    opencodeProxyPath,
-    acpxSidecarPath,
-    opencodeCommand,
-    opencodeExecutable,
-  ]) {
-    if (!existsSync(join(temporaryRoot, relativePath))) {
-      throw new Error(`Provider pack is missing ${relativePath}`);
-    }
-  }
-
-  const opencodeProxySha = sha256File(join(temporaryRoot, opencodeProxyPath));
-  const acpxSidecarSha = sha256File(join(temporaryRoot, acpxSidecarPath));
-  const distDigest = sha256Tree(join(temporaryRoot, "dist"));
-  const configuredRevision =
-    process.env.PAPERCLIP_RUNNER_SOURCE_REVISION?.trim();
-  const revision =
-    configuredRevision ??
-    execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-    }).trim();
-  if (!/^[0-9a-f]{40}$/.test(revision)) {
-    throw new Error("PAPERCLIP_RUNNER_SOURCE_REVISION must be a full Git SHA");
-  }
-  const dirty = configuredRevision
-    ? false
-    : spawnSync("git", ["diff", "--quiet", "--", "packages/paperclip-runner"], {
-        cwd: workspaceRoot,
-      }).status !== 0;
-  const payload = {
-    pins: {
-      nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.153.4",
-      opencode: "1.18.29",
-      acpx: "0.13.1",
-      claudeAcp: "0.73.0",
-      codexAcp: "1.6.2",
-      pi: "0.84.2",
-      piAcp: "0.0.33",
-    },
-    target: { platform: process.platform, architecture: process.arch },
-    runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
-    distDigest,
-    bridgeDigest: `sha256:${createHash("sha256")
-      .update(opencodeProxySha)
-      .update("\n")
-      .update(acpxSidecarSha)
-      .update("\n")
-      .update(distDigest)
-      .digest("hex")}`,
-    acpxProfileDigests: {
-      pi: "sha256:24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc",
-      claude:
-        "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
-      codex:
-        "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
-    },
-    artifacts: {
-      nodeCommand: {
-        path: nodeCommand,
-        sha256: sha256File(join(temporaryRoot, nodeCommand)),
-      },
-      productionLock: {
-        path: productionLock,
-        sha256: sha256File(join(temporaryRoot, productionLock)),
-      },
-      opencodeCommand: {
-        path: opencodeCommand,
-        sha256: sha256File(join(temporaryRoot, opencodeCommand)),
-      },
-      opencodeExecutable: {
-        path: opencodeExecutable,
-        sha256: sha256File(join(temporaryRoot, opencodeExecutable)),
-      },
-      opencodeProxy: {
-        path: opencodeProxyPath,
-        sha256: opencodeProxySha,
-      },
-      acpxSidecar: { path: acpxSidecarPath, sha256: acpxSidecarSha },
-    },
-  };
-  const manifest = {
-    schema: "paperclip-runner/remote-provider-pack/v1",
-    digest: `sha256:${createHash("sha256")
-      .update(canonicalJson(payload))
-      .digest("hex")}`,
-    payload,
-  };
-  writeFileSync(
-    join(temporaryRoot, "provider-pack.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-
-  rmSync(outputRoot, { recursive: true, force: true });
-  renameSync(temporaryRoot, outputRoot);
-  process.stdout.write(`${outputRoot}\n`);
-} finally {
-  rmSync(temporaryParent, { recursive: true, force: true });
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const outputArgument = process.argv.slice(2).find((value) => value !== "--");
+  const result = buildProviderPack({ outputRoot: resolve(process.cwd(), outputArgument ?? join(packageRoot, "provider-pack")) });
+  process.stdout.write(`${result.outputRoot}\n`);
 }

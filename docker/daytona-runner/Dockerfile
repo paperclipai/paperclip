@@ -15,12 +15,13 @@ RUN cargo build --locked --release -p paperclip-runner-core --bin paperclip-runn
 FROM node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b AS provider-pack-build
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /workspace
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+COPY package.json pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+COPY docker/daytona-runner/provider-dependencies.lock.yaml ./pnpm-lock.yaml
 COPY patches ./patches
 COPY scripts/link-plugin-dev-sdk.mjs ./scripts/link-plugin-dev-sdk.mjs
-# CI owns pnpm-lock.yaml and regenerates it for manifest-only PRs. Include the
-# complete workspace manifest graph so all source-owned patches apply, then
-# resolve before the frozen install. This happens only during image creation.
+# Provider dependencies use a separate immutable lock, shared with the Cloud
+# provider-pack stage. The CI-owned app lock may be regenerated independently.
+# Include the complete manifest graph so frozen installation checks every input.
 COPY packages ./packages
 COPY server/package.json ./server/package.json
 COPY ui/package.json ./ui/package.json
@@ -28,18 +29,24 @@ COPY cli/package.json ./cli/package.json
 # The complete resolved lock (including transitive integrity hashes) is reviewed.
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=84409576c7cbd2bec50b535c6df6acf3691bdec7c7697e6c50b2fb834b56f203
-RUN pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile \
-    && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=3d4577e64214452e3c1f65e32c9223cf34d17d5cf84aa4658f0fefa158fe6de5
+RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
-      node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+      node packages/paperclip-runner/scripts/assemble-provider-pack.mjs /provider-pack \
     && node packages/paperclip-runner/scripts/verify-pi-provider-launch.mjs /provider-pack \
-    && chmod -R a+rX /provider-pack
+    && PATH=/provider-pack/node_modules/.bin:$PATH sh -ec 'for cli in node acpx claude-agent-acp codex-acp pi-acp pi claude codex opencode; do test -x "/provider-pack/node_modules/.bin/$cli"; done; test "$(acpx --version)" = "0.13.1"; test "$(claude-agent-acp --version)" = "0.73.0"; test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"' \
+    && node --input-type=module -e "import {verifyProviderPack} from './packages/paperclip-runner/scripts/provider-pack-integrity.mjs'; verifyProviderPack('/provider-pack', {revision: '${PAPERCLIP_RUNNER_SOURCE_REVISION}', lockSha256: '${PAPERCLIP_RUNNER_LOCK_SHA256}'});"
+
+# The trusted qualification entry exports the identical canonical provider stage.
+FROM scratch AS provider-pack-export
+# Keep the pack beneath the exporter-owned outer directory: BuildKit gives
+# that directory host-local permissions rather than the source root's mode.
+COPY --from=provider-pack-build /provider-pack /provider-pack
 
 # Fleet sandbox base image. Keep this section aligned with
 # paperclipai/paperclip-cloud/fleet-sandbox-image/Dockerfile. The only Paperclip

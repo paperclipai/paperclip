@@ -738,6 +738,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: executionTargetIsRemote ? env : runtimeEnv,
+        // Pi reads piped stdin before starting print mode. Remote transports must
+        // deliver EOF; leaving the session input pipe open stalls the first turn.
+        stdin: executionTargetIsRemote ? "" : undefined,
         timeoutSec,
         graceSec,
         onSpawn,

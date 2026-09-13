@@ -1219,6 +1219,7 @@ describe("ACPX runtime host", () => {
       ),
     );
     await commandAdmissionStarted.promise;
+    expect(openCommand).toHaveBeenCalledWith({ reusable: true });
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);

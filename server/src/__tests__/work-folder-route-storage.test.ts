@@ -67,6 +67,29 @@ it.each([
   ]);
 });
 
+it.each([true, false])("only retains unresolved failures when another sandbox saved the shared folder last (recovered: %s)", async (recovered) => {
+  const entry = (runId: string, sandboxKey: string, state: string, at: string | null) => ({
+    folderRun: { runId, manifest: { agentId: "agent", sandboxKey }, state,
+      lastSavedAt: at ? new Date(at) : null, error: state === "failed" ? "Storage unavailable" : null,
+      refreshRequested: false },
+    status: state === "failed" ? "failed" : "succeeded",
+  });
+  const latest = entry("other-sandbox-save", "other", "saved", "2026-09-09T12:03:00Z");
+  const success = entry("same-sandbox-save", "same", "saved", "2026-09-09T12:01:00Z");
+  const failure = entry("failed-run", "same", "failed", null);
+  // The query orders by updatedAt descending. The order within one sandbox
+  // determines whether its failure remains unresolved, independently of the
+  // newest checkpoint from another sandbox sharing this folder.
+  const rows = recovered ? [latest, success, failure] : [latest, failure, success];
+  const query = { from: () => query, innerJoin: () => query, where: () => query,
+    orderBy: () => query, limit: async () => rows };
+  const app = express();
+  app.use("/api", workFolderRoutes({ select: () => query } as unknown as Db));
+  const response = await request(app).get("/api/companies/11111111-1111-4111-8111-111111111111/work-folders/user/22222222-2222-4222-8222-222222222222/sync").expect(200);
+  expect(response.body.map((status: { runId: string }) => status.runId))
+    .toEqual(recovered ? ["other-sandbox-save"] : ["other-sandbox-save", "failed-run"]);
+});
+
 it.each([undefined, "2026-09-09T04:00:00.000Z"])(
   "distinguishes periodic saves from explicit finalization (%s)",
   async (finalCheckpointAt) => {

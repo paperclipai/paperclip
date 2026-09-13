@@ -393,7 +393,7 @@ export class AcpxRuntimeHost {
       }
       command = await acquireAbortableAdmissionResource({
         signal: options.signal,
-        acquire: () => installation.openCommand(),
+        acquire: () => installation.openCommand({ reusable: true }),
         resource: "command",
         releaseLate: (lateCommand) => lateCommand.close(),
         reportFailure: (failure) =>

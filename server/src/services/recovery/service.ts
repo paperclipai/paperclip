@@ -825,7 +825,7 @@ function isStrandedIssueRecoveryIssue(
  * stopped the agent, and re-waking it — or escalating "stranding" — would
  * fight the human. Any newer run or wake supersedes the exemption.
  */
-function isOperatorCancelledRun(
+export function isOperatorCancelledRun(
   latestRun: LatestIssueRun,
   currentAgentId: string,
 ): boolean {
@@ -2486,7 +2486,9 @@ export function recoveryService(
               : recoveryCause === "codex_output_inactivity_monitor"
                 ? "Board operator: inspect the inactivity evidence, then explicitly retry the original owner, reassign, or intentionally resolve the task."
                 : recoveryCause === "workspace_validation_failed"
-                  ? readWorkspaceValidationPayload(input.latestRun)?.reason ===
+                  ? readWorkspaceValidationPayload(input.latestRun)?.reason === "sandbox_repository_preparation_failed"
+                    ? "Board operator: repair the project repository URL, clone access, ref, or setup command, then explicitly retry the original owner. Completed checkouts and unsaved files remain in the retained sandbox."
+                    : readWorkspaceValidationPayload(input.latestRun)?.reason ===
                     "git_worktree_branch_incoherence"
                     ? "Board operator: repair the source task git worktree branch incoherence or choose a new execution workspace, then explicitly retry or reassign."
                     : readWorkspaceValidationPayload(input.latestRun)

@@ -556,6 +556,7 @@ describe("shared ACPX engine runtime behavior", () => {
     const { configOptions, meta } = await runExecutor({ agent: "codex" });
 
     expect((meta[0]?.env as Record<string, string>).CODEX_CONFIG).toBeUndefined();
+    expect((meta[0]?.env as Record<string, string>).INITIAL_AGENT_MODE).toBeUndefined();
     expect(configOptions).toEqual([]);
   });
 

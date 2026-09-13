@@ -12,11 +12,17 @@ type SupertestServer = NetServer & {
 
 type SupertestTestInstance = {
   _server?: SupertestServer;
+  url: string;
+  __paperclipListening?: Promise<void>;
+  assert(error: Error, response: undefined, callback?: SupertestCallback): void;
 };
+
+type SupertestCallback = (error: Error | null, response?: unknown) => void;
 
 type SupertestTestConstructor = {
   prototype: {
     serverAddress(this: SupertestTestInstance, app: SupertestServer, path: string): string;
+    end(this: SupertestTestInstance, callback?: SupertestCallback): SupertestTestInstance;
     __paperclipLoopbackPatched?: boolean;
   };
 };
@@ -39,25 +45,58 @@ if (!process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS) {
 }
 
 if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
+  const pendingListeners = new WeakMap<SupertestServer, Promise<void>>();
+  const originalEnd = SupertestTest.prototype.end;
+
   SupertestTest.prototype.serverAddress = function serverAddress(app, path) {
-    const addr = app.address();
-
-    if (!addr) {
-      this._server = app.listen(0) as SupertestServer;
-    }
-
-    const listeningAddress = app.address() as AddressInfo | string | null;
-    if (!listeningAddress || typeof listeningAddress === "string") {
-      throw new Error("Expected Supertest server to listen on a TCP port");
-    }
-
-    const host = listeningAddress.address === "::"
-      ? "[::1]"
-      : listeningAddress.address === "0.0.0.0"
-        ? "127.0.0.1"
-        : listeningAddress.address;
     const protocol = app instanceof TlsServer ? "https" : "http";
-    return `${protocol}://${host}:${listeningAddress.port}${path}`;
+    const addressUrl = () => {
+      const address = app.address() as AddressInfo | string | null;
+      if (!address || typeof address === "string") {
+        throw new Error("Expected Supertest server to listen on a TCP port");
+      }
+      const host = address.address === "0.0.0.0" ? "127.0.0.1" : address.address;
+      return `${protocol}://${host.includes(":") ? `[${host === "::" ? "::1" : host}]` : host}:${address.port}${path}`;
+    };
+
+    if (app.address()) return addressUrl();
+
+    // A wildcard ephemeral listener can overlap an existing loopback listener
+    // on macOS. Bind the address we actually request, and await the asynchronous
+    // bind before Superagent resolves the URL or sends any request bytes.
+    let listening = pendingListeners.get(app);
+    if (!listening) {
+      listening = new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => {
+          app.off("listening", onListening);
+          pendingListeners.delete(app);
+          reject(error);
+        };
+        const onListening = () => {
+          app.off("error", onError);
+          pendingListeners.delete(app);
+          resolve();
+        };
+        app.once("error", onError);
+        app.once("listening", onListening);
+        app.listen(0, "127.0.0.1");
+      });
+      pendingListeners.set(app, listening);
+    }
+    this._server = app;
+    this.__paperclipListening = listening.then(() => { this.url = addressUrl(); });
+    // A request may be configured before the caller attaches its callback.
+    void this.__paperclipListening.catch(() => {});
+    return `${protocol}://127.0.0.1:0${path}`;
+  };
+
+  SupertestTest.prototype.end = function end(callback) {
+    if (!this.__paperclipListening) return originalEnd.call(this, callback);
+    void this.__paperclipListening.then(
+      () => { originalEnd.call(this, callback); },
+      (error: Error) => { this.assert(error, undefined, callback); },
+    );
+    return this;
   };
 
   SupertestTest.prototype.__paperclipLoopbackPatched = true;

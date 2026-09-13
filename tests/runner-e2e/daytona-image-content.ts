@@ -6,34 +6,79 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export const DAYTONA_IMAGE_CONTENT_SCHEMA =
-  "paperclip-daytona-runner-image-content/v5";
+  "paperclip-daytona-runner-image-content/v6";
 export const DAYTONA_IMAGE_PLATFORM = "linux/amd64";
 export const DAYTONA_IMAGE_DOCKERFILE_PATH = "docker/daytona-runner/Dockerfile";
 
-// This mirrors the explicit repository-local build inputs copied by
-// docker/daytona-runner/Dockerfile. Broad package-tree COPYs are forbidden by
-// the contract test so development-only files cannot silently enter the image
-// without first changing this content-identity contract.
+// Hash the provider build dependency closure: the complete copied manifest
+// graph and immutable provider lock, plus the runner/eval runtime build inputs.
+// The contract test checks copied package manifests against this explicit list;
+// unrelated application source is not part of the provider output.
 export const DAYTONA_IMAGE_INPUT_PATHS = [
   ".dockerignore",
   ".npmrc",
   "docker/daytona-runner/Dockerfile",
   "package.json",
   "patches",
-  "pnpm-lock.yaml",
+  "docker/daytona-runner/provider-dependencies.lock.yaml",
   "pnpm-workspace.yaml",
   "scripts/link-plugin-dev-sdk.mjs",
   "tsconfig.base.json",
+  "server/package.json",
+  "ui/package.json",
+  "cli/package.json",
+  "packages/adapter-utils/package.json",
+  "packages/adapters/claude-local/package.json",
+  "packages/adapters/codex-local/package.json",
+  "packages/adapters/cursor-cloud/package.json",
+  "packages/adapters/cursor-local/package.json",
+  "packages/adapters/gemini-local/package.json",
+  "packages/adapters/grok-local/package.json",
+  "packages/adapters/hermes-gateway/package.json",
+  "packages/adapters/hermes/package.json",
+  "packages/adapters/kimi-local/package.json",
+  "packages/adapters/openclaw-gateway/package.json",
+  "packages/adapters/opencode-local/package.json",
+  "packages/adapters/pi-local/package.json",
+  "packages/db/package.json",
+  "packages/google-sheets-mcp-server/package.json",
+  "packages/kv-demo-mcp-server/package.json",
+  "packages/mcp-server/package.json",
   "packages/paperclip-eval-kernel/package.json",
+  "packages/paperclip-runner/package.json",
+  "packages/plugins/create-paperclip-plugin/package.json",
+  "packages/plugins/examples/plugin-authoring-smoke-example/package.json",
+  "packages/plugins/examples/plugin-file-browser-example/package.json",
+  "packages/plugins/examples/plugin-hello-world-example/package.json",
+  "packages/plugins/examples/plugin-kitchen-sink-example/package.json",
+  "packages/plugins/examples/plugin-orchestration-smoke-example/package.json",
+  "packages/plugins/paperclip-plugin-fake-sandbox/package.json",
+  "packages/plugins/plugin-llm-wiki/package.json",
+  "packages/plugins/plugin-workspace-diff/package.json",
+  "packages/plugins/sandbox-providers/cloudflare/bridge-template/package.json",
+  "packages/plugins/sandbox-providers/cloudflare/package.json",
+  "packages/plugins/sandbox-providers/daytona/package.json",
+  "packages/plugins/sandbox-providers/e2b/package.json",
+  "packages/plugins/sandbox-providers/exe-dev/package.json",
+  "packages/plugins/sandbox-providers/kubernetes/package.json",
+  "packages/plugins/sandbox-providers/modal/package.json",
+  "packages/plugins/sandbox-providers/novita/package.json",
+  "packages/plugins/sdk/package.json",
+  "packages/shared/package.json",
+  "packages/skills-catalog/package.json",
+  "packages/tailscale-https-broker/package.json",
+  "packages/teams-catalog/package.json",
   "packages/paperclip-eval-kernel/src",
   "packages/paperclip-eval-kernel/tsconfig.json",
-  "packages/paperclip-runner/package.json",
   "packages/paperclip-runner/protocol",
   "packages/paperclip-runner/runner/Cargo.lock",
   "packages/paperclip-runner/runner/Cargo.toml",
   "packages/paperclip-runner/runner/crates",
   "packages/paperclip-runner/scripts/acpx-sidecar-contract.mjs",
   "packages/paperclip-runner/scripts/build-provider-pack.mjs",
+  "packages/paperclip-runner/scripts/assemble-provider-pack.mjs",
+  "packages/paperclip-runner/scripts/provider-pack-integrity.mjs",
+  "packages/paperclip-runner/scripts/provider-pack-layout.mjs",
   "packages/paperclip-runner/scripts/materialize-pi-binary.mjs",
   "packages/paperclip-runner/scripts/portable-provider-shim.mjs",
   "packages/paperclip-runner/scripts/verify-pi-provider-launch.mjs",
@@ -152,7 +197,9 @@ export function extractDaytonaBaseImages(dockerfile: string): string[] {
     }
 
     const reference = match[1]!;
-    if (!stageAliases.has(reference)) {
+    // Docker's scratch is the built-in empty filesystem, not a registry image.
+    // Its declaration remains covered by the Dockerfile content hash.
+    if (reference !== "scratch" && !stageAliases.has(reference)) {
       assertPinnedBaseImage(reference);
       baseImages.push(reference);
     }

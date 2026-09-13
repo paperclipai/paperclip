@@ -2006,6 +2006,12 @@ async function buildRuntime(input: {
     env.ANTHROPIC_MODEL = requestedModel;
   }
   if (acpxAgent === "codex") {
+    // Match the native runner: the admitted outer sandbox supplies isolation.
+    // Codex ACP's default mode isolates loopback too, hiding our API bridge
+    // from tools. Restricted permission modes and local runs keep their mode.
+    if (workFolderHome && permissionMode === "approve-all") {
+      env.INITIAL_AGENT_MODE = "agent-full-access";
+    }
     const codexStartupConfig = buildCodexStartupConfig({
       existingConfig: env.CODEX_CONFIG,
       requestedModel,

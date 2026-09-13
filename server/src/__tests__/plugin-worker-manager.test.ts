@@ -1631,7 +1631,7 @@ describe("plugin worker manager login pseudo-terminal concurrency", () => {
 // ---------------------------------------------------------------------------
 
 describe("plugin worker manager login pseudo-terminal missing hostRouteId diagnostic", () => {
-  it("delivers output from a legacy worker with no hostRouteId, resolved by the worker session id, and warns once", async () => {
+  it.each([false, true])("delivers legacy output and warns once (batched open reply: %s)", async (batchWithOpenReply) => {
     const handle = makeLoginPtyHandle();
     vi.mocked(logger.warn).mockClear();
     try {
@@ -1639,8 +1639,9 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
       const chunks: string[] = [];
       const route = await handle.openLoginPtySession(
         ptyOpenInput({
+          batchWithOpenReply,
           workerSessionId: "ws-A",
-          emitOnInput: true,
+          emitOnInput: !batchWithOpenReply,
           outputs: [{ chunk: "legacy-output", omitHostRouteId: true }],
         }),
       );
@@ -1663,12 +1664,12 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
     }
   });
 
-  it("settles the login wait on a legacy worker's exit notification with no hostRouteId", async () => {
+  it.each([false, true])("settles a legacy exit notification (batched open reply: %s)", async (batchWithOpenReply) => {
     const handle = makeLoginPtyHandle();
     try {
       await handle.start();
       const route = await handle.openLoginPtySession(
-        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true, emitOnInput: true }),
+        ptyOpenInput({ batchWithOpenReply, workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true, emitOnInput: !batchWithOpenReply }),
       );
       route.write("emit-scripted-exit");
       await expect(route.wait()).resolves.toEqual({ exitCode: 0 });
@@ -1728,7 +1729,7 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
     }
   });
 
-  it("drops a no-hostRouteId message naming a concurrent route's session instead of cross-delivering it", async () => {
+  it.each([false, true])("drops ambiguous legacy output with concurrent routes (batched open reply: %s)", async (batchWithOpenReply) => {
     const handle = makeLoginPtyHandle();
     try {
       await handle.start();
@@ -1740,6 +1741,7 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
       );
       const second = await handle.openLoginPtySession(
         ptyOpenInput({
+          batchWithOpenReply,
           workerSessionId: "ws-B",
           outputs: [{ chunk: "cross-route", sid: "ws-A", omitHostRouteId: true }],
         }),
@@ -1755,6 +1757,90 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
 
       await first.close();
       await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("validates queued legacy session IDs and preserves output/exit ordering", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const route = await handle.openLoginPtySession(ptyOpenInput({
+        batchWithOpenReply: true,
+        workerSessionId: "ws-A",
+        outputs: [
+          { chunk: "forged", sid: "ws-forged", omitHostRouteId: true },
+          { chunk: "accepted", omitHostRouteId: true },
+        ],
+        exitCode: 0,
+        omitHostRouteIdOnExit: true,
+        outputsAfterExit: [{ chunk: "after-exit", omitHostRouteId: true }],
+      }));
+      const chunks: string[] = [];
+      route.onData((chunk) => chunks.push(chunk));
+      await expect(route.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["accepted"]);
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a forged legacy exit queued before the session binds", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const route = await handle.openLoginPtySession(ptyOpenInput({
+        batchWithOpenReply: true,
+        workerSessionId: "ws-A",
+        // An empty host route ID takes the same legacy resolution path as an
+        // omitted one. The fixture can order these exits around real output.
+        sequence: [
+          { type: "exit", hostRouteId: "", sid: "ws-forged", exitCode: 17 },
+          { type: "output", hostRouteId: "", chunk: "still-open" },
+          { type: "exit", hostRouteId: "", exitCode: 0 },
+        ],
+      }));
+      const chunks: string[] = [];
+      route.onData((chunk) => chunks.push(chunk));
+      await expect(route.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["still-open"]);
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it.each(["malformed-open", "frame-overflow", "character-overflow"])("clears legacy pre-bind records and releases the route after %s", async (failure) => {
+    const handle = makeLoginPtyHandle({
+      duplexRouteSlots: createDuplexRouteSlotController(1),
+      loginPtyLimits: {
+        ...(failure === "frame-overflow" ? { maxPreBindFrames: 1 } : {}),
+        ...(failure === "character-overflow" ? { maxPreBindChars: 20 } : {}),
+      },
+    });
+    try {
+      await handle.start();
+      await expect(handle.openLoginPtySession(ptyOpenInput({
+        batchWithOpenReply: true,
+        mode: failure === "malformed-open" ? "malformed-open" : "normal",
+        workerSessionId: "ws-A",
+        outputs: [
+          { chunk: "old-private-output", omitHostRouteId: true },
+          { chunk: "overflow", omitHostRouteId: true },
+        ],
+      }))).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+      // Reuse the same worker session identifier. Neither retained frames nor
+      // an unreleased route slot may leak from the rejected opening.
+      const route = await handle.openLoginPtySession(ptyOpenInput({
+        batchWithOpenReply: true, workerSessionId: "ws-A",
+        outputs: [{ chunk: "new", omitHostRouteId: true }],
+      }));
+      const chunks: string[] = [];
+      route.onData((chunk) => chunks.push(chunk));
+      expect(chunks).toEqual(["new"]);
+      await route.close();
     } finally {
       await handle.stop().catch(() => undefined);
     }

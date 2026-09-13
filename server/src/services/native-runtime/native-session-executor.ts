@@ -12,6 +12,8 @@ import {
 } from "../execution-control-deadline.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { hasSandboxPerformanceTrace } from "../sandbox-performance.js";
+import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
   chmodSync,
   copyFileSync,
@@ -7036,7 +7038,8 @@ async function executePaperclipNativeSessionWithinScope(
       "paperclip_runner_provider_unsupported: ACPX Pi requires the native runner's descriptor-confined verified launch",
     );
   }
-  const preparationSpans = input.preparationSpans ?? [];
+  const hostMeasured = hasSandboxPerformanceTrace();
+  const preparationSpans = hostMeasured ? [] : input.preparationSpans ?? [];
   const preparationStarts = nativeRunPreparationStarts(
     preparationSpans,
     Date.now(),
@@ -7045,6 +7048,7 @@ async function executePaperclipNativeSessionWithinScope(
     runId: input.execution.binding.runId,
     startedAtMs: preparationStarts.runStartedAtMs,
     onEvent: input.onEvent,
+    parentContext: hostMeasured ? getActiveStepContext()?.parentContext : undefined,
   });
   const taskPrepareScope = trace.start("task.prepare", {
     parentName: "task.run",
@@ -8287,7 +8291,7 @@ async function executePaperclipNativeSessionWithinScope(
           ? error.message.slice(0, 2_000)
           : String(error).slice(0, 2_000);
       const sanitizedStderrTail = redactSensitiveText(message).slice(-4_096);
-      await input.db.transaction(async (tx) => {
+      const cancellationWon = await input.db.transaction(async (tx) => {
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );
@@ -8303,6 +8307,70 @@ async function executePaperclipNativeSessionWithinScope(
             ),
           )
           .for("update");
+      // After the issue lock, acquire coordinator then run, as cancellation does. Cancellation
+      // publishes its intent under the run lock before interrupting the provider.
+      // A result-less interrupted turn must not overwrite that intent's outcome
+      // or create recovery work that keeps its sandbox running.
+      await tx
+        .select({ runId: nativeRunFinalizations.runId })
+        .from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, input.execution.binding.runId))
+        .for("update")
+        .limit(1);
+      const boundRun = await tx
+        .select({
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          nativeIssueId: heartbeatRuns.nativeIssueId,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.execution.binding.runId))
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const cancellation = record(record(boundRun?.resultJson).nativeCancellation);
+      if (
+        !ownershipUnverified && protocolIntegrityFailure === null &&
+        cancellation.scope === "run" &&
+        (cancellation.dispatchState === "pending" || cancellation.dispatchState === "acknowledged")
+      ) {
+        if (
+          boundRun?.companyId !== input.execution.binding.companyId ||
+          boundRun?.agentId !== input.execution.binding.agentId ||
+          boundRun?.nativeIssueId !== input.execution.binding.issueId ||
+          cancellation.schema !== "paperclip.native-cancellation.v1" ||
+          cancellation.companyId !== input.execution.binding.companyId ||
+          cancellation.runId !== input.execution.binding.runId ||
+          cancellation.issueId !== input.execution.binding.issueId
+        ) {
+          throw new Error("native_cancellation_intent_conflict");
+        }
+        const released = await tx
+          .update(nativeRunFinalizations)
+          .set({
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            nextAttemptAt: null,
+            recoveryState: null,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+            eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+            eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+            eq(nativeRunFinalizations.attempt, attempt),
+            eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+            eq(nativeRunFinalizations.controllerPid, controller.pid),
+            eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+            gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+          ))
+          .returning({ runId: nativeRunFinalizations.runId })
+          .then((rows) => rows[0] ?? null);
+        if (!released) throw new Error("native_session_lease_lost");
+        return true;
+      }
         const updated = await tx
           .update(nativeRunFinalizations)
           .set({
@@ -8519,6 +8587,14 @@ async function executePaperclipNativeSessionWithinScope(
             recoveryProjection.supersedeOnIdentityChange,
         });
       });
+      if (cancellationWon) {
+        await boundedExecutionCleanup(async () => {
+          await stoppedLeaseRenewal;
+          if (taskSettleScope) await trace.end(taskSettleScope, { outcome: "ok" });
+          await trace.finish("ok");
+        });
+        throw new NativeCancellationPendingRecoveryError();
+      }
       await boundedExecutionCleanup(async () => {
         await stoppedLeaseRenewal;
         await attemptFailureStep(() =>
@@ -9040,6 +9116,36 @@ export function readRemoteProviderPackManifest(
     );
   }
   return structuredClone(manifest);
+}
+
+/** Verify bytes against the host-owned content contract while retaining revision provenance. */
+export function buildRemoteProviderPackVerificationScript(): string {
+  return [
+    "const fs=require('node:fs')",
+    "const crypto=require('node:crypto')",
+    "const path=require('node:path')",
+    "const root=process.argv[1]",
+    "const expected=JSON.parse(Buffer.from(process.argv[2],'base64').toString('utf8'))",
+    "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
+    "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
+    "const manifest=JSON.parse(actual)",
+    "const digest=(payload)=>'sha256:'+crypto.createHash('sha256').update(canonical(payload)).digest('hex')",
+    "if(manifest.schema!==expected.schema||!manifest.payload||!(/^[0-9a-f]{40}(?:-dirty)?$/).test(manifest.payload.runnerSourceRevision))throw new Error('manifest schema or revision mismatch')",
+    "if(digest(manifest.payload)!==manifest.digest)throw new Error('manifest digest mismatch')",
+    "const content=(value)=>{const {digest:provenanceDigest,...fields}=value;const {runnerSourceRevision,...payload}=fields.payload;return {...fields,payload}}",
+    "if(canonical(content(manifest))!==canonical(content(expected)))throw new Error('manifest content mismatch')",
+    "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
+    "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
+    "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
+    "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
+    "const version=process.versions.node.split('.').map(Number)",
+    "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
+    "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
+    "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
+    "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
+    "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
+    "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
+  ].join(";");
 }
 
 export function assertRemoteRunnerBuildMetadata(
@@ -10278,28 +10384,7 @@ async function createRunnerdBackendWithinSessionClaim(
       packRoot,
       expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
     );
-    const verifyScript = [
-      "const fs=require('node:fs')",
-      "const crypto=require('node:crypto')",
-      "const path=require('node:path')",
-      "const root=process.argv[1]",
-      "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
-      "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
-      "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
-      "const manifest=JSON.parse(actual)",
-      "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
-      "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
-      "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
-      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
-      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
-      "const version=process.versions.node.split('.').map(Number)",
-      "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
-      "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
-      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
-      "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
-      "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
-      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
-    ].join(";");
+    const verifyScript = buildRemoteProviderPackVerificationScript();
     const verified = await remoteCommandRunner.execute({
       command: providerNodeCommand,
       args: ["-e", verifyScript, packRoot, expected],
@@ -10646,7 +10731,7 @@ async function createRunnerdBackendWithinSessionClaim(
               activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
               await input.onLog?.(
                 "stderr",
-                "[paperclip-runner] using manifest-matched provider pack from the sandbox image\n",
+                "[paperclip-runner] using content-matched provider pack from the sandbox image\n",
               );
             } catch {
               preinstalledProviderPack = null;
@@ -10693,7 +10778,7 @@ async function createRunnerdBackendWithinSessionClaim(
       if (packSource === "staged") {
         await input.onLog?.(
           "stderr",
-          "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
+          "[paperclip-runner] reusing content-matched provider pack from the workspace\n",
         );
       }
     }

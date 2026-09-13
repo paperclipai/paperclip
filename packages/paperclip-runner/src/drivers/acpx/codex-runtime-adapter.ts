@@ -320,6 +320,11 @@ export async function openQualifiedAcpxRuntime(
       ...(options.profile.agent === "claude"
         ? {
             PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+            // Claude ACP otherwise maps concrete IDs back to rolling picker
+            // aliases (e.g. claude-sonnet-5 -> sonnet). Advertise the exact
+            // host-requested ID so model verification stays exact on resume
+            // and before the first billable prompt.
+            ANTHROPIC_CUSTOM_MODEL_OPTION: options.profile.reportedModelId,
             // This URL comes from the runner-owned authenticated tool bridge,
             // never provider-supplied permission-request metadata.
             PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(

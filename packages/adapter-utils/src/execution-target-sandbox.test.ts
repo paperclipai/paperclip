@@ -1,9 +1,11 @@
+import { existsSync } from "node:fs";
+import { beginAdapterRunCancellation, cancelAdapterRunExecution, finishAdapterRunCancellation } from "./adapter-run-cancellation.js";
 import { createServer } from "node:http";
 import http2 from "node:http2";
 import net from "node:net";
 import { duplexPair, type Duplex } from "node:stream";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -32,6 +34,7 @@ import {
   formatAdapterExecutionTimeoutStartLogLine,
   parseAdapterExecutionTarget,
   postedIssueCommentLogMarker,
+  prepareGitHubOperationLaunchers,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -162,6 +165,139 @@ describe("sandbox adapter execution targets", () => {
       },
     };
   }
+
+  describe("GitHub launcher staging transport retries", () => {
+    const transient = () => Object.assign(new Error("Request failed with status code 502"), {
+      name: "JsonRpcCallError", code: -32002,
+    });
+    async function fixture(execute: NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]) {
+      const root = await mkdtemp(path.join(os.tmpdir(), "github-launcher-retry-"));
+      cleanupDirs.push(root);
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote", transport: "sandbox", providerKey: "test", environmentId: "env-1",
+        leaseId: "lease-1", remoteCwd: root, timeoutMs: 30_000, runner: { execute },
+      };
+      // Pin this local fixture PATH so these tests inject failures into writes,
+      // independently of the execution-target PATH discovery tests.
+      return { runId: "launcher-retry", target, cwd: root, env: { PATH: "/usr/bin:/bin" } };
+    }
+
+    it("hash-skips an accepted upload after its provider reply is lost", async () => {
+      const local = createLocalSandboxRunner();
+      let firstMtime = 0;
+      const outputs: string[] = [];
+      const execute = vi.fn(async (request: Parameters<typeof local.execute>[0]) => {
+        const result = await local.execute(request);
+        outputs.push(result.stdout);
+        if (outputs.length === 1) {
+          firstMtime = (await stat(path.join(request.cwd!, ".paperclip-runtime/github/launcher-retry/package.json"))).mtimeMs;
+          throw transient();
+        }
+        return result;
+      });
+      const input = await fixture(execute);
+      const env = await prepareGitHubOperationLaunchers(input);
+      expect(execute).toHaveBeenCalledTimes(11);
+      expect(JSON.parse(outputs[1].trim())).toEqual({ uploaded: false });
+      expect((await stat(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "package.json"))).mtimeMs).toBe(firstMtime);
+      expect(JSON.parse(await readFile(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "package.json"), "utf8"))).toEqual({ type: "commonjs" });
+      expect((await stat(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "git"))).mode & 0o777).toBe(0o700);
+      expect((await stat(env.GH_CONFIG_DIR)).isDirectory()).toBe(true);
+    });
+
+    it("safely completes permissions after their provider reply is lost", async () => {
+      const local = createLocalSandboxRunner();
+      let lost = false;
+      const execute = vi.fn(async (request: Parameters<typeof local.execute>[0]) => {
+        const result = await local.execute(request);
+        if (request.args?.[1]?.startsWith("chmod 700") && !lost) {
+          lost = true;
+          throw transient();
+        }
+        return result;
+      });
+      const env = await prepareGitHubOperationLaunchers(await fixture(execute));
+      expect(lost).toBe(true);
+      expect(execute).toHaveBeenCalledTimes(11);
+      expect((await stat(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"))).mode & 0o777).toBe(0o700);
+      expect((await stat(env.GH_CONFIG_DIR)).isDirectory()).toBe(true);
+    });
+
+    it("limits persistent transport failures to three attempts within one deadline", async () => {
+      const error = transient();
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockRejectedValue(error);
+      await expect(prepareGitHubOperationLaunchers(await fixture(execute))).rejects.toBe(error);
+      expect(execute).toHaveBeenCalledTimes(3);
+      const budgets = execute.mock.calls.map(([request]) => request.timeoutMs!);
+      expect(budgets[0]).toBeLessThanOrEqual(15_000);
+      expect(budgets[1]).toBeLessThan(budgets[0]);
+      expect(budgets[2]).toBeLessThan(budgets[1]);
+    });
+
+    it.each([
+      new Error("script failed: Request failed with status code 502"),
+      Object.assign(new Error("permission denied"), { code: "EACCES" }),
+      Object.assign(new Error("Request failed with status code 502"), { name: "JsonRpcCallError", code: -32602 }),
+    ])("does not replay unclassified errors: %s", async (error) => {
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockRejectedValue(error);
+      await expect(prepareGitHubOperationLaunchers(await fixture(execute))).rejects.toBe(error);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry a completed shell failure containing an HTTP status", async () => {
+      const local = createLocalSandboxRunner();
+      const execute = vi.fn(async (request: Parameters<typeof local.execute>[0]) => {
+        const result = await local.execute({ ...request, command: "sh", args: ["-c", "echo 'Request failed with status code 502' >&2; exit 1"] });
+        return result;
+      });
+      await expect(prepareGitHubOperationLaunchers(await fixture(execute))).rejects.toThrow("502");
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ...["ETIMEDOUT", "ECONNREFUSED", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]
+        .flatMap((code) => [
+          Object.assign(new Error("provider transport failed"), { code }),
+          new Error("fetch failed", { cause: Object.assign(new Error("provider transport failed"), { code }) }),
+        ]),
+      Object.assign(new Error("provider deadline exceeded"), { name: "TimeoutError" }),
+    ])("retries established transient transport errors: %s", async (error) => {
+      const local = createLocalSandboxRunner();
+      const execute = vi.fn(local.execute).mockRejectedValueOnce(error);
+      const env = await prepareGitHubOperationLaunchers(await fixture(execute));
+      expect(execute).toHaveBeenCalledTimes(11);
+      expect((await stat(env.GH_CONFIG_DIR)).isDirectory()).toBe(true);
+    });
+
+    it("does not exceed the deadline after a failed attempt", async () => {
+      const error = transient();
+      let now = 1_000;
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockImplementation(async () => {
+        now += 15_000;
+        throw error;
+      });
+      const input = await fixture(execute);
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        await expect(prepareGitHubOperationLaunchers(input)).rejects.toBe(error);
+        expect(execute).toHaveBeenCalledTimes(1);
+      } finally { clock.mockRestore(); }
+    });
+
+    it("stops retries when the run is cancelled", async () => {
+      let cancelled: Promise<void> | undefined;
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockImplementation(async () => {
+        cancelled = cancelAdapterRunExecution("launcher-retry");
+        throw transient();
+      });
+      const input = await fixture(execute);
+      beginAdapterRunCancellation(input.runId);
+      try {
+        await expect(prepareGitHubOperationLaunchers(input)).rejects.toMatchObject({ code: "ADAPTER_RUN_CANCELLED" });
+        expect(execute).toHaveBeenCalledTimes(1);
+      } finally { finishAdapterRunCancellation(input.runId); await cancelled; }
+    });
+  });
 
   async function readRuntimeTextFiles(rootDir: string): Promise<string[]> {
     const entries = await readdir(rootDir, { withFileTypes: true }).catch(() => []);
@@ -880,6 +1016,40 @@ describe("sandbox adapter execution targets", () => {
       await bridge?.stop();
     }
   });
+
+  it.each([false, true])("cancels the actual ACP child through its existing shutdown protocol (streamed=%s)", async (streamOutputViaSession) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-acp-cancel-"));
+    cleanupDirs.push(rootDir);
+    const runId = `cancel-${rootDir}`;
+    const readyPath = path.join(rootDir, "ready"), stoppedPath = path.join(rootDir, "stopped");
+    const childPath = path.join(rootDir, "child.cjs");
+    await writeFile(childPath, `const fs=require('node:fs');
+process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(stoppedPath)},'stopped');process.exit(0)});
+fs.writeFileSync(${JSON.stringify(readyPath)},'ready');
+process.stdin.resume();setTimeout(()=>process.exit(2),20000);`);
+    beginAdapterRunCancellation(runId);
+    let bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetProcessSessionBridge>> = null;
+    let cancelling: Promise<void> | undefined;
+    try {
+      bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId, target: { kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
+          timeoutMs: 30_000, runner: createLocalSandboxRunner() },
+        runtimeRootDir: path.join(rootDir, ".paperclip-runtime"), adapterKey: "acpx",
+        command: process.execPath, args: [childPath], cwd: rootDir, env: {}, timeoutSec: 10,
+        streamOutputViaSession,
+      });
+      await waitForCondition(() => existsSync(readyPath), "ACP child never started", 5_000);
+      cancelling = cancelAdapterRunExecution(runId);
+      await waitForCondition(() => existsSync(stoppedPath), "Cancellation did not reach the ACP child", 5_000);
+      finishAdapterRunCancellation(runId);
+      await cancelling;
+      expect(await readFile(stoppedPath, "utf8")).toBe("stopped");
+    } finally {
+      await bridge?.stop();
+      finishAdapterRunCancellation(runId);
+      await cancelling;
+    }
+  }, 15_000);
 
   it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
@@ -3256,14 +3426,13 @@ describe("sandbox adapter execution targets", () => {
       headers: Record<string, string>;
       body: Buffer;
     }> = [];
-    const server = createServer((req, res) => {
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const headers: Record<string, string> = {};
       for (const [key, value] of Object.entries(req.headers)) {
         if (typeof value === "string") headers[key] = value;
       }
-      const chunks: Buffer[] = [];
-      req.on("data", (chunk: Buffer) => chunks.push(chunk));
-      req.on("end", () => {
         requests.push({
           method: req.method ?? "GET",
           url: req.url ?? "/",
@@ -3282,7 +3451,6 @@ describe("sandbox adapter execution targets", () => {
         }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
-      });
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -3423,6 +3591,27 @@ describe("sandbox adapter execution targets", () => {
         url: "/api/agents/me",
         auth: "Bearer real-run-jwt",
         runId: "run-http2",
+      });
+      // Native Git uses this same channel. Keep its runtime capability header
+      // while the host replaces bridge authentication and binds the run ID.
+      const credentials = await http2TestRequest(sessionRef.current!, {
+        method: "POST",
+        path: "/runtime-tools/github/credentials",
+        headers: {
+          authorization: `Bearer ${bridgeToken}`,
+          "x-paperclip-github-capability": "current-github-capability",
+          "content-type": "application/json",
+        },
+        body: Buffer.from("{}"),
+      });
+      expect(credentials.status).toBe(200);
+      expect(api.requests[1]).toMatchObject({
+        method: "POST",
+        url: "/runtime-tools/github/credentials",
+        auth: "Bearer real-run-jwt",
+        runId: "run-http2",
+        headers: { "x-paperclip-github-capability": "current-github-capability" },
+        body: Buffer.from("{}"),
       });
     } finally {
       sessionRef.current?.close();
@@ -5456,6 +5645,63 @@ describe("sandbox adapter execution targets", () => {
       expect(counters.some((c) => c.metric === DUPLEX_COUNTER_LOSS_TOTAL)).toBe(false);
     } finally {
       await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it.each([false, true])("controller bridge shutdown preserves prior loss without inventing one (priorLoss=%s)", async (priorLoss) => {
+    // A loss ordered after a host-observed orderly completion is a normal
+    // teardown, not a failure: the run already completed. The disposition
+    // latch must keep the success and emit no loss event for it.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-orderly-close-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    let emitExit: (() => void) | null = null;
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      emitExit = ctx.emitExit;
+      ctx.emitReady();
+      ctx.connectHttp2();
+    });
+    const open = runner.openDuplexChannel;
+    runner.openDuplexChannel = async (input) => {
+      const channel = await open(input);
+      return { ...channel, close: async () => { emitExit!(); await channel.close(); } };
+    };
+    const { recorder, events, counters } = createRecordingDuplexRecorder();
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-orderly-close",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+      duplexObservabilityRecorder: recorder,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      if (priorLoss) {
+        emitExit!();
+        await waitForCondition(() => events.some((event) => event.dimensions.loss_reason === "provider_exit"), "Expected real loss before shutdown", 4_000);
+      }
+      await bridge!.stop();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(bridge?.readRunDisposition?.()).toEqual({ failed: priorLoss, lossReason: priorLoss ? "provider_exit" : null });
+      expect(events.some((event) => event.dimensions.loss_reason !== undefined)).toBe(priorLoss);
+      expect(counters.some((counter) => counter.metric === DUPLEX_COUNTER_LOSS_TOTAL)).toBe(priorLoss);
+    } finally {
       await api.close();
     }
   }, 20000);

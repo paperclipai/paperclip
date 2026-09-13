@@ -442,6 +442,7 @@ export function FileTree({
               <label className="flex items-center pl-2" onClick={(event) => event.stopPropagation()}>
                 <input
                   type="checkbox"
+                  aria-label={`Select ${node.path}`}
                   checked={allChecked}
                   ref={(element) => {
                     if (element) element.indeterminate = someChecked;
