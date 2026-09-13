@@ -136,6 +136,8 @@ export interface SandboxManagedRuntimeAssetRestoreContext {
 export interface SandboxManagedRuntimeAsset {
   key: string;
   localDir: string;
+  /** Host-selected conventional CLI directory inside an isolated sandbox. */
+  remoteDir?: string;
   followSymlinks?: boolean;
   exclude?: string[];
   /** Optional inbound provisioning contribution (staged files + extract command). */
@@ -1448,7 +1450,7 @@ export async function prepareSandboxManagedRuntime(input: {
       inboundTasks.push(() =>
         runStepSpan(`stage.asset.${asset.key}`, async () => {
           await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing runtime assets to environment");
-          const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
+          const remoteAssetDir = asset.remoteDir ?? path.posix.join(runtimeRootDir, asset.key);
           const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
           // Every asset — default OR custom-provisioned (e.g. an adapter credential
           // merge) — rides one `syncIn` operation: the asset tar plus any staged
@@ -1498,7 +1500,7 @@ export async function prepareSandboxManagedRuntime(input: {
             files,
             postUploadCommands: [{ command: postUploadCommand }],
             sourceRoots: [tempDir],
-            targetRoots: [runtimeRootDir],
+            targetRoots: [runtimeRootDir, remoteAssetDir],
             progressLabel: asset.key,
             statusPhase: "config_sync",
             progressBytes: assetTarSize,
@@ -1608,7 +1610,7 @@ export async function prepareSandboxManagedRuntime(input: {
   });
 
   const assetDirs = Object.fromEntries(
-    (input.assets ?? []).map((asset) => [asset.key, path.posix.join(runtimeRootDir, asset.key)]),
+    (input.assets ?? []).map((asset) => [asset.key, asset.remoteDir ?? path.posix.join(runtimeRootDir, asset.key)]),
   );
 
   return {
@@ -1848,7 +1850,7 @@ export async function prepareSandboxManagedRuntime(input: {
           runStepSpan(`restore.asset.${assetKey}`, async () => {
             await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
               await assetRestore({
-                assetDir: path.posix.join(runtimeRootDir, assetKey),
+                assetDir: asset.remoteDir ?? path.posix.join(runtimeRootDir, assetKey),
                 readFile: async (remotePath) => toBuffer(await input.client.readFile(remotePath)),
                 tempDir,
               });

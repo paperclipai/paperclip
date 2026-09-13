@@ -178,6 +178,8 @@ export interface SandboxLeaseAcquisition {
 }
 
 export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
+  /** Host-selected work-folder home. Absent for local/old unmanaged execution. */
+  workFolderHome?: string;
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
@@ -505,6 +507,7 @@ export function overrideAdapterExecutionTargetRemoteCwd(
   target: AdapterExecutionTarget | null | undefined,
   remoteCwd: string | null | undefined,
 ): AdapterExecutionTarget | null | undefined {
+  if (target?.kind === "remote" && target.transport === "sandbox" && target.workFolderHome) return target;
   const nextRemoteCwd = remoteCwd?.trim();
   if (!target || target.kind !== "remote" || !nextRemoteCwd) {
     return target;
@@ -533,6 +536,7 @@ export function resolveAdapterExecutionTargetCwd(
   configuredCwd: string | null | undefined,
   localFallbackCwd: string,
 ): string {
+  if (target?.kind === "remote" && target.transport === "sandbox" && target.workFolderHome) return target.workFolderHome;
   if (typeof configuredCwd === "string" && configuredCwd.trim().length > 0) {
     return configuredCwd;
   }
@@ -876,7 +880,7 @@ export async function runAdapterExecutionTargetProcess(
       const result = await runner.execute({
         command: execCommand,
         args: execArgs,
-        cwd: target.remoteCwd,
+        cwd: target.workFolderHome ?? target.remoteCwd,
         env,
         stdin: options.stdin,
         timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
@@ -1499,14 +1503,15 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
-    syncWorkspace: input.syncWorkspace,
+    syncWorkspace: target.workFolderHome ? false : input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
-    assets: input.assets,
+    assets: input.assets?.map((asset) => target.workFolderHome && input.adapterKey.includes("codex") && asset.key === "home"
+      ? { ...asset, remoteDir: path.posix.join(target.workFolderHome, ".codex") } : asset),
     additionalSources: input.additionalSources,
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
@@ -2020,7 +2025,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const commandPayload = Buffer.from(JSON.stringify({
     command: input.command,
     args: input.args,
-    cwd: input.cwd || target.remoteCwd,
+    cwd: target.transport === "sandbox" ? target.workFolderHome ?? input.cwd ?? target.remoteCwd : input.cwd || target.remoteCwd,
     // The ACP engine has already projected this launch env from explicit
     // adapter/runtime inputs and registered contributions. Compare against an
     // empty inherited baseline so an explicit identity value (notably PATH)
@@ -2325,7 +2330,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     const streamCommandPayload = Buffer.from(JSON.stringify({
       command: input.command,
       args: input.args,
-      cwd: input.cwd || target.remoteCwd,
+      cwd: target.transport === "sandbox" ? target.workFolderHome ?? input.cwd ?? target.remoteCwd : input.cwd || target.remoteCwd,
       // Same provenance-clean contract as the polled payload above. Preserve
       // every explicit identity override even when it equals the host value.
       env: sanitizeRemoteExecutionEnv(launchEnvForStream, {}),

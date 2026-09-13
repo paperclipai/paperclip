@@ -53,6 +53,7 @@ import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 
 type BackendFactoryOptions = {
+  environment?: NodeJS.ProcessEnv;
   runnerInstanceId?: string;
   acpxRuntimeDirectory?: string;
   workingDirectoryAuthority?: "local_filesystem" | "remote_runner";
@@ -9498,6 +9499,88 @@ describe("runnerd provider runtime wiring", () => {
     expect(state.createTransport.mock.calls[0]![0].runnerBinary).not.toBe(
       `${remoteCwd}/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd`,
     );
+  });
+
+  it("starts sandbox sessions in the scoped home while preserving the primary workspace", async () => {
+    const remoteCwd = "/home/daytona/repos/main";
+    const home = "/home/daytona";
+    const remoteExecution = {
+      ...execution,
+      binding: { ...execution.binding, runId: "run-scoped-home-test" },
+      task: {
+        identifier: "DOT-REMOTE",
+        title: "Remote workspace test",
+        description: null,
+        prompt: "Verify the remote workspace.",
+        workMode: "standard",
+      },
+      workspace: {
+        cwd: "/host/paperclip-workspace",
+        repoUrl: null,
+        repoRef: null,
+        branchName: null,
+      },
+      session: {
+        normalizedSessionId: "scoped-home-session",
+        driverKind: "codex_app_server",
+        protocolVersion: 2,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+      provider: {
+        kind: "codex",
+        model: null,
+        approvalPolicy: "never",
+      },
+      executionMode: "default",
+      planningContext: null,
+      interactionResponses: [],
+      credentialBindings: [],
+    } as unknown as NativeExecutionInputV1;
+    state.createBackend.mockClear();
+    state.execute.mockReset().mockResolvedValue({
+      result: { summary: "completed" },
+      terminal: { runTerminalState: "succeeded" },
+      turnId: "turn",
+      normalizedSessionId: "session",
+      providerSessionId: null,
+      driverKind: "test",
+      driverVersion: "1",
+      nativeEventCount: 1,
+      highestContiguousSourceSeq: 1,
+    });
+
+    await executePaperclipNativeSession({
+      db: leaseDb(remoteExecution),
+      execution: remoteExecution,
+      runnerInstanceId: "runner",
+      useRunnerd: true,
+      runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd, workFolderHome: home,
+        environmentId: "environment", leaseId: "lease", providerKey: "daytona",
+        runner: { execute: vi.fn(), syncIn: vi.fn() },
+      } as never,
+      runnerPublicUrl: "wss://paperclip.example.test",
+    });
+
+    expect(state.createBackend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace: expect.objectContaining({ cwd: home }),
+      }),
+      expect.objectContaining({
+        workingDirectoryAuthority: "remote_runner",
+      }),
+    );
+    expect(state.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          workspace: expect.objectContaining({ cwd: home }),
+        }),
+      }),
+    );
+    expect(state.createBackend.mock.calls[0]![1].environment).toEqual(expect.objectContaining({
+      HOME: home, CODEX_HOME: `${home}/.codex`, PAPERCLIP_WORKSPACE_CWD: remoteCwd,
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+    }));
   });
 
   it("uses the image's shared Codex without uploading or installing artifacts", async () => {

@@ -3,6 +3,13 @@ name: Docker cloud
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      staging_artifact_base_url:
+        type: string
+        default: ""
+      staging_lock_sha256:
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -80,9 +87,16 @@ jobs:
           node-version: 24
 
       - name: Refresh lockfile for Docker build context
+        env:
+          STAGING_ARTIFACT_BASE_URL: ${{ inputs.staging_artifact_base_url }}
+          EXPECTED_LOCK_SHA256: ${{ inputs.staging_lock_sha256 }}
         run: |
           set -euo pipefail
           pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          if [ -n "$STAGING_ARTIFACT_BASE_URL" ]; then
+            [[ "$EXPECTED_LOCK_SHA256" =~ ^[a-f0-9]{64}$ ]]
+            echo "$EXPECTED_LOCK_SHA256  pnpm-lock.yaml" | sha256sum --check --strict
+          fi
 
           changed="$(git status --porcelain)"
           if [ -z "$changed" ]; then

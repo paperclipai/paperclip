@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1527,7 +1527,8 @@ export function environmentService(db: Db) {
                         environmentLeases.executionWorkspaceId,
                         input.executionWorkspaceId!,
                       ),
-                      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                      or(eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                        sql`${environmentLeases.metadata}->'workFolderRecoveryRequired' = 'true'::jsonb`),
                       eq(
                         environmentLeases.providerLeaseId,
                         input.providerLeaseId!,
@@ -1571,7 +1572,8 @@ export function environmentService(db: Db) {
                         environmentLeases.heartbeatRunId,
                         input.heartbeatRunId!,
                       ),
-                      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                      or(eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                        sql`${environmentLeases.metadata}->'workFolderRecoveryRequired' = 'true'::jsonb`),
                       eq(
                         environmentLeases.providerLeaseId,
                         input.providerLeaseId!,

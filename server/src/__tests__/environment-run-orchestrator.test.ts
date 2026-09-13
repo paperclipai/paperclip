@@ -287,11 +287,14 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
   });
 
   it("uses an in-place authoritative root on the adapter execution target", async () => {
-    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+    const executionTarget = {
       kind: "remote",
       transport: "sandbox",
       remoteCwd: "/copied/workspace",
-    });
+      workFolderHome: undefined as string | undefined,
+      runner: { syncOut: async () => executionTarget.workFolderHome },
+    };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(executionTarget);
     const runtime = makeMockRuntime({
       realizeWorkspace: vi.fn().mockResolvedValue({
         cwd: "/app",
@@ -323,6 +326,10 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
         outboundRestorePaths: [],
       },
     }));
+    expect(result.executionTarget).toBe(executionTarget);
+    if (result.executionTarget?.kind !== "remote" || result.executionTarget.transport !== "sandbox") throw new Error("Expected sandbox target");
+    result.executionTarget.workFolderHome = "/home/daytona";
+    await expect(result.executionTarget.runner!.syncOut!([])).resolves.toBe("/home/daytona");
   });
 
   it("realization failure: runtime.realizeWorkspace throws → EnvironmentRunError with code workspace_realization_failed", async () => {

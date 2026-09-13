@@ -8,6 +8,7 @@ import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
+import { WorkFolderBrowser } from "@/components/WorkFolderBrowser";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
 import type { ComposioServiceRow } from "./apps/composio-services";
@@ -513,6 +514,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}
       {/* ============================================================ */}
+      <Section title="Work folders">
+        <WorkFolderBrowser owner={{ companyId: "example", scope: "task", ownerId: "example" }} exampleFiles={[
+          { id: "notes", path: "notes", kind: "directory", byteSize: 0, sha256: null, executable: false, contentType: "application/octet-stream", deletedAt: null, updatedAt: "2026-09-07T00:00:00Z" },
+          { id: "readme", path: "notes/README.md", kind: "file", byteSize: 24, sha256: null, executable: false, contentType: "text/markdown", deletedAt: null, updatedAt: "2026-09-07T00:00:00Z" },
+        ]} />
+        <WorkFolderBrowser owner={{ companyId: "example", scope: "user", ownerId: "example" }} exampleFiles={[]} />
+      </Section>
+
       <Section title="Component Coverage">
         <p className="text-sm text-muted-foreground">
           This page should be updated when new UI primitives or app-level patterns ship.

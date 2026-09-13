@@ -101,6 +101,17 @@ describe.sequential("cli auth routes", () => {
     vi.resetAllMocks();
   });
 
+  it.each(["session", "cloud_tenant"])("recognizes an authenticated %s user for board CLI approval", async (source) => {
+    mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({ id: "challenge-1", requestedAccess: "board", status: "pending" });
+    const app = await createApp({ type: "board", source, userId: "user-1", companyIds: ["company-1"], isInstanceAdmin: false });
+    const result = await request(app).get("/api/cli-auth/challenges/challenge-1?token=pcp_cli_auth_secret");
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ requiresSignIn: false, canApprove: true, currentUserId: "user-1" });
+    mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({ id: "challenge-1", requestedAccess: "instance_admin_required", status: "pending" });
+    const admin = await request(app).get("/api/cli-auth/challenges/challenge-1?token=pcp_cli_auth_secret");
+    expect(admin.body.canApprove).toBe(false);
+  });
+
   it.sequential("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {

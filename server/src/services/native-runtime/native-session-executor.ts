@@ -7808,7 +7808,9 @@ async function executePaperclipNativeSessionWithinScope(
           ...input.execution,
           workspace: {
             ...input.execution.workspace,
-            cwd: input.runnerExecutionTarget.remoteCwd,
+            cwd: input.runnerExecutionTarget.transport === "sandbox"
+              ? input.runnerExecutionTarget.workFolderHome ?? input.runnerExecutionTarget.remoteCwd
+              : input.runnerExecutionTarget.remoteCwd,
           },
         }
       : input.execution;
@@ -10064,7 +10066,9 @@ async function createRunnerdBackendWithinSessionClaim(
   const remotePersistencePath = (
     directory: NativeHarnessPersistenceDirectory,
   ): string | null =>
-    directory.location === "runner"
+    remoteTarget?.transport === "sandbox" && remoteTarget.workFolderHome && directory.name === "codex-home"
+      ? posix.join(remoteTarget.workFolderHome, ".codex")
+      : directory.location === "runner"
       ? (remoteStateDirectory ?? null)
       : remoteRunnerFilesystemRoot
         ? posix.join(remoteRunnerFilesystemRoot, directory.name)
@@ -11390,7 +11394,7 @@ async function createRunnerdBackendWithinSessionClaim(
         ...input.execution,
         workspace: {
           ...input.execution.workspace,
-          cwd: remoteTarget.remoteCwd,
+          cwd: remoteTarget.transport === "sandbox" ? remoteTarget.workFolderHome ?? remoteTarget.remoteCwd : remoteTarget.remoteCwd,
         },
       }
     : input.execution;
@@ -11404,12 +11408,11 @@ async function createRunnerdBackendWithinSessionClaim(
   const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
     ? {
         ...effectiveRunnerEnvironmentBase,
-        // The provider home is runner-owned state, not the execution workspace.
-        // Codex's permission profile explicitly denies HOME and CODEX_HOME. If
-        // either points at remoteCwd, that deny rule shadows the workspace write
-        // grant and the provider cannot initialize its shell sandbox or edit.
-        HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
-        CODEX_HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
+        // External sandboxes use their natural home and the external-sandbox
+        // permission profile. SSH retains its isolated provider home so its
+        // host-home deny rules cannot shadow the assigned workspace.
+        HOME: remoteTarget!.transport === "sandbox" && remoteTarget!.workFolderHome ? remoteTarget!.workFolderHome : posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
+        CODEX_HOME: remoteTarget!.transport === "sandbox" && remoteTarget!.workFolderHome ? posix.join(remoteTarget!.workFolderHome, ".codex") : posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
         ...(remoteTarget!.transport === "sandbox"
           ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }

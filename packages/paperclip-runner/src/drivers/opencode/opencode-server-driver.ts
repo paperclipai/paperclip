@@ -1,3 +1,4 @@
+import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -1931,6 +1932,7 @@ async function startRuntime(input: {
     input.options.environment ?? process.env,
     {
       HOME: isolatedHome,
+      ...externalWorkFolderEnvironment(input.options.environment ?? {}),
       XDG_CONFIG_HOME: configHome,
       XDG_DATA_HOME: dataHome,
       XDG_CACHE_HOME: cacheHome,

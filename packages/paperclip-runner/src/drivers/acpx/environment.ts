@@ -1,4 +1,5 @@
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
+import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
 
 declare const sanitizedAcpxSpawnInputBrand: unique symbol;
 
@@ -23,6 +24,7 @@ export function createSanitizedAcpxSpawnInput(
   agent: QualifiedAcpxAgent,
 ): SanitizedAcpxSpawnInput {
   const source = environment ?? process.env;
+  const scoped = externalWorkFolderEnvironment(source);
   const result: NodeJS.ProcessEnv = {};
   const credentialNames =
     agent === "pi"
@@ -56,9 +58,10 @@ export function createSanitizedAcpxSpawnInput(
     "PAPERCLIP_NATIVE_MCP_NAME",
     "PAPERCLIP_NATIVE_MCP_URL",
     ...credentialNames,
+    ...Object.keys(scoped),
   ]);
   let retainedBytes = 0;
-  for (const [key, value] of Object.entries(source)) {
+  for (const [key, value] of Object.entries({ ...source, ...scoped })) {
     if (typeof value !== "string") continue;
     if (!allowed.has(key) && !/^LC_[A-Z0-9_]{1,32}$/.test(key)) continue;
     if (key.includes("\0") || value.includes("\0")) {

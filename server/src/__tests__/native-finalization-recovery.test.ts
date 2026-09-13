@@ -13,6 +13,7 @@ import {
   nativeRunResults,
   statusDecisions,
   workAssessments,
+  workFolderRuns,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -211,6 +212,29 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
 
   afterAll(async () => {
     await temporary.cleanup();
+  });
+
+  it("does not publish native completion before the sandbox's final durable save", async () => {
+    const manifest = { version: 1 as const, companyId, runId, agentId, taskId: issueId,
+      responsibleUserId: null, projectId: null, leaseId: runId, sandboxKey: runId,
+      home: "/home/sandbox", folders: {}, repositories: [] };
+    await db.insert(workFolderRuns).values({ runId, companyId, manifest });
+    try {
+      for (const state of ["starting", "saving", "saved", "failed"] as const) {
+        await db.update(workFolderRuns).set({ state, lastSavedAt: new Date() })
+          .where(eq(workFolderRuns.runId, runId));
+        await expect(reconcileNativeFinalizations(db, [runId])).resolves.toEqual([]);
+      }
+      // A failed refresh/save cannot reuse an older final-save marker.
+      await db.update(workFolderRuns).set({ manifest: { ...manifest, finalCheckpointAt: new Date().toISOString() } })
+        .where(eq(workFolderRuns.runId, runId));
+      await expect(reconcileNativeFinalizations(db, [runId])).resolves.toEqual([]);
+      const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run[0]?.status).toBe("running");
+      await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId))).resolves.toHaveLength(0);
+    } finally {
+      await db.delete(workFolderRuns).where(eq(workFolderRuns.runId, runId));
+    }
   });
 
   it("fails closed into bounded named recovery without consulting the live flag or falling back", async () => {

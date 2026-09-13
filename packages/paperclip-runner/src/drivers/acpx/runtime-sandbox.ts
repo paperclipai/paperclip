@@ -1,3 +1,4 @@
+import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
 import { randomBytes } from "node:crypto";
 import {
   constants,
@@ -405,6 +406,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   };
   Object.assign(launchEnvironment, {
     HOME: homeDirectory,
+    ...externalWorkFolderEnvironment(input.environment ?? {}),
     XDG_CONFIG_HOME: configDirectory,
     XDG_DATA_HOME: dataDirectory,
     XDG_CACHE_HOME: cacheDirectory,

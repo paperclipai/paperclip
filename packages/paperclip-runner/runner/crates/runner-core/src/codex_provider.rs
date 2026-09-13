@@ -16,7 +16,7 @@ use crate::durable::{redact_text, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     is_node_interpreter, BoundedLogBuffer, ProcessExitFact, ProcessOutput, SupervisedProcess,
-    VerifiedProcessArgument, VerifiedProcessLaunch,
+    VerifiedProcessArgument, VerifiedProcessLaunch, WORK_FOLDER_ENVIRONMENT_KEYS,
 };
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
 use crate::provider_events::normalized_codex_terminal_event_type;
@@ -824,6 +824,7 @@ impl CodexProvider {
             .iter()
             .copied()
             .chain(provider_environment_keys.iter().copied())
+            .chain(WORK_FOLDER_ENVIRONMENT_KEYS.iter().copied())
             .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
             .collect::<Vec<_>>();
         let runtime_request_scope = new_runtime_request_scope()?;

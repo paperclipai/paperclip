@@ -4874,15 +4874,21 @@ describe("daytona native file-sync hooks", () => {
     // Hold the inbound upload and the outbound download open at the same time, so
     // the shared lease has two active sync calls when teardown starts.
     let releaseUpload!: () => void;
+    let uploadStarted!: () => void;
+    const uploadReady = new Promise<void>((resolve) => { uploadStarted = resolve; });
     sandbox.fs.uploadFiles.mockImplementation(async () => {
       await new Promise<void>((resolve) => {
         releaseUpload = resolve;
+        uploadStarted();
       });
     });
     let releaseDownload!: () => void;
+    let downloadStarted!: () => void;
+    const downloadReady = new Promise<void>((resolve) => { downloadStarted = resolve; });
     sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination: string }>) => {
       await new Promise<void>((resolve) => {
         releaseDownload = resolve;
+        downloadStarted();
       });
       return Promise.all(
         requests.map(async (request) => {
@@ -4899,9 +4905,9 @@ describe("daytona native file-sync hooks", () => {
     const outboundCall = plugin.definition.onEnvironmentSyncOut?.(
       syncOutParams({ operationId: "out-active", sourcePath: `${REMOTE_DIR}/out.txt`, targetPath: outboundTarget }),
     );
-    // Let both sync calls register on the activity gate and reach their hung
-    // transfer, so teardown sees a refCount of two.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Wait for both actual transfers, rather than assuming one event-loop tick
+    // completes the asynchronous filesystem preparation on a busy runner.
+    await Promise.all([uploadReady, downloadReady]);
 
     const destroyCall = plugin.definition.onEnvironmentDestroyLease?.({
       driverKey: "daytona",

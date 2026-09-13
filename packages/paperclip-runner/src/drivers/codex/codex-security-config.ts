@@ -1,6 +1,7 @@
 import { resolve, isAbsolute, join, dirname, delimiter } from "node:path";
 import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
 
 import {
   githubCredentialEnvironmentKeys,
@@ -128,10 +129,13 @@ export function codexCommandEnvironment(
     const value = source[key];
     if (value !== undefined) environment[key] = value;
   }
+  for (const [key, value] of Object.entries(externalWorkFolderEnvironment(source))) {
+    if (value !== undefined) environment[key] = value;
+  }
   if (source.PAPERCLIP_GITHUB_AUTH_MODE === "host" && source.PAPERCLIP_GITHUB_HOST_HOME) {
-    environment.HOME = source.PAPERCLIP_GITHUB_HOST_HOME;
+    environment.HOME ??= source.PAPERCLIP_GITHUB_HOST_HOME;
   } else if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) {
-    environment.HOME = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    environment.HOME ??= source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
     environment.ZDOTDIR = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
     environment.BASH_ENV = `${source.PAPERCLIP_GITHUB_LAUNCHER_DIR}/.bashrc`;
   }

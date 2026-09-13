@@ -14,6 +14,7 @@ import {
   statusDecisionEffects,
   statusDecisions,
   workAssessments,
+  workFolderRuns,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -564,12 +565,18 @@ export async function reconcileNativeFinalizations(
       assessmentId: nativeRunFinalizations.assessmentId,
       decisionId: nativeRunFinalizations.decisionId,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      workFolderState: workFolderRuns.state,
+      workFolderManifest: workFolderRuns.manifest,
     })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .innerJoin(issues, and(
       eq(issues.id, nativeRunFinalizations.issueId),
       eq(issues.companyId, heartbeatRuns.companyId),
+    ))
+    .leftJoin(workFolderRuns, and(
+      eq(workFolderRuns.runId, heartbeatRuns.id),
+      eq(workFolderRuns.companyId, heartbeatRuns.companyId),
     ))
     .where(and(
       eq(heartbeatRuns.runtimeMode, "native"),
@@ -588,6 +595,11 @@ export async function reconcileNativeFinalizations(
     ));
   const results = [];
   for (const row of rows) {
+    // A scoped sandbox's final flush is its durability barrier. A periodic
+    // save or the old host workspace directory cannot substitute for it.
+    // The live executor also publishes its next-turn session before this
+    // barrier, so completion cannot race a warm restart with a fresh identity.
+    if (row.workFolderManifest && (row.workFolderState !== "saved" || !row.workFolderManifest.finalCheckpointAt)) continue;
     const pendingEffects = row.decisionId
       ? await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
           eq(statusDecisionEffects.companyId, row.companyId),

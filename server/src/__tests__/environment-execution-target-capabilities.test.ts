@@ -47,6 +47,7 @@ async function buildSandboxTarget(input: {
   snapshot: EffectiveExecutionCapabilities | null;
   supportsSync: boolean;
   config?: Record<string, unknown>;
+  leaseMetadata?: Record<string, unknown>;
   // Reject the capability resolution to exercise the fail-closed error path.
   rejectResolution?: boolean;
 }) {
@@ -82,15 +83,15 @@ async function buildSandboxTarget(input: {
     adapterType: "codex_local",
     environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
     leaseId: "lease-1",
-    leaseMetadata: { remoteCwd: "/work" },
-    lease: { id: "lease-1", leasePolicy: "reuse_by_environment" } as never,
+    leaseMetadata: { remoteCwd: "/work", ...input.leaseMetadata },
+    lease: { id: "lease-1", leasePolicy: "reuse_by_environment", metadata: { remoteCwd: "/work", marker: "preserved" } } as never,
     environmentRuntime,
   });
 
   if (target?.kind !== "remote" || target.transport !== "sandbox") {
     throw new Error("expected a sandbox target");
   }
-  return { target, execute };
+  return { target, execute, environmentRuntime };
 }
 
 describe("resolveEnvironmentExecutionTarget effective capability snapshot", () => {
@@ -266,6 +267,33 @@ describe("effective snapshot gates the sync decision", () => {
     const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
     expect(target.runner?.syncIn).toBeTypeOf("function");
     expect(target.runner?.syncOut).toBeTypeOf("function");
+  });
+
+  it("uses the host-bound home for sync after work folders are prepared without changing the primary workspace", async () => {
+    const { target, environmentRuntime } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
+    await target.runner!.syncOut!([]);
+    expect(environmentRuntime.syncOut).toHaveBeenLastCalledWith(expect.objectContaining({
+      lease: expect.objectContaining({ metadata: { remoteCwd: "/work", marker: "preserved" } }),
+    }));
+    target.workFolderHome = "/home/daytona";
+    await target.runner!.syncIn!([]);
+    await target.runner!.syncOut!([]);
+    for (const sync of [environmentRuntime.syncIn, environmentRuntime.syncOut]) {
+      expect(sync).toHaveBeenLastCalledWith(expect.objectContaining({
+        lease: expect.objectContaining({ metadata: { remoteCwd: "/home/daytona", marker: "preserved" } }),
+      }));
+    }
+    expect(target.remoteCwd).toBe("/work");
+  });
+
+  it("restores the host-bound sync home when reconstructing a target from its saved lease", async () => {
+    const { target, environmentRuntime } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true,
+      leaseMetadata: { workFolderHome: "/home/daytona" } });
+    expect(target.workFolderHome).toBe("/home/daytona");
+    await target.runner!.syncOut!([]);
+    expect(environmentRuntime.syncOut).toHaveBeenLastCalledWith(expect.objectContaining({
+      lease: expect.objectContaining({ metadata: expect.objectContaining({ remoteCwd: "/home/daytona" }) }),
+    }));
   });
 
   it("omits the native sync hooks when the snapshot removes a sync verb", async () => {

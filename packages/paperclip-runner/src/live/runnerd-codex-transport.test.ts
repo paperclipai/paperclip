@@ -3462,6 +3462,19 @@ it("allows trusted package-manager runtime roots without exposing HOME paths", (
   ).toEqual(["/opt/homebrew", "/usr/local"]);
 });
 
+it.each(["codex", "opencode", "acpx"] as const)("keeps the natural sandbox home through the %s provider environment", (provider) => {
+  const home = "/home/daytona";
+  const environment = { HOME: home, PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_PRIMARY_REPO: `${home}/repos/main`,
+    PAPERCLIP_TASK_DIR: `${home}/task`, PAPERCLIP_AGENT_DIR: `${home}/agent`, PAPERCLIP_USER_DIR: `${home}/user`,
+    PAPERCLIP_PROJECT_DIR: `${home}/project`, PAPERCLIP_REPOS_DIR: `${home}/repos`, OPENAI_API_KEY: "fixture-provider-key" };
+  const result = createCapabilityRunnerdProviderEnvironment({ provider, options: { provider, stateDirectory: "/controller/state", environment },
+    identity: { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" },
+    codexHome: `${home}/.codex`, runtimeContextPath: "/runtime/context.json", hasRuntimeContext: false });
+  expect(result).toMatchObject({ HOME: home, PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_TASK_DIR: `${home}/task`, PAPERCLIP_USER_DIR: `${home}/user` });
+  if (provider === "codex") expect(result.CODEX_HOME).toBe(`${home}/.codex`);
+  expect(() => createRunnerdCodexAppServerArgs({ environment, codexHome: `${home}/.codex` })).not.toThrow();
+});
+
 it("denies the isolated Codex home without denying a remote execution workspace", () => {
   const args = createRunnerdCodexAppServerArgs({
     environment: {

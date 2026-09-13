@@ -4,7 +4,6 @@ import { Link, useParams, useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { accessApi } from "../api/access";
-import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 
 export function CliAuthPage() {
@@ -18,11 +17,6 @@ export function CliAuthPage() {
     [challengeId, token],
   );
 
-  const sessionQuery = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    retry: false,
-  });
   const challengeQuery = useQuery({
     queryKey: ["cli-auth-challenge", challengeId, token],
     queryFn: () => accessApi.getCliAuthChallenge(challengeId, token),
@@ -49,7 +43,7 @@ export function CliAuthPage() {
     return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid CLI auth URL.</div>;
   }
 
-  if (sessionQuery.isLoading || challengeQuery.isLoading) {
+  if (challengeQuery.isLoading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading CLI auth challenge...</div>;
   }
 
@@ -102,7 +96,9 @@ export function CliAuthPage() {
     );
   }
 
-  if (challenge.requiresSignIn || !sessionQuery.data) {
+  // The server evaluates both local sessions and Cloud tenant identity.
+  // Cloud sign-in does not create a separate Better Auth session cookie.
+  if (challenge.requiresSignIn) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <Card className="block p-6">

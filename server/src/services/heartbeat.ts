@@ -47,6 +47,9 @@ import {
 import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
+import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "./work-folder-retention.js";
+import { prepareSandboxWorkFolders } from "./sandbox-work-folders.js";
+import { bindWarmSandboxWorkspace } from "./sandbox-workspace-binding.js";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -8694,7 +8697,13 @@ export async function persistHeartbeatRunProcessMetadata(
           : startedAt,
         updatedAt: new Date(),
       })
-      .where(eq(heartbeatRuns.id, runId))
+      // Late callbacks must not rewrite completed process history or revoke
+      // its stop evidence after asynchronous identity lookup.
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.status, "running"),
+        isNull(heartbeatRuns.finishedAt),
+      ))
       .returning()
       .then((rows) => rows[0] ?? null);
     if (run?.runtimeMode === "native") await appendHeartbeatRunEvent(tx as unknown as Db, {
@@ -10226,10 +10235,7 @@ export function heartbeatService(
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .where(and(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
-        eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
-        executionBlockerPredicate(),
-      ))), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"),
         eq(agentWakeupRequests.requestedByActorType, "user"),
         sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
@@ -10252,7 +10258,26 @@ export function heartbeatService(
       // Match normal admission's deterministic current blocker selection. An
       // arbitrary historical action must not choose the retry's source run.
       const blocker = await getExecutionBlocker(db, wake.companyId, issueId);
-      const sourceId = blocker?.runId;
+      if (!blocker) {
+        // Cleanup may already have resolved the recovery action. The saved
+        // receipt remains work; normal admission rechecks ownership, holds,
+        // budgets and any blocker created since this read under the issue lock.
+        if (wake.idempotencyKey?.startsWith("chat-inbound:") ||
+            !["issue_commented", "issue_reopened_via_comment"].includes(wake.reason ?? "")) continue;
+        const payload = parseObject(wake.payload);
+        const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+        await enqueueWakeup(wake.agentId, {
+          source: wake.source as WakeupOptions["source"],
+          triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
+          reason: wake.reason, payload, contextSnapshot: context,
+          requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
+          idempotencyKey: `execution-wait-comment:${wake.id}`,
+        }, wake.id).catch(err => {
+          logger.warn({ err, requestId: wake.id }, "failed to resume saved execution-wait message after recovery");
+        });
+        continue;
+      }
+      const sourceId = blocker.runId;
       if (!sourceId || !isUuidLike(sourceId)) continue;
       const run = await getRun(sourceId);
       if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
@@ -19572,8 +19597,12 @@ export function heartbeatService(
     const executionControl = createAdapterExecutionControl();
     const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
     let runScratch: HeartbeatRunScratch | null = null;
-    let githubLauncherLocation:
-      Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
+    let sandboxWorkFolders: Awaited<ReturnType<typeof prepareSandboxWorkFolders>> | null = null;
+    let workFolderSaveFailed = false;
+    let nativeTaskSessionPersisted = false;
+    let beforeWorkFolderCompletion: (() => Promise<void>) | undefined;
+    let workFolderLeaseId: string | null = null;
+    let githubLauncherLocation: Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
     let nativeOwnershipHeld = false;
     let nativeDispatchStarted = false;
@@ -20839,8 +20868,8 @@ export function heartbeatService(
         shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
       const sessionResetReason =
         sessionConfigFreshness.reasons.join("; ") || null;
-      const taskSessionForRun = resetTaskSession ? null : taskSession;
-      const previousSessionParams =
+      let taskSessionForRun = resetTaskSession ? null : taskSession;
+      let previousSessionParams =
         explicitResumeSessionParams ??
         (isCanonicalSessionIdForAdapter(
           agent.adapterType,
@@ -21228,14 +21257,20 @@ export function heartbeatService(
           };
         }
         if (Object.keys(nextIssuePatch).length > 0) {
-          await issuesSvc.update(
-            issueId,
-            { ...nextIssuePatch, companyGuard: agent.companyId },
-            db,
-            undefined,
-            undefined,
-            { bindRuntimeSharedWorkspace: warmReusableExecutionWorkspace && workspace.mode === "shared_workspace" },
-          );
+          if (warmReusableExecutionWorkspace && !isolatedWorkspacesEnabled) {
+            await bindWarmSandboxWorkspace(db, {
+              companyId: agent.companyId, issueId, runId: run.id, agentId: agent.id, workspaceId: workspace.id,
+            });
+          } else {
+            await issuesSvc.update(
+              issueId,
+              { ...nextIssuePatch, companyGuard: agent.companyId },
+              db,
+              undefined,
+              undefined,
+              { bindRuntimeSharedWorkspace: warmReusableExecutionWorkspace && workspace.mode === "shared_workspace" },
+            );
+          }
           issueExecutionWorkspaceIdForRun = workspace.id;
           issueProjectWorkspaceIdForRun =
             resolvedProjectWorkspaceId ?? issueProjectWorkspaceIdForRun;
@@ -21609,6 +21644,32 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      if (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {
+        // The coordinator owns folder identity, hydration and durability for
+        // both legacy and native dispatch. Local execution never enters here.
+        workFolderSaveFailed = true;
+        workFolderLeaseId = activeEnvironmentLease.lease.id;
+        sandboxWorkFolders = await prepareSandboxWorkFolders({ db, companyId: run.companyId, runId: run.id,
+          agentId: agent.id, responsibleUserId: run.responsibleUserId ?? null,
+          taskId: issueRef?.id ?? null, projectId: issueRef?.projectId ?? null, target: executionTarget,
+          primaryWorkspaceId: executionWorkspace.workspaceId, primaryBranchName: executionWorkspace.branchName,
+          sandboxKey: workFolderSandboxKey(activeEnvironmentLease.lease) });
+        if (sandboxWorkFolders.identityChanged) { taskSessionForRun = null; previousSessionParams = null; }
+        executionTarget.workFolderHome = sandboxWorkFolders.home;
+        executionTarget.remoteCwd = sandboxWorkFolders.primaryRepo;
+        const nextLeaseMetadata = { ...activeEnvironmentLease.lease.metadata, remoteCwd: sandboxWorkFolders.primaryRepo, workFolderHome: sandboxWorkFolders.home };
+        await db.update(environmentLeases).set({ metadata: nextLeaseMetadata, updatedAt: new Date() }).where(eq(environmentLeases.id, activeEnvironmentLease.lease.id));
+        activeEnvironmentLease = { ...activeEnvironmentLease, lease: { ...activeEnvironmentLease.lease, metadata: nextLeaseMetadata } };
+        runtimeConfig = { ...runtimeConfig, env: { ...parseObject(runtimeConfig.env), ...sandboxWorkFolders.env } };
+        context.paperclipWorkFolders = { ...sandboxWorkFolders.manifest, primaryRepo: sandboxWorkFolders.primaryRepo };
+        context.paperclipTaskMarkdown = [readNonEmptyString(context.paperclipTaskMarkdown),
+          "## Sandbox files", `Your starting directory and HOME are ${sandboxWorkFolders.home}.`,
+          "The task/, agent/, user/, and project/ directories contain the files bound to this run. They are writable and save every 180 seconds, plus a final save when the run ends.",
+          `The primary repository is ${sandboxWorkFolders.primaryRepo}. All attached repositories are under ${sandboxWorkFolders.home}/repos/.`,
+          "Use the primary repository for project commands. CLI credentials and caches are separate from shared files.",
+        ].filter(Boolean).join("\n\n");
+        workFolderSaveFailed = false;
+      }
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
         catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
@@ -21833,7 +21894,7 @@ export function heartbeatService(
           : []),
       ];
       context.paperclipWorkspace = {
-        cwd: executionWorkspace.cwd,
+        cwd: sandboxWorkFolders?.primaryRepo ?? executionWorkspace.cwd,
         source: executionWorkspace.source,
         mode: effectiveExecutionWorkspaceMode,
         strategy: executionWorkspace.strategy,
@@ -21845,12 +21906,16 @@ export function heartbeatService(
         worktreePath: executionWorkspace.worktreePath,
         realization: workspaceRealization,
         agentHome: await (async () => {
+          if (sandboxWorkFolders) return sandboxWorkFolders.env.AGENT_HOME;
           const home = resolveDefaultAgentWorkspaceDir(agent.id);
           await fs.mkdir(home, { recursive: true });
           return home;
         })(),
       };
-      context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+      context.paperclipWorkspaces = sandboxWorkFolders ? sandboxWorkFolders.manifest.repositories.map((repo) => ({
+        workspaceId: repo.workspaceId, projectId: sandboxWorkFolders!.manifest.projectId,
+        cwd: `${sandboxWorkFolders!.home}/repos/${repo.name}`,
+      })) : buildRunWorkspaceHints(resolvedWorkspace);
       // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
       // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
       // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts
@@ -21947,6 +22012,11 @@ export function heartbeatService(
         stripPaperclipSessionMetadataFromSessionParams(runtimeSessionParams),
       );
 
+      if (sandboxWorkFolders?.identityChanged) {
+        runtimeSessionIdForAdapter = null;
+        runtimeSessionParamsForAdapter = null;
+        previousSessionDisplayId = null;
+      }
       const sessionCompaction = await evaluateSessionCompaction({
         agent,
         sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
@@ -22277,7 +22347,7 @@ export function heartbeatService(
           leaseMetadata: activeEnvironmentLease.lease.metadata,
         });
         const adapterEnv = Object.fromEntries(
-          Object.entries(parseObject(runtimeConfig.env)).filter(
+          Object.entries({ ...parseObject(runtimeConfig.env), ...sandboxWorkFolders?.env }).filter(
             (entry): entry is [string, string] =>
               typeof entry[0] === "string" && typeof entry[1] === "string",
           ),
@@ -22485,7 +22555,9 @@ export function heartbeatService(
                     return requests.length > 0 ? requests : undefined;
                   })(),
                 });
-          const taskNativeSessionId = managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity ? null : readNonEmptyString(
+          const taskSessionIdentityChanged = Boolean(sandboxWorkFolders?.identityChanged
+            || (managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity));
+          const taskNativeSessionId = taskSessionIdentityChanged ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
           // Compatibility for native retry rows created before same-run restart
@@ -22493,7 +22565,7 @@ export function heartbeatService(
           // inherit its source checkpoint; any process/provider evidence on the
           // replacement makes the ownership ambiguous and therefore ineligible.
           const legacyRetrySource =
-            run.retryOfRunId && !isFailedChatRunRetry
+            !taskSessionIdentityChanged && run.retryOfRunId && !isFailedChatRunRetry
               ? await db
                   .select({
                     id: heartbeatRuns.id,
@@ -23036,7 +23108,7 @@ export function heartbeatService(
           });
           if (!nativeSelected) return;
           controllerLease.stop();
-          nativeWorkspaceSync = await prepareNativeWorkspaceSync({
+          nativeWorkspaceSync = sandboxWorkFolders ? null : await prepareNativeWorkspaceSync({
             db,
             runId: run.id,
             companyId: agent.companyId,
@@ -23724,6 +23796,43 @@ export function heartbeatService(
           // If recording the barrier itself fails, propagate as a run failure
           // rather than silently leaving dependents stranded behind a missing
           // finalize row.
+          if (sandboxWorkFolders) {
+            if (adapterResult.nativeFinalization && taskKey) {
+              const nativeTerminal = adapterResult.nativeFinalization.terminal.runTerminalState;
+              beforeWorkFolderCompletion = async () => {
+                if (nativeTaskSessionPersisted) return;
+                // The coordinator invokes this after saving data and before
+                // publishing the barrier that allows terminal reconciliation.
+                const sessionState = resolveNextSessionState({
+                  adapterType: agent.adapterType,
+                  codec: sessionCodec,
+                  adapterResult,
+                  outcome: nativeTerminal === "succeeded"
+                    ? "succeeded" : "failed",
+                  previousParams: previousSessionParams,
+                  previousDisplayId: runtimeForAdapter.sessionDisplayId,
+                  previousLegacySessionId: runtimeForAdapter.sessionId,
+                });
+                await upsertTaskSession({
+                  companyId: agent.companyId,
+                  agentId: agent.id,
+                  adapterType: agent.adapterType,
+                  taskKey,
+                  sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+                    sessionState.params, configuredModel, sessionConfigMetadata,
+                  ),
+                  sessionDisplayId: sessionState.displayId,
+                  lastRunId: run.id,
+                  lastError: adapterResult.errorMessage ?? null,
+                });
+                nativeTaskSessionPersisted = true;
+              };
+            }
+            workFolderSaveFailed = true;
+            await sandboxWorkFolders.stop(beforeWorkFolderCompletion);
+            sandboxWorkFolders = null;
+            workFolderSaveFailed = false;
+          }
           if (nativeWorkspaceSync) {
             await nativeWorkspaceSync.restoreWorkspace();
           }
@@ -24584,7 +24693,7 @@ export function heartbeatService(
             },
             normalizedUsage,
           );
-          if (taskKey) {
+          if (taskKey && !nativeTaskSessionPersisted) {
             if (
               adapterResult.clearSession ||
               (!nextSessionState.params && !nextSessionState.displayId)
@@ -24919,6 +25028,7 @@ export function heartbeatService(
 
           if (
             taskKey &&
+            !nativeTaskSessionPersisted &&
             (goalCheckpointSession.current ||
               previousSessionParams ||
               previousSessionDisplayId ||
@@ -25185,6 +25295,10 @@ export function heartbeatService(
         }
       }
     } finally {
+      if (sandboxWorkFolders) {
+        try { await sandboxWorkFolders.stop(beforeWorkFolderCompletion); workFolderSaveFailed = false; }
+        catch (error) { workFolderSaveFailed = true; logger.error({ err: error, runId: run.id }, "Work folder save failed; retaining sandbox for recovery"); }
+      }
       if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
       try {
@@ -25270,7 +25384,12 @@ export function heartbeatService(
               },
             );
           }
-          await releaseEnvironmentLeasesForRun({
+          if (workFolderSaveFailed && workFolderLeaseId) {
+            await retainUnsavedWorkFolderLease(db, { id: workFolderLeaseId, companyId: run.companyId }).catch((error) => {
+              logger.error({ err: error, runId: run.id }, "Could not record work folder retention; lease remains active");
+            });
+          }
+          if (!workFolderSaveFailed) await releaseEnvironmentLeasesForRun({
             runId: run.id,
             companyId: run.companyId,
             agentId: run.agentId,
@@ -25981,6 +26100,15 @@ export function heartbeatService(
             if (!pending || !wakeCommentId || !queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) {
               return { kind: "deferred" as const };
             }
+            const [comment] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+              eq(issueComments.companyId, agent.companyId), eq(issueComments.issueId, issueId),
+              sql`${issueComments.id}::text = ${wakeCommentId}`, eq(issueComments.authorType, "user"),
+              opts.queuedCommentInterruptId === executionWaitRequestId
+                ? undefined : eq(issueComments.authorUserId, opts.requestedByActorId ?? ""),
+              isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
+              sql`length(trim(${issueComments.body})) > 0`,
+            ));
+            if (!comment) return { kind: "deferred" as const };
             if (opts.queuedCommentRequestId) {
               const ids = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
                 agent.companyId, issueId, agentId, queuedCommentIdsFromWakePayload(pending.payload));
@@ -26328,9 +26456,9 @@ export function heartbeatService(
 
           let continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
           const deferBlockedExecution = async (
-            executionBlocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>,
+            executionBlocker: Awaited<ReturnType<typeof getExecutionBlocker>>,
           ) => {
-            const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
+            const condition = { recoveryActionId: executionBlocker?.recoveryActionId ?? null, ...continuationWait };
             if (executionWaitRequestId) {
               await tx.update(agentWakeupRequests).set({
                 payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify(condition)}::jsonb)`,
@@ -26363,7 +26491,7 @@ export function heartbeatService(
                   ...durableReceiptFields,
                   companyId: agent.companyId, agentId, source, triggerDetail,
                   reason: "execution_reconciliation_required",
-                  error: executionBlocker.nextAction,
+                  error: executionBlocker?.nextAction ?? continuationWait.message,
                   payload,
                   requestedByActorType: opts.requestedByActorType ?? null,
                   requestedByActorId: opts.requestedByActorId ?? null,
@@ -26374,9 +26502,11 @@ export function heartbeatService(
             return { kind: "deferred" as const };
           };
           const explicitContinuationRunId = randomUUID();
+          const executionBlockerOptions = {
+            conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null,
+          };
           const executionBlocker = await getExecutionBlocker(
-            tx as unknown as Db, issue.companyId, issue.id,
-            { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null },
+            tx as unknown as Db, issue.companyId, issue.id, executionBlockerOptions,
           );
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
@@ -27104,7 +27234,7 @@ export function heartbeatService(
             tx,
           );
           if (dailyCapBlock) {
-            if (executionWaitRequestId && executionBlocker) {
+            if (executionWaitRequestId) {
               continuationWait = { reason: dailyCapBlock.reason,
                 message: "The agent has reached its daily limit. Your message is saved until work can resume." };
               return deferBlockedExecution(executionBlocker);
@@ -27144,14 +27274,27 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          let continuationRejected = false;
           const explicitContinuation = await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            resumingSavedMessage: Boolean(executionWaitRequestId),
+            onBlocked: (reason, message) => {
+              continuationRejected = true;
+              continuationWait = { reason, message };
+            },
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
           });
-          if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
+          // Recovery can change while earlier admission gates await I/O. Use
+          // the current blocker, not the snapshot from the start of admission.
+          const remainingExecutionBlocker = await getExecutionBlocker(
+            tx as unknown as Db, issue.companyId, issue.id, executionBlockerOptions,
+          );
+          // A decision can reject a saved message after cleanup has removed
+          // every recovery blocker; null can also mean no applicable hold to retire.
+          if (continuationRejected || remainingExecutionBlocker) return deferBlockedExecution(remainingExecutionBlocker);
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
@@ -27258,6 +27401,19 @@ export function heartbeatService(
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+          // The receipt that authorized this run is consumed independently of
+          // optional aggregation of other comments. A later blocker may suppress
+          // aggregation, but must never leave this message eligible for replay.
+          if (executionWaitRequestId) {
+            const [consumed] = await tx.update(agentWakeupRequests).set({
+              status: "coalesced", runId: newRun.id, finishedAt: new Date(), updatedAt: new Date(),
+            }).where(and(eq(agentWakeupRequests.id, executionWaitRequestId),
+              eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            )).returning({ id: agentWakeupRequests.id });
+            if (!consumed) throw conflict("Saved message changed before admission");
+          }
 
           if (adoptedComments.length) {
             await tx

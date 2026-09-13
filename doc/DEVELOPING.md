@@ -578,6 +578,12 @@ that file, not as the main completion path for deliverables.
 
 ## Default Agent Workspaces
 
+Sandbox execution uses the scoped `$HOME/task`, `agent`, `user`, `project`, and
+`repos` directories, with object-storage checkpoints every 180 seconds and at
+run completion. See [Sandbox work folders](sandbox-work-folders.md) for the
+ownership, recovery, API, and dedicated staging acceptance contract. The local
+execution paths below remain unchanged.
+
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:
 
 - `~/.paperclip/instances/default/workspaces/<agent-id>`

@@ -41,6 +41,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("request headers", () => {
+  it("keeps JSON content type when a mutation supplies an idempotency header", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ applied: true }));
+    await api.post("/work-folder/operations", { action: "delete", path: "note.md" },
+      { headers: { "Idempotency-Key": "delete-note" } });
+    const request = fetchMock.mock.calls[0]![1] as RequestInit;
+    const headers = new Headers(request.headers);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("Idempotency-Key")).toBe("delete-note");
+    expect(JSON.parse(String(request.body))).toEqual({ action: "delete", path: "note.md" });
+  });
+  it("preserves a raw upload's explicit content type", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ applied: true }));
+    const body = new Blob(["file bytes"]);
+    await api.putRaw("/work-folder/content", body, { headers: { "Idempotency-Key": "upload" } });
+    const request = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(new Headers(request.headers).get("Content-Type")).toBe("application/octet-stream");
+    expect(request.body).toBe(body);
+  });
+});
+
 describe("tenant-session recovery", () => {
   it("keeps concurrent failures pending and schedules one top-level reload", async () => {
     const reload = vi.fn();

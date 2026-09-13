@@ -112,6 +112,12 @@ in `packages/shared/src/constants.ts`.
   - local default: `~/.paperclip/instances/default/data/storage` (`local_disk`)
   - cloud: S3-compatible object storage (`s3`)
 
+Sandbox work folders use these same object-storage providers, with company/owner
+bindings, current file references, recoverable deletions, and checkpoint state
+in PostgreSQL. Legacy and native sandbox execution share the `$HOME` layout and
+180-second/final-flush lifecycle described in [Sandbox work folders](sandbox-work-folders.md).
+Local execution retains its existing home and workspace behavior.
+
 ## 6.3 Background Processing
 
 A lightweight scheduler/worker in the server process handles:

@@ -37,6 +37,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { Tabs } from "@/components/ui/tabs";
+import { WorkFolderButton } from "@/components/WorkFolderBrowser";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
@@ -773,6 +774,7 @@ export function ProjectDetail() {
           ) : null}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <WorkFolderButton owner={{ companyId: project.companyId, scope: "project", ownerId: project.id }} label="Project files" />
           <StarToggle
             size="button"
             starred={projectStarred}

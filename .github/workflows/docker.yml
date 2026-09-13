@@ -13,6 +13,16 @@ on:
   # the new tag ref instead. The tag mapping below keys off github.ref either
   # way.
   workflow_dispatch:
+    inputs:
+      staging_artifact_base_url:
+        description: Optional HTTPS object-storage/CDN prefix for staging migrator artifacts (build only; no releases)
+        type: string
+        default: ""
+
+      staging_lock_sha256:
+        description: Reviewed SHA-256 of the resolved pnpm 9 lockfile; required with staging_artifact_base_url
+        type: string
+        default: ""
 
 # Least privilege: nothing at the workflow level; each job declares exactly
 # the token scopes it uses (checkout needs contents:read, GHCR pushes need
@@ -33,6 +43,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  staging-migrator:
+    if: github.event_name == 'workflow_dispatch' && inputs.staging_artifact_base_url != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Require a non-default branch
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$REF" == refs/heads/* && "$REF" != "refs/heads/$DEFAULT_BRANCH" ]]
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Resolve and verify staging dependencies before installation
+        env:
+          EXPECTED_LOCK_SHA256: ${{ inputs.staging_lock_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_LOCK_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          echo "$EXPECTED_LOCK_SHA256  pnpm-lock.yaml" | sha256sum --check --strict
+      - run: pnpm install --frozen-lockfile
+      - name: Build matching migrator artifacts
+        env:
+          ARTIFACT_BASE_URL: ${{ inputs.staging_artifact_base_url }}
+        run: node scripts/build-preview-migrator.mjs "$RUNNER_TEMP/staging-migrator" "$ARTIFACT_BASE_URL"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: staging-migrator-${{ github.sha }}
+          path: ${{ runner.temp }}/staging-migrator/
+          if-no-files-found: error
+          retention-days: 30
+
   # Multi-arch by native runner, not QEMU.
   #
   # This was one job building linux/amd64,linux/arm64 together on an x86
@@ -134,9 +185,17 @@ jobs:
           node-version: 24
 
       - name: Refresh lockfile for Docker build context
+        env:
+          STAGING_ARTIFACT_BASE_URL: ${{ inputs.staging_artifact_base_url }}
+          EXPECTED_LOCK_SHA256: ${{ inputs.staging_lock_sha256 }}
         run: |
           set -euo pipefail
           pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+
+          if [ -n "$STAGING_ARTIFACT_BASE_URL" ]; then
+            [[ "$EXPECTED_LOCK_SHA256" =~ ^[a-f0-9]{64}$ ]]
+            echo "$EXPECTED_LOCK_SHA256  pnpm-lock.yaml" | sha256sum --check --strict
+          fi
 
           changed="$(git status --porcelain)"
           if [ -z "$changed" ]; then
@@ -368,6 +427,9 @@ jobs:
   build-and-push-cloud:
     if: github.event_name != 'push' || github.ref != 'refs/heads/master'
     uses: ./.github/workflows/docker-cloud.yml
+    with:
+      staging_artifact_base_url: ${{ inputs.staging_artifact_base_url || '' }}
+      staging_lock_sha256: ${{ inputs.staging_lock_sha256 || '' }}
     permissions:
       contents: read
       packages: write

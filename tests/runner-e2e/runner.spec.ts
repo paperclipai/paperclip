@@ -811,10 +811,13 @@ for (const execution of executions) {
     });
 
     try {
+      // Each isolated campaign selects its generation explicitly; the app's
+      // default can change without changing which runtime this cell exercises.
+      const enableNativeRunner = execution.profile.generation === "native";
       const experimental = await api.patch<{
         enableNativeRunner: boolean;
       }>("/api/instance/settings/experimental", {
-        enableNativeRunner: true,
+        enableNativeRunner,
         ...(execution.task.flow === "warm_three_turn"
           ? { enableIsolatedWorkspaces: true }
           : {}),
@@ -823,7 +826,12 @@ for (const execution of executions) {
           ? { enableRunnerPreviewIngress: true }
           : {}),
       });
-      expect(experimental.enableNativeRunner).toBe(true);
+      expect(experimental.enableNativeRunner).toBe(enableNativeRunner);
+
+      const configuredExperimental = await api.get<{
+        enableNativeRunner: boolean;
+      }>("/api/instance/settings/experimental");
+      expect(configuredExperimental.enableNativeRunner).toBe(enableNativeRunner);
 
       fixtures = await setupLiveFixtures({
         api,

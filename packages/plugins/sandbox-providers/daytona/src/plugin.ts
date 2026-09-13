@@ -2229,6 +2229,7 @@ const plugin = definePlugin({
               metadata: { expired: true, workspaceSentinel },
             };
           }
+          if (config.autoDeleteInterval === -1) await sandbox.setAutoDeleteInterval(-1);
           const shellCommand = await detectSandboxShellCommand(
             sandbox,
             toTimeoutSeconds(config.timeoutMs),

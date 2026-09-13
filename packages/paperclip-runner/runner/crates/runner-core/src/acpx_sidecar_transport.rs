@@ -13,6 +13,7 @@ use crate::generated_acpx_sidecar_contract::{
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
+    WORK_FOLDER_ENVIRONMENT_KEYS,
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
@@ -124,6 +125,7 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
         keys.extend_from_slice(credential_keys);
+        keys.extend_from_slice(WORK_FOLDER_ENVIRONMENT_KEYS);
         Self::start_with_environment_keys(config, &keys)
     }
 
