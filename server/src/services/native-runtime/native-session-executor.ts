@@ -13,6 +13,11 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { hasSandboxPerformanceTrace } from "../sandbox-performance.js";
+import {
+  adoptVerifiedRemoteRunner,
+  verifyRemoteRunnerRecovery,
+  type RemoteRunnerRecovery,
+} from "./remote-runner-recovery.js";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
   chmodSync,
@@ -4341,7 +4346,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   restartRecovery?: NativeRestartRecoveryClaim;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
-}): Promise<VerifiedWarmTransitionBinding | undefined> {
+}): Promise<VerifiedWarmTransitionBinding | RemoteRunnerRecovery | undefined> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   // A crash can leave a source archive intent before/after its rename. Until
   // that exact maintenance is settled, absence of a canonical root is not
@@ -4351,6 +4356,37 @@ async function migrateRunnerdStateRootForExecution(input: {
     issueId: input.execution.binding.issueId,
     stateKey: basename(scoped),
   });
+  if (input.restartRecovery?.kind === "reconcile_remote_runner") {
+    const target = input.runnerExecutionTarget;
+    const identity = readRunnerdDurableIdentity(scoped);
+    if (
+      input.restartRecovery.runId !== input.execution.binding.runId ||
+      !durableIdentityMatchesSession(identity, input.execution) ||
+      identity.runId !== input.execution.binding.runId ||
+      target?.kind !== "remote" ||
+      target.transport !== "sandbox" ||
+      !target.runner ||
+      runnerdAuthorityLifecycle(scoped, identity) === "indeterminate"
+    ) {
+      throw new Error("runner_remote_recovery_unverified");
+    }
+    // Active sandbox authority is remote; a suspended host backup need not
+    // exist yet. Preserve this exact root even if the remote probe fails.
+    return verifyRemoteRunnerRecovery({
+      runner: target.runner,
+      identity: {
+        runId: identity.runId,
+        normalizedSessionId: identity.normalizedSessionId,
+        runnerInstanceId: identity.runnerInstanceId,
+        environmentLeaseId: identity.environmentLeaseId,
+      },
+      stateDirectory: posix.join(
+        target.remoteCwd, ".paperclip-runtime", "paperclip-runner", "sessions",
+        createHash("sha256").update(nativeSessionKey(input.execution)).digest("hex"),
+        "runner",
+      ),
+    });
+  }
   if (
     input.allowLocalRecovery &&
     !input.allowRetainedWarmRunner &&
@@ -5711,6 +5747,7 @@ export function nativeSessionFailureDisposition(
   const permanentFailure =
     sourceFailureCode === "native_provider_model_rejected" ||
     sourceFailureCode === "native_event_replay_conflict" ||
+    sourceFailureCode === "runner_remote_recovery_unverified" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
     sourceFailureCode === "native_provider_terminal_failed" ||
     sourceFailureCode === "native_current_wake_comments_unread" ||
@@ -5765,6 +5802,8 @@ export function nativeSessionFailureSourceCode(
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
+  | "runner_remote_recovery_unverified"
+  | "runner_remote_recovery_unavailable"
   | "provider_process_exited"
   | "provider_stdout_closed"
   | "provider_process_output_closed"
@@ -5798,6 +5837,12 @@ export function nativeSessionFailureSourceCode(
   if (error instanceof NativeSessionCleanupQuarantinedError)
     return "native_session_cleanup_quarantined";
   const message = error instanceof Error ? error.message : String(error);
+  if (/runner_remote_recovery_unverified/i.test(message)) {
+    return "runner_remote_recovery_unverified";
+  }
+  if (/runner_remote_recovery_unavailable/i.test(message)) {
+    return "runner_remote_recovery_unavailable";
+  }
   if (/native_provider_model_rejected/i.test(message))
     return "native_provider_model_rejected";
   if (/native_adopted_runner_authentication_timeout/i.test(message)) {
@@ -7089,25 +7134,42 @@ async function executePaperclipNativeSessionWithinScope(
     await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs });
   }
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
+  let verifiedRemoteRecovery: RemoteRunnerRecovery | undefined;
+  let remoteRecoveryVerificationError: Error | undefined;
   if (input.useRunnerd) {
-    retainedTransition = await migrateRunnerdStateRootForExecution({
-      db: input.db,
-      execution: input.execution,
-      allowVerifiedBackup:
-        input.runnerExecutionTarget?.kind === "remote" &&
-        input.runnerExecutionTarget.transport === "sandbox",
-      // A retained warm runner is deliberately still ready rather than
-      // suspended. Only the exact idle in-process owner may rotate that
-      // prior-run authority; after a hard restart the map is empty and the
-      // durable-state verifier continues to require a suspended runner.
-      allowRetainedWarmRunner: hasIdleWarmNativeSessionOwner(input),
-      allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
-      onLog: input.onLog,
-      restartRecovery: input.restartRecovery,
-      runnerExecutionTarget: input.runnerExecutionTarget,
-    });
+    try {
+      const migration = await migrateRunnerdStateRootForExecution({
+        db: input.db,
+        execution: input.execution,
+        allowVerifiedBackup:
+          input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "sandbox",
+        // A retained warm runner is deliberately still ready rather than
+        // suspended. Only the exact idle in-process owner may rotate that
+        // prior-run authority; after a hard restart the map is empty and the
+        // durable-state verifier continues to require a suspended runner.
+        allowRetainedWarmRunner: hasIdleWarmNativeSessionOwner(input),
+        allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
+        onLog: input.onLog,
+        restartRecovery: input.restartRecovery,
+        runnerExecutionTarget: input.runnerExecutionTarget,
+      });
+      if (migration && "alive" in migration) verifiedRemoteRecovery = migration;
+      else retainedTransition = migration;
+    } catch (error) {
+      if (input.restartRecovery?.kind !== "reconcile_remote_runner") throw error;
+      // Restart recovery already owns a durable claim. Settle failed remote
+      // verification through the same fenced failure handler as execution,
+      // without loading unverified state or creating a provider session.
+      remoteRecoveryVerificationError = new Error(
+        nativeSessionFailureSourceCode(error) === "runner_remote_recovery_unavailable"
+          ? "runner_remote_recovery_unavailable"
+          : "runner_remote_recovery_unverified",
+        { cause: error },
+      );
+    }
   }
-  const durableRunnerBinding = input.useRunnerd
+  const durableRunnerBinding = input.useRunnerd && !remoteRecoveryVerificationError
     ? loadRunnerdDurableBinding(input.execution, retainedTransition)
     : null;
   const effectiveRunnerInstanceId =
@@ -7274,7 +7336,10 @@ async function executePaperclipNativeSessionWithinScope(
           }
           const nextAttempt = nextNativeProviderAttempt(
             incidentAttempts,
-            recovering?.kind,
+            recovering?.kind === "reconcile_remote_runner" &&
+              (verifiedRemoteRecovery?.alive === false || remoteRecoveryVerificationError !== undefined)
+              ? "resume_dead_runner"
+              : recovering?.kind,
           );
           if (nextAttempt > 3)
             throw new Error("native_session_retry_exhausted");
@@ -7712,7 +7777,7 @@ async function executePaperclipNativeSessionWithinScope(
   );
   let existingWarmSession: NativeSession | undefined;
   let persistedWarmSession: PersistedNativeSession | null | undefined;
-  if (warmSessionId !== null && warmConfigDigest !== null) {
+  if (!remoteRecoveryVerificationError && warmSessionId !== null && warmConfigDigest !== null) {
     const entry = warmNativeSessions.get(warmSessionId);
     if (entry) {
       // Run-scoped broker capabilities must rotate with the process, while the
@@ -7880,6 +7945,7 @@ async function executePaperclipNativeSessionWithinScope(
     controller,
   });
   try {
+    if (remoteRecoveryVerificationError) throw remoteRecoveryVerificationError;
     const expectedCurrentWakeComments = await resolveCurrentWakeCommentsBinding(
       input.db,
       input.execution.binding,
@@ -7895,7 +7961,7 @@ async function executePaperclipNativeSessionWithinScope(
             runnerInstanceId: effectiveRunnerInstanceId,
             durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
             trace,
-          })
+          }, verifiedRemoteRecovery)
         : null;
     const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
         input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
@@ -8284,6 +8350,7 @@ async function executePaperclipNativeSessionWithinScope(
         agentId: input.execution.binding.agentId,
       });
       const { exhausted } = recoveryProjection;
+      const remoteAuthorityFailure = sourceFailureCode === "runner_remote_recovery_unverified";
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
       const message =
@@ -8404,6 +8471,8 @@ async function executePaperclipNativeSessionWithinScope(
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
                     : recoveryEvidence.recoveryMode === "ambiguous_state"
                       ? "Inspect the original provider failure and durable events; state is ambiguous and a replacement provider session is forbidden."
+                      : remoteAuthorityFailure
+                      ? "Inspect the original sandbox identity and durable runner state; automatic replacement is forbidden until authority is verified."
                       : integrityFailure
                         ? "Inspect the persisted runner events and checkpoint for a source-sequence integrity conflict; automatic recovery is stopped."
                         : sourceFailureCode === "native_provider_usage_limit"
@@ -8564,7 +8633,9 @@ async function executePaperclipNativeSessionWithinScope(
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
                 : recoveryEvidence.recoveryMode === "ambiguous_state"
                   ? "Inspect the original provider failure and explicitly resolve the ambiguous session state; do not open a replacement provider session."
-                  : integrityFailure
+                  : remoteAuthorityFailure
+                      ? "Inspect the original sandbox identity and durable runner state; automatic replacement is forbidden until authority is verified."
+                      : integrityFailure
                     ? "Inspect the persisted runner event collision and explicitly repair or replace the run; automatic retries are disabled."
                     : sourceFailureCode === "native_provider_usage_limit"
                       ? "Restore model provider usage capacity, then explicitly retry the task; automatic retries are stopped."
@@ -9993,7 +10064,11 @@ export function createRemoteRunnerProcessLauncher(input: {
         };
       }
     })();
-    return { child, completion };
+    return {
+      child,
+      completion,
+      get startedAt() { return launchedIdentity?.startedAt; },
+    };
   };
 }
 
@@ -10075,7 +10150,7 @@ export async function createRunnerdBackend(input: {
       contextSnapshot: Record<string, unknown>;
     },
   ) => Promise<unknown>;
-}): Promise<NativeSessionBackend> {
+}, verifiedRemoteRecovery?: RemoteRunnerRecovery): Promise<NativeSessionBackend> {
   const sessionScopeId = nativeSessionScopeKey(input.execution);
   const scopeOwner = executingRunnerdSessionScopes.get(sessionScopeId);
   if (scopeOwner && scopeOwner !== input.execution.binding.runId) {
@@ -10097,7 +10172,7 @@ export async function createRunnerdBackend(input: {
         input.execution.binding.runId ||
       hasRetainedWarmTransitionEvidence(scopedRunnerdStateRoot(input.execution))
     ) {
-      retainedTransition = await migrateRunnerdStateRootForExecution({
+      const migration = await migrateRunnerdStateRootForExecution({
         db: input.db,
         execution: input.execution,
         allowVerifiedBackup:
@@ -10109,11 +10184,14 @@ export async function createRunnerdBackend(input: {
         restartRecovery: input.restartRecovery,
         runnerExecutionTarget: input.runnerExecutionTarget,
       });
+      if (migration && "alive" in migration) verifiedRemoteRecovery = migration;
+      else retainedTransition = migration;
     }
     return await createRunnerdBackendWithinSessionClaim(
       input,
       sessionScopeId,
       retainedTransition,
+      verifiedRemoteRecovery,
     );
   } finally {
     initializingSessionToolAuthorities.delete(sessionScopeId);
@@ -10124,6 +10202,7 @@ async function createRunnerdBackendWithinSessionClaim(
   input: Parameters<typeof createRunnerdBackend>[0],
   sessionScopeId: string,
   retainedTransition?: VerifiedWarmTransitionBinding,
+  verifiedRemoteRecovery?: RemoteRunnerRecovery,
 ): Promise<NativeSessionBackend> {
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
@@ -10495,6 +10574,20 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return;
     selectedRemoteMode = requiredMode;
+    if (verifiedRemoteRecovery?.alive) {
+      // The executor is already using these artifacts. Verify in place; do
+      // not replace binaries, provider packs, or credential files beneath it.
+      await verifyRemoteRunner(requiredMode);
+      if (requiresRemoteProviderPack) {
+        if (!stagedRemoteProviderPackRoot) throw new Error("runner_remote_recovery_unverified");
+        await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
+        activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      }
+      remotePrepared = true;
+      remoteHarnessStatePrepared = true;
+      resolveRemoteRunnerProcessSpawned?.();
+      return;
+    }
     let usedPreinstalledRunner = false;
     const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
     if (mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
@@ -11654,6 +11747,15 @@ async function createRunnerdBackendWithinSessionClaim(
     input.restartRecovery?.kind === "reattach_existing_runner"
       ? input.restartRecovery.process
       : null;
+  const adoptedRunner = verifiedRemoteRecovery?.alive && remoteCommandRunner
+    ? adoptVerifiedRemoteRunner(remoteCommandRunner, verifiedRemoteRecovery)
+    : adoptedProcess
+      ? {
+          ...adoptedProcess,
+          isAlive: () => verifiedRecoveryProcessIsAlive(adoptedProcess),
+          signal: (signal: NodeJS.Signals) => signalVerifiedRecoveryProcess(adoptedProcess, signal),
+        }
+      : undefined;
   const executeCurrentToolAuthority = (
     call: Parameters<SessionToolAuthorityEpoch["execute"]>[0],
   ) => {
@@ -11806,15 +11908,8 @@ async function createRunnerdBackendWithinSessionClaim(
           ? resolveSourceCodexHome(input.runnerEnvironment ?? process.env)
           : undefined,
         runnerProcessLauncher: remoteProcessLauncher,
-        runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,
-        adoptExistingRunner: adoptedProcess
-          ? {
-              ...adoptedProcess,
-              isAlive: () => verifiedRecoveryProcessIsAlive(adoptedProcess),
-              signal: (signal) =>
-                signalVerifiedRecoveryProcess(adoptedProcess, signal),
-            }
-          : undefined,
+        runnerReconnectGraceMs: remoteTarget ? 300_000 : undefined,
+        adoptExistingRunner: adoptedRunner,
         environment: effectiveRunnerEnvironment,
         onDiagnostic: (message) => {
           void input.onLog?.(

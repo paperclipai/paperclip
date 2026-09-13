@@ -20,6 +20,9 @@ const child = lease.spawn([], { cwd: root, detached: true, env: {
   // Makes the static OpenRouter model catalog selectable; never sends a prompt.
   OPENROUTER_API_KEY: "qualification-no-model-requests",
 } });
+// Register before requesting a session so even an early close is observed.
+let childDidClose = false;
+const childClosed = new Promise((resolveClose) => child.once("close", () => { childDidClose = true; resolveClose(); }));
 let buffer = "", stderr = "";
 const pending = new Map();
 child.stderr.on("data", (data) => { stderr = (stderr + data).slice(-4000); });
@@ -47,7 +50,29 @@ try {
   assert.equal(typeof session.result?.sessionId, "string");
   console.log("Verified Pi ACP and pinned RPC runtime started successfully");
 } finally {
-  try { process.kill(-child.pid, "SIGTERM"); } catch {}
-  await lease.close();
-  await rm(root, { recursive: true, force: true });
+  // Pi can still write its private home while handling SIGTERM. Keep the
+  // temporary directory until its pipes close, with a bounded group teardown.
+  let forceTimer, deadlineTimer;
+  const shutdownDeadline = new Promise((_, reject) => {
+    forceTimer = setTimeout(() => {
+      try { if (!childDidClose) process.kill(-child.pid, "SIGKILL"); }
+      catch (error) { if (error.code !== "ESRCH") reject(error); }
+    }, 5_000);
+    deadlineTimer = setTimeout(() => reject(new Error("Pi qualification process did not close after SIGKILL")), 10_000);
+  });
+  try {
+    try { if (!childDidClose) process.kill(-child.pid, "SIGTERM"); }
+    catch (error) { if (error.code !== "ESRCH") throw error; }
+    await Promise.race([childClosed, shutdownDeadline]);
+  } finally {
+    clearTimeout(forceTimer);
+    clearTimeout(deadlineTimer);
+    try {
+      await lease.close();
+    } finally {
+      // A failed verifier aborts this disposable image-build step. Remove its
+      // temporary HOME even when shutdown or lease cleanup reports a failure.
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }
 }

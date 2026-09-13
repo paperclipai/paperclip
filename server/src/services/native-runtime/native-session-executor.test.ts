@@ -423,6 +423,7 @@ describe("remote runner process supervision", () => {
       startedAt: "2026-09-06T00:00:00.000Z",
     });
     expect(handle.child.pid).toBe(4321);
+    expect(handle.startedAt).toBe("2026-09-06T00:00:00.000Z");
 
     expect(handle.child.kill("SIGKILL")).toBe(true);
     await vi.waitFor(() =>
@@ -8847,6 +8848,58 @@ describe("runnerd provider runtime wiring", () => {
       } else {
         process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
       }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["live", "suspended", "mismatched", "unavailable"] as const)("verifies remote restart authority without requiring a host runner copy (%s)", async (scenario) => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-remote-restart-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const identity = { runId: execution.binding.runId, normalizedSessionId: execution.session.normalizedSessionId,
+      runnerInstanceId: "remote-restart-runner", environmentLeaseId: "remote-restart-lease" };
+    const execute = vi.fn(async (input: { command: string; args: string[] }) => {
+      expect(input.command).toBe("node");
+      const request = JSON.parse(input.args[2]!);
+      if (scenario === "unavailable") throw new Error("provider unavailable");
+      return { exitCode: 0, timedOut: false, stdout: JSON.stringify({
+        identity: { ...identity, ...(scenario === "mismatched" ? { runId: "other-run" } : {}) },
+        stateDirectory: request.stateDirectory, lifecycle: scenario === "suspended" ? "suspended" : "ready",
+        alive: scenario !== "suspended", process: { pid: 4321, startedAt: "2026-09-10T00:00:00.000Z", nonce: "ec0e1ae3-0614-44fc-a352-bb03d89134d7", startTicks: "13579" },
+      }) };
+    });
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/project", providerKey: "daytona", runner: { execute } } as never;
+    try {
+      state.createBackend.mockClear(); state.createTransport.mockClear();
+      await createRunnerdBackend({ db: leaseDb(execution), execution, runnerInstanceId: identity.runnerInstanceId });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const root = state.createTransport.mock.calls[0]![0].stateDirectory!;
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      const controlPlanePath = join(root, "control-plane", "control-plane-state.json");
+      const original = JSON.stringify(durableControlPlaneState(identity));
+      await writeFile(controlPlanePath, original);
+      state.createBackend.mockClear(); state.createTransport.mockClear();
+      const resumed = createRunnerdBackend({ db: leaseDb(execution), execution, runnerInstanceId: identity.runnerInstanceId,
+        runnerExecutionTarget: target, restartRecovery: {
+          kind: "reconcile_remote_runner", runId: execution.binding.runId, leaseOwner: "controller-owner",
+          controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+        } });
+      if (scenario === "unavailable" || scenario === "mismatched") {
+        await expect(resumed).rejects.toThrow();
+        expect(state.createBackend).not.toHaveBeenCalled();
+      } else {
+        await expect(resumed).resolves.toBeDefined();
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const options = state.createTransport.mock.calls[0]![0] as RunnerTransportOptions & { adoptExistingRunner?: { pid: number } };
+        expect(options.prpIdentity).toMatchObject({ runId: identity.runId, runnerInstanceId: identity.runnerInstanceId });
+        expect(options.adoptExistingRunner?.pid).toBe(scenario === "live" ? 4321 : undefined);
+      }
+      expect(await readFile(controlPlanePath, "utf8")).toBe(original);
+      await expect(access(join(stateBase, "quarantine"))).rejects.toThrow();
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(stateBase, { recursive: true, force: true });
     }
   });

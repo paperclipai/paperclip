@@ -1,8 +1,8 @@
+import { createHash, randomUUID } from "node:crypto";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -37,8 +37,13 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import {
   claimNativeRestartRecoveries,
+  currentNativeControllerIdentity,
   type NativeControllerIdentity,
 } from "./native-restart-recovery.js";
+
+import { dispatchNativeSessionResumptions } from "./native-finalization-reconciler.js";
+import { executePaperclipNativeSession } from "./native-session-executor.js";
+import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -229,6 +234,122 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     return { db, issueId, runId, native };
   }
 
+  it.each([
+    { scenario: "unavailable", priorAttempt: 1, phase: "retryable_failure" },
+    { scenario: "unavailable", priorAttempt: 2, phase: "terminal_failure" },
+    { scenario: "timeout", priorAttempt: 1, phase: "retryable_failure" },
+    { scenario: "mismatched", priorAttempt: 1, phase: "terminal_failure" },
+    { scenario: "missing-host-state", priorAttempt: 1, phase: "terminal_failure" },
+  ] as const)("settles a claimed remote verification failure ($scenario, attempt $priorAttempt)", async ({ scenario, priorAttempt, phase }) => {
+    const fixture = await seedRun(`VERIFY-${scenario}-${priorAttempt}`);
+    const controller = await currentNativeControllerIdentity();
+    const leaseOwner = `verification-${randomUUID()}`;
+    const stateBase = await mkdtemp(resolve(runtimeRoot, "remote-verification-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const execution: NativeExecutionInputV1 = {
+      schema: "paperclip.native-execution-input.v1",
+      provider: { kind: "codex", model: null },
+      binding: { companyId, runId: fixture.runId, issueId: fixture.issueId, agentId, executionWorkspaceId: "verification-workspace" },
+      task: { identifier: "NRR-VERIFY", title: "Verify claimed recovery", description: null, prompt: "Must not dispatch a provider turn.", workMode: "standard" },
+      workspace: { cwd: stateBase, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      completionContract: { id: "verification-contract", sha256: "verification-sha", schemaVersion: "paperclip.completion-contract.v1", contract: { revision: "1", objective: "Verify recovery", criteria: [{ id: "objective", requirement: "No stranded lease" }] } },
+      interactionResponses: [], credentialBindings: [],
+    };
+    // This canonical scope is the existing on-disk contract. Only controller
+    // journal state exists locally; remote runner state must not be fabricated.
+    const scope = JSON.stringify({ agentId, companyId, normalizedSessionId: fixture.native.normalizedSessionId,
+      provider: { driverKind: "codex_app_server", identity: { kind: "codex" } },
+      schema: "paperclip.native-session-scope.v2", workspace: { executionWorkspaceId: "verification-workspace", kind: "managed" } });
+    const root = resolve(stateBase, createHash("sha256").update(scope).digest("hex"));
+    const identity = { runId: fixture.runId, normalizedSessionId: fixture.native.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId };
+    const journal = JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v1", identity, committedEvents: [{ preserved: true }] });
+    await mkdir(resolve(root, "control-plane"), { recursive: true });
+    const journalPath = resolve(root, "control-plane", "control-plane-state.json");
+    if (scenario !== "missing-host-state") await writeFile(journalPath, journal);
+    await fixture.db.update(heartbeatRuns).set({
+      // Deliberately use a live host PID as the remote numeric PID. The retry
+      // must retain it and must not apply host process ownership checks.
+      processPid: process.pid, processGroupId: process.pid,
+      contextSnapshot: { issueId: fixture.issueId, paperclipEnvironment: { driver: "sandbox" } },
+      runnerProfileJson: { nativeExecutionInput: execution, sessionCheckpoint: {
+        providerSessionId: "original-provider-session",
+        identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId, sessionId: fixture.native.normalizedSessionId },
+      } },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({
+      phase: "observed", attempt: priorAttempt, leaseOwner, leaseExpiresAt: new Date(Date.now() + 20 * 60_000),
+      controllerBootId: controller.bootId, controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+      controllerGeneration: 2, nextAttemptAt: null,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const execute = vi.fn(async (input: { command: string; args: string[] }) => {
+      expect(input.command).toBe("node");
+      if (scenario === "unavailable") throw new Error("fixture connection unavailable");
+      if (scenario === "timeout") return { exitCode: null, timedOut: true, stdout: "" };
+      const request = JSON.parse(input.args[2]!);
+      return { exitCode: 0, timedOut: false, stdout: JSON.stringify({ identity: { ...identity, runId: randomUUID() }, stateDirectory: request.stateDirectory }) };
+    });
+    const onSpawn = vi.fn();
+    const unavailable = scenario === "unavailable" || scenario === "timeout";
+    const code = unavailable ? "runner_remote_recovery_unavailable" : "runner_remote_recovery_unverified";
+    try {
+      await expect(executePaperclipNativeSession({
+        db: fixture.db, execution, runnerInstanceId: fixture.native.runnerInstanceId,
+        useRunnerd: true, leaseOwner, onSpawn,
+        restartRecovery: { kind: "reconcile_remote_runner", runId: fixture.runId, leaseOwner, controllerGeneration: 2, providerAttempt: priorAttempt, restartKind: "hard", recoveryRequestId: null },
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/project", providerKey: "daytona", runner: { execute } } as never,
+      })).rejects.toThrow(code);
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator).toMatchObject({ phase, attempt: priorAttempt + 1, leaseOwner: null, leaseExpiresAt: null,
+        recoveryState: phase === "retryable_failure" ? "resuming_session" : "blocked",
+        failureCode: !unavailable ? code : phase === "terminal_failure" ? "native_session_retry_exhausted" : "native_session_interrupted",
+        failureDetail: { originalFailureCode: code },
+      });
+      if (phase === "retryable_failure") {
+        expect(coordinator!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now() + 20_000);
+        expect(coordinator!.nextAttemptAt!.getTime()).toBeLessThan(Date.now() + 31_000);
+      } else expect(coordinator!.nextAttemptAt).toBeNull();
+      expect(coordinator!.recoveryHistory).toEqual([expect.objectContaining({ reason: code, disposition: phase, providerAttempt: priorAttempt + 1 })]);
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run).toMatchObject({ nativePhase: phase, errorCode: code });
+      const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+      expect(issue!.status).toBe(phase === "terminal_failure" ? "in_review" : "in_progress");
+      expect(onSpawn).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(scenario === "missing-host-state" ? 0 : 1);
+      if (scenario !== "missing-host-state") expect(await readFile(journalPath, "utf8")).toBe(journal);
+      expect(existsSync(resolve(stateBase, "quarantine"))).toBe(false);
+      if (phase === "retryable_failure") {
+        const dispatch = vi.fn();
+        await dispatchNativeSessionResumptions({ db: fixture.db, runnerInstanceId: "retry-controller", runIds: [fixture.runId], dispatch });
+        expect(dispatch).not.toHaveBeenCalled();
+        await fixture.db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() - 1) }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+        const claims = await dispatchNativeSessionResumptions({ db: fixture.db, runnerInstanceId: "retry-controller", runIds: [fixture.runId], dispatch });
+        expect(claims).toHaveLength(1);
+        expect(dispatch).toHaveBeenCalledExactlyOnceWith(claims[0]);
+        expect(claims[0]!.restartRecovery).toMatchObject({ kind: "reconcile_remote_runner", providerAttempt: 2, controllerGeneration: 3 });
+        const duplicate = await dispatchNativeSessionResumptions({ db: fixture.db, runnerInstanceId: "competing-controller", runIds: [fixture.runId], dispatch: vi.fn() });
+        expect(duplicate).toEqual([]);
+        await expect(executePaperclipNativeSession({
+          db: fixture.db, execution, runnerInstanceId: fixture.native.runnerInstanceId,
+          useRunnerd: true, leaseOwner: claims[0]!.leaseOwner, restartRecovery: claims[0]!.restartRecovery, onSpawn,
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/project", providerKey: "daytona", runner: { execute } } as never,
+        })).rejects.toThrow(code);
+        const [settled] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+        expect(settled).toMatchObject({ phase: "terminal_failure", attempt: 3, leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null, failureCode: "native_session_retry_exhausted" });
+        expect(await readFile(journalPath, "utf8")).toBe(journal);
+        expect(onSpawn).not.toHaveBeenCalled();
+        expect(execute).toHaveBeenCalledTimes(2);
+        const [retained] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(retained).toMatchObject({ processPid: process.pid, processGroupId: process.pid });
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+    }
+  });
+
   function transportOptions(
     fixture: Awaited<ReturnType<typeof seedRun>>,
     stateDirectory: string,
@@ -354,13 +475,17 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       .where(eq(nativeRunFinalizations.runId, input.fixture.runId));
   }
 
-  realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
-    const fixture = await seedRun("LIVE");
+  realProcessIt.each([false, true])("adopts one active runner across hot and hard controller restarts without duplicating steering (external state: %s)", async (externalState) => {
+    const fixture = await seedRun(externalState ? "LIVE-REMOTE" : "LIVE");
     const stateDirectory = resolve(runtimeRoot, fixture.runId);
     const baseOptions = transportOptions(fixture, stateDirectory);
     const options = {
       ...baseOptions,
       codexArgs: [...baseOptions.codexArgs, "--linger-after-turn-start"],
+      ...(externalState ? {
+        runnerStateDirectory: resolve(stateDirectory, "external-runner"),
+        readRunnerState: async () => JSON.parse(await readFile(resolve(stateDirectory, "external-runner", "runner-state.json"), "utf8")),
+      } : {}),
     };
     const first = createRunnerdCodexTransport(options);
     let runnerPid: number | null = null;
@@ -394,6 +519,17 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         providerPid: first.evidence().providerPid,
         providerSessionId: String(thread.id),
       });
+      const processIdentity = {
+        pid: runnerPid,
+        processGroupId: first.evidence().runnerProcessGroupId,
+        startedAt: (await readProcessStartedAt(runnerPid))!,
+      };
+      if (externalState) {
+        await fixture.db.update(heartbeatRuns).set({
+          contextSnapshot: { paperclipEnvironment: { driver: "sandbox" } },
+        }).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(existsSync(resolve(stateDirectory, "runner", "runner-state.json"))).toBe(false);
+      }
 
       await first.detachControllerForRestart();
       const [claim] = await claimNativeRestartRecoveries({
@@ -405,13 +541,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         runIds: [fixture.runId],
       });
       expect(claim).toMatchObject({
-        kind: "reattach_existing_runner",
+        kind: externalState ? "reconcile_remote_runner" : "reattach_existing_runner",
         runId: fixture.runId,
         controllerGeneration: 2,
         providerAttempt: 0,
-        process: { pid: runnerPid },
+        ...(externalState ? {} : { process: { pid: runnerPid } }),
       });
-      if (!claim || claim.kind !== "reattach_existing_runner") {
+      if (!claim || (claim.kind !== "reattach_existing_runner" && claim.kind !== "reconcile_remote_runner")) {
         throw new Error("Expected live-runner recovery claim");
       }
 
@@ -423,7 +559,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         resumeDynamicTools: [],
         runnerProcessLauncher: duplicateLauncher,
         adoptExistingRunner: {
-          ...claim.process,
+          ...(claim.kind === "reattach_existing_runner" ? claim.process : processIdentity),
           isAlive: () => processAlive(runnerPid),
         },
       });
@@ -462,13 +598,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         runIds: [fixture.runId],
       });
       expect(hardClaim).toMatchObject({
-        kind: "reattach_existing_runner",
+        kind: externalState ? "reconcile_remote_runner" : "reattach_existing_runner",
         runId: fixture.runId,
         controllerGeneration: 3,
         providerAttempt: 0,
-        process: { pid: runnerPid },
+        ...(externalState ? {} : { process: { pid: runnerPid } }),
       });
-      if (!hardClaim || hardClaim.kind !== "reattach_existing_runner") {
+      if (!hardClaim || (hardClaim.kind !== "reattach_existing_runner" && hardClaim.kind !== "reconcile_remote_runner")) {
         throw new Error("Expected second live-runner recovery claim");
       }
       const secondDuplicateLauncher = vi.fn(() => {
@@ -479,7 +615,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         resumeDynamicTools: [],
         runnerProcessLauncher: secondDuplicateLauncher,
         adoptExistingRunner: {
-          ...hardClaim.process,
+          ...(hardClaim.kind === "reattach_existing_runner" ? hardClaim.process : processIdentity),
           isAlive: () => processAlive(runnerPid),
         },
       });

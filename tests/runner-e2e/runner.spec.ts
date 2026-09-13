@@ -13,6 +13,7 @@ import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, type MatcherResult } from "./matchers.js";
 import {
   acceptedPlanSessionResetFailures,
+  hasConsistentPrpEventVersion,
   hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
@@ -472,12 +473,8 @@ function nativeRunEventIntegrityFailures(
     }
     const envelope = record(event.payload?.prpEvent);
     if (Object.keys(envelope).length === 0) continue;
-    if (
-      envelope.schema !== "paperclip.prp.event.v1" ||
-      envelope.schemaVersion !== 1 ||
-      event.protocolSchemaVersion !== 1
-    ) {
-      failures.push(`run ${run.id} exposed a malformed PRP v1 envelope`);
+    if (!hasConsistentPrpEventVersion(envelope, event.protocolSchemaVersion)) {
+      failures.push(`run ${run.id} exposed a malformed PRP envelope`);
     }
     if (envelope.runId !== run.id) {
       failures.push(

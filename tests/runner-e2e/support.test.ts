@@ -37,6 +37,7 @@ import {
 } from "./ports.js";
 import {
   acceptedPlanSessionResetFailures,
+  hasConsistentPrpEventVersion,
   hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
@@ -768,6 +769,14 @@ describe("runner E2E failure policy", () => {
 });
 
 describe("runner E2E server isolation", () => {
+  it.each(["", "; cleanup: provider failed to start"])("does not retry an explicitly nonretryable provider rejection%s", (suffix) => {
+    const failure = classifyFailure(new Error(
+      "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=effective_model_mismatch)" + suffix,
+    ));
+    expect(failure).toBe("permanent_infrastructure");
+    expect(shouldRetryFailure(failure)).toBe(false);
+  });
+
   it("shares restart control files beneath the isolated temporary root", () => {
     expect(runnerE2EServerControlPaths("/tmp/cell")).toEqual({
       controlDirectory: path.join("/tmp/cell", "control"),
@@ -1273,5 +1282,23 @@ describe("runner E2E macOS shared-memory cleanup", () => {
         creatorPid: 52172,
       },
     ]);
+  });
+});
+
+describe("persisted native event versions", () => {
+  it.each([1, 2])("accepts matching PRP v%i events", (version) => {
+    expect(hasConsistentPrpEventVersion({
+      schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+    }, version)).toBe(true);
+  });
+  it.each([
+    ["paperclip.prp.event.v1", 2, 2],
+    ["paperclip.prp.event.v2", 1, 1],
+    ["paperclip.prp.event.v2", 2, 1],
+    ["paperclip.prp.event.v3", 3, 3],
+    ["***REDACTED***", 2, 2],
+    ["paperclip.prp.event.v2", "2", 2],
+  ])("rejects inconsistent version metadata %s/%s/%s", (schema, version, outer) => {
+    expect(hasConsistentPrpEventVersion({schema, schemaVersion: version}, outer)).toBe(false);
   });
 });

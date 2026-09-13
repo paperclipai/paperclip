@@ -138,6 +138,24 @@ The new scoped-shell startup setting is not added to an existing unscoped Codex
 session's protected launch arguments. Its durable provider profile remains
 unchanged during attachment.
 
+For an active native sandbox run, the app keeps the control-plane journal while
+the sandbox keeps the runner journal. An app restart must verify the exact
+remote run, session, runner, and lease identity; a missing controller-side runner
+file is not evidence of corruption. Recovery checks the remote process marker,
+Linux process fingerprint, and command-line binding before adopting a live
+runner. The runner must then authenticate to its existing durable PRP authority.
+Adoption preserves the provider attempt and does not launch another runner or
+replace its artifacts. A dead runner can restart only from verified suspended
+state. Missing or conflicting evidence preserves the controller journal and
+fails recovery. Verification failures release the claimed execution lease and
+persist a recovery disposition. Temporary connection failures retry after 30
+seconds through the same remote verifier and consume the bounded attempt budget;
+missing or conflicting authority blocks automatic replacement. The retry keeps
+remote process identifiers and cannot launch a provider before verification.
+Host PID checks do not establish remote process ownership.
+Remote runners have a five-minute reconnect grace period for app replacement;
+liveness probes share one request in flight and run at most once per second.
+
 Acceptance must resume representative pre-upgrade legacy and native tasks with
 committed, staged, unstaged, and untracked work, verify their original paths and
 usable continuation, and exercise their existing restore mechanism after a

@@ -22,6 +22,8 @@ export function classifyFailure(error: unknown): FailureClass {
     return "transient_infrastructure";
   if (/secret.*(?:leak|plaintext|redaction)/i.test(message))
     return "secret_leak";
+  if (/retryable=false|effective_model_mismatch/i.test(message))
+    return "permanent_infrastructure";
   if (/cleanup|teardown|lease.*release/i.test(message)) {
     return TRANSIENT.test(message)
       ? "transient_infrastructure"

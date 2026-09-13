@@ -277,3 +277,13 @@ export function numberedPlanStepCount(body: string | null | undefined) {
     );
   }).length;
 }
+
+/** Validate the persisted protocol version without discarding v1 upgrade history. */
+export function hasConsistentPrpEventVersion(
+  envelope: Record<string, unknown>,
+  protocolSchemaVersion: unknown,
+): boolean {
+  return (envelope.schemaVersion === 1 || envelope.schemaVersion === 2)
+    && envelope.schema === `paperclip.prp.event.v${envelope.schemaVersion}`
+    && protocolSchemaVersion === envelope.schemaVersion;
+}

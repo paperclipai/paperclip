@@ -17,6 +17,7 @@ import {
   workFolderRuns,
   workspaceOperations,
 } from "@paperclipai/db";
+import { claimNativeRestartRecoveries, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import {
   finalizeNativeRun,
   pendingNativeGovernance,
@@ -159,7 +160,7 @@ export function resolveNativeReconciliationStatus(input: {
   throw new Error("native_reconciliation_facts_invalid");
 }
 
-export type NativeSessionResumeClaim = { runId: string; leaseOwner: string };
+export type NativeSessionResumeClaim = { runId: string; leaseOwner: string; restartRecovery?: NativeRestartRecoveryClaim };
 
 type NativeCleanupOutcome = {
   runId: string;
@@ -328,7 +329,7 @@ export async function claimNativeSessionResumptions(input: {
 }): Promise<NativeSessionResumeClaim[]> {
   const now = input.now ?? new Date();
   const candidates = await input.db
-    .select({ runId: heartbeatRuns.id })
+    .select({ runId: heartbeatRuns.id, errorCode: heartbeatRuns.errorCode })
     .from(heartbeatRuns)
     .innerJoin(
       nativeRunFinalizations,
@@ -338,8 +339,8 @@ export async function claimNativeSessionResumptions(input: {
       and(
         eq(heartbeatRuns.runtimeMode, "native"),
         nativeRunnerOwnershipNotHeldCondition(),
-        isNull(heartbeatRuns.processPid),
-        isNull(heartbeatRuns.processGroupId),
+        or(and(isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId)),
+          eq(heartbeatRuns.errorCode, "runner_remote_recovery_unavailable")),
         isNull(nativeRunFinalizations.resultId),
         eq(nativeRunFinalizations.phase, "retryable_failure"),
         or(
@@ -360,6 +361,20 @@ export async function claimNativeSessionResumptions(input: {
 
   const claims: NativeSessionResumeClaim[] = [];
   for (const candidate of candidates) {
+    if (candidate.errorCode === "runner_remote_recovery_unavailable") {
+      // A failed probe says nothing about the remote process's liveness. Keep
+      // its identifiers and re-enter exact remote-authority reconciliation.
+      const dispositions = await claimNativeRestartRecoveries({
+        db: input.db, runIds: [candidate.runId], now,
+        restartKind: "hard", remoteVerificationRetry: true,
+      });
+      for (const disposition of dispositions) {
+        if (disposition.kind === "reconcile_remote_runner") {
+          claims.push({ runId: disposition.runId, leaseOwner: disposition.leaseOwner, restartRecovery: disposition });
+        }
+      }
+      continue;
+    }
     const leaseOwner = `${input.runnerInstanceId}:resume:${randomUUID()}`;
     let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
     const claimed = await input.db.transaction(async (tx) => {
@@ -376,6 +391,7 @@ export async function claimNativeSessionResumptions(input: {
       if (
         row.run.runtimeMode !== "native" ||
         isNativeRunnerOwnershipHeld(row.run) ||
+        row.run.errorCode === "runner_remote_recovery_unavailable" ||
         row.run.processPid !== null ||
         row.run.processGroupId !== null ||
         row.coordinator.resultId ||

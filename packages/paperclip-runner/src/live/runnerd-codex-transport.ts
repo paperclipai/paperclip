@@ -1236,7 +1236,7 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
   /**
-   * A verified local runner that outlived its controller. Adoption registers
+   * A verified runner that outlived its controller. Adoption registers
    * the durable authority and waits for this exact process to reconnect; it
    * never calls the process launcher while the process remains alive.
    */
@@ -3914,7 +3914,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return {
       pid: this.#evidence.runnerPid,
       processGroupId: this.#evidence.runnerProcessGroupId,
-      startedAt: this.#startedAt,
+      // Reconnecting creates a new transport, not a new runner process.
+      startedAt: this.options.adoptExistingRunner?.startedAt ?? this.#handle?.startedAt ?? this.#startedAt,
       exited: this.#evidence.runnerExited,
       exitCode: this.#evidence.runnerExitCode,
       signal: this.#evidence.runnerSignal,

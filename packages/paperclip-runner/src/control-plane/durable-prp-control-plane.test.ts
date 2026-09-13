@@ -263,6 +263,40 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it("retains asynchronously resolved process identity through the restart wrapper", async () => {
+  const starts: Array<{ startedAt?: string }> = [];
+  const handle = spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    processLauncher: () => {
+      const process: { startedAt?: string } = {};
+      starts.push(process);
+      return {
+        child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+        completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }),
+        get startedAt() { return process.startedAt; },
+      };
+    },
+  });
+
+  expect(handle.startedAt).toBeUndefined();
+  await Promise.resolve();
+  starts[0]!.startedAt = "2026-09-10T20:09:39.848Z";
+  expect(handle.startedAt).toBe(starts[0]!.startedAt);
+
+  const replacement = handle.restart("replacement-ticket");
+  expect(replacement.startedAt).toBeUndefined();
+  starts[1]!.startedAt = "2026-09-10T20:10:00.000Z";
+  expect(replacement.startedAt).toBe(starts[1]!.startedAt);
+  expect(handle.startedAt).toBe(starts[0]!.startedAt);
+});
+
 it("pins the ACPX launch profile in runner startup arguments and restarts", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
   const handle = spawnRunner({

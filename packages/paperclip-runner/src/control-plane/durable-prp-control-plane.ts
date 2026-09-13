@@ -3480,6 +3480,10 @@ export function spawnRunner(options: {
   const environment = runnerEnvironment(options.ticket, options.environment);
   const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => ({
     ...handle,
+    // Remote launchers resolve process identity after returning the handle.
+    get startedAt() {
+      return handle.startedAt;
+    },
     restart: (ticket) => spawnRunner({ ...options, ticket }),
   });
   if (options.processLauncher !== undefined) {

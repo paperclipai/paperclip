@@ -8499,7 +8499,7 @@ async function verifyLiveRunnerAdoption(
       adoptExistingRunner: {
         pid: runnerPid!,
         processGroupId: runnerPid,
-        startedAt: new Date().toISOString(),
+        startedAt: "2026-09-01T10:00:00.000Z",
         signal,
         isAlive: () => {
           try {
@@ -8561,6 +8561,7 @@ async function verifyLiveRunnerAdoption(
       }),
     );
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
+    expect(adopted.transport.processInfo?.().startedAt).toBe("2026-09-01T10:00:00.000Z");
     if (startWithoutCheckpoint) {
       const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
       for (const type of ["run.prepare", "session.open"]) {
