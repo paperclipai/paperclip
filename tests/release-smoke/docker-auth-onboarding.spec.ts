@@ -10,15 +10,15 @@ const ADMIN_PASSWORD =
   "paperclip-smoke-password";
 
 // A hire needs a live-verified credential since #13344 — the subscription
-// path now dead-ends in CI on a `claude auth login` no machine can finish —
-// so the wizard is driven through "Use API key instead" with a real key. CI
-// injects it from the runner-e2e-paid environment; local runs export one of
-// these before invoking the suite. Its only use is the server's one
-// models-list validation call: the seeded first task makes no LLM calls.
+// path now dead-ends on a `claude auth login` no CI machine can finish — so
+// the wizard is driven through "Use API key instead". The server verifies the
+// key against api.anthropic.com, which the docker-onboard-smoke harness
+// serves from its own mock inside the container's network, so the placeholder
+// below passes without any real credential in CI. The override exists for
+// running this suite against an instance that reaches the real provider.
 const ANTHROPIC_API_KEY =
   process.env.PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY ??
-  process.env.ANTHROPIC_API_KEY ??
-  "";
+  "sk-ant-release-smoke-placeholder";
 
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
 const AGENT_NAME = "Release Smoke Lead";
@@ -87,13 +87,6 @@ test.describe("Docker authenticated onboarding smoke", () => {
   test("logs in, completes onboarding, and hires the lead agent", async ({
     page,
   }) => {
-    // Fail on arrival rather than after a 60s wait for a Connect that could
-    // never succeed: without a key there is no credential the wizard accepts.
-    expect(
-      ANTHROPIC_API_KEY,
-      "Set PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY — onboarding cannot hire without a verifiable credential"
-    ).toBeTruthy();
-
     await signIn(page);
 
     const baseUrl = new URL(page.url()).origin;
@@ -137,10 +130,11 @@ test.describe("Docker authenticated onboarding smoke", () => {
     // a terminal on the server can finish, and Connect refuses to proceed
     // until it has. The clean-machine path this suite guards is therefore the
     // API key: switch modes, pick Claude, paste a key, Connect — the server
-    // validates it live against the provider and then hires. A genuine
-    // failure here means the published artifact cannot hire on a clean
-    // machine even with a valid key in hand. Allow generous time for the
-    // validation + hire + auto-approval.
+    // verifies it against the provider endpoint (the harness's mock, here)
+    // and then hires. A genuine failure here means the published artifact
+    // cannot hire on a clean machine even when the provider accepts the
+    // credential. Allow generous time for the validation + hire +
+    // auto-approval.
     //
     // The mode switch comes before the tile: picking a tile starts the step's
     // collapse sequence and the "Use API key instead" link only offers itself
