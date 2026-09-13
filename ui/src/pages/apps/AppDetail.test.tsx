@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAppStoreDefinition } from "@paperclipai/shared";
 import { AppDetail } from "./AppDetail";
 import { APP_TABS } from "./app-tabs";
 
@@ -1170,6 +1171,30 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("This app needs reconnecting");
     expect(container.textContent).toContain("Token expired.");
     expect(container.textContent).toContain("Which agents can use this connection?");
+  });
+
+  it.each(["permissions", "review"])("offers a supported replacement for an obsolete Anthropic connection on %s", async (tab) => {
+    mockParams.tab = tab;
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("anthropic")!] });
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Anthropic",
+      transport: "rest_api",
+      authKind: "api_key",
+      config: { sourceTemplateKey: "anthropic", connectionMethodKey: "api-key" },
+      healthStatus: "error",
+      healthMessage: "This connection has no supported tool integration.",
+    }));
+
+    await renderAppDetail();
+
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(findButton("Check & reconnect")).toBeUndefined();
+    expect(findButton("Reconnect")).toBeUndefined();
+    expect(container.textContent).toContain("Connection no longer supported");
+    expect(container.textContent).toContain("then remove this connection");
+    expect(container.querySelector('a[href="/apps/connect?source=anthropic"]')?.textContent)
+      .toBe("Add supported connection");
   });
 
   it("offers retry for a transient GitHub error without asking for another login", async () => {

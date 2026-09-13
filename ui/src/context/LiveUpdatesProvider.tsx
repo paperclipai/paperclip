@@ -527,6 +527,8 @@ function invalidateVisibleIssueRunQueries(
       // A final comment can race the last in-flight history fetch. Reconcile
       // persisted messages after the turn settles.
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(issueRef) });
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueRef] });
     }
   }
@@ -1075,6 +1077,8 @@ function buildRunStatusToast(
   // Interrupt is an intentional conversation control. Its caller gives
   // feedback; the terminal event must not announce a cancelled/failed run.
   if (errorCode === "operator_interrupted") return null;
+  // Workspace contention is ordinary scheduling, not a failed user action.
+  if (errorCode === "workspace_busy") return null;
   const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? "Agent";
@@ -1341,6 +1345,12 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        }
+        if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
+          // These cards are durable API objects, not streamed text. Refresh the
+          // visible task too, including attachments bound to an existing comment.
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(ref) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(ref) });
         }
         if (action === "issue.conversation_session_started") {
           queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", ref] });

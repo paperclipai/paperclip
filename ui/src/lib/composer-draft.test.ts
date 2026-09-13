@@ -9,6 +9,7 @@ import {
   loadDraftSubmission,
   saveDraftSubmission,
   clearDraftSubmission,
+  settleDraftSubmission,
 } from "./composer-draft";
 
 describe("task draft upload receipts", () => {
@@ -22,6 +23,21 @@ describe("task draft upload receipts", () => {
     contentPath: `/api/attachments/${id}/content`,
   };
   beforeEach(() => localStorage.clear());
+  it("settles only submitted text and attachments while preserving the next draft", () => {
+    const nextId = "aaf8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    const nextReceipt = { ...receipt, attachmentId: nextId, contentPath: `/api/attachments/${nextId}/content` };
+    saveDraft(key, "Sent\n\nNext");
+    saveDraftAttachments(key, [receipt]);
+    saveDraftSubmission(key, { attemptId: id, reviewed: false, nextDraftOffset: 6, submittedAttachmentIds: [id] });
+    saveDraftAttachments(key, [receipt, nextReceipt], nextId);
+    expect(loadDraftAttachments(key)).toEqual([receipt]);
+    saveDraftAttachments(key, [receipt, nextReceipt], id);
+    expect(settleDraftSubmission(key, nextId)).toBe(false);
+    expect(settleDraftSubmission(key, id)).toBe(true);
+    expect(loadDraft(key)).toBe("Next");
+    expect(loadDraftAttachments(key)).toEqual([nextReceipt]);
+    expect(loadDraftSubmission(key)).toBeNull();
+  });
   it("keeps chat drafts and pending submission fences within the current tab", () => {
     sessionStorage.clear();
     const chatKey = "paperclip:agent-chat-draft:company:user:agent";

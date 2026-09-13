@@ -271,6 +271,61 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send(body).expect(409);
   });
 
+  it.each([
+    ["other", "running"], ["other", "queued"], ["other", "scheduled_retry"],
+    ["same", "running"], ["same", "queued"], ["same", "scheduled_retry"],
+  ] as const)("scopes interrupted queue successors to its agent: %s agent %s", async (owner, status) => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "succeeded",
+      finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agentWakeupRequests).set({ payload: { ...wake.payload,
+      queuedCommentInterrupt: { actorId: "other-operator", requestedAt: new Date().toISOString() },
+    } }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    // Keep this agent at capacity so successful delivery queues a successor
+    // without launching a provider. The independent run shares only the task.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    const successorAgentId = owner === "same" ? seeded.agentId : randomUUID();
+    if (owner === "other") await db.insert(agents).values({ id: successorAgentId,
+      companyId: seeded.companyId, name: "Independent agent", role: "engineer",
+      status: "idle", adapterType: "claude_local",
+    });
+    const [existingRun] = await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: successorAgentId,
+      status, contextSnapshot: { issueId: seeded.issueId },
+    }).returning();
+
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId, { retryCleanup: true });
+    if (owner === "other" && status !== "scheduled_retry") {
+      // Another agent is not this queue's successor, but ordinary admission
+      // must still preserve the task execution lock until its work stops.
+      const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      const [task] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      expect(waiting.status).toBe("deferred_issue_execution");
+      expect(task.executionRunId).toBe(existingRun.id);
+      expect(waiting.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "other-operator" });
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, existingRun.id));
+      await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId, { retryCleanup: true });
+    }
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(receipt.status).toBe(owner === "same" ? "deferred_issue_execution" : "coalesced");
+    if (owner === "other") {
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
+      expect(successor).toMatchObject({ agentId: seeded.agentId, status: "queued", responsibleUserId: "other-operator" });
+      expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
+    }
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId, { retryCleanup: true });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId)))
+      .toHaveLength(owner === "same" ? 3 : 4);
+  });
+
   it.each(["user", "system"])("keeps stopped-run interruption intent on a %s receipt across restart until the process stops, then delivers once", async (actorType) => {
     const seeded = await seedQueue();
     await db.update(agentWakeupRequests).set({ requestedByActorType: actorType })
