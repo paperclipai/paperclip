@@ -13,6 +13,7 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel("kimi_local")).toBe("Kimi Code");
     expect(getAdapterLabel("hermes_local")).toBe("Hermes");
     expect(getAdapterLabel("hermes_gateway")).toBe("Hermes Gateway");
+    expect(getAdapterLabel("jcode_local")).toBe("JCode");
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
     expect(getAdapterLabel("pi_local")).toBe("Pi");
 
@@ -26,6 +27,7 @@ describe("adapter display registry", () => {
       kimi_local: "Kimi Code",
       hermes_local: "Hermes",
       hermes_gateway: "Hermes Gateway",
+      jcode_local: "JCode",
       opencode_local: "OpenCode",
       pi_local: "Pi",
     });
