@@ -9593,7 +9593,16 @@ export function createRemoteRunnerProcessLauncher(input: {
           ],
           bypassSession: true,
           timeoutMs: 10_000,
-        });
+        }).catch(async () => {
+          // kill() follows Node's synchronous child-process contract. A deleted
+          // sandbox or failed signal RPC must not reject outside that boundary
+          // and crash the controller. This is not a termination receipt: the
+          // monitor and cleanup verification still decide whether work stopped.
+          await input.onLog?.(
+            "stderr",
+            "Remote runner signal failed; process termination is not confirmed.\n",
+          );
+        }).catch(() => undefined);
         return true;
       },
     };
