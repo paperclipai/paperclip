@@ -62,6 +62,7 @@ describe("built-in runtime connection tool delivery", () => {
     ["grok_local", "environment"],
     ["hermes_gateway", "invocation_context"],
     ["hermes_local", "environment"],
+    ["google_vertex", "environment"],
     ["kimi_local", "environment"],
     ["openclaw_gateway", "invocation_context"],
     ["opencode_local", "environment"],

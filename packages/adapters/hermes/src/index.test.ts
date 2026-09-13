@@ -6,6 +6,7 @@ import { expect, test } from "vitest";
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
+  createGoogleVertexServerAdapter,
   createServerAdapter,
   hermesGatewayType,
 } from "./index.js";
@@ -40,6 +41,21 @@ test("root package export keeps explicit local and gateway adapter factories", (
   expect(hermesGatewayType).toBe("hermes_gateway");
   expect(gatewayAdapter.supportsLocalAgentJwt).toBe(false);
   expect(gatewayAdapter.supportsInstructionsBundle).toBe(false);
+});
+
+test("root package export exposes the Google Vertex AI adapter factory", () => {
+  const adapter = createGoogleVertexServerAdapter();
+
+  expect(adapter.type).toBe("google_vertex");
+  expect(adapter.models?.[0]).toEqual({
+    id: "google/gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+  });
+  expect(adapter.supportsLocalAgentJwt).toBe(true);
+  expect(adapter.supportsInstructionsBundle).toBe(true);
+  expect(typeof adapter.execute).toBe("function");
+  expect(typeof adapter.testEnvironment).toBe("function");
+  expect(typeof adapter.getConfigSchema).toBe("function");
 });
 
 test("gateway subpath export exposes the Hermes Gateway adapter entrypoint", () => {
