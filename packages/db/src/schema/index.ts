@@ -104,3 +104,8 @@ export { meditationLogs } from "./meditation_logs.js";
 export { habitDefinitions, habitCompletions } from "./habits.js";
 export { annotations, annotationTypeEnum, annotationSeverityEnum, annotationVisibilityEnum } from "./annotations.js";
 export { solarisOrgs, solarisAlerts, alertSeverityEnum, alertDispatchStatusEnum } from "./solaris_alerts.js";
+export {
+  irwinExportQueue,
+  irwinExportStatusEnum,
+  irwinIncidentClassificationEnum,
+} from "./irwin_export_queue.js";
