@@ -239,7 +239,7 @@ export async function prepareManagedAiRuntime(
     acpxAgent: input.config.acpxAgent,
   });
   const release =
-    input.binding.method === "subscription"
+    selection.attribution.method === "subscription"
       ? await acquireCredentialLease(db, selection.grant.id)
       : async () => {};
   let home: string | undefined;
@@ -277,7 +277,7 @@ export async function prepareManagedAiRuntime(
     };
     const capability =
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
-        input.binding.method
+        selection.attribution.method
       ]!;
     const authFile = path.join(providerHome, "auth.json");
     if (input.binding.provider === "openai")
@@ -287,13 +287,13 @@ export async function prepareManagedAiRuntime(
         { mode: 0o600 },
       );
     const subscriptionFile =
-      input.binding.method === "subscription" &&
+      selection.attribution.method === "subscription" &&
       input.binding.provider !== "anthropic";
     if (subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else env[capability.envKey] = value;
     if (
       input.binding.provider === "openai" &&
-      input.binding.method === "api_key"
+      selection.attribution.method === "api_key"
     ) {
       env.CODEX_API_KEY = value;
       await writeFile(authFile, JSON.stringify({ OPENAI_API_KEY: value }), {

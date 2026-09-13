@@ -1,6 +1,6 @@
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
-import { hasAcknowledgedNativeStopIntent } from "./acknowledged-native-stop.js";
+import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
@@ -10051,6 +10051,20 @@ export function heartbeatService(
         !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
+    const currentRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
+    const [coordinator] = currentRun ? await db.select({ phase: nativeRunFinalizations.phase,
+      leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+    )) : [];
+    // Stop ends one response. Saved user input can enter ordinary admission
+    // once its executor settles; it does not need a manufactured crash incident.
+    // The ordinary path still enforces task holds, ownership, and native session
+    // cleanup before starting a provider.
+    const stoppedNativeContinuation = currentRun && isAcknowledgedNativeStop(currentRun) &&
+      !activeRunExecutions.has(run.id) && !coordinator?.leaseOwner &&
+      ["terminal_failure", "applied"].includes(coordinator?.phase ?? "") &&
+      await acknowledgedNativeStopExecutionHasStopped(db, currentRun) &&
+      !(await getExecutionBlocker(db, run.companyId, issueId));
     const legacyContinuation = run.runtimeMode === "legacy" &&
       hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
       !(await getExecutionBlocker(db, run.companyId, issueId));
@@ -10064,28 +10078,45 @@ export function heartbeatService(
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
     for (const wake of pending) {
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) continue;
-      const payload = parseObject(wake.payload);
+      let payload = parseObject(wake.payload);
       if (payload.queuedCommentInterrupt) {
         await resumeQueuedCommentInterrupt(wake.companyId, wake.id);
         continue;
       }
-      const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
-      const commentId = deriveCommentId(context, payload);
-      if (legacyContinuation) {
-        if (!commentId || !run.finishedAt || !wake.requestedByActorId ||
-            !["issue_commented", "issue_reopened_via_comment"].includes(wake.reason ?? "")) continue;
+      let context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      let commentId = deriveCommentId(context, payload);
+      let requestedByActorId = wake.requestedByActorId;
+      const reason = readNonEmptyString(context.wakeReason) ?? wake.reason;
+      if (stoppedNativeContinuation) {
+        const ids = await undeliveredLegacyUserCommentIds(db, run.companyId, issueId, run.agentId,
+          queuedCommentIdsFromWakePayload(payload));
+        if (!ids.length) continue;
+        payload = withQueuedCommentIdsInWakePayload(payload, ids);
+        context = withQueuedCommentIdsInRunContext(context, ids);
+        commentId = ids.at(-1)!;
+        // A coalesced queue can contain several authors. Its saved comments,
+        // not the outer wake's first author, authorize the remaining input.
+        const [author] = await db.select({ id: issueComments.authorUserId }).from(issueComments).where(and(
+          eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId), eq(issueComments.id, commentId),
+        ));
+        requestedByActorId = author?.id ?? null;
+      }
+      if (legacyContinuation || stoppedNativeContinuation) {
+        if (!commentId || !run.finishedAt || !requestedByActorId ||
+            !["issue_commented", "issue_reopened_via_comment"].includes(reason ?? "")) continue;
         const [comment] = await db.select().from(issueComments).where(and(
           eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
           sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
-          eq(issueComments.authorUserId, wake.requestedByActorId), isNull(issueComments.deletedAt),
-          isNull(issueComments.createdByRunId), gt(issueComments.createdAt, run.finishedAt),
+          eq(issueComments.authorUserId, requestedByActorId), isNull(issueComments.deletedAt),
+          isNull(issueComments.createdByRunId),
+          stoppedNativeContinuation ? undefined : gt(issueComments.createdAt, run.finishedAt),
         ));
         if (!comment?.body.trim()) continue;
       } else {
         let wait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
         const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
-          agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
-          reason: wake.reason, commentId, successorRunId: randomUUID(), dryRun: true,
+          agentId: run.agentId, actorType: wake.requestedByActorType, actorId: requestedByActorId,
+          reason, commentId, successorRunId: randomUUID(), dryRun: true,
           onBlocked: (reason, message) => { wait = { reason, message }; },
         });
         if (!admitted) {
@@ -10101,8 +10132,9 @@ export function heartbeatService(
       // Re-enter ordinary admission with the original user's authority. It
       // atomically adopts the deferred comments and still applies every gate.
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
-        reason: wake.reason, payload, contextSnapshot: context,
-        requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
+        reason, payload, contextSnapshot: context,
+        requestedByActorType: "user", requestedByActorId,
+        ...(stoppedNativeContinuation ? { queuedCommentRequestId: wake.id } : {}),
         idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
       break;
     }
@@ -23692,6 +23724,26 @@ export function heartbeatService(
                     },
                     onDispatch: markDispatchStarted,
                     signal: executionControl.controller.signal,
+                    ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {
+                      stopRemoteStartup: async () => {
+                        // Scope comes from the running host invocation, never agent
+                        // config. Keep adapter ownership until setup has unwound.
+                        if (!executionControl.controller.signal.aborted) {
+                          throw new Error("Remote startup stop requires a cancelled run");
+                        }
+                        const release = await envOrchestrator.releaseForRun({
+                          heartbeatRunId: run.id,
+                          companyId: agent.companyId,
+                          agentId: agent.id,
+                          status: "released",
+                          providerResourceDisposition: "stop_and_retain",
+                          cancelActiveWork: true,
+                        });
+                        if (release.errors.length || !await remoteExecutionHasStopped(db, agent.companyId, run.id)) {
+                          throw new Error("Could not verify remote startup stopped");
+                        }
+                      },
+                    } : {}),
                     onCancellationReady: async () => {
                       await registerAdapterExecutionControl(run.id, executionControl);
                       const current = await getRun(run.id);
@@ -27176,6 +27228,20 @@ export function heartbeatService(
             .returning()
             .then((rows) => rows[0]);
 
+          // A handoff changes the executor, not the owner of saved user input.
+          // Validate its exact stopped source while the issue row is locked;
+          // unrelated agents and dedicated continuations keep their own wakes.
+          const interruptedRunId = readNonEmptyString(enrichedContextSnapshot.interruptedRunId);
+          const handoffSource = source === "assignment" && reason === "issue_assigned" &&
+            issue.assigneeAgentId === agentId && interruptedRunId && isUuidLike(interruptedRunId)
+              ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.id, interruptedRunId), eq(heartbeatRuns.companyId, issue.companyId),
+                  eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, "issue_reassigned"),
+                  ne(heartbeatRuns.agentId, agentId),
+                  sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+                  or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issue.id)),
+                )).then(rows => rows[0] ?? null)
+              : null;
           const pendingComments =
             !isConversation(issue) && opts.allowRunCoalescing !== false &&
             !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
@@ -27185,7 +27251,7 @@ export function heartbeatService(
                   .where(
                     and(
                       eq(agentWakeupRequests.companyId, issue.companyId),
-                      eq(agentWakeupRequests.agentId, agentId),
+                      inArray(agentWakeupRequests.agentId, handoffSource ? [agentId, handoffSource.agentId] : [agentId]),
                       eq(agentWakeupRequests.status, "deferred_issue_execution"),
                       sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
                     ),
@@ -27218,7 +27284,7 @@ export function heartbeatService(
               ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
             ]),
           ];
-          if (opts.queuedCommentRequestId) {
+          if (opts.queuedCommentRequestId || handoffSource) {
             adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }

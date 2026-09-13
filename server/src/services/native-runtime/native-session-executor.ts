@@ -1,3 +1,4 @@
+import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
@@ -77,7 +78,7 @@ import {
   type NativeSessionGoalControl,
 } from "../../vendor/paperclip-runner/index.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
+import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
   resolvePaperclipRunnerTransport,
@@ -9592,7 +9593,16 @@ export function createRemoteRunnerProcessLauncher(input: {
           ],
           bypassSession: true,
           timeoutMs: 10_000,
-        });
+        }).catch(async () => {
+          // kill() follows Node's synchronous child-process contract. A deleted
+          // sandbox or failed signal RPC must not reject outside that boundary
+          // and crash the controller. This is not a termination receipt: the
+          // monitor and cleanup verification still decide whether work stopped.
+          await input.onLog?.(
+            "stderr",
+            "Remote runner signal failed; process termination is not confirmed.\n",
+          );
+        }).catch(() => undefined);
         return true;
       },
     };
@@ -9915,6 +9925,20 @@ async function createRunnerdBackendWithinSessionClaim(
 ): Promise<NativeSessionBackend> {
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
+  const remoteTarget = target.kind === "remote" ? target : null;
+  const remoteCommandRunner = remoteTarget
+    ? remoteTarget.transport === "ssh"
+      ? createNativeSshCommandRunner({
+          spec: remoteTarget.spec,
+          defaultCwd: remoteTarget.remoteCwd,
+        })
+      : remoteTarget.runner
+    : null;
+  if (remoteTarget && !remoteCommandRunner) {
+    throw new Error(
+      "runner_transport_ineligible: remote process runner is unavailable",
+    );
+  }
   const currentWakeComments = await resolveCurrentWakeCommentsBinding(
     input.db,
     input.execution.binding,
@@ -9934,8 +9958,11 @@ async function createRunnerdBackendWithinSessionClaim(
         ? input.execution.runtimeContext.mcp.digest
         : undefined,
     workMode: input.execution.task.workMode,
-    workspaceRoot: input.execution.workspace.cwd,
+    workspaceRoot: remoteTarget?.remoteCwd ?? input.execution.workspace.cwd,
     executionTargetKind: target.kind,
+    readRemoteWorkspaceFile: remoteTarget && remoteCommandRunner
+      ? (file) => readVerifiedRemoteWorkspaceFile({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd, ...file })
+      : undefined,
     currentWakeComments: currentWakeComments ?? undefined,
     chatAttachmentReadScope: input.chatAttachmentReadScope,
     enqueueWakeup: input.enqueueWakeup,
@@ -9967,20 +9994,6 @@ async function createRunnerdBackendWithinSessionClaim(
     input.durableEnvironmentLeaseId ??
     input.execution.binding.executionWorkspaceId;
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const remoteTarget = target.kind === "remote" ? target : null;
-  const remoteCommandRunner = remoteTarget
-    ? remoteTarget.transport === "ssh"
-      ? createSshCommandManagedRuntimeRunner({
-          spec: remoteTarget.spec,
-          defaultCwd: remoteTarget.remoteCwd,
-        })
-      : remoteTarget.runner
-    : null;
-  if (remoteTarget && !remoteCommandRunner) {
-    throw new Error(
-      "runner_transport_ineligible: remote process runner is unavailable",
-    );
-  }
   const remoteRuntimeRoot = remoteTarget
     ? posix.join(
         remoteTarget.remoteCwd,
@@ -10702,6 +10715,28 @@ async function createRunnerdBackendWithinSessionClaim(
     };
   };
 
+  const claimUntouchedSessionInResumedLease = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
+    const identity = readRunnerdDurableIdentity(root);
+    if (!durableIdentityMatchesExecution(identity, input.execution) ||
+        identity?.runnerInstanceId !== effectiveRunnerInstanceId ||
+        identity?.environmentLeaseId !== effectiveEnvironmentLeaseId ||
+        !runnerdStateProvesIncompleteBootstrap(root)) return false;
+    // A reusable workspace may have failed before any harness was created.
+    // Claim this exact new session atomically under readable real directories.
+    // Missing files inside an existing session never authorize a fresh start.
+    const probe = await remoteCommandRunner.execute({
+      command: "sh",
+      args: ["-c",
+        'set -eu; umask 077; test -d "$1" && test ! -L "$1" && test -r "$1" && test -x "$1" || exit 1; if test ! -e "$2" && test ! -L "$2"; then mkdir -- "$2"; fi; test -d "$2" && test ! -L "$2" && test -r "$2" && test -x "$2" || exit 1; mkdir -- "$3"',
+        "paperclip-runner-claim-unstarted-session", remoteRuntimeRoot,
+        posix.dirname(remoteSessionRoot), remoteSessionRoot],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    return probe.exitCode === 0 && !probe.timedOut;
+  };
+
   const recordInPlaceHarnessReuse = async (
     providerSessionIdentity: Record<string, unknown>,
     startedAtMs = Date.now(),
@@ -10958,12 +10993,16 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      throw new Error("runner_harness_state_mismatch");
+                      if (state.incompleteReason !== "unavailable" || backupAvailable ||
+                          !(await claimUntouchedSessionInResumedLease())) {
+                        throw new Error("runner_harness_state_mismatch");
+                      }
+                    } else {
+                      await recordInPlaceHarnessReuse(
+                        state.providerSessionIdentity,
+                        reuseStartedAtMs,
+                      );
                     }
-                    await recordInPlaceHarnessReuse(
-                      state.providerSessionIdentity,
-                      reuseStartedAtMs,
-                    );
                   } else if (
                     sandboxLeaseAcquisition?.outcome === "replacement"
                   ) {

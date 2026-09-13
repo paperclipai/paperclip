@@ -33,9 +33,9 @@ not change agent execution settings.
 API keys are validated against fixed provider endpoints; redirects
 and caller-supplied validation URLs are rejected.
 
-`runtimeConfig.aiConnection` contains `provider`, `method`, and `mode`:
+`runtimeConfig.aiConnection` contains `provider`, `mode`, and `method`. For responsible-user selections, `method` is a legacy wire hint retained for rolling upgrades; the resolver uses the selected account’s actual method:
 
-- `responsible_user`: resolve the run's responsible user's personal default.
+- `responsible_user`: resolve the run's responsible user's personal provider default, using that account's subscription or API key. The `method` hint does not restrict the responsible user's account.
 - `shared`: use the named `connectionId` and `grantId`, with audience and agent
   access checks.
 - `delegated`: retained only to read legacy bindings. It cannot bypass human
@@ -52,8 +52,10 @@ A connection choice never changes the harness, model, or provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
 
-Personal defaults are unique per company, user, provider, and sign-in method.
+Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 The first successful personal connection sets a default only when none exists.
+The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
+
 Revocation retains the unavailable default; connecting another account does not
 silently replace it. Change it explicitly on the account detail page.
 
@@ -62,7 +64,7 @@ silently replace it. Change it explicitly on the account detail page.
 AI connections pair `connectionPurpose: ai` with `transport: runtime_auth`.
 Database checks and the shared discriminator enforce the pair. These entries
 cannot participate in tool discovery, MCP gateways, execution, or channels.
-Anthropic retains its existing tool methods alongside its AI methods. Catalog
+Anthropic offers Claude subscription and Claude API key; the unsupported duplicate REST API option is excluded. Catalog
 validation also pairs AI metadata with runtime authentication and rejects unsupported
 sign-in methods. Provider artwork and source provenance live in
 `ui/public/brands/apps/manifest.json`; OpenRouter uses its official sign-in assets,
@@ -124,6 +126,20 @@ Revocation blocks new invocations and refresh persistence. A running provider
 process may already hold credentials. The revoke confirmation lists attributed
 active runs and exposes the existing Stop action; it does not promise immediate
 provider-side revocation.
+
+### Stop during sandbox preparation
+
+ACPX startup registers cancellation while it materializes the remote auth home
+and stages files. Stop requests termination of that run's sandbox. Daytona closes
+admission and stops the sandbox before waiting for outstanding setup commands.
+The host requires a receipt for the exact company, run, and provider lease before
+abandoning the blocked setup RPC. Normal completion still drains work gracefully.
+
+Late setup responses cannot launch the agent. A cancelled sandbox cannot resume
+while its old provider requests are still settling; a retry receives an explicit
+error instead. If termination cannot be verified, the adapter keeps ownership
+until the outstanding operation settles, and Stop is not acknowledged as complete.
+Local execution and cancellation of an already-running agent turn are unchanged.
 
 ## Legacy adoption
 

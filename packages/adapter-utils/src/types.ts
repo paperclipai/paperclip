@@ -199,6 +199,9 @@ export interface AdapterExecutionContext {
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
   onCancellationReady?: () => Promise<void>;
+  /** Host-owned stop of this run's sandbox during setup. Resolves only after
+   * provider termination is verified; never accepts an agent-selected lease. */
+  stopRemoteStartup?: () => Promise<void>;
   /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
   executionContinuation?: ExecutionContinuationEnvelope | null;
   runId: string;

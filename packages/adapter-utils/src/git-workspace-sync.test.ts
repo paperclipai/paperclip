@@ -118,6 +118,19 @@ describe("git workspace sync", () => {
     return repo;
   }
 
+  it("does not classify a selected repository subfolder as a cloneable repository root", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-selected-folder-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const selectedDir = path.join(repo, "project");
+    await mkdir(selectedDir);
+    await writeFile(path.join(selectedDir, "draft.md"), "selected work\n");
+
+    expect(await git(selectedDir, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
+    expect(await readGitWorkspaceSnapshot(selectedDir)).toBeNull();
+    expect((await readGitWorkspaceSnapshot(repo))?.headCommit).toBe(await git(repo, ["rev-parse", "HEAD"]));
+  });
+
   it("creates a shallow standalone clone from the local HEAD snapshot", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-sync-"));
     cleanupDirs.push(rootDir);
@@ -586,6 +599,27 @@ describe("git workspace sync", () => {
       await writeFile(path.join(plainDir, "file.txt"), "body\n", "utf8");
 
       await expect(readReferencedSourceGitIgnoredPaths(plainDir)).resolves.toBeNull();
+    });
+
+    it.each([
+      { code: "workspace_git_scan_failed", exitCode: 128, signal: null, nonGit: true },
+      { code: "workspace_git_scan_timeout", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_cancelled", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_output_limit", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_failed", exitCode: null, signal: "SIGTERM", nonGit: false },
+    ])("classifies scheduled non-repository failures without swallowing $code/$signal", async ({ code, exitCode, signal, nonGit }) => {
+      const error = Object.assign(new Error("Workspace Git scan failed"), {
+        code,
+        details: { exitCode, signal, stderr: "fatal: not a git repository (or any of the parent directories): .git" },
+      });
+      setExpensiveWorkspaceGitExecutor(async () => { throw error; });
+      try {
+        const result = readReferencedSourceGitIgnoredPaths("/plain-workspace");
+        if (nonGit) await expect(result).resolves.toBeNull();
+        else await expect(result).rejects.toBe(error);
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
     });
 
     it("reads the repository top level and the ignored paths of a Git work tree", async () => {

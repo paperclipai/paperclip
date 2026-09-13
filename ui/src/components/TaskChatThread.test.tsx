@@ -1056,6 +1056,40 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(onRetryFailedRun).toHaveBeenCalledWith("native-failed");
   });
 
+  it.each([false, true])("keeps a later bootstrap failure actionable only after the old recovery has a successor: %s", async (continued) => {
+    const onRetryFailedRun = vi.fn();
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked"
+      onRetryFailedRun={onRetryFailedRun} linkedRuns={[
+        {
+          runId: "old-native", runtimeMode: "native", status: "failed", errorCode: "adapter_failed",
+          agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:02.000Z",
+          execution: {
+            phase: continued ? "completed" : "recovery_needed", label: continued ? "Continued in another run" : "Stopped",
+            cause: "native_continuation_requires_reconciliation", lastConfirmedActivityAt: null,
+            retryAt: null, attempt: 1, maxAttempts: 3, recoveryOwner: null, nextAction: null,
+            permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: continued ? "failed-bootstrap" : null,
+          },
+        },
+        {
+          runId: "failed-bootstrap", runtimeMode: "legacy", status: "failed", errorCode: "setup_failed",
+          agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:01:00.000Z", startedAt: "2026-08-25T18:01:00.000Z",
+          finishedAt: "2026-08-25T18:01:02.000Z",
+        },
+      ]} />);
+    const retryButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]'));
+    if (!continued) {
+      expect(retryButtons).toHaveLength(0);
+      return;
+    }
+    expect(retryButtons.length).toBeGreaterThan(0);
+    flushSync(() => retryButtons.at(-1)!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("failed-bootstrap");
+  });
+
   it("explains a native provider usage limit without exposing its error code", async () => {
     const onRetryFailedRun = vi.fn();
     render(

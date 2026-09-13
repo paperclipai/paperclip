@@ -14,6 +14,7 @@ const requirement: AiConnectionRequirement = {
 };
 const account: AiConnectionSummary = {
   ...requirement,
+  method: "subscription",
   id: "example",
   grantId: "example-grant",
   name: "My Claude subscription",

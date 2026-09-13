@@ -97,6 +97,25 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it.each([false, true])("honors driver steering support even when the transport exposes a steer method (%s)", async supported => {
+    const steer = vi.fn(async () => { throw new Error("provider does not support steering"); });
+    const session = Object.assign(new FakeHarnessSession(), { steer });
+    const backend = new HarnessDriverBackend({ ...driver,
+      descriptor: async () => ({ ...(await driver.descriptor()), capabilities: {
+        ...(await driver.descriptor()).capabilities, steering: supported,
+      } }),
+      openSession: async () => session,
+      recoverSession: async () => ({ recovered: true, session }),
+    });
+    const opened = await backend.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    expect((await opened.capabilities()).steering).toBe(supported);
+    const recovered = await backend.recoverSession(await opened.snapshot(), { signal: new AbortController().signal });
+    expect(recovered.recovered).toBe(true);
+    expect((await recovered.session!.capabilities()).steering).toBe(supported);
+    expect(steer).not.toHaveBeenCalled();
+  });
   it("retains Codex accounting and startup state through a serialized native checkpoint", async () => {
     const fields = { workingDirectory: "/workspace/selected", codexUsageBaseline: {
       baseline: { inputTokens: 100, outputTokens: 20 },

@@ -42,6 +42,29 @@ describe("execution truth projection", () => {
       scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } }), undefined, [], undefined, now))
       .toMatchObject({ label: "Waiting for workspace", phase: "retry_scheduled", attempt: 2, recoveryOwner: null });
   });
+  it.each([
+    { status: "resolved", previousRunId: "old", nextRunId: "next", continued: true },
+    { status: "active", previousRunId: "old", nextRunId: "next", continued: false },
+    { status: "resolved", previousRunId: "other", nextRunId: "next", continued: false },
+    { status: "resolved", previousRunId: "old", nextRunId: "old", continued: false },
+    { status: "resolved", previousRunId: "old", nextRunId: null, continued: false },
+  ])("projects the recorded explicit successor without hiding unresolved recovery: $status/$previousRunId/$nextRunId", ({ status, previousRunId, nextRunId, continued }) => {
+    const source = run({ id: "old", status: "failed", errorCode: "adapter_failed" });
+    expect(projectExecution(source, coordinator({ phase: "terminal_failure" }), [], {
+      status,
+      cause: "native_continuation_requires_reconciliation",
+      nextAction: "Inspect the stopped execution.",
+      evidence: {
+        automaticRecovery: { policy: "preserve_without_replay_v1" },
+        explicitUserContinuation: { previousRunId, runId: nextRunId },
+      },
+    }, now)).toMatchObject(continued ? {
+      phase: "completed", label: "Continued in another run", successorRunId: "next",
+      cause: "native_continuation_requires_reconciliation", nextAction: null,
+    } : { phase: "recovery_needed", successorRunId: null });
+    expect(source.status).toBe("failed");
+  });
+
   it("shows a reconciled continuation as queued until its durable delivery is recorded", () => {
     const action = {
       cause: "native_session_retry_exhausted",

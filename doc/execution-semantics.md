@@ -834,6 +834,11 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+If runnerd synthesizes a result when the provider stops, it publishes that result
+before the provider-turn terminal and publishes the run terminal last. The
+adapter can therefore retain the result while the matching turn still has
+authority. A late result must not reopen an already finalized turn.
+
 Routine task completion and human-input requests must work under Conservative
 runner permissions. The isolated Claude runtime grants only the narrow task
 tools on the runner-owned bridge; it does not change general tool permissions.
@@ -853,6 +858,11 @@ it does not create a pause hold. An acknowledged intentional cancellation remain
 neutral even if teardown releases the run lease or returns no semantic result.
 **Pause work** separately controls future execution. A crash preventing progress
 is **Blocked**; **In Review** requires a concrete human decision.
+
+Subtree pause and cancel record the authenticated board actor on each run they
+interrupt. A verified native stop must not become an unexplained failure simply
+because it came from a subtree action. The explicit pause hold still prevents
+future execution until Resume, and missing stop proof still blocks continuation.
 
 ### Provider continuity and bounded finalization
 
@@ -1158,3 +1168,72 @@ and final dispatch gates. Queued and final native replacement dispatch also
 re-read dependency readiness, since new dependencies need not change the
 displayed task status. Old blocked rows without a receipt remain held; no
 historical status backfill is performed.
+
+### Queued input after a native Stop
+
+A run-only Stop ends the current response. It does not discard queued user
+messages or require a recovery incident. After the controller releases ownership
+and the old local process or remote environment has a verified stop record,
+Paperclip submits saved input through normal task admission, once, with the
+original user's authority. Pauses, task ownership, budgets, approvals, and
+execution recovery holds still apply. Unconfirmed cleanup does not start work.
+
+The active session advertises steering only when its driver supports it. A
+transport method that rejects steering does not grant that capability. The
+queued-message control remains mounted until the server accepts a steer request,
+so a rejected last-row action keeps its message and visible error.
+
+### Preserve work across handoff and deliver requested files
+
+An agent handoff carries the interrupted run's authorized task history, completed
+semantic actions, and available result summary to the replacement agent. The
+replacement must inspect existing files and preserve completed content before
+editing. Source history is still scoped to the same company and task; prior
+results are untrusted evidence, not instructions or new authorization.
+Saved task comments move into that successor's delivery receipt in the same
+transaction that queues it. Their original authors remain intact. A former
+assignee's ordinary comment wake must not start another execution or reopen a
+completed task after the replacement finishes. Mentions, chat deliveries, and
+dedicated interaction continuations retain their separate delivery contracts.
+
+A requested file is complete when the user can retrieve it. Native runners must
+register requested output files before reporting Done and link the resulting
+attachment in their answer. Completion feedback rejects workspace-only file
+references and fabricated or cross-task delivery receipts. Text answers and
+accessible repository work products do not require an attachment. Publication
+failure calls for continued work or a concrete blocker, not a human confirmation
+that the task is complete.
+
+For an explicit file output in the current request, an empty report, a
+verification-only reference, or an unregistered URL cannot satisfy delivery.
+The report must cite an attachment verified by the current run's durable
+publication receipt, matching its task, filename, size, and SHA-256, or an
+accessible work product registered by that run with a published URL. A prior
+run's output cannot stand in for a newly requested file. A same-run controller
+restart keeps the receipt; a replacement can inspect and re-register preserved
+workspace bytes without user bookkeeping. Follow-ups requesting no new file can
+still reference existing downloads. Prior downloads can also accompany a valid
+current output as context. Authorized chat attachment reuse supplies a current-run
+publication receipt for its verified clone; older reuse receipts must additionally
+match an intact company-scoped source's filename, size, and hash.
+A `workspace_file` locator alone is not delivery
+evidence: it neither verifies the file nor preserves its bytes after cleanup.
+Reading or reviewing an existing file for an inline answer does not
+require uploading that input. Ambiguous prose remains subject to the runner's
+completion contract; the server's explicit-output check is deliberately narrow.
+
+Local and remote runners use the same attachment publication contract. Remote
+files are read through the bound environment runner, with workspace confinement,
+no symlinks or hardlinks, stable file identity, a 10 MiB bound, and exact size and
+SHA-256 checks before storage. Remote paths are never opened on the controller.
+
+An asynchronous remote signal failure, including a sandbox already removed by
+the operator, must not crash the controller. Logging that failure must also be
+contained. A rejected signal does not prove termination: existing process and
+provider monitoring still own stop acknowledgement and cleanup proof.
+
+Protocol-failure handling can begin transport cleanup before the owning runtime
+awaits it. That background invocation observes rejection immediately, including
+when a remote sandbox has already disappeared. The owner's awaited close still
+receives the original failure; containment never fabricates a successful close
+or permission to reuse an unverified execution.

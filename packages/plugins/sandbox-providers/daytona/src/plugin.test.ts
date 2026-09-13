@@ -2551,6 +2551,21 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(3);
     });
 
+    it("keeps account credentials and API endpoints isolated for the same sandbox ID", async () => {
+      mockGet.mockImplementation(async () => createMockSandbox({ id: "sandbox-account" }));
+      const params = execParams("sandbox-account");
+      for (const config of [
+        { apiKey: "account-a", apiUrl: "https://one.daytona.test/api" },
+        { apiKey: "account-b", apiUrl: "https://one.daytona.test/api" },
+        { apiKey: "account-a", apiUrl: "https://two.daytona.test/api" },
+      ]) {
+        await plugin.definition.onEnvironmentExecute!({
+          ...params, config: { ...params.config, ...config },
+        });
+      }
+      expect(mockGet).toHaveBeenCalledTimes(3);
+    });
+
     it("rejects a queued execute after release teardown closes the lease", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       mockGet.mockImplementation(async () => createMockSandbox({ id: "lease-a" }));
@@ -2643,6 +2658,52 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(1);
       expect(sandbox.stop).toHaveBeenCalledTimes(1);
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("cancels active work before waiting for a stalled execute to drain", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let release!: () => void;
+      sandbox.process.executeCommand.mockImplementation(async () => {
+        await new Promise<void>(resolve => { release = resolve; });
+        return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+      });
+      mockGet.mockResolvedValue(sandbox);
+      const execute = plugin.definition.onEnvironmentExecute!(execParams("lease-a"));
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      const cancellation = plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true },
+        cancelActiveWork: true,
+      });
+      try {
+        await vi.waitFor(() => expect(sandbox.stop).toHaveBeenCalledTimes(1), { timeout: 500 });
+        await expect(cancellation).resolves.toEqual({ providerLeaseId: "lease-a", state: "stopped" });
+        await expect(plugin.definition.onEnvironmentExecute!(execParams("lease-a"))).rejects.toThrow(/no longer active/);
+        await expect(plugin.definition.onEnvironmentResumeLease!({
+          driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+          providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true },
+        })).rejects.toThrow(/still settling cancelled work/);
+        expect(sandbox.start).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await execute;
+        await cancellation;
+      }
+    });
+
+    it("does not report termination when the provider rejects Stop", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      sandbox.stop.mockRejectedValue(new Error("provider unavailable"));
+      mockGet.mockResolvedValue(sandbox);
+      await expect(plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        providerLeaseId: "lease-a", config: { timeoutMs: 300000, reuseLease: true },
+        cancelActiveWork: true,
+      })).rejects.toThrow("provider unavailable");
+      expect(sandbox.delete).not.toHaveBeenCalled();
+      await expect(plugin.definition.onEnvironmentExecute!(execParams("lease-a"))).rejects.toThrow(/no longer active/);
     });
 
     it("waits for an in-flight execute before teardown cleanup starts", async () => {
@@ -3271,6 +3332,55 @@ describe("Daytona sandbox provider plugin", () => {
       // The failed refresh evicted the handle, so the next lookup re-fetches.
       await plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config });
       expect(mockGet).toHaveBeenCalledTimes(2);
+    });
+
+    it("realizes a resumed lease after the provider fills in an unspecified target", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-default-target" });
+      mockCreate.mockResolvedValue(sandbox);
+      mockGet.mockResolvedValue(sandbox);
+      const base = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1" };
+      const config = { image: "node:20", timeoutMs: 300000, reuseLease: true };
+      const lease = await plugin.definition.onEnvironmentAcquireLease!({
+        ...base, runId: "run-1", agentId: "agent-1", executionWorkspaceId: "workspace-1", config,
+      });
+      // The host materializes provider metadata into later operation config,
+      // but resumes with the environment's original, target-less config.
+      const realizedConfig = { ...config, ...lease.metadata };
+      expect(realizedConfig).toMatchObject({ target: "us" });
+      await plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config: realizedConfig, lease,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      });
+      expect(mockGet).not.toHaveBeenCalled();
+      await plugin.definition.onEnvironmentReleaseLease!({
+        ...base, config: realizedConfig, providerLeaseId: lease.providerLeaseId!,
+      });
+      await expect(plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config, lease,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      })).rejects.toThrow(/no longer active/);
+      await expect(plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config: realizedConfig, lease,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      })).rejects.toThrow(/no longer active/);
+
+      sandbox.state = "stopped";
+      const sentinel = lease.metadata!.workspaceSentinel as { token: string };
+      sandbox.process.executeCommand.mockResolvedValueOnce({
+        exitCode: 0, result: JSON.stringify({ token: sentinel.token }),
+        artifacts: { stdout: JSON.stringify({ token: sentinel.token }) },
+      });
+      const resumed = await plugin.definition.onEnvironmentResumeLease!({
+        ...base, config, providerLeaseId: lease.providerLeaseId!, leaseMetadata: lease.metadata,
+      });
+      expect(resumed.metadata).toMatchObject({
+        resumedLease: true, workspaceSentinel: { result: "matched" },
+      });
+      await expect(plugin.definition.onEnvironmentRealizeWorkspace!({
+        ...base, config: { ...config, ...resumed.metadata }, lease: resumed,
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+      })).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
     });
 
     it("realizes the workspace from the acquire-seeded handle without a client.get", async () => {

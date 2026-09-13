@@ -60,12 +60,13 @@ function AgentConnectionReview({
   error,
 }: AiConnectionsReviewProps) {
   const requirement = initialRequirement;
+  const method = requirement.method ?? (requirement.provider === "openrouter" ? "api_key" : "subscription");
   const [connections, setConnections] = useState(initialConnections);
-  const [binding, setBinding] = useState(
+  const [binding, setBinding] = useState<AiConnectionBinding>(
     initialBinding ?? {
       ...AI_REVIEW_BINDING,
       provider: requirement.provider,
-      method: requirement.method,
+      method,
     },
   );
   const [stage, setStage] = useState<string>(
@@ -73,7 +74,7 @@ function AgentConnectionReview({
   );
   const [auth, setAuth] = useState<AiAuthState>(initialAuthState);
   const [name] = useState(
-    `My ${aiMethodLabel(requirement.provider, requirement.method) === "API key" ? `${AI_PROVIDERS[requirement.provider].name} API` : aiMethodLabel(requirement.provider, requirement.method)}`,
+    `My ${aiMethodLabel(requirement.provider, method) === "API key" ? `${AI_PROVIDERS[requirement.provider].name} API` : aiMethodLabel(requirement.provider, method)}`,
   );
   const [tested, setTested] = useState(false);
   const [adopting, setAdopting] = useState(false);
@@ -134,7 +135,7 @@ function AgentConnectionReview({
     }
     const id = `review-account-${connections.length + 1}`;
     const connection: AiConnectionSummary = {
-      ...requirement, id, grantId: `grant-${id}`, name: name.trim(),
+      ...requirement, method, id, grantId: `grant-${id}`, name: name.trim(),
       ownership: "personal", ownerUserId: currentUserId,
       ownerName: currentUserId === "dotta" ? "Dotta" : "Sam",
       isDefault: !connections.some((row) => matchesAiRequirement(row, requirement) && row.ownerUserId === currentUserId && row.isDefault),
@@ -316,7 +317,7 @@ function AgentConnectionReview({
           <AiReviewBoundary label="Simulated authentication controller: AiConnectionAuth · Reuses existing login cards">
           <AiConnectionAuth
             provider={requirement.provider}
-            method={requirement.method}
+            method={method}
             state={auth}
             onStart={() => {
               if (!name.trim()) return;

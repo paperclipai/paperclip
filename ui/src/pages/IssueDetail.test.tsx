@@ -5629,6 +5629,40 @@ describe("IssueDetail", () => {
     },
   );
 
+  it("keeps the last queued message mounted until steering is acknowledged so rejection stays visible", async () => {
+    const queue = createQueuedCommentQueue();
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+    mockIssuesApi.listComments.mockResolvedValue([queue.entries[0].comment]);
+    mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-active-1", runtimeMode: "native", status: "running", invocationSource: "issue",
+      triggerDetail: null, contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner", issueId: "issue-1",
+    });
+    let rejectSteer!: (error: Error) => void;
+    mockIssuesApi.steerQueuedComment.mockReturnValue(new Promise((_, reject) => { rejectSteer = reject; }));
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>); });
+    type Props = { onSteerQueuedComment: (id: string, revision: string) => Promise<void>; queuedCommentQueue: IssueQueuedCommentQueue | null };
+    let props!: Props;
+    await waitForAssertion(() => {
+      props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      expect(props.queuedCommentQueue?.entries).toHaveLength(1);
+      expect(props.queuedCommentQueue?.queueId).toBe("wake-queue-1");
+      expect(props.queuedCommentQueue?.targetRunId).toBe("run-active-1");
+    });
+    let pending!: Promise<unknown>;
+    await act(async () => { pending = props.onSteerQueuedComment("queued-comment-1", queue.revision).catch(error => error); });
+    // The child owns its pending/error state. Unmounting it here loses any later error.
+    const whilePending = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+    expect(whilePending.queuedCommentQueue?.entries).toHaveLength(1);
+    const failure = new ApiError("This runner does not support steering", 409, { code: "steering_unsupported" });
+    await act(async () => { rejectSteer(failure); await pending; });
+    expect(await pending).toBe(failure);
+    expect((mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props).queuedCommentQueue?.entries).toHaveLength(1);
+  });
+
   it("promotes a steered message immediately while its durable timeline position refreshes", async () => {
     const queue = createQueuedCommentQueue();
     const steeredQueue = createQueuedCommentQueue({
@@ -5702,6 +5736,7 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.steerQueuedComment).toHaveBeenCalled();
       expect(mockActivityApi.forIssue.mock.calls.length).toBeGreaterThan(1);
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]?.queuedCommentQueue).toBeNull();
     });
 
     const whileRefreshing = mockIssueChatThreadRender.mock.calls.at(

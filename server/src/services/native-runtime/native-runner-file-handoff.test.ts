@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
+import { nativeCompletionFeedback } from "./native-completion-feedback.js";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -14,7 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   activityLog,
@@ -116,6 +118,7 @@ describe("native runner file handoff", () => {
     overrides: Partial<{
       companyId: string;
       executionTargetKind: "local" | "remote";
+      readRemoteWorkspaceFile: (input: { contentRef: string; byteSize: number; sha256: string }) => Promise<Buffer>;
     }> = {},
   ) {
     return new PaperclipRunnerToolAuthority(db, {
@@ -125,6 +128,7 @@ describe("native runner file handoff", () => {
       runId,
       workspaceRoot,
       executionTargetKind: overrides.executionTargetKind ?? "local",
+      readRemoteWorkspaceFile: overrides.readRemoteWorkspaceFile,
       storage: createStorageService(
         createLocalDiskStorageProvider(storageRoot),
       ),
@@ -179,6 +183,66 @@ describe("native runner file handoff", () => {
     return { attachment, comment, stored };
   }
 
+  function doneReport(refs: string[]): PrpStructuredRunResult {
+    return {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "done",
+      summary: "Created the requested checklist.",
+      completionClaim: { contractRevision: "test", objectiveSatisfied: true, criteria: [], remainingWork: [] },
+      evidence: refs.map((ref) => ({ ref })),
+      verification: [], attentionRequests: [], artifacts: [],
+    };
+  }
+
+  it("rejects a workspace-only file completion and invented delivery receipts without asking the user to approve completion", async () => {
+    for (const ref of ["launch-checklist.md", "./out/report.pdf", "/workspace/answer.txt", "file:out/report.csv", "deliverable:00000000-0000-4000-8000-000000000001"]) {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([ref])))
+        .rejects.toThrow(/register_deliverable|registered attachment/);
+    }
+    await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+      .rejects.toThrow(/requested file.*accessible|register_deliverable/);
+    await expect(nativeCompletionFeedback(db, runId, doneReport(["verification:passed"])))
+      .rejects.toThrow(/requested file.*accessible|register_deliverable/);
+    await expect(nativeCompletionFeedback(db, runId, doneReport(["https://example.com/report.pdf"])))
+      .rejects.toThrow(/requested file.*accessible|register_deliverable/);
+    await db.update(issues).set({ title: "Explain how a newsletter works" }).where(eq(issues.id, issueId));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+        .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, runId, doneReport(["README.md"])))
+        .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, runId, { ...doneReport([]), artifacts: [{ kind: "file", ref: "unpublished.pdf" }] }))
+        .rejects.toThrow("workspace-only file");
+    } finally {
+      await db.update(issues).set({ title: "Prepare a requested file" }).where(eq(issues.id, issueId));
+    }
+  });
+
+  it("accepts a cited registered work product and respects the current request", async () => {
+    const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "artifact", provider: "external",
+      title: "Requested report", status: "ready_for_review", url: "https://example.com/report.pdf", createdByRunId: runId }).returning();
+    try {
+      for (const ref of [product.url!, `work_product:${product.id}`]) {
+        await expect(nativeCompletionFeedback(db, runId, doneReport([ref])))
+          .resolves.toContain("Completion report accepted");
+      }
+      // Metadata can name a nonexistent or cleaned-up workspace file; it is not a download.
+      await db.update(issueWorkProducts).set({ url: null, metadata: { resourceRef: { kind: "workspace_file", path: "missing-report.pdf" } } }).where(eq(issueWorkProducts.id, product.id));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
+        .rejects.toThrow("requested file has no accessible delivery evidence");
+      await db.update(issueWorkProducts).set({ url: product.url }).where(eq(issueWorkProducts.id, product.id));
+      await db.update(issueWorkProducts).set({ status: "failed" }).where(eq(issueWorkProducts.id, product.id));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
+        .rejects.toThrow("requested file has no accessible delivery evidence");
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective: "Do not create a file. Explain the result inline." } } }).where(eq(heartbeatRuns.id, runId));
+      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+        .resolves.toContain("Completion report accepted");
+    } finally {
+      await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
   it("prepares one verified same-run attachment and replays without duplicates", async () => {
     const body = Buffer.from("native runner file handoff\n", "utf8");
     await mkdir(path.join(workspaceRoot, "out"), { recursive: true });
@@ -227,6 +291,19 @@ describe("native runner file handoff", () => {
       disposition: "duplicate",
       entityRefs: first.entityRefs,
     });
+
+    await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+      .resolves.toContain("Completion report accepted");
+    const otherIssueId = "00000000-0000-4000-8000-000000009111";
+    await db.insert(issues).values({ id: otherIssueId, companyId, title: "Unrelated file", status: "in_progress" });
+    await db.update(issueAttachments).set({ issueId: otherIssueId }).where(eq(issueAttachments.id, first.entityRefs[0]));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+        .rejects.toThrow("registered attachment on this task");
+    } finally {
+      await db.update(issueAttachments).set({ issueId }).where(eq(issueAttachments.id, first.entityRefs[0]));
+      await db.delete(issues).where(eq(issues.id, otherIssueId));
+    }
 
     const attachmentRows = await db
       .select()
@@ -351,6 +428,22 @@ describe("native runner file handoff", () => {
         callFor("checked.txt", body, "foreign-denied"),
       ),
     ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+  });
+
+  it("registers a verified remote output without reading a controller path", async () => {
+    const body = Buffer.from("Remote requested file\n");
+    const reader = vi.fn(async () => body);
+    const remote = authority({ executionTargetKind: "remote", readRemoteWorkspaceFile: reader });
+    expect(remote.definitions()).toContainEqual(expect.objectContaining({ name: "register_deliverable" }));
+    const call = callFor("remote-only/result.txt", body, "remote-output");
+    const result = await remote.execute(call) as { entityRefs: string[] };
+    expect(reader).toHaveBeenCalledWith({ contentRef: call.arguments.contentRef, byteSize: body.length, sha256: call.arguments.sha256 });
+    await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${result.entityRefs[0]}`])))
+      .resolves.toContain("Completion report accepted");
+    const badReader = vi.fn(async () => Buffer.from("wrong bytes"));
+    await expect(authority({ executionTargetKind: "remote", readRemoteWorkspaceFile: badReader })
+      .execute(callFor("remote-only/drift.txt", body, "remote-drift")))
+      .rejects.toThrow(/size|hash/);
   });
 
   it("stages only exact wake-bound inbound bytes without exposing an API credential", async () => {
@@ -1058,6 +1151,77 @@ describe("native runner file handoff", () => {
         .update(heartbeatRuns)
         .set({ contextSnapshot: originalRun.contextSnapshot })
         .where(eq(heartbeatRuns.id, runId));
+    }
+  });
+  it.each(["attachment", "work product"])("rejects a previous run's %s for new output and revalidates preserved bytes internally", async (kind) => {
+    const key = `prior-output-${kind}`;
+    const body = Buffer.from("Preserved work from the previous run.\n");
+    await writeFile(path.join(workspaceRoot, `${key}.txt`), body);
+    const prior = await authority().execute(callFor(`${key}.txt`, body, key)) as { entityRefs: string[] };
+    const [product] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "artifact", provider: "external",
+      title: "Previous report", status: "ready_for_review", url: "https://example.com/previous.pdf", createdByRunId: runId }).returning();
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, issueId));
+    const ref = kind === "attachment" ? `deliverable:${prior.entityRefs[0]}` : `work_product:${product.id}`;
+    try {
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref])))
+        .rejects.toThrow(/current run|this run|requested file.*accessible/);
+
+      // A reference in a text-only follow-up is still useful evidence, not a new output claim.
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective: "Do not create a file. Explain the result inline." } } }).where(eq(heartbeatRuns.id, nextRunId));
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref])))
+        .resolves.toContain("Completion report accepted");
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, nextRunId));
+
+      // The replacement can verify and publish the existing bytes itself. No user action is needed.
+      const replacement = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId: nextRunId,
+        workspaceRoot, executionTargetKind: "local", storage: createStorageService(createLocalDiskStorageProvider(storageRoot)) });
+      const current = await replacement.execute(callFor(`${key}.txt`, body, `${key}-verified`)) as { entityRefs: string[] };
+      expect(current.entityRefs[0]).not.toBe(prior.entityRefs[0]);
+      expect(await readFile(path.join(workspaceRoot, `${key}.txt`))).toEqual(body);
+      // Feedback reloads the durable receipt, so a controller restart of the same run keeps this proof.
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([`deliverable:${current.entityRefs[0]}`])))
+        .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref, `deliverable:${current.entityRefs[0]}`])))
+        .resolves.toContain("Completion report accepted");
+      const [currentProduct] = await db.insert(issueWorkProducts).values({ companyId, issueId, type: "artifact", provider: "external",
+        title: "Current report", status: "ready_for_review", url: "https://example.com/current.pdf", createdByRunId: nextRunId }).returning();
+      await expect(nativeCompletionFeedback(db, nextRunId, doneReport([ref, `work_product:${currentProduct.id}`])))
+        .resolves.toContain("Completion report accepted");
+    } finally {
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));
+    }
+  });
+
+  it.each(["filename", "size", "hash", "origin", "missing receipt", "wrong operation"])("requires matching current publication proof after %s changes", async (mutation) => {
+    const key = `receipt-match-${mutation}`;
+    const body = Buffer.from(`verified publication ${mutation}\n`);
+    await writeFile(path.join(workspaceRoot, `${key}.txt`), body);
+    const result = await authority().execute(callFor(`${key}.txt`, body, key)) as { entityRefs: string[] };
+    const [attachment] = await db.select().from(issueAttachments).where(eq(issueAttachments.id, result.entityRefs[0]));
+    const [asset] = await db.select().from(assets).where(eq(assets.id, attachment.assetId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    if (mutation === "filename") await db.update(assets).set({ originalFilename: "different.txt" }).where(eq(assets.id, asset.id));
+    if (mutation === "size") await db.update(assets).set({ byteSize: asset.byteSize + 1 }).where(eq(assets.id, asset.id));
+    if (mutation === "hash") await db.update(assets).set({ sha256: "0".repeat(64) }).where(eq(assets.id, asset.id));
+    if (mutation === "origin") await db.update(issueAttachments).set({ originatingRunId: null }).where(eq(issueAttachments.id, attachment.id));
+    if (mutation === "missing receipt" || mutation === "wrong operation") {
+      const changed = structuredClone(run.resultJson!);
+      const receipts = changed.semanticToolReceipts as Record<string, { operationId: string }>;
+      if (mutation === "missing receipt") delete receipts[key];
+      else receipts[key]!.operationId = "report_progress";
+      await db.update(heartbeatRuns).set({ resultJson: changed }).where(eq(heartbeatRuns.id, runId));
+    }
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${attachment.id}`])))
+        .rejects.toThrow(/current run|this run/);
+    } finally {
+      await db.update(assets).set({ originalFilename: asset.originalFilename, byteSize: asset.byteSize, sha256: asset.sha256 }).where(eq(assets.id, asset.id));
+      await db.update(issueAttachments).set({ originatingRunId: attachment.originatingRunId }).where(eq(issueAttachments.id, attachment.id));
+      await db.update(heartbeatRuns).set({ resultJson: run.resultJson }).where(eq(heartbeatRuns.id, runId));
     }
   });
 });

@@ -124,7 +124,19 @@ export function issueTreeControlRoutes(db: Db) {
       for (const heartbeatRunId of interruptedRunIds) {
         const cancellationTask = (async () => {
           try {
-            await heartbeat.cancelRun(heartbeatRunId);
+            // This board-only operation is an intentional interruption, just
+            // like composer Stop. Preserve its actor so verified native stops
+            // do not manufacture recovery incidents while the hold is active.
+            await heartbeat.cancelRun(
+              heartbeatRunId,
+              `Cancelled by a board operator's subtree ${result.hold.mode}`,
+              {
+                resultJson: {
+                  cancelledByActorType: "user",
+                  cancelledByUserId: req.actor.userId ?? null,
+                },
+              },
+            );
             await logActivity(db, {
               companyId: root.companyId,
               actorType: actor.actorType,

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   agentWakeupRequests,
@@ -124,11 +124,12 @@ export async function buildExecutionContinuation(input: {
     explicitUserSource ??
     triggerInteraction?.sourceRunId ??
     string(input.context.retryOfRunId) ??
-    string(input.context.previousRunId);
+    string(input.context.previousRunId) ??
+    string(input.context.interruptedRunId);
   const sourceRun = sourceRunId
     ? (
         await db
-          .select({ context: heartbeatRuns.contextSnapshot })
+          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
           .from(heartbeatRuns)
           .where(
             and(
@@ -222,7 +223,8 @@ export async function buildExecutionContinuation(input: {
     .where(
       and(
         eq(heartbeatRuns.companyId, companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
+        or(eq(heartbeatRuns.agentId, input.agentId),
+          sourceRunId ? eq(heartbeatRuns.id, sourceRunId) : undefined),
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
       ),
     )
@@ -308,7 +310,7 @@ export async function buildExecutionContinuation(input: {
     if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }
-  const interruptedRunId = explicitUserSource ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
+  const interruptedRunId = explicitUserSource ?? string(input.context.interruptedRunId) ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
@@ -340,7 +342,12 @@ export async function buildExecutionContinuation(input: {
         status: row.status,
         result: row.result,
       })),
-    completedWork: input.summary,
+    // Low-trust evidence only: renderPaperclipWakePrompt removes completedWork
+    // from requestContext and encodes it in the fenced, non-authoritative
+    // continuation-evidence section. It cannot supply objective or authority.
+    completedWork: input.summary ??
+      string(object(object(sourceRun?.result).nativeResult).summary)?.slice(0, 32_000) ??
+      string(object(sourceRun?.result).summary)?.slice(0, 32_000) ?? null,
     completedActions,
     unresolvedInteractionIds: interactions
       .filter((row) => row.status === "pending")

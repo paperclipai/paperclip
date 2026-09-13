@@ -68,6 +68,13 @@ describe("native runtime context files", () => {
     );
   });
 
+  it("requires requested file deliverables before completion in ordinary native tasks", () => {
+    const constraints = nativeTaskConstraints(runtimeInput("/bundle", "AGENTS.md")).join("\n");
+    expect(constraints).toContain("register_deliverable");
+    expect(constraints).toContain("deliverable:");
+    expect(constraints).toContain("download link");
+  });
+
   it("marks only authoritative answered-question envelopes as resolved in the outer task", () => {
     const answeredQuestion = {
       interactionId: "answered-question-1",

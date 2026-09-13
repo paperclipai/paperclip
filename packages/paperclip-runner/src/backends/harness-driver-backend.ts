@@ -73,7 +73,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         .catch(() => undefined);
       throw error;
     }
-    return new HarnessNativeSession(input, session);
+    return new HarnessNativeSession(input, session, undefined, (await this.#driver.descriptor()).capabilities.steering);
   }
 
   async recoverSession(
@@ -183,6 +183,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         { identity: snapshot.identity },
         recovered.session,
         recoveredTerminal,
+        (await this.#driver.descriptor()).capabilities.steering,
       ),
     };
   }
@@ -430,11 +431,15 @@ class HarnessNativeSession implements NativeSession {
     }
   }
 
+  readonly #steeringSupported: boolean;
+
   constructor(
     input: OpenNativeSessionInput,
     session: HarnessSession,
     terminal?: PrpTerminalState | null,
+    steeringSupported = false,
   ) {
+    this.#steeringSupported = steeringSupported;
     this.#input = structuredClone(input);
     this.#session = session;
     this.#terminal = terminal === undefined ? null : structuredClone(terminal);
@@ -448,7 +453,7 @@ class HarnessNativeSession implements NativeSession {
     return {
       resume: true,
       typedEvents: true,
-      steering: this.#session.steer !== undefined,
+      steering: this.#steeringSupported && this.#session.steer !== undefined,
       interruption: this.#session.interrupt !== undefined,
       structuredResult: true,
       read: this.#session.read !== undefined,
@@ -678,7 +683,7 @@ class HarnessNativeSession implements NativeSession {
     correlationId?: string;
   }) {
     this.#assertProtocolIntegrity();
-    if (this.#session.steer === undefined)
+    if (!this.#steeringSupported || this.#session.steer === undefined)
       throw new Error("steering is unavailable");
     return this.#withProtocolIntegrity(() => this.#session.steer!(input));
   }

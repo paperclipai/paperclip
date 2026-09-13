@@ -46,14 +46,14 @@ export function AiConnectionPicker({
     matchesAiRequirement(connection, requirement),
   );
   const personalDefault = personalAiDefault(
-    compatible,
+    connections,
     requirement,
     currentUserId,
   );
   const problem = value ? bindingProblem(
     value,
     requirement,
-    compatible,
+    connections,
     currentUserId,
     agentId,
   ) : undefined;
@@ -63,7 +63,7 @@ export function AiConnectionPicker({
   ) =>
     onChange({
       provider: requirement.provider,
-      method: requirement.method,
+      method: connection.method,
       mode,
       connectionId: connection.id,
       grantId: connection.grantId,
@@ -81,8 +81,8 @@ export function AiConnectionPicker({
         <div className="flex min-w-0 flex-col gap-1">
         <h3 className="text-sm font-semibold">AI connection</h3>
         <p className="text-xs text-muted-foreground">
-          {AI_PROVIDERS[requirement.provider].name} ·{" "}
-          {aiMethodLabel(requirement.provider, requirement.method)}
+          {AI_PROVIDERS[requirement.provider].name}
+          {value && value.mode !== "responsible_user" && ` · ${aiMethodLabel(value.provider, value.method)}`}
         </p>
         </div>
       </div>
@@ -109,16 +109,16 @@ export function AiConnectionPicker({
             choices={[
               { id: "responsible_user", name: "Responsible user’s connection", description: <>
                 <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
-                <span className="block">Other users’ tasks use their own {requirement.method === "api_key" ? `${AI_PROVIDERS[requirement.provider].name} API key` : aiMethodLabel(requirement.provider, requirement.method)}.</span>
+                <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
               </> },
               ...compatible.filter((connection) => connection.ownership === "shared").map((connection) => ({
                 id: connection.id, name: connection.name,
                 disabled: Boolean(aiConnectionProblem(connection)),
-                description: <>Company shared{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
+                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
               })),
             ]}
             onSelect={(id) => {
-              if (id === "responsible_user") onChange({provider: requirement.provider, method: requirement.method, mode: "responsible_user"});
+              if (id === "responsible_user") onChange({provider: requirement.provider, method: personalDefault?.method ?? requirement.method ?? (requirement.provider === "openrouter" ? "api_key" : "subscription"), mode: "responsible_user"});
               else { const connection = compatible.find((item) => item.id === id)!; select("shared", connection); }
             }}
           />

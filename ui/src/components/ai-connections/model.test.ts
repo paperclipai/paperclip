@@ -16,6 +16,7 @@ const requirement: AiConnectionRequirement = {
 };
 const account: AiConnectionSummary = {
   ...requirement,
+  method: "subscription",
   id: "connection",
   grantId: "grant",
   name: "Personal Claude",
@@ -31,11 +32,10 @@ const binding: AiConnectionBinding = {
 };
 
 describe("AI connection selection presentation", () => {
-  it("scopes personal defaults to company, user, provider and method", () => {
+  it("scopes personal defaults to company, user and provider, independently of method", () => {
     for (const change of [
       { companyId: "other" },
       { provider: "openai" as const },
-      { method: "api_key" as const },
       { ownerUserId: "bob" },
       { ownership: "shared" as const },
     ]) {
@@ -44,6 +44,9 @@ describe("AI connection selection presentation", () => {
       ).toBeUndefined();
     }
     expect(personalAiDefault([account], requirement, "alice")).toBe(account);
+    const apiDefault = { ...account, method: "api_key" as const };
+    expect(personalAiDefault([apiDefault], requirement, "alice")).toBe(apiDefault);
+    expect(bindingProblem(binding, requirement, [apiDefault], "alice", "agent")).toBeNull();
   });
   it("retains a revoked default instead of falling back to a healthy account", () => {
     const revoked = { ...account, status: "revoked" as const };
@@ -126,6 +129,7 @@ describe("AI connection selection presentation", () => {
       bindingProblem(
         {
           ...binding,
+          method: "subscription",
           mode: "shared",
           connectionId: account.id,
           grantId: account.grantId,

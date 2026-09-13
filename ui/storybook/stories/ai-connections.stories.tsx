@@ -38,6 +38,7 @@ const groups = [
     "Choose an account",
     [
       ["Responsible user", "responsible-user"],
+      ["Same bot, another user’s API key", "responsible-user-api-key"],
       ["Company shared", "shared-selected"],
       ["Human access denied", "shared-audience-denied"],
       ["Another responsible user", "another-user-missing"],
@@ -81,7 +82,7 @@ export const ReviewIndex: Story = {
         viewports.
       </p>
       <p className="text-sm">
-        Personal defaults are per company, provider, and sign-in method.
+        Personal defaults are per company, user, and provider; subscription or API key.
         Connection selection never changes harness or model. Unavailable
         accounts block without fallback.
       </p>
@@ -145,6 +146,35 @@ export const IdentityMatrix: Story = {
   render: () => <AiConnectorPages />,
 };
 export const ResponsibleUser: Story = {};
+export const ResponsibleUserApiKey: Story = {
+  args: {
+    requirement: { companyId: AI_REVIEW_REQUIREMENT.companyId, provider: "anthropic" },
+    currentUserId: "sam",
+    initialBinding: AI_REVIEW_BINDING,
+    initialConnections: [...AI_REVIEW_CONNECTIONS, {
+      id: "sam-api", grantId: "sam-api-grant", companyId: AI_REVIEW_REQUIREMENT.companyId,
+      provider: "anthropic", method: "api_key", name: "My Claude API key",
+      ownership: "personal", ownerUserId: "sam", ownerName: "Sam", isDefault: true, status: "connected",
+    }, {
+      id: "shared-api", grantId: "shared-api-grant", companyId: AI_REVIEW_REQUIREMENT.companyId,
+      provider: "anthropic", method: "api_key", name: "Engineering Claude API",
+      ownership: "shared", status: "connected",
+    }],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const harness = canvas.getByTestId("ai-harness").textContent;
+    const model = canvas.getByTestId("ai-model").textContent;
+    await expect(canvas.getByText("For you: My Claude API key")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Engineering Claude API" }));
+    await expect(canvas.getByRole("button", { name: "Engineering Claude API" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(canvas.getByRole("button", { name: "Responsible user’s connection" }));
+    await expect(canvas.getByRole("button", { name: "Responsible user’s connection" })).toHaveAttribute("aria-pressed", "true");
+    await expect(canvas.getByTestId("ai-harness")).toHaveTextContent(harness!);
+    await expect(canvas.getByTestId("ai-model")).toHaveTextContent(model!);
+    await expect(canvas.queryByRole("status")).not.toBeInTheDocument();
+  },
+};
 export const SharedSelected: Story = {
   args: {
     initialBinding: {

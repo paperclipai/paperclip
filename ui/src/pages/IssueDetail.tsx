@@ -2128,16 +2128,6 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         throw new Error(
           "The queued message no longer has an active run target.",
         );
-      const anchorAt = new Date().toISOString();
-      setLocalSteeringPlacements((current) => {
-        const next = new Map(current);
-        const sequence = [...current.values()].filter(
-          (placement) => placement.targetRunId === targetRunId,
-        ).length;
-        next.set(commentId, { targetRunId, anchorAt, sequence });
-        return next;
-      });
-      setConsumedQueuedCommentIds((current) => new Set(current).add(commentId));
       try {
         const nextQueue = await issuesApi.steerQueuedComment(
           issueId,
@@ -2148,6 +2138,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             revision,
           },
         );
+        // Keep the queue component mounted until the server accepts steering:
+        // its pending/error state must survive a rejected last-row action.
+        const anchorAt = new Date().toISOString();
+        setLocalSteeringPlacements((current) => {
+          const next = new Map(current);
+          const sequence = [...current.values()].filter(
+            (placement) => placement.targetRunId === targetRunId,
+          ).length;
+          next.set(commentId, { targetRunId, anchorAt, sequence });
+          return next;
+        });
+        setConsumedQueuedCommentIds((current) => new Set(current).add(commentId));
         // The local steering placement already promoted the message into the
         // active turn. Refresh its durable acknowledgement before publishing
         // the returned queue so the local and server anchors hand off without a
