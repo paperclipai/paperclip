@@ -146,6 +146,7 @@ export function claudeSessionMcpServersMatch(input: {
     try {
       const value: unknown = JSON.parse(raw);
       if (!Array.isArray(value) || !value.every((entry) => entry && typeof entry === "object"
+        && Object.keys(entry).length === 3
         && typeof entry.name === "string" && typeof entry.url === "string" && typeof entry.connectionId === "string")) return null;
       return value;
     } catch { return null; }
@@ -170,8 +171,11 @@ export function claudeSessionMcpServersMatch(input: {
   }
   const saved = parse(input.savedIdentity);
   if (!saved || !current) return false;
-  return JSON.stringify(saved.filter((entry) => !builtin(entry)))
-    === JSON.stringify(current.filter((entry) => !builtin(entry)));
+  // Database order and JSON property order are not tool identity. Keep every
+  // occurrence so adding or removing a duplicate still changes the identity.
+  const externalIdentities = (entries: typeof saved) => entries.filter((entry) => !builtin(entry))
+    .map((entry) => JSON.stringify([entry.name, entry.url, entry.connectionId])).sort();
+  return JSON.stringify(externalIdentities(saved)) === JSON.stringify(externalIdentities(current));
 }
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {

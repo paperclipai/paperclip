@@ -61,6 +61,30 @@ describe("legacy sandbox conversation persistence", () => {
     expect(claudeSessionMcpServersMatch({ ...input, savedIdentity: "malformed" })).toBe(false);
   });
 
+  it("matches reordered sandbox external MCP identities without losing duplicate multiplicity", () => {
+    const first = { name: "First tool", url: "https://tools.test/first", connectionId: "external:first" };
+    const second = { name: "Second tool", url: "https://tools.test/second", connectionId: "external:second" };
+    const builtin = { name: "Paperclip projects", url: "https://paperclip.test/api/mcp/project-tools", connectionId: "paperclip-project-tools" };
+    const input = { savedIdentity: JSON.stringify([first, second]), currentIdentity: JSON.stringify([second, builtin, first]),
+      currentConnectionIds: [second.connectionId, builtin.connectionId, first.connectionId], legacyPlatformSession: false,
+      paperclipApiUrl: "https://paperclip.test", sandboxUpgrade: true };
+    expect(claudeSessionMcpServersMatch(input)).toBe(true);
+    expect(claudeSessionMcpServersMatch({ ...input, sandboxUpgrade: false })).toBe(false);
+    expect(claudeSessionMcpServersMatch({ ...input, currentIdentity: JSON.stringify([
+      { connectionId: second.connectionId, url: second.url, name: second.name }, builtin, first,
+    ]) })).toBe(true);
+    for (const entries of [
+      [second, builtin],
+      [second, builtin, first, first],
+      [second, builtin, { ...first, url: "https://foreign.test/first" }],
+      [second, builtin, { ...first, name: "Changed tool" }],
+      [second, builtin, { ...first, connectionId: "external:replacement" }],
+      [second, builtin, { ...first, permissionScope: "unknown" }],
+    ]) expect(claudeSessionMcpServersMatch({ ...input, currentIdentity: JSON.stringify(entries) })).toBe(false);
+    expect(claudeSessionMcpServersMatch({ ...input, savedIdentity: JSON.stringify([first, first, second]) })).toBe(false);
+    expect(claudeSessionMcpServersMatch({ ...input, savedIdentity: JSON.stringify([{ ...first, permissionScope: "unknown" }, second]) })).toBe(false);
+  });
+
   for (const [name, codec] of [["codex_local", codex], ["claude_local", claude]] as const) {
     it(`${name} recovers old metadata, persists it, and resumes across host leases`, () => {
       const input = fixture(); input.adapterType = name;
