@@ -133,6 +133,59 @@ describe("connect command", () => {
     });
   });
 
+  it("stores a custom api key env var name in board profiles and exports", async () => {
+    const contextPath = createTempContextPath();
+    vi.mocked(prompts.text).mockResolvedValue(API_BASE);
+    vi.mocked(prompts.select).mockResolvedValue(COMPANY_ID);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/health") return jsonResponse({ status: "ok" });
+      if (url.pathname === "/api/companies") {
+        return jsonResponse([{ id: COMPANY_ID, name: "Connect Co" }]);
+      }
+      if (url.pathname === "/api/board-api-keys" && init?.method === "POST") {
+        return jsonResponse({
+          id: "board-key-1",
+          name: "connect-board-token",
+          token: "pcp_board_created",
+          createdAt: "2026-05-24T12:00:00.000Z",
+          expiresAt: null,
+        });
+      }
+      return jsonResponse({ error: `Unexpected ${init?.method ?? "GET"} ${url.pathname}` }, { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await createProgram().parseAsync([
+      "connect",
+      "--persona",
+      "board",
+      "--profile",
+      "cli-board",
+      "--token-name",
+      "connect-board-token",
+      "--api-key-env-var-name",
+      "PAPERCLIP_BOARD_TOKEN",
+      "--context",
+      contextPath,
+      "--api-base",
+      API_BASE,
+      "--json",
+    ], { from: "user" });
+
+    const output = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+    expect(output.exports).toContain("export PAPERCLIP_BOARD_TOKEN='pcp_board_created'");
+    expect(output.exports).not.toContain("export PAPERCLIP_API_KEY=");
+    expect(readContext(contextPath)).toMatchObject({
+      profiles: {
+        "cli-board": {
+          apiKeyEnvVarName: "PAPERCLIP_BOARD_TOKEN",
+        },
+      },
+    });
+  });
+
   it("drives the interactive agent profile flow through prompts and context writes", async () => {
     const contextPath = createTempContextPath();
     vi.mocked(prompts.text).mockResolvedValue(API_BASE);
@@ -193,5 +246,26 @@ describe("connect command", () => {
         },
       },
     });
+  });
+
+  it("fails clearly when connect runs outside an interactive terminal", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as never);
+
+    await expect(createProgram().parseAsync([
+      "connect",
+      "--persona",
+      "board",
+      "--api-base",
+      API_BASE,
+    ], { from: "user" })).rejects.toThrow("process.exit called");
+
+    expect(error.mock.calls[0]?.[0]).toContain("`paperclipai connect` is interactive");
+    expect(error.mock.calls[0]?.[0]).toContain("For scripts, pass --api-base/--api-key");
+    expect(exit).toHaveBeenCalledWith(1);
   });
 });
