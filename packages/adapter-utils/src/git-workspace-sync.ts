@@ -291,6 +291,15 @@ async function runHardenedReadOnlyGit(
  * surface as a failure and never look like "no Git tree here".
  */
 function isNotAGitRepositoryError(error: unknown): boolean {
+  // The host scheduler keeps bounded subprocess diagnostics under details.
+  // Only a completed Git exit may establish that no repository exists.
+  if (error && typeof error === "object" && "code" in error &&
+      typeof error.code === "string" && error.code.startsWith("workspace_git_scan_")) {
+    const details = "details" in error && error.details && typeof error.details === "object"
+      ? error.details as Record<string, unknown> : {};
+    return error.code === "workspace_git_scan_failed" && details.exitCode === 128 && details.signal === null &&
+      typeof details.stderr === "string" && /not a git repository/i.test(details.stderr);
+  }
   const stderr = error && typeof error === "object" && "stderr" in error ? String((error as { stderr: unknown }).stderr) : "";
   const message = error instanceof Error ? error.message : String(error);
   return /not a git repository/i.test(stderr) || /not a git repository/i.test(message);
