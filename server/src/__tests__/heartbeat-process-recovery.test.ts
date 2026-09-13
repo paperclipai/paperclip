@@ -232,6 +232,8 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
+import { SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS } from "../services/recovery/service.ts";
+
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 const embeddedPostgresSupport = externalTestDatabaseUrl
   ? { supported: true }
@@ -1281,6 +1283,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     kind?: string;
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
+    maxAttempts?: number | null;
   }) {
     const action = await waitForValue(async () =>
       db
@@ -1311,7 +1314,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.returnOwnerAgentId ?? input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: input.maxAttempts ?? null,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -5703,6 +5706,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
@@ -5833,12 +5837,136 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+  });
+
+  it("caps re-escalation once the same-cause missing-disposition recovery action hits the attempt cap (SPC-21314)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    // First reconcile escalates once and opens the missing-disposition action.
+    const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(firstResult.successfulRunHandoffEscalated).toBe(1);
+    const action = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      kind: "missing_disposition",
+      maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
+    });
+
+    // Simulate the flap: the action has re-escalated up to its cap and the owner
+    // has PATCHed the issue back to in_progress without recording a disposition.
+    await db
+      .update(issueRecoveryActions)
+      .set({ attemptCount: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS })
+      .where(eq(issueRecoveryActions.id, action.id));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+
+    // Second reconcile must NOT re-escalate — the same-cause cap short-circuits.
+    const secondResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(secondResult.successfulRunHandoffEscalated).toBe(0);
+
+    const after = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id))
+      .then((rows) => rows[0] ?? null);
+    expect(after?.attemptCount).toBe(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
+  });
+
+  it("honors a persisted missing-disposition cap that differs from the process default (SPC-21314)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(firstResult.successfulRunHandoffEscalated).toBe(1);
+    const action = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      kind: "missing_disposition",
+      maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
+    });
+
+    // Simulate a pre-restart action that recorded a lower cap than the current
+    // process env. The gate must honor the persisted value, not the new default.
+    const persistedCap = 1;
+    expect(persistedCap).toBeLessThan(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
+    await db
+      .update(issueRecoveryActions)
+      .set({ attemptCount: persistedCap, maxAttempts: persistedCap })
+      .where(eq(issueRecoveryActions.id, action.id));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+
+    const secondResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(secondResult.successfulRunHandoffEscalated).toBe(0);
+
+    const after = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id))
+      .then((rows) => rows[0] ?? null);
+    expect(after?.attemptCount).toBe(persistedCap);
+    expect(after?.maxAttempts).toBe(persistedCap);
   });
 
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
@@ -6643,6 +6771,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       maxAttempts: null,
       resolutionNote: "owner_not_invokable",
     });
+  });
+
+  // SPC-21314 deficiency #3 / SPC-37112 / SPC-39089: without this gate the
+  // exact same fixture (paused, non-invokable source owner) escalates every
+  // reconciler tick via the branch exercised above — even when the issue has
+  // a legitimate monitor wake armed days out. That flap burned an in_progress
+  // issue with a 9-day-out monitor with 10+ issue_continuation_needed wakes
+  // in ~20 minutes on SPC-37112.
+  it("does not escalate a stranded-looking issue with a monitor wake armed far in the future", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      // The guard compares against wall-clock `new Date()`, not the fixture's
+      // fixed 2026-03-19 fixture timestamps, so this must be in the real
+      // future regardless of when the suite runs.
+      monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z"),
+    });
+    await db
+      .update(agents)
+      .set({ status: "paused" })
+      .where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.armedMonitorExempted).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      );
+    expect(actions).toHaveLength(0);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+        ),
+      );
+    expect(
+      wakeups.some(
+        (wake) =>
+          wake.reason === "issue_continuation_needed" ||
+          (wake.payload as { retryReason?: string } | null)?.retryReason ===
+            "issue_continuation_needed",
+      ),
+    ).toBe(false);
   });
 
   it("keeps a legacy agent-owned recovery action readable without scheduling another takeover wake", async () => {
