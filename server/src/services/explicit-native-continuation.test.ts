@@ -42,7 +42,7 @@ const support = await getEmbeddedPostgresTestSupport();
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
-  it.each(["ready", "unacknowledged", "pause", "recovery", "controller", "process_running", "identity_missing", "remote_pending", "remote_stopped"])("delivers a saved native message after run-only Stop exactly once (%s)", async gate => {
+  it.each(["ready", "unacknowledged", "pause", "recovery", "controller", "process_running", "identity_missing", "remote_pending", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors"])("delivers a saved native message after run-only Stop exactly once (%s)", async gate => {
     const f = await seed();
     if (gate !== "recovery") await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issueId));
@@ -66,11 +66,24 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.insert(issueTreeHolds).values({ id: holdId, companyId: f.companyId, rootIssueId: f.issueId, mode: "pause", status: "active" });
       await db.insert(issueTreeHoldMembers).values({ companyId: f.companyId, holdId, issueId: f.issueId, depth: 0, issueTitle: "Deploy", issueStatus: "in_progress" });
     }
+    let queuedIds = [f.commentId];
+    let expectedIds = queuedIds;
+    if (["first_delivered", "last_delivered", "mixed_authors"].includes(gate)) {
+      const secondId = randomUUID();
+      await db.insert(issueComments).values({ id: secondId, companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: gate === "mixed_authors" ? "second-author" : "board",
+        body: "Keep the earlier direction too.", createdAt: new Date("2026-09-11T09:01:00Z") });
+      queuedIds = [f.commentId, secondId];
+      expectedIds = gate === "first_delivered" ? [secondId] : gate === "last_delivered" ? [f.commentId] : queuedIds;
+      if (gate !== "mixed_authors") await db.update(heartbeatRuns).set({ startedAt: new Date("2026-09-11T09:02:00Z"),
+        contextSnapshot: { issueId: f.issueId, wakeCommentIds: gate === "first_delivered" ? [f.commentId] : [secondId] },
+      }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
     const queueId = randomUUID();
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
       source: "automation", triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
       requestedByActorType: "user", requestedByActorId: "board", payload: {
-        issueId: f.issueId, commentId: f.commentId, _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] },
+        issueId: f.issueId, commentId: queuedIds.at(-1), _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: queuedIds.at(-1), wakeCommentIds: queuedIds },
       },
     });
     if (gate.startsWith("remote_")) {
@@ -87,11 +100,11 @@ const support = await getEmbeddedPostgresTestSupport();
     await heartbeat.resumeRemoteStopComments(source);
     await heartbeat.resumeRemoteStopComments(source);
     const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
-    expect(successors).toHaveLength(["ready", "remote_stopped"].includes(gate) ? 1 : 0);
+    expect(successors).toHaveLength(["ready", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors"].includes(gate) ? 1 : 0);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
-    if (["ready", "remote_stopped"].includes(gate)) {
+    if (["ready", "remote_stopped", "first_delivered", "last_delivered", "mixed_authors"].includes(gate)) {
       expect(wake).toMatchObject({ status: "coalesced", runId: successors[0].id, requestedByActorId: "board" });
-      expect(successors[0].contextSnapshot).toMatchObject({ wakeCommentIds: [f.commentId] });
+      expect(successors[0].contextSnapshot).toMatchObject({ wakeCommentIds: expectedIds });
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
     } else expect(wake.status).toBe("deferred_issue_execution");
   });

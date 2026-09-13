@@ -10078,32 +10078,44 @@ export function heartbeatService(
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
     for (const wake of pending) {
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) continue;
-      const payload = parseObject(wake.payload);
+      let payload = parseObject(wake.payload);
       if (payload.queuedCommentInterrupt) {
         await resumeQueuedCommentInterrupt(wake.companyId, wake.id);
         continue;
       }
-      const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
-      const commentId = deriveCommentId(context, payload);
+      let context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      let commentId = deriveCommentId(context, payload);
+      let requestedByActorId = wake.requestedByActorId;
       const reason = readNonEmptyString(context.wakeReason) ?? wake.reason;
+      if (stoppedNativeContinuation) {
+        const ids = await undeliveredLegacyUserCommentIds(db, run.companyId, issueId, run.agentId,
+          queuedCommentIdsFromWakePayload(payload));
+        if (!ids.length) continue;
+        payload = withQueuedCommentIdsInWakePayload(payload, ids);
+        context = withQueuedCommentIdsInRunContext(context, ids);
+        commentId = ids.at(-1)!;
+        // A coalesced queue can contain several authors. Its saved comments,
+        // not the outer wake's first author, authorize the remaining input.
+        const [author] = await db.select({ id: issueComments.authorUserId }).from(issueComments).where(and(
+          eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId), eq(issueComments.id, commentId),
+        ));
+        requestedByActorId = author?.id ?? null;
+      }
       if (legacyContinuation || stoppedNativeContinuation) {
-        if (!commentId || !run.finishedAt || !wake.requestedByActorId ||
+        if (!commentId || !run.finishedAt || !requestedByActorId ||
             !["issue_commented", "issue_reopened_via_comment"].includes(reason ?? "")) continue;
         const [comment] = await db.select().from(issueComments).where(and(
           eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
           sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
-          eq(issueComments.authorUserId, wake.requestedByActorId), isNull(issueComments.deletedAt),
+          eq(issueComments.authorUserId, requestedByActorId), isNull(issueComments.deletedAt),
           isNull(issueComments.createdByRunId),
           stoppedNativeContinuation ? undefined : gt(issueComments.createdAt, run.finishedAt),
         ));
         if (!comment?.body.trim()) continue;
-        if (stoppedNativeContinuation && !(await undeliveredLegacyUserCommentIds(
-          db, run.companyId, issueId, run.agentId, [commentId],
-        )).length) continue;
       } else {
         let wait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
         const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
-          agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
+          agentId: run.agentId, actorType: wake.requestedByActorType, actorId: requestedByActorId,
           reason, commentId, successorRunId: randomUUID(), dryRun: true,
           onBlocked: (reason, message) => { wait = { reason, message }; },
         });
@@ -10121,7 +10133,8 @@ export function heartbeatService(
       // atomically adopts the deferred comments and still applies every gate.
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
         reason, payload, contextSnapshot: context,
-        requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
+        requestedByActorType: "user", requestedByActorId,
+        ...(stoppedNativeContinuation ? { queuedCommentRequestId: wake.id } : {}),
         idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
       break;
     }
