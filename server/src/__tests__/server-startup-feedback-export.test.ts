@@ -233,6 +233,12 @@ vi.mock("../services/native-runtime/native-session-executor.js", () => ({
   verifyStoppedNativeSessionForReplacement: vi.fn(async () => null),
 }));
 
+// This suite verifies server startup scheduling; replacement correctness is
+// exercised by the dedicated DB-backed recovery suites.
+vi.mock("../services/native-runtime/native-safe-replacement.js", () => ({
+  reconcileSafeNativeReplacements: vi.fn(async () => ({ scanned: 0, scheduled: 0 })),
+}));
+
 vi.mock("../config.js", () => ({
   loadConfig: loadConfigMock,
 }));
