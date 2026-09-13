@@ -965,7 +965,9 @@ function sandboxAccountDiscriminator(config: DaytonaDriverConfig): string {
   return createHash("sha256")
     .update(stableStringify({
       apiUrl: config.apiUrl,
-      target: config.target,
+      // Target is a creation placement hint, not account identity: the SDK
+      // resolves existing sandboxes by ID. Lease metadata fills an omitted
+      // target with the actual region, which must not split admission state.
       apiKey: resolvedApiKey,
     }))
     .digest("hex");
