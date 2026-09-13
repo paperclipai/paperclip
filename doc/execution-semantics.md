@@ -1198,3 +1198,8 @@ references and fabricated or cross-task delivery receipts. Text answers and
 accessible repository work products do not require an attachment. Publication
 failure calls for continued work or a concrete blocker, not a human confirmation
 that the task is complete.
+
+Local and remote runners use the same attachment publication contract. Remote
+files are read through the bound environment runner, with workspace confinement,
+no symlinks or hardlinks, stable file identity, a 10 MiB bound, and exact size and
+SHA-256 checks before storage. Remote paths are never opened on the controller.

@@ -1,3 +1,4 @@
+import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
@@ -9915,6 +9916,20 @@ async function createRunnerdBackendWithinSessionClaim(
 ): Promise<NativeSessionBackend> {
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
+  const remoteTarget = target.kind === "remote" ? target : null;
+  const remoteCommandRunner = remoteTarget
+    ? remoteTarget.transport === "ssh"
+      ? createSshCommandManagedRuntimeRunner({
+          spec: remoteTarget.spec,
+          defaultCwd: remoteTarget.remoteCwd,
+        })
+      : remoteTarget.runner
+    : null;
+  if (remoteTarget && !remoteCommandRunner) {
+    throw new Error(
+      "runner_transport_ineligible: remote process runner is unavailable",
+    );
+  }
   const currentWakeComments = await resolveCurrentWakeCommentsBinding(
     input.db,
     input.execution.binding,
@@ -9934,8 +9949,11 @@ async function createRunnerdBackendWithinSessionClaim(
         ? input.execution.runtimeContext.mcp.digest
         : undefined,
     workMode: input.execution.task.workMode,
-    workspaceRoot: input.execution.workspace.cwd,
+    workspaceRoot: remoteTarget?.remoteCwd ?? input.execution.workspace.cwd,
     executionTargetKind: target.kind,
+    readRemoteWorkspaceFile: remoteTarget && remoteCommandRunner
+      ? (file) => readVerifiedRemoteWorkspaceFile({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd, ...file })
+      : undefined,
     currentWakeComments: currentWakeComments ?? undefined,
     chatAttachmentReadScope: input.chatAttachmentReadScope,
     enqueueWakeup: input.enqueueWakeup,
@@ -9967,20 +9985,6 @@ async function createRunnerdBackendWithinSessionClaim(
     input.durableEnvironmentLeaseId ??
     input.execution.binding.executionWorkspaceId;
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const remoteTarget = target.kind === "remote" ? target : null;
-  const remoteCommandRunner = remoteTarget
-    ? remoteTarget.transport === "ssh"
-      ? createSshCommandManagedRuntimeRunner({
-          spec: remoteTarget.spec,
-          defaultCwd: remoteTarget.remoteCwd,
-        })
-      : remoteTarget.runner
-    : null;
-  if (remoteTarget && !remoteCommandRunner) {
-    throw new Error(
-      "runner_transport_ineligible: remote process runner is unavailable",
-    );
-  }
   const remoteRuntimeRoot = remoteTarget
     ? posix.join(
         remoteTarget.remoteCwd,
