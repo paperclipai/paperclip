@@ -78,7 +78,8 @@ function isAllowed(relative: string) {
   if (segments.length === 1)
     return (
       ALLOWED_ROOT_FILES.has(relative) ||
-      /^(?:plan|question)-[a-z0-9-]+\.png$/.test(relative)
+      /^(?:plan|question)-[a-z0-9-]+\.png$/.test(relative) ||
+      /^warm-turn-[1-9][0-9]*\.png$/.test(relative)
     );
   return ALLOWED_DIRECTORIES.has(segments[0]);
 }
