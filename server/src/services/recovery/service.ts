@@ -5855,6 +5855,113 @@ export function recoveryService(
     return result;
   }
 
+  // Repair sweep: an issue in `blocked` with no first-class blocker relations,
+  // no unblockDescriptor, no pending interaction or approval, and no active
+  // recovery action is an invalid stuck state — no automation (blockers_resolved,
+  // recovery action, interaction poller) can ever unblock it. Move it to `todo`
+  // so the assignee is re-invoked. An active recovery action is the board's
+  // continuation path and must not be overridden here; a non-empty blocker
+  // relation is a valid wait so it is excluded too.
+  async function repairBlockedWithNoBlockers() {
+    const result = { repaired: 0, issueIds: [] as string[] };
+
+    // Find `blocked` issues that have no first-class blocker relations.
+    const candidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        unblockDescriptor: issues.unblockDescriptor,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          isNull(issues.hiddenAt),
+          isNull(issues.assigneeUserId),
+          // Exclude issues that have at least one non-terminal blocker relation
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_relations ir
+            INNER JOIN issues bi ON bi.id = ir.issue_id AND bi.company_id = ${issues.companyId}
+            WHERE ir.related_issue_id = ${issues.id}
+              AND ir.company_id = ${issues.companyId}
+              AND ir.type = 'blocks'
+              AND bi.status NOT IN ('done', 'cancelled')
+              AND bi.hidden_at IS NULL
+          )`,
+        ),
+      )
+      .limit(50);
+
+    for (const candidate of candidates) {
+      // Skip if there is an unblockDescriptor — that is a human-owned wait path.
+      if (candidate.unblockDescriptor) continue;
+
+      // Skip if there is an active recovery action — the board must decide.
+      const activeAction = await recoveryActionsSvc.getActiveForIssue(
+        candidate.companyId,
+        candidate.id,
+      );
+      if (activeAction) continue;
+
+      // Skip if there is a pending interaction or approval on this issue.
+      const [pendingInteraction, pendingApproval] = await Promise.all([
+        db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, candidate.companyId),
+              eq(issueThreadInteractions.issueId, candidate.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: approvals.id })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+          .where(
+            and(
+              eq(issueApprovals.companyId, candidate.companyId),
+              eq(issueApprovals.issueId, candidate.id),
+              eq(approvals.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+      ]);
+      if (pendingInteraction || pendingApproval) continue;
+
+      const updated = await issuesSvc.update(candidate.id, { status: "todo" });
+      if (!updated) continue;
+
+      await issuesSvc.addComment(
+        candidate.id,
+        "Auto-repaired from `blocked` to `todo`: no first-class blockers, " +
+          "no unblockDescriptor, no pending interaction or approval, and no " +
+          "active recovery action were found — this state was unresolvable by " +
+          "automation. If the block was intentional, re-block with a valid " +
+          "`blockedByIssueIds` or `unblockDescriptor`.",
+        {},
+      );
+
+      result.repaired += 1;
+      result.issueIds.push(candidate.id);
+      logger.warn(
+        {
+          issueId: candidate.id,
+          companyId: candidate.companyId,
+          assigneeAgentId: candidate.assigneeAgentId,
+        },
+        "repaired blocked-with-no-blockers issue to todo",
+      );
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -5863,6 +5970,7 @@ export function recoveryService(
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
+    repairBlockedWithNoBlockers,
     reconcileResolvedDependencyWakeBackstop,
     readRecoveryTimerIntervalMs,
   };

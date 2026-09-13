@@ -6484,7 +6484,12 @@ export function issueRoutes(
 
   async function requireRecoveryActionAuthority(
     req: Request,
-    issue: { id: string; companyId: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      assigneeAgentId: string | null;
+      createdByAgentId?: string | null;
+    },
     activeRecoveryAction: Awaited<
       ReturnType<typeof recoveryActionsSvc.getActiveForIssue>
     >,
@@ -6508,6 +6513,14 @@ export function issueRoutes(
     ) {
       return true;
     }
+    // When there is no agent assignee, the issue creator is the natural fallback
+    // owner — consistent with how reconcileResolvedDependencyWakeBackstop treats
+    // null-assignee blocked tasks (wakes createdByAgentId). A board-owned
+    // recovery action on an unassigned issue should not permanently block the
+    // creator from self-healing their own task.
+    if (!issue.assigneeAgentId && issue.createdByAgentId === actorAgentId) {
+      return true;
+    }
     if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
     if (
       activeRecoveryAction.ownerAgentId &&
@@ -6525,6 +6538,7 @@ export function issueRoutes(
       recoveryActionId: activeRecoveryAction.id,
       actorAgentId,
       assigneeAgentId: issue.assigneeAgentId,
+      createdByAgentId: issue.createdByAgentId ?? null,
       recoveryOwnerAgentId: activeRecoveryAction.ownerAgentId,
       source: input.source,
       securityPrinciples: [
