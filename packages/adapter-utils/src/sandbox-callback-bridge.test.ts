@@ -605,7 +605,7 @@ describe("sandbox callback bridge", () => {
         return {
           status: 200,
           headers: { "content-type": "application/json" },
-          body: Buffer.from(JSON.stringify({ ok: true }), "utf8"),
+          body: JSON.stringify({ ok: true }),
         };
       },
     });
@@ -3746,7 +3746,7 @@ describe("sandbox callback bridge", () => {
         return {
           status: 200,
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ok: true }),
+          body: Buffer.from(JSON.stringify({ ok: true }), "utf8"),
         };
       },
     });
