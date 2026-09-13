@@ -2706,7 +2706,10 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
-    const pending = connection.replayOnly ? [] : this.#nextPendingCommand();
+    const pending = connection.replayOnly
+      ? []
+      : this.#nextPendingCommand(connection);
+    if (pending === null) return;
     const [pendingCommand] = pending;
     connection.terminalLifecycleCommandId =
       pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
@@ -2776,11 +2779,23 @@ export class DurablePrpControlPlane {
     return wire;
   }
 
-  #nextPendingCommand(): DurableRecoveryCoreCommand[] {
+  #nextPendingCommand(
+    connection: AuthorityConnection,
+  ): DurableRecoveryCoreCommand[] | null {
     if (this.#store.state.warmTransition) return [];
     const command = this.#store.state.commands.find(
       (candidate) => candidate.status === "pending",
     );
+    if (
+      command?.schema === "paperclip.prp.command.v2" &&
+      connection.lease?.protocolVersion !== 2
+    ) {
+      // Queue-time negotiation does not authorize delivery after a reconnect.
+      // Refuse this incompatible connection without consuming or skipping the
+      // durable command: a compatible runner must resume it before later work.
+      connection.close();
+      return null;
+    }
     return command === undefined ? [] : [command];
   }
 
@@ -2820,7 +2835,9 @@ export class DurablePrpControlPlane {
       this.#store.state.warmTransition
     )
       return;
-    const [command] = this.#nextPendingCommand();
+    const pending = this.#nextPendingCommand(connection);
+    if (pending === null) return;
+    const [command] = pending;
     if (command === undefined) return;
     if (this.#isTerminalLifecycleCommand(command)) {
       connection.terminalLifecycleCommandId = command.commandId;
