@@ -3346,9 +3346,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (options.adoptExistingRunner && !options.stateDirectory?.trim()) {
       throw new Error("native_adopted_runner_state_directory_required");
     }
-    if (options.provider === "acpx" && options.acpxAgent === "pi") {
-      throw new Error("The Pi ACPX profile is not available");
-    }
     this.#failureSignal = new Promise<never>((_resolve, reject) => {
       this.#rejectFailureSignal = reject;
     });

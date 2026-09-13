@@ -6994,10 +6994,11 @@ async function executePaperclipNativeSessionWithinScope(
   }
   if (
     input.execution.provider.kind === "acpx" &&
-    input.execution.provider.agent === "pi"
+    input.execution.provider.agent === "pi" &&
+    !input.useRunnerd
   ) {
     throw new Error(
-      "paperclip_runner_provider_unsupported: ACPX Pi is unavailable until descriptor-confined verified launch is implemented",
+      "paperclip_runner_provider_unsupported: ACPX Pi requires the native runner's descriptor-confined verified launch",
     );
   }
   const preparationSpans = input.preparationSpans ?? [];
@@ -8789,8 +8790,11 @@ const REMOTE_PROVIDER_PACK_PINS = {
   acpx: "0.13.1",
   claudeAcp: "0.73.0",
   codexAcp: "1.6.2",
+  pi: "0.84.2",
+  piAcp: "0.0.33",
 } as const;
 const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
+  pi: "sha256:24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc",
   claude:
     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
   codex:

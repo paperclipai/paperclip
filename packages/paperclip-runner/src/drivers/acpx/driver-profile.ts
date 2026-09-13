@@ -12,7 +12,7 @@ import {
   type QualifiedAcpxAgent,
 } from "./qualified-profiles.js";
 
-const ACPX_AGENTS = ["claude", "codex"] as const;
+const ACPX_AGENTS = ["claude", "codex", "pi"] as const;
 const ACPX_PERMISSION_MODES = [
   "approve-all",
   "approve-reads",
@@ -95,7 +95,7 @@ export function validateAcpxDriverConfig(
     return invalid(
       "agent",
       "invalid_agent",
-      "ACPX agent must be claude or codex.",
+      "ACPX agent must be claude, codex, or pi.",
     );
   }
   const model = text(config.model);

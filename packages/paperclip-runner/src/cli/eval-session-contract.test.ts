@@ -145,11 +145,12 @@ describe("eval-session request contract", () => {
     })))).toBe("17");
   });
 
-  it("rejects Pi and accepts both qualified remote provider profiles", () => {
-    expect(() => parseEvalSessionRequest(request({
+  it("accepts Pi and both qualified remote provider profiles", () => {
+    expect(parseEvalSessionRequest(request({
       provider: "acpx",
       acpxAgent: "pi",
-    }))).toThrow("Pi ACPX profile is not available");
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+    }))).toMatchObject({ provider: "acpx", acpxAgent: "pi" });
     expect(parseEvalSessionRequest(request({
       provider: "aws_agentcore",
       driver: "aws_agentcore_harness_api",

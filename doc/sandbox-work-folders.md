@@ -18,6 +18,19 @@ Credentials are not recorded in Playwright reports. These API checks supplement
 the required browser walkthrough, two real 180-second intervals, and recovery
 scenarios; passing them alone is not staging acceptance.
 
+The staging matrix covers legacy Codex and Claude with both CLI and ACP,
+legacy OpenCode and Pi, and native Codex, OpenCode, and ACPX Claude/Codex/Pi.
+Cursor, Gemini, Grok, and Kimi are excluded from this acceptance campaign by
+explicit user instruction. Other required profiles must not be silently skipped.
+
+Native Pi uses `pi-acp@0.0.33` with the official Linux x64 Pi `0.84.2`
+standalone executable. The image build verifies the archive and executable
+SHA-256, then starts an ACP session through the runner's descriptor-based
+launcher. It does not make a model request. Live staging must still verify the
+qualified OpenRouter model, work folders, saves, and recovery. The same image
+exposes this Pi executable to the legacy adapter. Provider-pack shims resolve
+links before locating their runtime so task-local launch paths remain valid.
+
 Sandbox runs use the operating-system user's home directory. Both legacy
 adapters and the native runner enter the same host-owned lifecycle before
 dispatch. Local execution keeps its existing workspace and home behavior.
@@ -138,6 +151,16 @@ All routes start at
 
 ## Acceptance gate
 
+The Cloud app image includes a build-owned remote provider pack at
+`/opt/paperclip-runner/provider-pack` and configures
+`PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` to that directory. Native OpenCode
+and ACPX runs verify the sandbox's installed pack against this manifest; if it
+differs, the host stages its complete pack before launch. The pack is built
+from the app revision, includes the production lockfile and artifact hashes,
+and must pass its provider-launch checks during the image build. It belongs to
+the app image, not the workspace volume or a scoped file collection. Ordinary
+local execution is unchanged.
+
 Automated tests do not qualify a deployed runner image. Before merging, use a
 new pinned staging stack with the branch's Cloud image and matching migrator.
 The deployed harness must target that tenant URL without launching a local
@@ -153,7 +176,10 @@ the user's explicit sign-off.
 Staging migrator artifacts use an immutable object-storage prefix. The Docker
 workflow's optional `staging_artifact_base_url` input builds DB/shared tarballs
 and an integrity manifest as a GitHub Actions artifact; it has no release-write
-permission. Transfer those artifacts to the staging bucket using conditional
+permission. Supply `staging_lock_sha256` with the reviewed SHA-256 of the
+resolved pnpm 9.15.4 lockfile. The migrator and both app-image builds verify
+that digest before installing dependencies, failing if registry resolution
+has changed. Transfer those artifacts to the staging bucket using conditional
 creates, publishing the manifest last. Do not create GitHub releases or publish
 npm packages for this flow.
 

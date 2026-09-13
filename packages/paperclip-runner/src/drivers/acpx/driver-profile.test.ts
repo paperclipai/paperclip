@@ -83,8 +83,7 @@ describe("ACPX driver profile", () => {
         model: "openrouter/deepseek/deepseek-v4-flash-0731",
       }),
     ).toMatchObject({
-      ok: false,
-      issues: [{ path: "agent", code: "invalid_agent" }],
+      ok: true,
     });
     expect(
       validateAcpxDriverConfig({

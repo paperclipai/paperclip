@@ -32,11 +32,18 @@ import {
   snapshotDescriptorAncestorIndex,
   snapshotDescriptorResolution,
   verifiedExecutableOpenFlags,
-  verifyQualifiedAcpxInstallation,
+  verifyQualifiedAcpxInstallation as verifyProductionInstallation,
   probeAcpxClaudeInstallation,
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
+
+// Synthetic provider commands exercise the generic descriptor/module confinement
+// independently of the production Pi ELF. Real profiles always use production checks.
+const verifyQualifiedAcpxInstallation: typeof verifyProductionInstallation = (profile, resolver) =>
+  verifyProductionInstallation(profile, resolver, profile.agent === "pi" &&
+    profile.commandDigest !== resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731").commandDigest
+    ? { runtimeExecutable: async () => null, dependencies: [] } : {});
 
 const temporaryDirectories: string[] = [];
 const descriptorCommandPath = "/proc/self/fd/4/server.js";
@@ -101,7 +108,7 @@ describe("ACPX installation integrity", () => {
       JSON.stringify({
         name: "qualified-dependency",
         version: "1.0.0",
-        exports: "./index.js",
+        exports: { ".": { import: "./index.js" } },
       }),
     );
     await writeFile(join(nestedDependencyDirectory, "index.js"), "export {};");
@@ -430,7 +437,7 @@ describe("ACPX installation integrity", () => {
     });
   });
 
-  it("pins Claude ACP direct dependencies outside its package root", async () => {
+  it.each(["exports", "main"])("pins ACP direct dependencies with %s metadata outside its package root", async (entryField) => {
     const fixture = await installationFixture();
     const command = [
       'import { qualifiedValue } from "@anthropic-ai/claude-agent-sdk";',
@@ -485,7 +492,7 @@ describe("ACPX installation integrity", () => {
             name: dependency.name,
             version: dependency.version,
             type: "module",
-            exports: "./index.js",
+            [entryField]: "./index.js",
           }),
         ),
       ),
@@ -1563,7 +1570,8 @@ describe("ACPX installation integrity", () => {
           `const profile = ${JSON.stringify(fixture.profile)};`,
           `const credential = await credentials.stageManagedCodexCredential({ agentHomeDirectory: ${JSON.stringify(credentialHome)}, environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"original"}' } });`,
           `const paths = new Map(${JSON.stringify([...fixture.paths])});`,
-          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name));",
+          // This synthetic fixture exercises lifetime fencing, not the Pi ELF.
+          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name), { runtimeExecutable: async () => null, dependencies: [] });",
           "const lease = await installation.openCommand();",
           `const provider = lease.spawn([], { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: ${JSON.stringify(pidFile)} } }, { credentialFenceFds: credential.lifetimeFenceFds, activateCredentialFenceOwner: (pid) => credential.activateLifetimeOwner(pid) });`,
           "await module.awaitVerifiedAcpxProviderOwnership(provider);",
@@ -1662,7 +1670,7 @@ describe("ACPX installation integrity", () => {
           `const profile = ${JSON.stringify(fixture.profile)};`,
           `const credential = await credentials.stageManagedCodexCredential({ agentHomeDirectory: ${JSON.stringify(credentialHome)}, environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"original"}' } });`,
           `const paths = new Map(${JSON.stringify([...fixture.paths])});`,
-          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name));",
+          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name), { runtimeExecutable: async () => null, dependencies: [] });",
           "const lease = await installation.openCommand();",
           `const provider = lease.spawn([], { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: ${JSON.stringify(pidFile)} } }, { credentialFenceFds: credential.lifetimeFenceFds, activateCredentialFenceOwner: (pid) => credential.activateLifetimeOwner(pid) });`,
           "await module.awaitVerifiedAcpxProviderOwnership(provider);",

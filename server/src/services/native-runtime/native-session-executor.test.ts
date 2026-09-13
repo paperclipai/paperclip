@@ -715,12 +715,15 @@ describe("remote provider pack manifest", () => {
         acpx: "0.13.1",
         claudeAcp: "0.73.0",
         codexAcp: "1.6.2",
+        pi: "0.84.2",
+        piAcp: "0.0.33",
       },
       target: { platform: "linux", architecture: "x64" },
       runnerSourceRevision: "1".repeat(40),
       distDigest: sha256DirectoryTree(join(root, "dist")),
       bridgeDigest: "",
       acpxProfileDigests: {
+        pi: "sha256:24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc",
         claude:
           "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
         codex:
@@ -6778,7 +6781,7 @@ describe("native process ownership", () => {
     },
   );
 
-  it("rejects ACPX Pi before constructing a backend", async () => {
+  it("rejects ACPX Pi without the verified runner before constructing a backend", async () => {
     const piExecution = {
       ...execution,
       binding: { ...execution.binding, runId: "run-acpx-pi-rejected" },
@@ -6817,6 +6820,35 @@ describe("runnerd provider runtime wiring", () => {
       process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
     }
     await rm(isolatedStateDirectory, { recursive: true, force: true });
+  });
+
+  it("admits ACPX Pi through the production verified-runner entry point", async () => {
+    const piExecution = {
+      ...execution,
+      binding: { ...execution.binding, runId: "run-acpx-pi-verified" },
+      provider: { kind: "acpx", agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", permissionMode: "approve-all" },
+      session: { ...execution.session, normalizedSessionId: "verified-pi-session", driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    state.execute.mockReset().mockResolvedValue({
+      result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+      turnId: "turn", normalizedSessionId: "verified-pi-session", providerSessionId: null,
+      driverKind: "acpx_runtime", driverVersion: "1", nativeEventCount: 1,
+      highestContiguousSourceSeq: 1,
+    });
+    await executePaperclipNativeSession({
+      db: leaseDb(piExecution), execution: piExecution,
+      runnerInstanceId: "verified-pi-runner", useRunnerd: true,
+    });
+    expect(state.createBackend).toHaveBeenCalledWith(piExecution, expect.objectContaining({
+      codexTransportFactory: expect.any(Function),
+    }));
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "acpx", acpxAgent: "pi",
+    }));
+    expect(state.execute).toHaveBeenCalledOnce();
   });
 
   it.each([

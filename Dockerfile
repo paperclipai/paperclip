@@ -292,7 +292,25 @@ RUN set -eu; \
   test -n "$specifiers" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS names no package" >&2; exit 1; }; \
   pnpm add --ignore-workspace --no-lockfile $specifiers
 
+# Use the same qualified interpreter as the Daytona provider-pack build.
+# The controller owns this pack and its manifest; remote OpenCode/ACPX launches
+# verify sandbox bytes against it, or stage this complete pack when needed.
+# Keep it Cloud-only so ordinary local execution and the production target do
+# not acquire remote-provider configuration.
+FROM node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b AS cloud-provider-pack
+RUN corepack enable
+WORKDIR /app
+COPY --from=build /app /app
+ARG PAPERCLIP_BUILD_COMMIT
+RUN test -n "${PAPERCLIP_BUILD_COMMIT}" \
+  && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" \
+    node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+  && node packages/paperclip-runner/scripts/verify-pi-provider-launch.mjs /provider-pack \
+  && chmod -R a+rX /provider-pack
+
 FROM production AS cloud
+COPY --from=cloud-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
+ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
 # Land the isolated install inside the server's own `node_modules`, the
 # directory Node's module resolution walks up to from `/app/server` for

@@ -30,11 +30,6 @@ export function createAcpxNativeSessionBackend(
   if (input.provider.kind !== "acpx") {
     throw new Error("ACPX backend requires provider kind acpx");
   }
-  if (input.provider.agent === "pi") {
-    throw new Error(
-      "Pi ACPX backend is unavailable until descriptor-confined verified launch is implemented",
-    );
-  }
   const qualifiedProfile = resolveQualifiedAcpxProfile(
     input.provider.agent,
     input.provider.model,

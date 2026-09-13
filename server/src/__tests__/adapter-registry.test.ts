@@ -279,6 +279,8 @@ describe("server adapter registry", () => {
 
   it.each([
     ["claude", "claude-sonnet-5"],
+    ["codex", "gpt-5.6-sol"],
+    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"],
   ] as const)("does not claim runtime readiness from the remote ACPX %s platform alone", async (acpxAgent, model) => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({
       companyId: "company-1",
@@ -315,20 +317,23 @@ describe("server adapter registry", () => {
     });
   });
 
-  it("keeps the ACPX Pi profile unavailable", async () => {
+  it.each([
+    ["codex", "gpt-5.6-sol"],
+    ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"],
+  ])("accepts qualified ACPX %s without claiming installation readiness", async (acpxAgent, model) => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({
       companyId: "company-1",
       adapterType: "paperclip_runner",
       config: {
         provider: "acpx",
-        acpxAgent: "pi",
-        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+        acpxAgent,
+        model,
       },
     });
 
     expect(result).toMatchObject({
-      status: "fail",
-      checks: [{ code: "paperclip_runner_acpx_agent_unavailable" }],
+      status: "warn",
+      checks: [{ code: "acpx_runtime_unverified", level: "warn" }],
     });
   });
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {

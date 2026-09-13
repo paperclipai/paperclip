@@ -15,6 +15,7 @@ import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS,
   resolvePaperclipRunnerModel,
   normalizeLegacyRunnerProvider,
 } from "./paperclip-runner-permissions.js";
@@ -4145,7 +4146,11 @@ export function normalizePaperclipRunnerAdapterConfig(
   }
   if (next.provider === "acpx") {
     next.acpxAgent ??= "claude";
-    next.model = resolvePaperclipRunnerModel("acpx", config.model);
+    const defaultModel = next.acpxAgent === "pi"
+      ? PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS.pi
+      : PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS.claude;
+    next.model = typeof config.model === "string" && config.model.trim().length > 0
+      ? config.model.trim() : defaultModel;
   }
   return normalizePaperclipOperationalSkillPreference(adapterType, next);
 }

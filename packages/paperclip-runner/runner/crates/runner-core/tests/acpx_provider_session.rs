@@ -129,8 +129,8 @@ fn bootstraps_a_codex_session_and_confirms_run_identity() {
 #[test]
 fn validates_qualified_policy_and_tool_catalog_before_spawning() {
     let mut invalid_agent = config("bootstrap");
-    invalid_agent.agent = "pi".to_owned();
-    assert!(start_error(&invalid_agent).contains("claude or codex"));
+    invalid_agent.agent = "unqualified".to_owned();
+    assert!(start_error(&invalid_agent).contains("claude, codex, or pi"));
 
     let mut unpinned = config("bootstrap");
     unpinned.permission_mode_pinned = false;
@@ -154,6 +154,7 @@ fn admits_custom_claude_models_and_legacy_codex_profile() {
         ("claude", "claude-sonnet-5"),
         ("claude", "claude-opus-5"),
         ("claude", "custom-provider-model"),
+        ("pi", "openrouter/deepseek/deepseek-v4-flash-0731"),
     ] {
         let mut qualified = config("bootstrap");
         qualified.agent = agent.to_owned();

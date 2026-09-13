@@ -736,7 +736,7 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
 }
 
 #[test]
-fn rejects_pi_before_starting_a_sidecar() {
+fn rejects_pi_with_codex_artifacts_before_starting_a_sidecar() {
     let directory = temporary_directory("pi");
     let config = config(&directory);
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
@@ -747,7 +747,9 @@ fn rejects_pi_before_starting_a_sidecar() {
             prepare_payload(&directory, "pi"),
         ))
         .unwrap_err();
-    assert!(error.to_string().contains("agent pi is not executable"));
+    assert!(error
+        .to_string()
+        .contains("does not match a qualified immutable profile"));
     assert!(!directory.join("acpx-runtime").exists());
     fs::remove_dir_all(directory).unwrap();
 }

@@ -1,3 +1,4 @@
+import { portableProviderShim } from "./portable-provider-shim.mjs";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -18,6 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { materializePiBinary } from "./materialize-pi-binary.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -85,31 +87,13 @@ function sha256Tree(root) {
 
 function writePortableNodeShim(name, entrypoint) {
   const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(
-    shimPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$basedir/../node/bin/node" "$basedir/../${entrypoint}" "$@"`,
-      "",
-    ].join("\n"),
-  );
+  writeFileSync(shimPath, portableProviderShim(entrypoint, { node: true }));
   chmodSync(shimPath, 0o755);
 }
 
 function writePortableExecutableShim(name, executable) {
   const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(
-    shimPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$basedir/../${executable}" "$@"`,
-      "",
-    ].join("\n"),
-  );
+  writeFileSync(shimPath, portableProviderShim(executable));
   chmodSync(shimPath, 0o755);
 }
 
@@ -189,6 +173,10 @@ try {
   writePortableExecutableShim("node", "node/bin/node");
   writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
+  const piPackageRoot = realpathSync(join(temporaryRoot, "node_modules", "@earendil-works", "pi-coding-agent"));
+  await materializePiBinary(piPackageRoot);
+  writePortableExecutableShim("pi", "@earendil-works/pi-coding-agent/vendor/standalone/pi");
+  writePortableNodeShim("pi-acp", "pi-acp/dist/index.js");
   writePortableNodeShim(
     "claude-agent-acp",
     "@agentclientprotocol/claude-agent-acp/dist/index.js",
@@ -295,6 +283,8 @@ try {
       acpx: "0.13.1",
       claudeAcp: "0.73.0",
       codexAcp: "1.6.2",
+      pi: "0.84.2",
+      piAcp: "0.0.33",
     },
     target: { platform: process.platform, architecture: process.arch },
     runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
@@ -307,6 +297,7 @@ try {
       .update(distDigest)
       .digest("hex")}`,
     acpxProfileDigests: {
+      pi: "sha256:24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc",
       claude:
         "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       codex:

@@ -443,7 +443,7 @@ describe("qualified ACPX runtime sidecar", () => {
     });
   });
 
-  it.each([["claude", "claude-sonnet-5"]])(
+  it.each([["claude", "claude-sonnet-5"], ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"]])(
     "reports the qualified %s profile",
     async (agent, model) => {
       const sidecar = startSidecar();
@@ -464,8 +464,8 @@ describe("qualified ACPX runtime sidecar", () => {
     sidecar.write(
       initializeRequest(
         1,
-        "pi",
-        "openrouter/deepseek/deepseek-v4-flash-0731",
+        "unqualified",
+        "unqualified-model",
       ),
     );
 
@@ -476,7 +476,7 @@ describe("qualified ACPX runtime sidecar", () => {
       ok: false,
       error: {
         code: "acpx_sidecar_command_failed",
-        message: "ACPX agent must be claude or codex",
+        message: "ACPX agent must be claude, codex, or pi",
         retryable: false,
       },
     });

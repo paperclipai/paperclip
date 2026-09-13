@@ -524,9 +524,9 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow();
   });
 
-  it("rejects Pi before installation or runtime launch", async () => {
+  it("verifies Pi's installation before opening the qualified runtime", async () => {
     const fixture = await hostFixture();
-    const verifyInstallation = vi.fn();
+    const verifyInstallation = vi.fn().mockRejectedValue(new Error("unverified Pi installation"));
     const openRuntime = vi.fn();
     await expect(
       AcpxRuntimeHost.open(
@@ -542,8 +542,8 @@ describe("ACPX runtime host", () => {
           reportRetainedCleanupFailure: vi.fn(),
         },
       ),
-    ).rejects.toThrow("descriptor-confined verified launch");
-    expect(verifyInstallation).not.toHaveBeenCalled();
+    ).rejects.toThrow("unverified Pi installation");
+    expect(verifyInstallation).toHaveBeenCalledWith(expect.objectContaining({ agent: "pi" }));
     expect(openRuntime).not.toHaveBeenCalled();
   });
 

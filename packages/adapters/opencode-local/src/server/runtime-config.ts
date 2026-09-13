@@ -248,12 +248,15 @@ export function prepareManagedOpenCodeRemoteHomes(input: {
   runtimeRootDir: string | null | undefined;
   runId: string;
   configDir?: string;
+  workFolderHome?: string;
 }): void {
   if (!input.config.managedAiConnection) return;
   if (!input.runtimeRootDir) throw new Error("Managed OpenCode authentication requires an isolated remote runtime directory.");
   const home = path.posix.join(input.runtimeRootDir, "managed-auth", input.runId);
   Object.assign(input.env, {
-    HOME: home,
+    // Scoped work folders live beneath the sandbox's real home. OpenCode's
+    // credential/configuration stores still use the isolated XDG directories.
+    HOME: input.workFolderHome ?? home,
     XDG_CONFIG_HOME: input.configDir ?? path.posix.join(home, "config"),
     XDG_DATA_HOME: path.posix.join(home, "data"),
     XDG_CACHE_HOME: path.posix.join(home, "cache"),

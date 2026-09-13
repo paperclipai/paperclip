@@ -73,9 +73,10 @@ impl AcpxProviderSessionConfig {
         let qualified_model = match self.agent.as_str() {
             "claude" => "claude-sonnet-5",
             "codex" => "gpt-5.6-sol",
+            "pi" => "openrouter/deepseek/deepseek-v4-flash-0731",
             _ => {
                 return Err(LocalRunnerError::invalid(
-                    "ACPX agent must be claude or codex",
+                    "ACPX agent must be claude, codex, or pi",
                 ))
             }
         };

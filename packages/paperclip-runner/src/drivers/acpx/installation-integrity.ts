@@ -5,7 +5,7 @@ import {
   type ChildProcess,
   type SpawnOptionsWithoutStdio,
 } from "node:child_process";
-import { constants, realpathSync } from "node:fs";
+import { constants, existsSync, realpathSync } from "node:fs";
 import {
   lstat,
   open,
@@ -42,6 +42,22 @@ const PROVIDER_WATCHDOG_HANDSHAKE_TIMEOUT_MS = 2_000;
 const PROVIDER_GUARDIAN_HANDSHAKE_TIMEOUT_MS = 5_000;
 const VERIFIED_PROVIDER_RUNTIME_TARGET_ENV =
   "PAPERCLIP_ACPX_VERIFIED_PROVIDER_RUNTIME_TARGET";
+
+const QUALIFIED_PI_LINUX_X64_RUNTIME = Object.freeze({
+  runtimePackageName: "@earendil-works/pi-coding-agent",
+  runtimePackageVersion: "0.84.2",
+  packageName: "@earendil-works/pi-coding-agent",
+  packageVersion: "0.84.2",
+  dependencyDeclaration: "0.84.2",
+  relativeExecutable: "vendor/standalone/pi",
+  executableDigest: "sha256:9a2d20fab3caacbe3517d91e59d495ccc49fd4b51a1a72dcec6e8c1f4b7d6ab2",
+  environmentVariable: "PI_ACP_PI_COMMAND",
+});
+
+const QUALIFIED_PI_PROVIDER_DEPENDENCIES = Object.freeze([
+  { packageName: "@agentclientprotocol/sdk", packageVersion: "0.26.0", dependencyDeclaration: "^0.26.0" },
+  { packageName: "zod", packageVersion: "3.25.76", dependencyDeclaration: "^3.25.0" },
+]);
 
 const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@anthropic-ai/claude-agent-sdk",
@@ -373,6 +389,13 @@ function resolvePackageJsonFromIssuer(
   ) {
     throw new Error(`ACPX provider package name is invalid: ${packageName}`);
   }
+  // Import-only packages need not expose either package.json or a require
+  // entrypoint. Locate metadata without executing their code; the caller still
+  // confines its real path to the selected provider pack.
+  for (const searchRoot of issuerRequire.resolve.paths(packageName) ?? []) {
+    const candidate = resolve(searchRoot, ...packageSegments, "package.json");
+    if (existsSync(candidate)) return candidate;
+  }
   let directory = dirname(realpathSync(issuerRequire.resolve(packageName)));
   for (let count = 0; count < MAX_DEPENDENCY_ANCESTORS; count += 1) {
     const matchesPackage =
@@ -490,7 +513,7 @@ interface VerifiedAcpxRuntimeExecutable {
   path: string;
   digest: string;
   identity: VerifiedAcpxCommandIdentity;
-  environmentVariable: "CLAUDE_CODE_EXECUTABLE" | "CODEX_PATH";
+  environmentVariable: "CLAUDE_CODE_EXECUTABLE" | "CODEX_PATH" | "PI_ACP_PI_COMMAND";
 }
 
 interface AcpxPackageMetadata {
@@ -522,6 +545,10 @@ const GUARDED_MODULE_SNAPSHOT_BOOTSTRAP = snapshotBootstrap("module", true);
 export async function verifyQualifiedAcpxInstallation(
   profile: QualifiedAcpxProfile,
   resolvePackageJson: AcpxPackageJsonResolver = defaultPackageJsonResolver,
+  verification: {
+    runtimeExecutable?: typeof verifyQualifiedRuntimeExecutable;
+    dependencies?: readonly { packageName: string; packageVersion: string; dependencyDeclaration: string }[];
+  } = {},
 ): Promise<VerifiedAcpxInstallation> {
   const serverPackageJsonPath = await realpath(
     resolvePackageJson(profile.agentServerPackage),
@@ -588,7 +615,7 @@ export async function verifyQualifiedAcpxInstallation(
       );
     }
     runtimePackageFormat = packageModuleFormat(runtimePackage.type);
-    runtimeExecutable = await verifyQualifiedRuntimeExecutable({
+    runtimeExecutable = await (verification.runtimeExecutable ?? verifyQualifiedRuntimeExecutable)({
       profile,
       runtimePackage,
       runtimePackageJsonPath,
@@ -602,23 +629,25 @@ export async function verifyQualifiedAcpxInstallation(
     directory: string;
     format: AcpxCommandFormat;
   }> = [];
-  if (profile.agent === "claude") {
+  const qualifiedDependencies = verification.dependencies ?? (profile.agent === "claude"
+    ? QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES : profile.agent === "pi" ? QUALIFIED_PI_PROVIDER_DEPENDENCIES : []);
+  if (qualifiedDependencies.length) {
     const declaredDependencies = serverPackage.dependencies;
     if (
       typeof declaredDependencies !== "object" ||
       declaredDependencies === null ||
       Array.isArray(declaredDependencies)
     ) {
-      throw new Error("ACPX claude package omitted its qualified dependencies");
+      throw new Error(`ACPX ${profile.agent} package omitted its qualified dependencies`);
     }
-    for (const expected of QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES) {
+    for (const expected of qualifiedDependencies) {
       if (
         (declaredDependencies as Record<string, unknown>)[
           expected.packageName
         ] !== expected.dependencyDeclaration
       ) {
         throw new Error(
-          `ACPX claude package dependency mismatch for ${expected.packageName}`,
+          `ACPX ${profile.agent} package dependency mismatch for ${expected.packageName}`,
         );
       }
       const dependencyPackageJsonPath = await realpath(
@@ -630,7 +659,7 @@ export async function verifyQualifiedAcpxInstallation(
       );
       if (dependencyPackage.version !== expected.packageVersion) {
         throw new Error(
-          `ACPX claude dependency package version mismatch for ${expected.packageName}: expected ${expected.packageVersion}, received ${dependencyPackage.version ?? "unknown"}`,
+          `ACPX ${profile.agent} dependency package version mismatch for ${expected.packageName}: expected ${expected.packageVersion}, received ${dependencyPackage.version ?? "unknown"}`,
         );
       }
       supplementalPackages.push({
@@ -845,7 +874,7 @@ async function verifyQualifiedRuntimeExecutable(input: {
         : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
       : input.profile.agent === "codex"
         ? QUALIFIED_CODEX_LINUX_X64_RUNTIME
-        : null;
+        : input.profile.agent === "pi" ? QUALIFIED_PI_LINUX_X64_RUNTIME : null;
   if (qualification === null) return null;
   if (
     input.profile.agentRuntimePackage !== qualification.runtimePackageName ||
@@ -863,20 +892,20 @@ async function verifyQualifiedRuntimeExecutable(input: {
   }
 
   const optionalDependencies = input.runtimePackage.optionalDependencies;
-  if (
+  if (input.profile.agent !== "pi" && (
     typeof optionalDependencies !== "object" ||
     optionalDependencies === null ||
     Array.isArray(optionalDependencies) ||
     (optionalDependencies as Record<string, unknown>)[
       qualification.packageName
     ] !== qualification.dependencyDeclaration
-  ) {
+  )) {
     throw new Error(
       `ACPX ${input.profile.agent} runtime omitted its verified platform executable package`,
     );
   }
 
-  const executablePackageJsonPath = await realpath(
+  const executablePackageJsonPath = input.profile.agent === "pi" ? input.runtimePackageJsonPath : await realpath(
     input.resolvePackageJson(
       qualification.packageName,
       input.runtimePackageJsonPath,
@@ -1689,7 +1718,8 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     'if ((serverPackageFormat !== "module" && serverPackageFormat !== "commonjs") || !Array.isArray(dependencyAncestorFormats) || dependencyAncestorFormats.length !== dependencyAncestorCount || dependencyAncestorFormats.some((value) => value !== "module" && value !== "commonjs")) throw new Error("ACPX provider package formats are invalid");',
     'if (providerRuntimeExecutableCount !== 0 && providerRuntimeExecutableCount !== 1) throw new Error("ACPX provider runtime executable count is invalid");',
     `const providerRuntimeExecutableFd = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount;`,
-    'if (providerRuntimeExecutableCount === 1) { if (providerRuntimeEnvironmentVariable !== "CODEX_PATH" && providerRuntimeEnvironmentVariable !== "CLAUDE_CODE_EXECUTABLE") throw new Error("ACPX provider runtime environment target is invalid"); fs.fstatSync(providerRuntimeExecutableFd); process.env[providerRuntimeEnvironmentVariable] = privateSnapshot ? privateSnapshot.executable : "/proc/" + process.pid + "/fd/" + providerRuntimeExecutableFd; } else if (providerRuntimeEnvironmentVariable !== undefined) throw new Error("ACPX provider runtime environment target is unexpected");',
+    'if (providerRuntimeExecutableCount === 1) { if (!["CODEX_PATH", "CLAUDE_CODE_EXECUTABLE", "PI_ACP_PI_COMMAND"].includes(providerRuntimeEnvironmentVariable)) throw new Error("ACPX provider runtime environment target is invalid"); fs.fstatSync(providerRuntimeExecutableFd); process.env[providerRuntimeEnvironmentVariable] = privateSnapshot ? privateSnapshot.executable : "/proc/" + process.pid + "/fd/" + providerRuntimeExecutableFd; } else if (providerRuntimeEnvironmentVariable !== undefined) throw new Error("ACPX provider runtime environment target is unexpected");',
+    `if (providerRuntimeEnvironmentVariable === "PI_ACP_PI_COMMAND") { if (serverDependencyAncestorCount >= dependencyAncestorCount) throw new Error("Pi runtime package descriptor is missing"); process.env.PI_PACKAGE_DIR = "/proc/" + process.pid + "/fd/" + (${DEPENDENCY_ANCESTOR_FD_START} + serverDependencyAncestorCount) + "/vendor/standalone"; }`,
     ...(guarded
       ? [
           `const guardianFd = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount + providerRuntimeExecutableCount;`,
@@ -1765,6 +1795,9 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     "let dependencyError = error;",
     "for (let dependencyIndex = Math.max(0, parentDependencyAncestorIndex); dependencyIndex < dependencyDirectoryUrls.length; dependencyIndex += 1) {",
     "const dependencyDirectoryUrl = dependencyDirectoryUrls[dependencyIndex];",
+    // Node's package self-reference requires exports. Older ACP SDKs expose
+    // only main; resolve that exact named root through its retained descriptor.
+    'if (dependencyIndex >= serverDependencyAncestorCount) { const metadata = JSON.parse(fs.readFileSync(new URL("package.json", dependencyDirectoryUrl), "utf8")); if (metadata.name === specifier && metadata.exports === undefined) { const main = typeof metadata.main === "string" ? metadata.main : "index.js"; const mainUrl = new URL(main, dependencyDirectoryUrl); if (!mainUrl.href.startsWith(dependencyDirectoryUrl)) throw new Error("ACPX dependency main escapes its verified package"); return rememberDependencyAncestor(specifier, nextResolve(mainUrl.href, context)); } }',
     'try { const candidateResolution = context.conditions?.includes("require") ? nextResolve(resolveBareFromDescriptor(specifier, dependencyDirectoryUrl), context) : nextResolve(specifier, { ...context, parentURL: new URL("package.json", dependencyDirectoryUrl).href }); return rememberDependencyAncestor(specifier, candidateResolution); } catch (candidateError) {',
     "if (!isMissingModuleError(candidateError)) throw candidateError;",
     "dependencyError = candidateError;",

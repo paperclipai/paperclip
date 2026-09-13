@@ -1,6 +1,7 @@
 import {
   isPaperclipRunnerProvider,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS,
   resolvePaperclipRunnerPermissionMode,
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
@@ -14,10 +15,7 @@ export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
 
-export const QUALIFIED_ACPX_RUNNER_MODELS = {
-  claude: "claude-sonnet-5",
-  codex: "gpt-5.6-sol",
-} as const;
+export const QUALIFIED_ACPX_RUNNER_MODELS = PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
   keyof typeof QUALIFIED_ACPX_RUNNER_MODELS;
@@ -404,14 +402,14 @@ export function resolvePaperclipRunnerProviderProfile(
   }
 
   const acpxAgent = config.acpxAgent ?? "claude";
-  if (acpxAgent !== "claude" && acpxAgent !== "codex") {
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "pi") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
-      "Paperclip Runner ACPX requires the qualified Claude or Codex agent profile; Pi is not available.",
+      "Paperclip Runner ACPX requires the qualified Claude, Codex, or Pi agent profile.",
     );
   }
   const qualifiedModel = QUALIFIED_ACPX_RUNNER_MODELS[acpxAgent];
-  if (acpxAgent === "codex" && model !== qualifiedModel) {
+  if (acpxAgent !== "claude" && model !== null && model !== qualifiedModel) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
       `Paperclip Runner ACPX ${acpxAgent} requires exact model ${qualifiedModel}.`,
