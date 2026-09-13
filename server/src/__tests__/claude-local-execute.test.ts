@@ -1301,6 +1301,9 @@ describe("claude execute", () => {
     vi.stubEnv("PAPERCLIP_HOME", root);
     vi.stubEnv("HOME", root);
     vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    // The stable CI runner isolates each invocation in a non-default instance.
+    const instanceId = process.env.PAPERCLIP_INSTANCE_ID || "claude-upgrade-fixture";
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", instanceId);
     const capture = path.join(root, "capture.json");
     const oldServers = [
       { name: "Paperclip connections", url: "http://localhost:3100/mcp/runtime-tools", connectionId: "paperclip-runtime-tools", token: "old-run-token" },
@@ -1320,7 +1323,8 @@ describe("claude execute", () => {
       const first = await execute({ ...base, runId: "first", runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "task" } });
       const initial = JSON.parse(await fs.readFile(capture, "utf8"));
       const oldKey = "a".repeat(64);
-      const oldDir = path.join(root, "instances", "default", "companies", "company", "claude-prompt-cache", oldKey);
+      // Sandbox addDir points at the copied remote bundle, not this host cache.
+      const oldDir = path.join(root, "instances", instanceId, "companies", "company", "claude-prompt-cache", oldKey);
       await fs.mkdir(path.join(oldDir, ".claude", "skills"), { recursive: true });
       await fs.copyFile(initial.instructionsFilePath, path.join(oldDir, "agent-instructions.md"));
       await fs.symlink(await fs.realpath(path.join(path.dirname(oldDir), String(first.sessionParams!.promptBundleKey), ".claude", "skills", "paperclip")), path.join(oldDir, ".claude", "skills", "paperclip"));
