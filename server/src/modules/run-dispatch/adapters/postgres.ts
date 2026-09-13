@@ -1,4 +1,5 @@
-import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { CONVERSATION_CONTINUATION_POLICY, hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { executionFailureRetryCount } from "../../../services/execution-recovery-attempt.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -711,6 +712,36 @@ export function createPostgresRunDispatchAdapter(
         new Date(run.scheduledRetryAt).getTime() > now.getTime()
       ) {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
+      // Historical quota rows were minted outside the bounded scheduler and
+      // can predate policy propagation. Promotion cannot depend on a recovery
+      // sweep running first. Recover only immutable, scope-matched evidence.
+      if (run.runtimeMode === "legacy" && run.scheduledRetryReason === "provider_quota_recovery" && run.retryOfRunId) {
+        const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
+        const [source] = issueId ? await tx.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, run.retryOfRunId), eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.runtimeMode, "legacy"),
+          inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        )) : [];
+        if (source && hasConversationContinuationPolicy(source.resultJson)) {
+          if (!hasConversationContinuationPolicy(run.resultJson)) {
+            const resultJson = { ...parseObject(run.resultJson), conversationContinuation: CONVERSATION_CONTINUATION_POLICY };
+            await tx.update(heartbeatRuns).set({ resultJson }).where(eq(heartbeatRuns.id, run.id));
+            run = { ...run, resultJson };
+          }
+          if (executionFailureRetryCount(source) >= 2 || (run.scheduledRetryAttempt ?? 0) > 2) {
+            const reason = "Automatic provider quota retry budget exhausted";
+            const errorCode = "provider_quota_retry_exhausted" as const;
+            const cancelled = await cancelSuppressedRetryInTx(tx, {
+              runId: run.id, companyId: run.companyId, now, reason, errorCode, issueId,
+              details: { retryOfRunId: source.id, scheduledRetryAttempt: run.scheduledRetryAttempt },
+            });
+            return cancelled.applied
+              ? { outcome: { outcome: "gate_suppressed" as const, reason, errorCode }, telemetryRun: cancelled.run }
+              : { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+          }
+        }
       }
       const factsResult = await loadGateFacts(
         {

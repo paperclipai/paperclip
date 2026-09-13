@@ -11227,6 +11227,64 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it.each(["close", "new"] as const)(
+    "does not schedule provider-quota recovery after a committed /%s receipt",
+    async (control) => {
+      const source = await seedCommittedChatControlStop(control);
+      await db.update(heartbeatRuns).set({
+        status: "failed",
+        runtimeMode: "legacy",
+        errorCode: "adapter_failed",
+        error: "You've hit your usage limit. Try again at 12:00 AM (UTC).",
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, source.runId));
+      const [before] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      const heartbeat = heartbeatService(db);
+      for (let sweep = 0; sweep < 2; sweep++) {
+        const result = await heartbeat.reconcileStrandedAssignedIssues();
+        expect(result.providerQuotaMonitored).toBe(0);
+        expect(result.escalated).toBe(0);
+      }
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, source.agentId))).toEqual([{ id: source.runId }]);
+      const [after] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(after).toEqual(before);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(mockExecutePaperclipNativeSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("cancels a separate quota retry when a chat close commits before promotion", async () => {
+    const source = await seedCommittedChatControlStop();
+    await db.update(chatPublications).set({ state: "pending" })
+      .where(eq(chatPublications.id, source.publicationId));
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      runtimeMode: "legacy",
+      errorCode: "adapter_failed",
+      error: "You've hit your usage limit. Try again at 12:00 AM (UTC).",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, source.runId));
+    const heartbeat = heartbeatService(db);
+    expect((await heartbeat.reconcileStrandedAssignedIssues()).providerQuotaMonitored).toBe(1);
+    const [retry] = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, source.runId));
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "provider_quota_recovery" });
+    await db.update(chatPublications).set({ state: "published" })
+      .where(eq(chatPublications.id, source.publicationId));
+    expect((await readChatControlRecoveryStop(db, {
+      companyId: source.companyId, issueId: source.issueId,
+      agentId: source.agentId, sourceRunId: retry!.id,
+    })).kind).toBe("stopped");
+    await heartbeat.promoteDueScheduledRetries(new Date(retry!.scheduledRetryAt!.getTime() + 1000));
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
+    expect(after).toMatchObject({ status: "cancelled", errorCode: CHAT_CONTROL_RECOVERY_STOP_CODE });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(mockExecutePaperclipNativeSession).not.toHaveBeenCalled();
+  });
+
   async function seedChatAutomaticChild(
     source: Awaited<ReturnType<typeof seedCommittedChatControlStop>>,
     extra?: {
