@@ -2,6 +2,15 @@ import { and, eq } from "drizzle-orm";
 import { assets, issueAttachments, type Db } from "@paperclipai/db";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
+function evidenceRefs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (typeof entry === "string") return [entry];
+    if (entry && typeof entry === "object" && typeof entry.ref === "string") return [entry.ref];
+    return [];
+  });
+}
+
 /** Files cited as completed output must be reachable outside the agent workspace. */
 export async function validateNativeDeliverableEvidence(
   db: Db,
@@ -10,8 +19,8 @@ export async function validateNativeDeliverableEvidence(
 ): Promise<void> {
   if (result.reportedWorkDisposition !== "done") return;
   const refs = new Set([
-    ...result.evidence.map(({ ref }) => ref),
-    ...result.artifacts.map(({ ref }) => ref),
+    ...evidenceRefs(result.evidence),
+    ...evidenceRefs(result.artifacts),
     ...result.completionClaim.criteria.flatMap(({ evidenceRefs }) => evidenceRefs),
   ]);
   for (const value of refs) {
