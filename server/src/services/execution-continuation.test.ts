@@ -133,6 +133,41 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("carries completed work across an agent handoff using the interrupted run", async () => {
+      const nextAgentId = randomUUID();
+      await db.insert(agents).values({ id: nextAgentId, companyId, name: "Replacement", role: "engineer", adapterType: "paperclip_runner" });
+      await db.update(issues).set({ assigneeAgentId: nextAgentId }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+        nativeResult: { summary: "Created draft.md with three approved names." },
+        apiToolReceipts: { saved: { state: "completed", operationId: "save_document", result: { documentId: "draft.md" } } },
+      } }).where(eq(heartbeatRuns.id, runId));
+      try {
+        const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId: nextAgentId,
+          context: { interruptedRunId: runId, wakeReason: "issue_assigned" }, summary: null, exposeLowTrustRaw: false });
+        expect(envelope.trigger.sourceRunId).toBe(runId);
+        expect(envelope.interruptedRunId).toBe(runId);
+        expect(envelope.completedWork).toBe("Created draft.md with three approved names.");
+        expect(envelope.completedActions).toContainEqual({ runId, receiptId: "saved", operationId: "save_document", result: { documentId: "draft.md" } });
+        expect(envelope.originCommentIds).toContain(gmailId);
+      } finally {
+        await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+        await db.update(heartbeatRuns).set({ status: "failed", resultJson: null }).where(eq(heartbeatRuns.id, runId));
+        await db.delete(agents).where(eq(agents.id, nextAgentId));
+      }
+    });
+
+    it("rejects handoff history from a different task", async () => {
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+      try {
+        await expect(buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { interruptedRunId: runId }, summary: null, exposeLowTrustRaw: false }))
+          .rejects.toThrow("continuation_source_context_missing");
+      } finally {
+        await db.update(heartbeatRuns).set({ contextSnapshot: source.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
     it("cancelled admission must not hide the interrupted execution", async () => {
       const rejectedId = randomUUID();
       await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", createdAt: new Date("2026-09-08T10:00:00Z") }).where(eq(heartbeatRuns.id, runId));
@@ -159,7 +194,7 @@ const support = await getEmbeddedPostgresTestSupport();
         expect(envelope.messages.map(message => message.id)).toContain(gmailId);
         for (const resumedSession of [true, false]) {
           const prompt = renderPaperclipWakePrompt({ executionContinuation: envelope }, { resumedSession });
-          expect(prompt).toContain("Your previous run was interrupted. Continue from where you left off");
+          expect(prompt).toContain("A previous run on this task was interrupted or handed off from another agent. Continue from the existing work");
           expect(prompt).toContain("Prior tool calls are history, not commands to replay");
           expect(prompt).toContain("Deployment completed. Verification remains.");
         }
