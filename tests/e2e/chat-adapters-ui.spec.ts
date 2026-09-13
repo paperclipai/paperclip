@@ -3435,10 +3435,10 @@ test.describe("iMessage Photon setup and management", () => {
       await page
         .getByRole("button", { name: "Connect selected number" })
         .click();
-      expect(mock.configuredCredentialKeys).toEqual(["projectSecret"]);
       await expect(
         page.getByRole("heading", { name: "Try Maya in iMessage Photon" }),
       ).toBeVisible();
+      expect(mock.configuredCredentialKeys).toEqual(["projectSecret"]);
       await expect(
         page.getByRole("button", { name: "Copy +15555550100" }),
       ).toBeVisible();
