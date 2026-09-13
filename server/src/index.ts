@@ -21,7 +21,7 @@ import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -96,6 +96,14 @@ import {
 import { createProductionSetupTokenReaper } from "./services/setup-token-reaper.js";
 import { localAiLoginService } from "./services/local-ai-login.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
+import { inspectDatabaseBackupHealth } from "./services/database-backup-health.js";
+import { createDatabaseBackupAlertReporter } from "./services/database-backup-alerts.js";
+import { createPgClientVersionPreflightReporter } from "./services/pgclient-version-preflight.js";
+// NOTE: database-backup-alert-board pulls in the issues service (and its
+// transitive `heartbeatRuns` drizzle table access via successful-run-handoff-state).
+// It is loaded lazily at boot only when board alerting is actually enabled, so
+// importing this entrypoint (e.g. in startServer tests that mock @paperclipai/db
+// without every table export) never evaluates that heavy graph.
 import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
@@ -810,6 +818,35 @@ async function startServerWithDatabaseTeardown(
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
+  // SIN-70819: turn a silent backup failure into a LOUD board signal. Resolve the
+  // company whose board receives the alert — an explicit override, else the
+  // oldest active company (the instance's primary board). No company (or backups
+  // disabled) leaves the board channel off; the marker + structured log still fire.
+  const databaseBackupAlertCompanyId: string | null = config.databaseBackupEnabled
+    ? (process.env.PAPERCLIP_DB_BACKUP_ALERT_COMPANY_ID?.trim() ||
+        (await db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.status, "active"))
+          .orderBy(asc(companies.createdAt), asc(companies.id))
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null))) ??
+      null
+    : null;
+  const databaseBackupAlertBoard =
+    config.databaseBackupEnabled && databaseBackupAlertCompanyId
+      ? (await import("./services/database-backup-alert-board.js")).createDatabaseBackupAlertBoard(
+          db,
+          { priority: "high" },
+        )
+      : null;
+  const databaseBackupAlertReporter = createDatabaseBackupAlertReporter({
+    markerFile: databaseBackupAlertFile,
+    clearMarkerFiles: databaseBackupAlertFiles,
+    board: databaseBackupAlertBoard,
+    companyId: databaseBackupAlertCompanyId,
+    logger,
+  });
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
@@ -838,6 +875,13 @@ async function startServerWithDatabaseTeardown(
         backupDir: config.databaseBackupDir,
         retention,
         filenamePrefix: "paperclip",
+        // SIN-70819 AC2: never let the auto-engine fallback swallow the real
+        // pg_dump error (e.g. server-version mismatch) — log it loudly.
+        onEngineFallback: (error) =>
+          logger.warn(
+            { err: error, backupDir: config.databaseBackupDir, trigger },
+            "pg_dump backup failed; falling back to JavaScript backup engine",
+          ),
       });
       const finishedAt = new Date();
       const response: InstanceDatabaseBackupRunResult = {
@@ -861,9 +905,19 @@ async function startServerWithDatabaseTeardown(
         },
         `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
       );
+      // SIN-70819 AC1: a healthy backup clears the failure marker and resolves any
+      // open board alert. Guarded internally so it never masks the backup result.
+      await databaseBackupAlertReporter.reportSuccess();
       return response;
     } catch (err) {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
+      // SIN-70819 AC1: on a scheduled-backup failure raise the LOUD signal —
+      // marker (exact error + timestamp) + structured log + idempotent board issue.
+      // Manual failures surface directly to the API caller, so only scheduled runs
+      // need the durable board alert. Guarded so it never replaces the real error.
+      if (trigger === "scheduled") {
+        await databaseBackupAlertReporter.reportFailure(err instanceof Error ? err.message : String(err));
+      }
       throw err;
     } finally {
       databaseBackupInFlight = false;
@@ -1837,8 +1891,65 @@ async function startServerWithDatabaseTeardown(
         // runServerDatabaseBackup already logs the failure with context.
       });
     }, backupIntervalMs);
+
+    // SIN-70819 AC3: defense-in-depth staleness detector. Independently of the
+    // failure path above, periodically inspect backup health and bridge any
+    // `warning` status (e.g. newest .gz older than the max-age threshold, or a
+    // failure marker present) to the same idempotent board alert. This catches
+    // failures that never threw — the exact gap that hid the 9-day outage.
+    const backupHealthCheckIntervalMs =
+      Math.max(1, Number(process.env.PAPERCLIP_DB_BACKUP_HEALTH_CHECK_INTERVAL_MINUTES) || 60) * 60 * 1000;
+    const runDatabaseBackupHealthBridge = async () => {
+      try {
+        const status = inspectDatabaseBackupHealth({
+          enabled: config.databaseBackupEnabled,
+          backupDir: config.databaseBackupDir,
+          maxAgeHours: databaseBackupMaxAgeHours,
+          alertFile: databaseBackupAlertFile,
+          alertFiles: databaseBackupAlertFiles,
+        });
+        await databaseBackupAlertReporter.reportHealthWarnings(status);
+      } catch (err) {
+        logger.error({ err }, "database backup health bridge tick failed");
+      }
+    };
+    // Run once at startup so an already-stale instance alerts immediately.
+    void runDatabaseBackupHealthBridge();
+    setInterval(() => {
+      void runDatabaseBackupHealthBridge();
+    }, backupHealthCheckIntervalMs);
+
+    // SIN-70820: anti-regression preflight for the SIN-70814 invariant — the
+    // embedded PostgreSQL major MUST match the host `postgresql-client` major, or
+    // pg_dump silently refuses to back up the server (the 9-day silent outage).
+    // Only meaningful in embedded mode, where the server major lives in
+    // <dataDir>/PG_VERSION. Resolve pg_dump the same way backup-lib does and
+    // compare majors; on divergence push a LOUD alert through the SIN-70819
+    // adapter (distinct fingerprint). Read-only + alert, never a boot hard-stop.
+    if (startupDbInfo.mode === "embedded-postgres") {
+      const pgClientVersionPreflight = createPgClientVersionPreflightReporter({
+        dataDir: startupDbInfo.dataDir,
+        pgDumpPath: process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump",
+        board: databaseBackupAlertBoard,
+        companyId: databaseBackupAlertCompanyId,
+        logger,
+      });
+      const runPgClientVersionPreflight = async () => {
+        try {
+          await pgClientVersionPreflight.run();
+        } catch (err) {
+          logger.error({ err }, "pg_dump client-major preflight tick failed");
+        }
+      };
+      // Run once at boot, then re-check on the same cadence as the health bridge
+      // so a later drift (or its fix) is picked up without a restart.
+      void runPgClientVersionPreflight();
+      setInterval(() => {
+        void runPgClientVersionPreflight();
+      }, backupHealthCheckIntervalMs);
+    }
   }
-  
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
