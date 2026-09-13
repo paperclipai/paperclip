@@ -48,6 +48,7 @@ import { meditationRoutes } from "./routes/meditation.js";
 import { habitsRoutes } from "./routes/habits.js";
 import { annotationRoutes } from "./routes/annotations.js";
 import { solarisAlertRoutes } from "./routes/solaris-alerts.js";
+import { cadWebhookRoutes } from "./routes/cad-webhook.js";
 import { estateRoutes } from "./routes/estate.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -127,6 +128,9 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  // CAD webhook: mounted before actorMiddleware — agencies authenticate via HMAC, not user sessions
+  app.use(cadWebhookRoutes(db));
+
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,

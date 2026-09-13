@@ -39,6 +39,12 @@ export const solarisAlerts = pgTable(
     capIdentifier: text("cap_identifier"),
     incidentArea: text("incident_area"),
     createdBy: text("created_by"),
+    // CAD dispatch fields (IUN-2751)
+    incidentId: text("incident_id").unique(),
+    incidentName: text("incident_name"),
+    incidentType: text("incident_type"),
+    reportedAt: timestamp("reported_at", { withTimezone: true }),
+    source: text("source").notNull().default("solaris"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
