@@ -4328,6 +4328,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     ],
   );
 
+  // The backend only accepts a check-now trigger when `monitorNextCheckAt` is
+  // actually persisted on the issue (see triggerIssueMonitor). The monitor
+  // banner's own displayed state falls back to policy/runtime monitor and
+  // scheduled-retry timestamps too, so gate the button on this narrower,
+  // exact field rather than on whatever the banner happens to be showing.
+  const canCheckMonitorNow = Boolean(issue?.monitorNextCheckAt);
+
   const checkIssueMonitorNow = useMutation({
     mutationFn: () => issuesApi.checkMonitorNow(issueId!),
     onSuccess: () => {
@@ -5566,7 +5573,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       onRetryExternalObjects: externalObjectsState.isEnabled
         ? externalObjectsState.refetch
         : undefined,
-      onCheckMonitorNow: () => checkIssueMonitorNow.mutate(),
+      onCheckMonitorNow: canCheckMonitorNow ? () => checkIssueMonitorNow.mutate() : undefined,
       checkingMonitorNow: checkIssueMonitorNow.isPending,
       documentDeepLink:
         documentDeepLink?.issueId === panelIssue.id ? documentDeepLink : null,
@@ -5607,6 +5614,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     relationIssueLinkState,
     streamlinedTaskDetailEnabled,
     resolvedHasActiveRun,
+    canCheckMonitorNow,
     checkIssueMonitorNow.isPending,
     checkIssueMonitorNow.mutate,
     externalObjectsState.isEnabled,
@@ -7210,7 +7218,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
       <IssueMonitorBanner
         issue={issue}
-        onCheckNow={() => checkIssueMonitorNow.mutate()}
+        onCheckNow={canCheckMonitorNow ? () => checkIssueMonitorNow.mutate() : null}
         checkingNow={checkIssueMonitorNow.isPending}
       />
 
@@ -7736,7 +7744,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
-                        onCheckNow={() => checkIssueMonitorNow.mutate()}
+                        onCheckNow={canCheckMonitorNow ? () => checkIssueMonitorNow.mutate() : null}
                         checkingNow={checkIssueMonitorNow.isPending}
                       />
                     ) : null
@@ -8051,7 +8059,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         ? externalObjectsState.refetch
                         : undefined
                     }
-                    onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
+                    onCheckMonitorNow={canCheckMonitorNow ? () => checkIssueMonitorNow.mutate() : undefined}
                     checkingMonitorNow={checkIssueMonitorNow.isPending}
                     fileTabsEnabled={fileViewerEnabled}
                     streamlinedTabs={streamlinedTaskDetailEnabled}
@@ -8108,7 +8116,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                             ? externalObjectsState.refetch
                             : undefined
                         }
-                        onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
+                        onCheckMonitorNow={canCheckMonitorNow ? () => checkIssueMonitorNow.mutate() : undefined}
                         checkingMonitorNow={checkIssueMonitorNow.isPending}
                         documentDeepLink={
                           documentDeepLink?.issueId === issue.id
