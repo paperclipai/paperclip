@@ -8063,6 +8063,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
+
+    // Belt-and-suspenders: clear stale execution locks where the referenced run has
+    // reached a terminal state. Catches locks from process crashes or cross-tree bugs
+    // that slip past the normal release path. TTL is conservative (10 min) to avoid
+    // false positives on long-running agents.
+    const LOCK_TTL_MS = 10 * 60 * 1000;
+    const lockTtlCutoff = new Date(now.getTime() - LOCK_TTL_MS);
+    const staleLockIssues = await db
+      .select({ id: issues.id, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(
+        and(
+          sql`${issues.executionRunId} is not null`,
+          sql`${issues.executionLockedAt} < ${lockTtlCutoff.toISOString()}`,
+        ),
+      );
+
+    let staleLockCleared = 0;
+    for (const staleLockIssue of staleLockIssues) {
+      if (!staleLockIssue.executionRunId) continue;
+      const staleRun = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, staleLockIssue.executionRunId))
+        .then((rows) => rows[0] ?? null);
+
+      // Keep the lock if the run is still active.
+      if (staleRun && !HEARTBEAT_RUN_TERMINAL_STATUSES.includes(staleRun.status as any))
+        continue;
+
+      const cleared = await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, staleLockIssue.id),
+            eq(issues.executionRunId, staleLockIssue.executionRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (cleared) staleLockCleared++;
+    }
+
+    if (staleLockCleared > 0) {
+      logger.warn({ staleLockCleared }, "cleared stale execution locks on issues");
+    }
+
     return { reaped: reaped.length, runIds: reaped };
   }
 
@@ -11194,6 +11247,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
               activeExecutionRun = null;
+            } else if (legacyRun.agentId !== issue.assigneeAgentId) {
+              // Cross-tree run: a heartbeat for a different agent has contextSnapshot.issueId
+              // pointing at this issue, but the run's agent does not own the issue. Do not
+              // adopt it as the active execution lock — stamping a foreign run's ID here
+              // would block the true assignee's wakes for up to ~30 min.
+              activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;
               const legacyAgent = await tx
@@ -11209,7 +11268,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   executionLockedAt: new Date(),
                   updatedAt: new Date(),
                 })
-                .where(eq(issues.id, issue.id));
+                .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, legacyRun.agentId)));
             }
           }
         }
