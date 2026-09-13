@@ -1,8 +1,8 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef14627011e02b30 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -2917,10 +2917,20 @@
-                                         cost: {
+@@ -2922,9 +2922,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -25,9 +25,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                      },
                                  });
                              }
-@@ -5307,8 +5317,12 @@
-         const options = {
-             systemPrompt,
+@@ -5311,6 +5321,10 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -38,7 +36,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              ...(settings && { settings }),
              env,
              // Override certain fields that must be controlled by ACP
-@@ -5317,7 +5331,9 @@
+@@ -5318,7 +5332,9 @@ export class ClaudeAcpAgent {
              includePartialMessages: true,
              forwardSubagentText,
              mcpServers: {
@@ -49,3 +47,20 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
+@@ -5329,6 +5345,16 @@ export class ClaudeAcpAgent {
+             allowDangerouslySkipPermissions: ALLOW_BYPASS,
+             permissionMode: initialPermissionMode,
+             canUseTool: this.canUseTool(sessionId),
++            // The runner pins this actual MCP endpoint before provider launch.
++            // Exempt only task delivery/control tools at the SDK dispatch boundary,
++            // not arbitrary provider permission metadata or MCP name prefixes.
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && {
++                allowedTools: mcpServers.paperclip?.type === "http"
++                    && mcpServers.paperclip.url === process.env.PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL
++                    ? ["paperclip_finish", "paperclip_block", "read_current_wake_comments", "request_human_input"]
++                        .map((tool) => `mcp__paperclip__${tool}`)
++                    : [],
++            }),
+             // Forward MCP elicitation requests onto ACP elicitation. Only attached
+             // when the client advertised support, so non-supporting clients keep the
+             // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in

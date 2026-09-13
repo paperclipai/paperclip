@@ -540,6 +540,38 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onResumeAssignee,
     resumeAssigneePending = false,
   } = props;
+  const retryFailedRunHandler =
+    isTerminalIssueStatus(issueStatus) ||
+    interactions?.some((interaction) => interaction.status === "pending") ||
+    requiresExecutionReconciliation(props.recoveryAction?.cause) ||
+    props.scheduledRetry ||
+    linkedRuns?.some((run) => {
+      // The server accepts explicit new attempts for these stopped legacy
+      // conversations. It still proves process/lease termination and ownership;
+      // offering Retry does not certify prior action outcomes or resume them.
+      // Keep this set aligned with conversation-continuation.ts on the server.
+      if (
+        run.runtimeMode === "legacy" &&
+        (run.status === "failed" || run.status === "timed_out") &&
+        run.execution?.phase === "recovery_needed" &&
+        run.execution.cause === "legacy_execution_requires_reconciliation" &&
+        [
+          "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
+          "pi_local", "grok_local", "kimi_local", "hermes_local",
+        ].includes(run.adapterType ?? "")
+      ) return false;
+      return [
+        "working",
+        "retry_scheduled",
+        "reconnecting",
+        "finishing",
+        "queued",
+        "recovery_needed",
+      ].includes(run.execution?.phase ?? "");
+    })
+      ? undefined
+      : onRetryFailedRun;
+  const canRetryFailedRun = Boolean(retryFailedRunHandler);
   const queryClient = useQueryClient();
   const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
@@ -1397,6 +1429,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      // A workspace admission attempt never started provider work. Its live
+      // successor owns the waiting indicator; retain this attempt in the run log.
+      if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
+        settledRunIds.add(source.id);
+        continue;
+      }
       // /new is represented by its durable comment boundary, not an empty
       // model response or a completed-run notice.
       if (meta?.resultJson?.conversationReset === true) { settledRunIds.add(source.id); continue; }
@@ -1632,7 +1670,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           const code = meta?.errorCode ?? "native_runner_process_exited";
           const retryDetail = meta?.scheduledRetryAt
             ? "Retry scheduled automatically."
-            : "You can retry this message now.";
+            : canRetryFailedRun
+              ? "You can retry this message now."
+              : "Your message is preserved.";
           const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
           const detail = aiRequest
             ? aiRequest.status === "pending"
@@ -1655,6 +1695,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               kind: "marker",
               variant: "interrupted",
               label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+              runId: source.status === "cancelled" ? undefined : source.id,
               tone: source.status === "cancelled" ? "neutral" : "error",
               detail,
             },
@@ -1975,6 +2016,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     };
   }, [
     orderedEntries,
+    canRetryFailedRun,
     interactions,
     runs,
     liveRun,
@@ -2782,28 +2824,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     tryAgainNoLiveExecutionPathPending={
                       tryAgainNoLiveExecutionPathPending
                     }
-                    onRetryFailedRun={
-                      isTerminalIssueStatus(issueStatus) ||
-                      interactions?.some(
-                        (interaction) => interaction.status === "pending",
-                      ) ||
-                      requiresExecutionReconciliation(
-                        props.recoveryAction?.cause,
-                      ) ||
-                      props.scheduledRetry ||
-                      linkedRuns?.some((run) =>
-                        [
-                          "working",
-                          "retry_scheduled",
-                          "reconnecting",
-                          "finishing",
-                          "queued",
-                          "recovery_needed",
-                        ].includes(run.execution?.phase ?? ""),
-                      )
-                        ? undefined
-                        : onRetryFailedRun
-                    }
+                    onRetryFailedRun={retryFailedRunHandler}
                     retryFailedRunId={retryFailedRunId}
                     tail={
                       tailRunId ||
@@ -2969,6 +2990,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   <div className="relative z-10">
                     <TaskChatComposer
                       onAdd={handleThreadAdd}
+                      confirmedSubmissionIds={new Set(comments.filter((comment) =>
+                        comment.authorUserId === currentUserId && comment.clientRequestId &&
+                        !("clientStatus" in comment && comment.clientStatus)
+                      ).map((comment) => comment.clientRequestId!))}
                       onReviewConversation={onReviewConversation}
                       onStop={liveRun ? onCancelRun : undefined}
                       stopPending={stopPending}

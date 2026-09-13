@@ -12652,6 +12652,7 @@ export function issueRoutes(
         : null;
       const {
         comment: commentBody,
+        commentClientRequestId,
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
         reviewRequest,
@@ -13513,6 +13514,7 @@ export function issueRoutes(
                 },
                 {
                   attachmentIds: commentAttachmentIds,
+                  clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: attachmentCommentSourceTrust,
                 },
@@ -14117,6 +14119,7 @@ export function issueRoutes(
           },
           {
             authorizationReason: issueMutationAuthorizationReason,
+            clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
             sourceTrust: await sourceTrustForActorWrite(issue, actor),
           },
         );
@@ -17442,6 +17445,7 @@ export function issueRoutes(
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
+          clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           sourceTrust,
         };
         let txResult: {
@@ -17553,6 +17557,7 @@ export function issueRoutes(
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
+          clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
         };
