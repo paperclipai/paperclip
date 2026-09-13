@@ -22,6 +22,12 @@ export function classifyFailure(error: unknown): FailureClass {
     return "transient_infrastructure";
   if (/secret.*(?:leak|plaintext|redaction)/i.test(message))
     return "secret_leak";
+  // An explicit ACPX session-open defect is a candidate failure even when
+  // wrapped by a generic retryable=false transport error. Concrete credential
+  // and model-compatibility errors still take precedence.
+  if (NON_RETRYABLE_ACPX_SESSION_OPEN.test(message) &&
+      !PERMANENT.test(message) && !/effective_model_mismatch/i.test(message))
+    return "candidate_failure";
   if (/retryable=false|effective_model_mismatch/i.test(message))
     return "permanent_infrastructure";
   if (/cleanup|teardown|lease.*release/i.test(message)) {
@@ -32,8 +38,7 @@ export function classifyFailure(error: unknown): FailureClass {
   if (PERMANENT.test(message)) return "permanent_infrastructure";
   if (
     /chat_idle_state_invariant/.test(message) ||
-    NON_RETRYABLE_SESSION_CLOSE.test(message) ||
-    NON_RETRYABLE_ACPX_SESSION_OPEN.test(message)
+    NON_RETRYABLE_SESSION_CLOSE.test(message)
   )
     return "candidate_failure";
   if (TRANSIENT.test(message)) return "transient_infrastructure";

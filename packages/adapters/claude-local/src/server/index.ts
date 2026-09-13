@@ -88,11 +88,13 @@ export const sessionCodec: AdapterSessionCodec = {
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
     const remoteExecution = serializeSessionExecutionIdentity(record.remoteExecution);
     const mcpServerIdentity = readNonEmptyString(record.mcpServerIdentity);
+    const promptCompatibilityKey = readNonEmptyString(record.promptCompatibilityKey);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
       ...(remoteExecution ? { remoteExecution } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
+      ...(promptCompatibilityKey ? { promptCompatibilityKey } : {}),
       ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -115,11 +117,13 @@ export const sessionCodec: AdapterSessionCodec = {
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
     const remoteExecution = serializeSessionExecutionIdentity(params.remoteExecution);
     const mcpServerIdentity = readNonEmptyString(params.mcpServerIdentity);
+    const promptCompatibilityKey = readNonEmptyString(params.promptCompatibilityKey);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
       ...(remoteExecution ? { remoteExecution } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
+      ...(promptCompatibilityKey ? { promptCompatibilityKey } : {}),
       ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),

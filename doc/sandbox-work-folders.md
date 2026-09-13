@@ -657,3 +657,27 @@ Late callbacks from warm-session inspection or maintenance cannot rewrite a
 completed run's process identity. Remote native process timestamps come from
 the validated remote marker; an unrelated host process with the same PID must
 not replace them. Active local execution retains its host process lookup.
+
+### Claude conversations during sandbox upgrades
+
+A sandbox Claude conversation can resume after an app upgrade refreshes shipped
+Paperclip skill files or adds a built-in Paperclip MCP server. The generated agent
+instructions must remain identical. Skill assignments and all non-shipped skill
+contents remain part of the session compatibility fingerprint. Built-in MCP
+comparison validates the exact Paperclip origin, endpoint path, name, and reserved
+connection ID; assigned/external server identities must still match.
+
+Older Claude codecs omitted remote and MCP identity fields. Migration uses the
+previous successful run's company, agent, responsible user, task, workspace, and
+same physical sandbox. Reconstructing an omitted assignment gateway additionally
+requires the historical host invocation and its run-scoped gateway evidence.
+Missing or ambiguous evidence does not authorize a builtin-only fallback. An old
+prompt bundle without its newer compatibility fingerprint is eligible only when
+its preserved instructions and skill symlinks prove the same shipped sources;
+unknown historical third-party contents are not assumed unchanged.
+
+Changes to the responsible identity, external grants, agent instructions, or
+non-shipped skills retain the existing reset behavior. Local and SSH execution
+keep their previous exact prompt-bundle and MCP comparisons. These compatibility
+rules do not themselves constitute live upgrade acceptance; staging must verify
+that the original provider conversation and saved work survive the transition.

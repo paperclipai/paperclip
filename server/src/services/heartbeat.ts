@@ -10,7 +10,7 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS, managedAiSessionFingerprintConfig, managedAiCredentialIdentityMatches } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -53,7 +53,7 @@ import fs from "node:fs/promises";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "./work-folder-retention.js";
 import { hasMatchingLegacySessionWorkspace } from "./legacy-session-workspace-compatibility.js";
 import { findUnboundLegacyTaskWorkspace, hasLegacySandboxWorkspace } from "./legacy-sandbox-workspace.js";
-import { recoverLegacySandboxSession } from "./legacy-sandbox-session.js";
+import { recoverLegacySandboxSession, recoverLegacyClaudeMcpIdentity } from "./legacy-sandbox-session.js";
 import { prepareSandboxWorkFolders } from "./sandbox-work-folders.js";
 import { bindReusableSandboxWorkspace, shouldBindReusableSandboxWorkspace } from "./sandbox-workspace-binding.js";
 import path from "node:path";
@@ -6406,6 +6406,8 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
   runtimeSkills: unknown;
   agentConfigRevision?: unknown;
+  /** Host-derived old identity for the exact current managed credential only. */
+  managedAiLegacyCredentialIdentity?: string;
 }): Promise<EffectiveRunSessionConfigMetadata> {
   const secretManifest = input.secretManifest ?? [];
   const instructions = await resolveInstructionsConfigFingerprintMetadata(
@@ -6465,6 +6467,15 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
         readPaperclipSkillSyncPreference(categoryValues.adapterConfig).desiredSkillEntries),
       paperclipConnectorSkillDigest: null,
     });
+  }
+  if (input.managedAiLegacyCredentialIdentity) {
+    for (const adapterConfig of [...adapterVariants]) {
+      const managed = parseObject(adapterConfig.managedAiConnection);
+      if (typeof managed.identity !== "string") continue;
+      adapterVariants.push({ ...adapterConfig, managedAiConnection: {
+        ...managed, identity: input.managedAiLegacyCredentialIdentity,
+      } });
+    }
   }
   const compatibleFingerprints = [...new Set(
     [categoryValues.workspaceConfig, ...legacyWorkspaceVariants].flatMap((workspaceConfig) =>
@@ -20874,7 +20885,7 @@ export function heartbeatService(
               fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
           });
         }
-        if (persistedNativeExecutionInput && parseObject(run.contextSnapshot?.aiConnection).identity !== managedAiRuntime.identity) {
+        if (persistedNativeExecutionInput && !managedAiCredentialIdentityMatches(parseObject(run.contextSnapshot?.aiConnection).identity, managedAiRuntime)) {
           throw new ConfigurationIncompleteFailure("The AI account changed while this native run was suspended. Start a new execution.", { configurationIncomplete: { reason: "ai_connection_changed", actionUrl: `/agents/${agent.id}/runtime` } });
         }
         Object.assign(resolvedConfig, managedAiRuntime.config);
@@ -20944,7 +20955,8 @@ export function heartbeatService(
       const sessionConfigMetadata =
         await measureSandboxOperation("heartbeat.build_effective_run_session_config_metadata", { operationIndex: 61 }, async () => (buildEffectiveRunSessionConfigMetadata({
           adapterType: agent.adapterType,
-          effectiveAdapterConfig: runtimeConfig,
+          effectiveAdapterConfig: managedAiSessionFingerprintConfig(runtimeConfig, managedAiRuntime),
+          managedAiLegacyCredentialIdentity: managedAiRuntime?.legacyCredentialIdentity,
           agentRuntimeConfig: agent.runtimeConfig,
           issueOverrides: issueAssigneeOverrides,
           workspaceConfig: {
@@ -22070,6 +22082,27 @@ export function heartbeatService(
           responsibleUserId: run.responsibleUserId ?? null,
           executionWorkspaceId: persistedExecutionWorkspace?.id ?? null, previousRun,
         });
+        if (agent.adapterType === "claude_local" && previousRun
+          && previousSessionParams?.legacyPlatformMcpSession === true && !previousSessionParams.mcpServerIdentity) {
+          const [invocations, gateways] = await Promise.all([
+            db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+              eq(heartbeatRunEvents.companyId, agent.companyId), eq(heartbeatRunEvents.agentId, agent.id),
+              eq(heartbeatRunEvents.runId, previousRun.id), eq(heartbeatRunEvents.eventType, "adapter.invoke"),
+            )).limit(2),
+            db.select({ companyId: toolMcpGatewayTokens.companyId, subjectType: toolMcpGatewayTokens.subjectType,
+              subjectId: toolMcpGatewayTokens.subjectId, createdByAgentId: toolMcpGatewayTokens.createdByAgentId,
+              gatewayCompanyId: toolMcpGateways.companyId, gatewayPublicId: toolMcpGateways.gatewayPublicId,
+              metadata: toolMcpGateways.metadata }).from(toolMcpGatewayTokens)
+              .innerJoin(toolMcpGateways, eq(toolMcpGateways.id, toolMcpGatewayTokens.gatewayId)).where(and(
+                eq(toolMcpGatewayTokens.companyId, agent.companyId), eq(toolMcpGateways.companyId, agent.companyId),
+                eq(toolMcpGatewayTokens.subjectType, "heartbeat_run"), eq(toolMcpGatewayTokens.subjectId, previousRun.id),
+                eq(toolMcpGatewayTokens.createdByAgentId, agent.id),
+              )).limit(2),
+          ]);
+          previousSessionParams = recoverLegacyClaudeMcpIdentity({ params: previousSessionParams,
+            previousRunId: previousRun.id, companyId: agent.companyId, agentId: agent.id, taskId: issueId,
+            paperclipApiUrl: paperclipApiBaseUrl(), invocations, gateways });
+        }
       }
       const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
         agentId: agent.id,
@@ -22252,7 +22285,7 @@ export function heartbeatService(
 
       if (managedAiRuntime) {
         sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
-        if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
+        if (!managedAiCredentialIdentityMatches(taskSessionDecodedParams?.paperclipAiCredentialIdentity, managedAiRuntime)) {
           runtimeSessionIdForAdapter = null;
           runtimeSessionParamsForAdapter = null;
           previousSessionDisplayId = null;
@@ -22767,7 +22800,7 @@ export function heartbeatService(
                   })(),
                 })));
           const taskSessionIdentityChanged = Boolean(sandboxWorkFolders?.identityChanged
-            || (managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity));
+            || (managedAiRuntime && !managedAiCredentialIdentityMatches(taskSessionDecodedParams?.paperclipAiCredentialIdentity, managedAiRuntime)));
           const taskNativeSessionId = taskSessionIdentityChanged ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
@@ -23147,6 +23180,23 @@ export function heartbeatService(
               });
             nativeExecution = nativeExecutionWithCheckpoint.execution;
             nativeResumeCheckpoint = nativeExecutionWithCheckpoint.checkpoint;
+            if (
+              previousNativeRun &&
+              executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" &&
+              nativeExecutionWithCheckpoint.sessionTransition.mode === "fresh"
+            ) {
+              const transition = nativeExecutionWithCheckpoint.sessionTransition;
+              const detail = transition.reason === "native_tool_contract_unverified"
+                ? "the saved native tool contract cannot be verified after an upgrade"
+                : transition.reason === "native_tool_contract_changed"
+                  ? "the native tool contract changed"
+                  : "the saved native checkpoint is incompatible with the current runtime";
+              await appendRunEvent(currentRun, {
+                eventType: "native.session.transition", stream: "system", level: "info",
+                message: `Starting a fresh provider conversation because ${detail}. The full task context is included.`,
+                payload: transition,
+              });
+            }
             if (
               nativeSessionId !==
               nativeExecutionWithCheckpoint.normalizedSessionId

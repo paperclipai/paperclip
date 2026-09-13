@@ -156,7 +156,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status: "todo",
       assigneeAgentId: agentId, responsibleUserId: ownerUserId });
-    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: ownerUserId, body: "Continue the task" });
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
       source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
       payload: { issueId, commentId, queuedCommentInterrupt: { actorId: operatorId, requestedAt: new Date().toISOString() },
@@ -185,7 +185,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Manual wake", status: "todo",
       assigneeAgentId: agentId, responsibleUserId: ownerUserId });
-    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Pending work" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: ownerUserId, body: "Pending work" });
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
       source: "automation", reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: ownerUserId,
       payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] } },
@@ -216,7 +216,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       requestedByActorType: "user", requestedByActorId: ownerUserId });
     try {
       await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalled(), { timeout: 5_000 });
-      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Pending work" });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: ownerUserId, body: "Pending work" });
       await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
         source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
         requestedByActorType: "user", requestedByActorId: ownerUserId,
@@ -358,6 +358,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
         id: commentId,
         companyId,
         issueId,
+        authorType: "user",
         authorUserId: commenterUserId,
         body: `Current request for ${wakeReason}`,
       });

@@ -9729,7 +9729,101 @@ const REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT =
   'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; expected_pid=$4; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 4; kill -0 "$pid" 2>/dev/null || exit 3; if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi';
 
 const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
-  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); identity_tmp="${identity_path}.tmp.$$"; printf "%s\\n%s\\n%s\\n%s\\n" "$identity_nonce" "$$" "$started_at" "$runner_instance_id" > "$identity_tmp"; chmod 0600 "$identity_tmp"; mv -f -- "$identity_tmp" "$identity_path"; exec "$@"';
+  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; export PAPERCLIP_RUNNER_PROCESS_NONCE="$identity_nonce"; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); identity_tmp="${identity_path}.tmp.$$"; printf "%s\\n%s\\n%s\\n%s\\n" "$identity_nonce" "$$" "$started_at" "$runner_instance_id" > "$identity_tmp"; chmod 0600 "$identity_tmp"; mv -f -- "$identity_tmp" "$identity_path"; exec "$@"';
+
+// Linux proof is optional: older/non-Linux transports still launch normally.
+// Capture it in the existing marker read, before publishing durable ownership.
+type RemoteRunnerContainment = { pid: number; startTicks: string; sessionId: number };
+const REMOTE_RUNNER_CONTAINMENT_PROBE = String.raw`
+import json, os, pathlib, sys
+try:
+    marker = pathlib.Path(sys.argv[1]).read_text().splitlines()
+    pid = int(marker[1])
+    fields = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    command = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    environment = pathlib.Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    expected = ("PAPERCLIP_RUNNER_PROCESS_NONCE=" + marker[0]).encode()
+    if expected not in environment or not any(command[i:i+2] == [b"--runner-id", marker[3].encode()] for i in range(len(command))):
+        print(json.dumps({"pending": True}))
+    elif int(fields[2]) == pid and int(fields[3]) == pid:
+        print(json.dumps({"pid": pid, "startTicks": fields[19], "sessionId": pid}))
+    else:
+        print("null")
+except (OSError, ValueError, IndexError):
+    print("null")
+`;
+
+// Open pidfds before checking process birth/nonce. Signals then address those
+// kernel process objects, never a numeric PID that may have been recycled.
+// An exited leader is safe only while every surviving session member carries
+// this launch's inherited nonce. Unknown members preserve all recovery files.
+const REMOTE_RUNNER_OWNERSHIP_FAILURE_CLEANUP = String.raw`
+import json, os, pathlib, signal, sys, time
+marker_path, nonce, runner_id, raw_pid, started_at, raw_proof = sys.argv[1:]
+proof = json.loads(raw_proof)
+pid = int(raw_pid)
+expected_marker = [nonce, str(pid), started_at, runner_id]
+expected_environment = ("PAPERCLIP_RUNNER_PROCESS_NONCE=" + nonce).encode()
+if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+    sys.exit(4)
+def check_marker():
+    if os.path.islink(marker_path) or pathlib.Path(marker_path).read_text().splitlines() != expected_marker:
+        raise RuntimeError("runner marker changed")
+def members():
+    found = []
+    try:
+        check_marker()
+        for entry in pathlib.Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                if int(fields[3]) != proof["sessionId"] or fields[0] == "Z":
+                    continue
+                member_pid = int(entry.name)
+                fd = os.pidfd_open(member_pid)
+                found.append(fd)
+                current = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                if fields[19] != current[19] or int(current[3]) != proof["sessionId"]:
+                    raise RuntimeError("process identity changed")
+                if member_pid == pid and current[19] != proof["startTicks"]:
+                    raise RuntimeError("runner pid reused")
+                if expected_environment not in (entry / "environ").read_bytes().split(b"\0"):
+                    raise RuntimeError("unverified session member")
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+        return found
+    except BaseException:
+        for fd in found:
+            os.close(fd)
+        raise
+try:
+    if proof["pid"] != pid or proof["sessionId"] != pid:
+        raise RuntimeError("invalid containment")
+    deadline = time.monotonic() + 8
+    kill_after = time.monotonic() + 2
+    while True:
+        fds = members()
+        if not fds:
+            check_marker()
+            sys.exit(0)
+        try:
+            requested = signal.SIGKILL if time.monotonic() >= kill_after else signal.SIGTERM
+            for fd in fds:
+                try:
+                    signal.pidfd_send_signal(fd, requested)
+                except ProcessLookupError:
+                    pass
+        finally:
+            for fd in fds:
+                os.close(fd)
+        if time.monotonic() >= deadline:
+            sys.exit(5)
+        time.sleep(0.1)
+except (OSError, ValueError, KeyError, RuntimeError) as error:
+    print(str(error), file=sys.stderr)
+    sys.exit(4)
+`;
 
 const REMOTE_RUNNER_FAILED_IDENTITY_CLEANUP_SCRIPT =
   'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; marker_wait=0; while { test ! -f "$identity_path" || test -L "$identity_path"; } && test "$marker_wait" -lt 50; do marker_wait=$((marker_wait + 1)); sleep 0.1; done; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test -n "$started_at" || exit 4; case "$pid" in ""|*[!0-9]*) exit 4 ;; esac; test "$pid" -gt 0 || exit 4; if kill -0 "$pid" 2>/dev/null; then if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi; signal_target=$pid; if command -v ps >/dev/null 2>&1; then session_id=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d " ") || true; if test "$session_id" = "$pid"; then signal_target="-$pid"; fi; fi; kill -TERM -- "$signal_target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; term_wait=0; while kill -0 "$pid" 2>/dev/null && test "$term_wait" -lt 50; do term_wait=$((term_wait + 1)); sleep 0.1; done; if kill -0 "$pid" 2>/dev/null; then kill -KILL -- "$signal_target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; kill_wait=0; while kill -0 "$pid" 2>/dev/null && test "$kill_wait" -lt 50; do kill_wait=$((kill_wait + 1)); sleep 0.1; done; fi; kill -0 "$pid" 2>/dev/null && exit 5; fi; test -f "$identity_path" && test ! -L "$identity_path" || exit 4; { IFS= read -r final_nonce; IFS= read -r final_pid; IFS= read -r final_started_at; IFS= read -r final_runner_id; } < "$identity_path"; test "$final_nonce" = "$nonce" && test "$final_pid" = "$pid" && test "$final_started_at" = "$started_at" && test "$final_runner_id" = "$runner_id" || exit 4; rm -f -- "$identity_path"';
@@ -9761,7 +9855,7 @@ async function waitForRemoteRunnerProcessIdentity(input: {
   identityPath: string;
   nonce: string;
   runnerInstanceId: string;
-}): Promise<{ pid: number; startedAt: string }> {
+}): Promise<{ pid: number; startedAt: string; containment: RemoteRunnerContainment | null }> {
   const deadline = Date.now() + REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS;
   while (Date.now() < deadline) {
     const result = await input.runner
@@ -9769,19 +9863,30 @@ async function waitForRemoteRunnerProcessIdentity(input: {
         command: "sh",
         args: [
           "-c",
-          'test -f "$1" && test ! -L "$1" && cat -- "$1"',
+          'test -f "$1" && test ! -L "$1" && cat -- "$1"; if command -v python3 >/dev/null 2>&1; then python3 -c "$2" "$1"; fi',
           "paperclip-runner-process-identity",
           input.identityPath,
+          REMOTE_RUNNER_CONTAINMENT_PROBE,
         ],
         bypassSession: true,
         timeoutMs: 2_000,
       })
       .catch(() => null);
+    const lines = result?.stdout.trim().split("\n") ?? [];
     const identity =
       result && result.exitCode === 0 && !result.timedOut
-        ? parseRemoteRunnerProcessIdentity(result.stdout, input)
+        ? parseRemoteRunnerProcessIdentity(lines.slice(0, 4).join("\n"), input)
         : null;
-    if (identity) return identity;
+    if (identity) {
+      let proof: Record<string, unknown> | null = null;
+      try { proof = JSON.parse(lines[4] ?? "null"); } catch { /* optional platform proof */ }
+      if (proof?.pending !== true) {
+        const containment = proof?.pid === identity.pid && proof?.sessionId === identity.pid
+          && typeof proof.startTicks === "string" && /^\d+$/.test(proof.startTicks)
+          ? proof as RemoteRunnerContainment : null;
+        return { ...identity, containment };
+      }
+    }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("runner_remote_process_identity_unavailable");
@@ -9835,7 +9940,25 @@ export function createRemoteRunnerProcessLauncher(input: {
       nonce: string;
       pid: number;
       startedAt: string;
+      containment: RemoteRunnerContainment | null;
     } | null = null;
+    let ownershipFailure: { error: unknown; containment: "confirmed" | "unconfirmed" } | undefined;
+    let resolveReady!: () => void;
+    let rejectReady!: (error: unknown) => void;
+    const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    void ready.catch(() => undefined);
+    let launchCancelled = false;
+    let launchDispatched = false;
+    let readySucceeded = false;
+    const cancelledError = new Error("runner_remote_process_launch_cancelled");
+    let rejectCancellation!: (error: Error) => void;
+    const cancellation = new Promise<never>((_resolve, reject) => { rejectCancellation = reject; });
+    void cancellation.catch(() => undefined);
+    const cancelPendingLaunch = () => {
+      if (readySucceeded || ownershipFailure || launchCancelled) return;
+      launchCancelled = true;
+      rejectCancellation(cancelledError);
+    };
     const child: RunnerProcessHandle["child"] = {
       pid: undefined,
       exitCode: null,
@@ -9885,15 +10008,16 @@ export function createRemoteRunnerProcessLauncher(input: {
     const completion = (async () => {
       if (input.ensureArtifact) {
         if (input.trace) {
-          await input.trace.measure(
+          await Promise.race([input.trace.measure(
             "runner.runtime.stage",
             input.ensureArtifact,
             { parentName: "runner.session.startup" },
-          );
+          ), cancellation]);
         } else {
-          await input.ensureArtifact();
+          await Promise.race([input.ensureArtifact(), cancellation]);
         }
       }
+      if (launchCancelled) throw cancelledError;
       const launchStartedAtMs = Date.now();
       // The provider's onSpawn callback is optional and some sandbox command
       // runners cannot report a remote pid until after the command has begun
@@ -9924,6 +10048,10 @@ export function createRemoteRunnerProcessLauncher(input: {
       // into its own session instead; its own bounded diagnostics directory and
       // durable PRP state remain the authorities, and the controller monitors
       // the exact persisted process identity below.
+      if (launchCancelled) throw cancelledError;
+      launchDispatched = true;
+      // After dispatch, cancellation must still adopt the exact identity before
+      // containment. Abandoning the RPC here could strand an unknown process.
       const launchResult = await runner.execute({
         command: "sh",
         args: [
@@ -9951,7 +10079,7 @@ export function createRemoteRunnerProcessLauncher(input: {
             : "runner_remote_process_launch_failed",
         );
       }
-      let identity: { pid: number; startedAt: string };
+      let identity: { pid: number; startedAt: string; containment: RemoteRunnerContainment | null };
       try {
         identity = await waitForRemoteRunnerProcessIdentity({
           runner,
@@ -9983,11 +10111,36 @@ export function createRemoteRunnerProcessLauncher(input: {
       }
       launchedIdentity = { nonce: identityNonce, ...identity };
       child.pid = identity.pid;
-      await input.onSpawn?.({
-        pid: identity.pid,
-        processGroupId: null,
-        startedAt: identity.startedAt,
-      });
+      try {
+        if (launchCancelled) throw cancelledError;
+        await Promise.race([Promise.resolve().then(() => {
+          if (launchCancelled) throw cancelledError;
+          return input.onSpawn?.({
+            pid: identity.pid,
+            processGroupId: null,
+            startedAt: identity.startedAt,
+          });
+        }), cancellation]);
+        if (launchCancelled) throw cancelledError;
+      } catch (error) {
+        const cleanup = identity.containment ? await runner.execute({
+          command: "python3",
+          args: ["-c", REMOTE_RUNNER_OWNERSHIP_FAILURE_CLEANUP, input.processIdentityPath,
+            identityNonce, input.runnerInstanceId, String(identity.pid), identity.startedAt,
+            JSON.stringify(identity.containment)],
+          bypassSession: true,
+          timeoutMs: 12_000,
+        }).catch(() => null) : null;
+        if (cleanup?.exitCode !== 0 || cleanup.timedOut) {
+          const failure = new Error(`${error instanceof Error ? error.message : String(error)}; cleanup incomplete: remote runner ownership unverified`, { cause: error });
+          ownershipFailure = { error: failure, containment: "unconfirmed" };
+          throw failure;
+        }
+        ownershipFailure = { error, containment: "confirmed" };
+        throw error;
+      }
+      readySucceeded = true;
+      resolveReady();
       await input.trace?.record({
         name: "runner.process.launch",
         parentName: "runner.session.startup",
@@ -10067,9 +10220,18 @@ export function createRemoteRunnerProcessLauncher(input: {
         };
       }
     })();
+    void completion.catch(error => {
+      if (!launchDispatched && error === cancelledError) {
+        ownershipFailure = { error, containment: "confirmed" };
+      }
+      rejectReady(error);
+    });
     return {
       child,
       completion,
+      ready,
+      cancelPendingLaunch,
+      get ownershipFailure() { return ownershipFailure; },
       get startedAt() { return launchedIdentity?.startedAt; },
     };
   };
@@ -10350,6 +10512,13 @@ async function createRunnerdBackendWithinSessionClaim(
   const remoteRunnerFilesystemRoot = remoteSessionRoot
     ? posix.join(remoteSessionRoot, "filesystem")
     : null;
+  // Credential copy-back must use the same CLI home as launch and persistence.
+  const remoteCodexHome =
+    remoteTarget?.transport === "sandbox" && remoteTarget.workFolderHome
+      ? posix.join(remoteTarget.workFolderHome, ".codex")
+      : remoteRunnerFilesystemRoot
+        ? posix.join(remoteRunnerFilesystemRoot, "codex-home")
+        : null;
   const persistenceProfile = resolveNativeHarnessPersistenceProfile(
     input.execution,
   );
@@ -10360,8 +10529,8 @@ async function createRunnerdBackendWithinSessionClaim(
   const remotePersistencePath = (
     directory: NativeHarnessPersistenceDirectory,
   ): string | null =>
-    remoteTarget?.transport === "sandbox" && remoteTarget.workFolderHome && directory.name === "codex-home"
-      ? posix.join(remoteTarget.workFolderHome, ".codex")
+    directory.name === "codex-home"
+      ? remoteCodexHome
       : directory.location === "runner"
       ? (remoteStateDirectory ?? null)
       : remoteRunnerFilesystemRoot
@@ -11709,7 +11878,7 @@ async function createRunnerdBackendWithinSessionClaim(
         // permission profile. SSH retains its isolated provider home so its
         // host-home deny rules cannot shadow the assigned workspace.
         HOME: remoteTarget!.transport === "sandbox" && remoteTarget!.workFolderHome ? remoteTarget!.workFolderHome : posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
-        CODEX_HOME: remoteTarget!.transport === "sandbox" && remoteTarget!.workFolderHome ? posix.join(remoteTarget!.workFolderHome, ".codex") : posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
+        CODEX_HOME: remoteCodexHome!,
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
         ...(remoteTarget!.transport === "sandbox"
           ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
@@ -12271,7 +12440,7 @@ async function createRunnerdBackendWithinSessionClaim(
       await close(closeInput);
       if (detachedForRestart || copied) return;
       copied = true;
-      const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
+      const remoteAuth = remoteCodexHome ? posix.join(remoteCodexHome, "auth.json") : null;
       const localAuth = join(root, "codex-home", "auth.json");
       try {
         await copyBackCodexAuth({

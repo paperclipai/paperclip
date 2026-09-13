@@ -3337,6 +3337,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
   #runnerRecoveryInProgress = false;
+  #runnerOwnershipAdmission: Promise<void> | null = null;
+  #runnerOwnershipPendingHandle: RunnerProcessHandle | null = null;
+  readonly #runnerOwnershipAbort = new AbortController();
+  readonly #cancelledRunnerLaunches = new WeakSet<RunnerProcessHandle>();
   #startupComplete = false;
   #startupFailureCode = "native_runner_process_exited";
   #controlPlaneCheckpoint:
@@ -3935,17 +3939,156 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     };
   }
 
-  async #publishSpawnedProcess(handle: RunnerProcessHandle): Promise<void> {
-    this.#evidence.runnerPid = handle.child.pid ?? null;
-    this.#evidence.runnerProcessGroupId = handle.processGroupId ?? null;
-    this.#publish();
-    if (handle.child.pid !== undefined) {
-      await this.options.onSpawn?.({
-        pid: handle.child.pid,
-        processGroupId: handle.processGroupId ?? null,
-        startedAt: this.#startedAt,
-      });
+  async #awaitRunnerOwnershipAdmission(core: DurablePrpControlPlane): Promise<boolean> {
+    try {
+      await this.#runnerOwnershipAdmission;
+      return true;
+    } catch {
+      // Close pending handshakes before returning to the core's post-admission
+      // credential recheck. Do not await the outer fence here: it joins these
+      // callbacks after stopping ingress and would otherwise wait on itself.
+      await core.stop();
+      return false;
     }
+  }
+
+  #cancelPendingRunnerLaunch(handle: RunnerProcessHandle): void {
+    if (this.#cancelledRunnerLaunches.has(handle)) return;
+    this.#cancelledRunnerLaunches.add(handle);
+    if (handle.cancelPendingLaunch) {
+      handle.cancelPendingLaunch();
+    } else if (handle.ready) {
+      // Compatibility for custom launchers without a cancellation latch: a late
+      // PID must still be signalled through its own handle, never on this host.
+      void handle.ready.then(() => {
+        if (!this.#controllerDetachedForRestart) signalUnpersistedRunner(handle, this.options.runnerProcessLauncher !== undefined);
+      }).catch(() => undefined);
+    }
+  }
+
+  async #publishSpawnedProcess(handle: RunnerProcessHandle, deadline?: number): Promise<void> {
+    void handle.completion.catch(() => undefined);
+    this.#runnerOwnershipPendingHandle = handle;
+    const assertActive = () => {
+      if (this.#closed) throw new Error("PRP Codex transport is closed");
+      this.#throwIfFailed();
+      if (deadline !== undefined && Date.now() >= deadline) throw new Error("runner_ownership_admission_deadline_exceeded");
+    };
+    let stopped!: () => void;
+    const closeSignal = new Promise<never>((_resolve, reject) => {
+      stopped = () => reject(new Error("PRP Codex transport is closed"));
+      this.#runnerOwnershipAbort.signal.addEventListener("abort", stopped, { once: true });
+      if (this.#runnerOwnershipAbort.signal.aborted) stopped();
+    });
+    let deadlineTimer: NodeJS.Timeout | undefined;
+    const deadlineSignal = new Promise<never>((_resolve, reject) => {
+      if (deadline !== undefined) deadlineTimer = setTimeout(() => reject(new Error("runner_ownership_admission_deadline_exceeded")), Math.max(0, deadline - Date.now()));
+    });
+    const ownership = (async () => {
+      await handle.ready;
+      assertActive();
+      if (handle.ready && handle.child.pid === undefined) {
+        throw new Error("runner_ready_without_process_identity");
+      }
+      this.#evidence.runnerPid = handle.child.pid ?? null;
+      this.#evidence.runnerProcessGroupId = handle.processGroupId ?? null;
+      this.#publish();
+      if (handle.child.pid !== undefined && handle.ready === undefined) {
+        await this.options.onSpawn?.({
+          pid: handle.child.pid,
+          processGroupId: handle.processGroupId ?? null,
+          startedAt: this.processInfo().startedAt,
+        });
+      }
+      assertActive();
+    })();
+    const admission = Promise.race([ownership, closeSignal, deadlineSignal, this.#failureSignal]);
+    this.#runnerOwnershipAdmission = admission;
+    try {
+      await admission;
+      assertActive();
+    } catch (error) {
+      if (this.#closed) throw error; // close/detach owns route and process disposition.
+      throw await this.#fenceFailedRunnerOwnership(handle, error);
+    } finally {
+      this.#runnerOwnershipAbort.signal.removeEventListener("abort", stopped);
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+      if (this.#runnerOwnershipPendingHandle === handle) this.#runnerOwnershipPendingHandle = null;
+    }
+  }
+
+  async #fenceFailedRunnerOwnership(handle: RunnerProcessHandle, error: unknown): Promise<Error> {
+    // The process already holds a valid bootstrap ticket. Fence its
+    // route and process before exposing failure; caller.close() may never
+    // run. Keep the durable files/checkpoint and sandbox lease for recovery.
+    const core = this.#core;
+    core?.disconnectActiveRunner();
+    const releaseRoute = this.#controlPlaneRelease;
+    const cleanup = Promise.allSettled([
+      Promise.resolve().then(async () => {
+        this.#cancelPendingRunnerLaunch(handle);
+        const ownershipFailure = handle.ownershipFailure;
+        if (handle.ready && ownershipFailure && ownershipFailure.error === error) {
+          if (ownershipFailure.containment !== "confirmed") throw error;
+          // The launcher already joined verified remote containment before
+          // rejecting readiness/lifetime. Do not signal again or misclassify
+          // that same expected rejection as a new cleanup failure.
+          this.#evidence.runnerExited = true;
+          this.#evidence.runnerExitCode = handle.child.exitCode;
+          this.#evidence.runnerSignal = handle.child.signalCode ?? null;
+          return;
+        }
+        // Default local launches own a detached process group. Custom
+        // launchers (including sandboxes) own their signalling callback;
+        // their reported PIDs must never be signalled on this host.
+        signalUnpersistedRunner(handle, this.options.runnerProcessLauncher !== undefined);
+        // Signal dispatch is not exit proof. Join the original handle's
+        // completion before reporting the replacement itself as exited.
+        let result;
+        try {
+          result = await handle.completion;
+        } catch (completionError) {
+          // Cancellation can finish containment after the initial getter read.
+          // Preserve the original admission error while recognizing only this
+          // exact producer-confirmed lifetime rejection as successful cleanup.
+          const completedFailure = handle.ownershipFailure;
+          if (!handle.ready || !completedFailure || completedFailure.error !== completionError || completedFailure.containment !== "confirmed") throw completionError;
+          this.#evidence.runnerExited = true;
+          this.#evidence.runnerExitCode = handle.child.exitCode;
+          this.#evidence.runnerSignal = handle.child.signalCode ?? null;
+          return;
+        }
+        this.#evidence.runnerExited = true;
+        this.#evidence.runnerExitCode = result.code;
+        this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
+      }),
+      Promise.resolve().then(async () => {
+        await releaseRoute?.();
+        if (this.#controlPlaneRelease === releaseRoute) this.#controlPlaneRelease = null;
+      }),
+      Promise.resolve().then(() => core?.stop()).then(() => core?.drainPendingConnectionProcessing()),
+    ]);
+    let cleanupDetail = "";
+    let cleanupTimer: NodeJS.Timeout | undefined;
+    try {
+      const results = await Promise.race([
+        cleanup,
+        new Promise<never>((_resolve, reject) => {
+          cleanupTimer = setTimeout(() => reject(new Error("ownership failure cleanup timed out")), 2_000);
+        }),
+      ]);
+      const rejected = results.find((result) => result.status === "rejected");
+      if (rejected?.status === "rejected") throw rejected.reason;
+    } catch (cleanupError) {
+      cleanupDetail = `; cleanup incomplete: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
+    } finally {
+      if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
+    }
+    const failure = new Error(
+      `native_runner_process_ownership_failed: ${error instanceof Error ? error.message : String(error)}${cleanupDetail}`,
+    );
+    this.#failTransport(failure);
+    return failure;
   }
 
   async #readDurableRunnerState(): Promise<Record<string, unknown>> {
@@ -4099,6 +4242,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#closed) return;
     this.#controllerDetachedForRestart = true;
     this.#closed = true;
+    this.#runnerOwnershipAbort.abort();
     this.#turnStartAdmission?.resolve(false);
     if (this.#pump !== null) clearInterval(this.#pump);
     this.#pump = null;
@@ -4127,6 +4271,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   async #closeOnce(): Promise<void> {
     this.#closed = true;
+    this.#runnerOwnershipAbort.abort();
+    if (this.#runnerOwnershipPendingHandle) {
+      try { this.#cancelPendingRunnerLaunch(this.#runnerOwnershipPendingHandle); }
+      catch (error) { this.#evidence.diagnostics.push(`pending launch cancellation failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
     this.#turnStartAdmission?.resolve(false);
     const adoptedRunner = this.options.adoptExistingRunner;
     // `settled` is a durable-state assertion, not merely the absence of a
@@ -4329,6 +4478,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       identity,
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
+      beforeAuthenticatedConnection: async () => { await this.#awaitRunnerOwnershipAdmission(core); },
       onProtocolIntegrityError: (error) => this.#failTransport(error),
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
       connectionLeaseTtlMs: 60 * 60 * 1_000,
@@ -4705,8 +4855,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       processLauncher: this.options.runnerProcessLauncher,
     });
     this.#handle = handle;
-    this.#watchRunner(handle);
     await this.#publishSpawnedProcess(handle);
+    if (this.#closed) throw new Error("PRP Codex transport is closed");
+    this.#throwIfFailed();
+    this.#watchRunner(handle);
     await registration?.activate?.();
     if (registration?.failure) {
       void registration.failure.catch((error: unknown) => {
@@ -5055,25 +5207,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
-      ...(warmRecovery
-        ? {
-            beforeAuthenticatedConnection: async (admission) => {
-              // Core policy already validated the current lease and tuple.
-              // Receipt replay still needs the recovery claim, including the
-              // completed-core/lost-final-ACK window. Ordinary post-ACK lease
-              // reconnects no longer depend on that historical claim.
-              if (
-                core.store.state.warmTransition?.receipt.transitionId ===
-                  warmRecovery.transitionId ||
-                admission.warmTransitionId === warmRecovery.transitionId
-              ) {
-                await this.options.authorizeWarmTransitionRecovery?.(
-                  "before_authentication",
-                );
-              }
-            },
-          }
-        : {}),
+      beforeAuthenticatedConnection: async (admission) => {
+        if (!await this.#awaitRunnerOwnershipAdmission(core)) return;
+        // Preserve warm-transition recovery admission after process ownership.
+        if (warmRecovery && (
+          core.store.state.warmTransition?.receipt.transitionId === warmRecovery.transitionId ||
+          admission.warmTransitionId === warmRecovery.transitionId
+        )) {
+          await this.options.authorizeWarmTransitionRecovery?.("before_authentication");
+        }
+      },
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
@@ -5336,8 +5479,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         });
     if (handle) {
       this.#handle = handle;
-      this.#watchRunner(handle);
       await this.#publishSpawnedProcess(handle);
+      if (this.#closed) throw new Error("PRP Codex transport is closed");
+      this.#throwIfFailed();
+      this.#watchRunner(handle);
     }
     if (oldTransitionRegistration && newTransitionRegistration) {
       await oldTransitionRegistration.activate?.();
@@ -6471,11 +6616,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#evidence.runnerExited = false;
         this.#evidence.runnerExitCode = null;
         this.#evidence.runnerSignal = null;
-        this.#evidence.runnerPid = recoveredHandle.child.pid ?? null;
-        this.#evidence.runnerProcessGroupId =
-          recoveredHandle.processGroupId ?? null;
-        this.#publish();
-
         let processSettled = false;
         const completion = recoveredHandle.completion.then(
           (result) => {
@@ -6489,6 +6629,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             return false;
           },
         );
+        try {
+          await this.#publishSpawnedProcess(recoveredHandle, deadline);
+        } catch (error) {
+          // Publication fenced the route and process before rejecting. A
+          // failed ownership save is terminal, never a fresh recovery attempt.
+          return;
+        }
+        if (this.#closed || this.#failure !== null) return;
         const authenticated = (async () => {
           while (
             !processSettled &&
@@ -6603,7 +6751,29 @@ export const runnerdLaunchProfileInternals = Object.freeze({
   p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
 });
 
+// A locally spawned detached group can outlive its runner. Unlike waiting for
+// completion with a timeout, unconditional containment also reaches descendants
+// when the group leader exited while ownership persistence was pending.
+function signalUnpersistedRunner(handle: RunnerProcessHandle, customLauncher: boolean): void {
+  const groupId = handle.processGroupId;
+  if (
+    !customLauncher && process.platform !== "win32" &&
+    Number.isSafeInteger(groupId) && (groupId ?? 0) > 0 && groupId === handle.child.pid
+  ) {
+    try {
+      process.kill(-groupId!, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+    return;
+  }
+  // A custom handle may refer to a remote PID. Only its launcher-provided
+  // callback has authority to signal it; never address that PID on this host.
+  handle.child.kill("SIGKILL");
+}
+
 export const runnerdRecoveryInternals = Object.freeze({
+  signalUnpersistedRunner,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
   awaitProviderDrainBarrier,

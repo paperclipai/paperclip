@@ -208,10 +208,15 @@ export async function buildExecutionContinuation(input: {
           ),
         }
       : undefined;
-  const latestRequest = messages.findLast(
-    (row) =>
-      row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
+  const userRequests = messages.filter((row) =>
+    row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
   );
+  const latestRequest = userRequests.at(-1);
+  // Keep history in creation order, but edits are new direction. Among changed
+  // requests, the latest edit wins even when its comment was created earlier.
+  const changedRequests = userRequests.filter((message) => !wasDelivered(message))
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) ||
+      a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   // Description edits create no comment. Do not promote an already delivered
   // historical comment over the current brief, including on a second resume.
   const wakeCommentIds = continuationOriginCommentIds({
@@ -220,23 +225,21 @@ export async function buildExecutionContinuation(input: {
     commentIds: input.context.commentIds,
     wakeCommentIds: input.context.wakeCommentIds,
   });
-  const hasUserWakeComment = messages.some((message) =>
-    wakeCommentIds.includes(message.id) && message.authorType === "user" &&
-    !message.createdByRunId && !message.deleted && message.body.trim().length > 0 &&
-    !wasDelivered(message),
+  const userWakeRequest = changedRequests.findLast((message) =>
+    wakeCommentIds.includes(message.id),
   );
   const previousIssue = object(previousRun?.context?.paperclipIssue);
   const briefUnchanged = Object.hasOwn(previousIssue, "description") &&
     previousIssue.description === issue.description;
-  const newUserDirection = deliveredMessages && latestRequest && !wasDelivered(latestRequest);
+  const newUserDirection = deliveredMessages ? changedRequests.at(-1) : undefined;
   const previousObjective = string(priorEnvelope.objective);
   // Never revive deleted, edited, or newly quarantined text from a prior run.
   const priorObjectiveStillCurrent = previousObjective === issue.description ||
     messages.some((message) => message.authorType === "user" && !message.createdByRunId &&
       !message.deleted && message.body === previousObjective);
-  const objective = (hasUserWakeComment || triggerInteraction || issue.conversationAgentId ||
+  const objective = (userWakeRequest || triggerInteraction || issue.conversationAgentId ||
     (briefUnchanged && newUserDirection))
-    ? latestRequest?.body ?? issue.description ?? issue.title
+    ? (userWakeRequest ?? newUserDirection ?? latestRequest)?.body ?? issue.description ?? issue.title
     : briefUnchanged && previousObjective && priorObjectiveStillCurrent
       ? previousObjective
       : issue.description ?? latestRequest?.body ?? issue.title;

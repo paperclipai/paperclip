@@ -1055,6 +1055,60 @@ it.each([
   },
 );
 
+it.each([false, true])("preserves pending v2 goals across an incompatible reconnect (v1 prefix: %s)", async (withPrefix) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-goal-downgrade-test-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const clients: AuthenticatedClient[] = [];
+  const connectVersion = async (version: number) => {
+    const client = await authenticate(core, core.issueBootstrapTicket(), identity,
+      expectedRunnerDigest, undefined, false, version);
+    if (client) clients.push(client);
+    return client;
+  };
+  try {
+    await core.start();
+    const original = (await connectVersion(2))!;
+    const prefix = withPrefix ? core.queueCommand("run.prepare") : null;
+    const goal = core.queueCommand("session.goal.get", {}, "pending-v2-goal");
+    const suspend = core.queueCommand("runner.suspend");
+    const originalGoal = structuredClone(goal);
+    original.socket.destroy();
+    await vi.waitFor(() => expect(core.activeRunnerConnectionCount()).toBe(0));
+
+    const oldRunner = await connectVersion(1);
+    if (prefix) {
+      expect(oldRunner).not.toBeNull();
+      expect(oldRunner!.welcome.payload).toMatchObject({ pendingCommands: [expect.objectContaining({ commandId: prefix.commandId })] });
+      sendSecure(oldRunner!, {
+        protocol: "paperclip.runner", version: 1, kind: "command_result",
+        payload: { commandId: prefix.commandId, commandType: prefix.type,
+          controllerSeq: prefix.controllerSeq, status: "completed", result: {} },
+      });
+      await expect(receiveSecure(oldRunner!)).resolves.toBeNull();
+    } else {
+      expect(oldRunner).toBeNull();
+    }
+    expect(core.store.state.commands.find((command) => command.commandId === goal.commandId)).toEqual(originalGoal);
+    expect(core.store.state.commandDeliveryCounts[goal.commandId] ?? 0).toBe(0);
+
+    const compatible = (await connectVersion(2))!;
+    expect(compatible.welcome.payload).toMatchObject({ pendingCommands: [expect.objectContaining({ commandId: goal.commandId, schema: "paperclip.prp.command.v2" })] });
+    sendSecure(compatible, {
+      protocol: "paperclip.runner", version: 2, kind: "command_result",
+      payload: { commandId: goal.commandId, commandType: goal.type,
+        controllerSeq: goal.controllerSeq, status: "completed", result: {} },
+    });
+    await expect(receiveSecure(compatible)).resolves.toMatchObject({
+      kind: "command", payload: { commandId: suspend.commandId, schema: "paperclip.prp.command.v1" },
+    });
+    expect(core.commandOutcome(goal.commandId)?.status).toBe("completed");
+  } finally {
+    for (const client of clients) client.socket.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it.each([1, 2])("only journals session goals after negotiating PRP v2 (version %s)", async (version) => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-goal-version-test-"));
   const core = new DurablePrpControlPlane({

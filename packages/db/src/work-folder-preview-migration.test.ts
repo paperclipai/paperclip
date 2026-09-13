@@ -99,7 +99,10 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  it("upgrades the exact f3c67d50 published history without losing files or provider sessions", async ({ onTestFinished }) => {
+  it.for([
+    { source: "f3c67d50", sourceCommit: "f3c67d50dad32563c7eb5cef1ebae8e83584d4cf", count: 248, removedHashes: 4 },
+    { source: "64814d5", sourceCommit: "64814d5a4b1cf9a61e6f0a661856d3c92401fa3b", count: 274, removedHashes: 0 },
+  ])("upgrades the exact $source history without losing files or provider sessions", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async ({ source, sourceCommit, count, removedHashes }, { onTestFinished }) => {
     const database = await startEmbeddedPostgresTestDatabase("work-folder-historical-");
     // Register each cleanup before acquiring the next resource or parsing the
     // fixture. Vitest runs these in reverse order even when setup fails.
@@ -108,11 +111,11 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
     onTestFinished(() => admin.end());
     const migrationsFolder = mkdtempSync(path.join(os.tmpdir(), "work-folder-f3-history-"));
     onTestFinished(() => rmSync(migrationsFolder, { recursive: true, force: true }));
-    const historyRoot = new URL("./__fixtures__/work-folders-f3c67d50/", import.meta.url);
+    const historyRoot = new URL(`./__fixtures__/work-folders-${source}/`, import.meta.url);
     const history = JSON.parse(readFileSync(new URL("history.json", historyRoot), "utf8")) as {
       sourceCommit: string;
       journal: { entries: { tag: string; when: number }[] };
-      files: { name: string; sha256: string }[];
+      files: { name: string; sha256: string; currentFile?: string }[];
     };
     const historicalUrl = new URL(database.connectionString);
     historicalUrl.pathname = "/historical_preview";
@@ -121,32 +124,32 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
       // The cluster helper's regular database is intentionally not the upgrade
       // subject: this separate database has never seen the current schema.
       await admin`CREATE DATABASE historical_preview`;
-      expect(history.sourceCommit).toBe("f3c67d50dad32563c7eb5cef1ebae8e83584d4cf");
-      expect(history.files).toHaveLength(248);
-      expect(history.journal.entries).toHaveLength(248);
+      expect(history.sourceCommit).toBe(sourceCommit);
+      expect(history.files).toHaveLength(count);
+      expect(history.journal.entries).toHaveLength(count);
       mkdirSync(path.join(migrationsFolder, "meta"));
       writeFileSync(path.join(migrationsFolder, "meta/_journal.json"), JSON.stringify(history.journal));
       for (const file of history.files) {
         const historicalFile = new URL(file.name, historyRoot);
-        const source = existsSync(historicalFile) ? historicalFile : new URL(`./migrations/${file.name}`, import.meta.url);
-        const bytes = readFileSync(source);
-        // The 244 unchanged files are shared, but every byte is pinned to the
-        // old package. The four removed preview migrations are verbatim fixtures.
+        const sourceFile = existsSync(historicalFile) ? historicalFile : new URL(`./migrations/${file.currentFile ?? file.name}`, import.meta.url);
+        const bytes = readFileSync(sourceFile);
+        // Shared SQL, including the renumbered idempotent work-folder migration,
+        // must match the exact old bytes. Removed SQL remains in the fixture.
         expect(createHash("sha256").update(bytes).digest("hex"), file.name).toBe(file.sha256);
         writeFileSync(path.join(migrationsFolder, file.name), bytes);
       }
       await migrate(drizzle(sql), { migrationsFolder });
       const journalBefore = [...await sql`SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id`];
-      expect(journalBefore).toHaveLength(248);
+      expect(journalBefore).toHaveLength(count);
       expect(journalBefore.map(row => ({ hash: row.hash, created_at: String(row.created_at) }))).toEqual(
         history.journal.entries.map(entry => ({
           hash: history.files.find(file => file.name === `${entry.tag}.sql`)!.sha256,
           created_at: String(entry.when),
         })),
       );
-      expect(await sql`SELECT to_regclass('public.email_messages') AS name`).toEqual([{ name: null }]);
+      expect(await sql`SELECT to_regclass('public.email_messages') AS name`).toEqual([{ name: source === "f3c67d50" ? null : "email_messages" }]);
       expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'heartbeat_runs'
-        AND column_name = 'controller_boot_id'`).toHaveLength(0);
+        AND column_name = 'controller_boot_id'`).toHaveLength(source === "f3c67d50" ? 0 : 1);
 
       const company = randomUUID(), otherCompany = randomUUID(), project = randomUUID(), environment = randomUUID();
       const responsibleUser = "paperclip-id:historical-preview-user";
@@ -214,7 +217,11 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
       const pending = await inspectMigrations(historicalUrl.toString());
       expect(pending.status).toBe("needsMigrations");
       if (pending.status !== "needsMigrations") throw new Error("Historical preview unexpectedly has current migrations");
-      expect(pending.pendingMigrations).toContain("0277_sandbox_work_folders.sql");
+      expect(pending.pendingMigrations).toEqual(expect.arrayContaining([
+        "0275_easy_dragon_man.sql", "0276_hard_mandroid.sql",
+      ]));
+      if (source === "f3c67d50") expect(pending.pendingMigrations).toContain("0277_sandbox_work_folders.sql");
+      else expect(pending.pendingMigrations).not.toContain("0277_sandbox_work_folders.sql");
       await applyPendingMigrations(historicalUrl.toString());
       expect((await inspectMigrations(historicalUrl.toString())).status).toBe("upToDate");
       for (const table of preservedTables) {
@@ -225,6 +232,12 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
       expect(await sql`SELECT to_regclass('public.email_messages') AS name`).toEqual([{ name: "email_messages" }]);
       expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'heartbeat_runs'
         AND column_name IN ('controller_boot_id', 'controller_lease_expires_at', 'execution_stage')`).toHaveLength(3);
+      // Both mainline migrations must execute even when the saved preview has a
+      // later work-folder timestamp. A schema marker alone is not evidence.
+      expect(await sql`SELECT to_regclass('public.ai_connection_defaults') AS name`).toEqual([{ name: "ai_connection_defaults" }]);
+      expect(await sql`SELECT to_regclass('public.chat_endpoints_photon_number_uq') AS name`).toEqual([{ name: "chat_endpoints_photon_number_uq" }]);
+      expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'adapter_auth_sessions'
+        AND column_name IN ('ai_connection', 'connection_id', 'connection_grant_id', 'connection_method')`).toHaveLength(4);
       // Compare the complete six-table catalog with the independently migrated
       // current database, ignoring physical column order from historical ADDs.
       async function workFolderSchema(connection: typeof sql) {
@@ -246,7 +259,7 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
       }
       expect(await workFolderSchema(sql)).toEqual(await workFolderSchema(admin));
       const journalAfter = [...await sql`SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id`];
-      expect(journalAfter).toHaveLength(pending.availableMigrations.length + 4);
+      expect(journalAfter).toHaveLength(pending.availableMigrations.length + removedHashes);
       expect(journalAfter.slice(0, journalBefore.length)).toEqual(journalBefore);
       expect(new Set(journalAfter.map(row => row.hash)).size).toBe(journalAfter.length);
       for (const hash of history.files.slice(-4).map(file => file.sha256)) expect(journalAfter.filter(row => row.hash === hash)).toHaveLength(1);
@@ -264,6 +277,6 @@ const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.s
     } finally {
       await sql.end();
     }
-  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+  });
 
 });

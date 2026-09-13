@@ -13,6 +13,7 @@ type SkillEntry = PaperclipSkillEntry;
 
 export interface ClaudePromptBundle {
   bundleKey: string;
+  compatibilityKey: string;
   rootDir: string;
   addDir: string;
   instructionsFilePath: string | null;
@@ -108,6 +109,63 @@ async function buildClaudePromptBundleKey(input: {
   return hash.digest("hex");
 }
 
+async function isShippedSkill(entry: SkillEntry, shippedSkills: SkillEntry[]): Promise<boolean> {
+  // A reserved key alone cannot make an editable/company skill first-party.
+  const shipped = shippedSkills.find((candidate) => candidate.key === entry.key && candidate.runtimeName === entry.runtimeName);
+  if (!shipped || entry.versionId != null) return false;
+  const [actual, expected] = await Promise.all([
+    fs.realpath(entry.source).catch(() => null), fs.realpath(shipped.source).catch(() => null),
+  ]);
+  return actual !== null && actual === expected;
+}
+
+async function buildCompatibilityKey(input: {
+  skills: SkillEntry[]; shippedSkills: SkillEntry[]; instructionsContents: string | null;
+}): Promise<string> {
+  const hash = createHash("sha256");
+  hash.update("paperclip-claude-session-context:v1\n");
+  hash.update(JSON.stringify(input.instructionsContents));
+  for (const entry of [...input.skills].sort((a, b) => a.runtimeName.localeCompare(b.runtimeName))) {
+    const shipped = await isShippedSkill(entry, input.shippedSkills);
+    hash.update(JSON.stringify([entry.key, entry.runtimeName, entry.versionId ?? null, shipped]));
+    if (!shipped) await hashPathContents(entry.source, hash, entry.runtimeName, new Set());
+  }
+  return hash.digest("hex");
+}
+
+/** Only shipped skill bytes may change without replacing an existing conversation. */
+export async function claudePromptBundleCanResume(input: {
+  companyId: string; bundle: ClaudePromptBundle; previousBundleKey: string;
+  previousCompatibilityKey: string; skills: SkillEntry[]; shippedSkills: SkillEntry[];
+  instructionsContents: string | null;
+}): Promise<boolean> {
+  if (!input.previousBundleKey || input.previousBundleKey === input.bundle.bundleKey) return true;
+  if (input.previousCompatibilityKey) return input.previousCompatibilityKey === input.bundle.compatibilityKey;
+  // Old sessions have no independent content fingerprint. Their cache contains
+  // symlinks, so it cannot prove historical third-party skill bytes. Fail closed.
+  if (!/^[a-f0-9]{64}$/.test(input.previousBundleKey) || input.skills.length === 0
+    || !(await Promise.all(input.skills.map((skill) => isShippedSkill(skill, input.shippedSkills)))).every(Boolean)) return false;
+  const cacheRoot = resolveManagedClaudePromptCacheRoot(process.env, input.companyId);
+  const oldRoot = path.join(cacheRoot, input.previousBundleKey);
+  try {
+    if (await fs.realpath(oldRoot) !== path.join(await fs.realpath(cacheRoot), input.previousBundleKey)) return false;
+    const names = await fs.readdir(path.join(oldRoot, ".claude", "skills"));
+    if (JSON.stringify(names.sort()) !== JSON.stringify(input.skills.map((entry) => entry.runtimeName).sort())) return false;
+    for (const entry of input.skills) {
+      const oldSkill = path.join(oldRoot, ".claude", "skills", entry.runtimeName);
+      // Legacy bundles used symlinks. Verify their historical source provenance,
+      // not just a runtime name that a company-managed skill could also use.
+      if (!(await fs.lstat(oldSkill)).isSymbolicLink()
+        || await fs.realpath(oldSkill) !== await fs.realpath(entry.source)) return false;
+    }
+    const instructionsPath = path.join(oldRoot, "agent-instructions.md");
+    const stat = await fs.lstat(instructionsPath).catch(() => null);
+    if (input.instructionsContents === null) return stat === null;
+    if (!stat?.isFile() || stat.size !== Buffer.byteLength(input.instructionsContents)) return false;
+    return await fs.readFile(instructionsPath, "utf8") === input.instructionsContents;
+  } catch { return false; }
+}
+
 async function ensureReadableFile(targetPath: string, contents: string): Promise<void> {
   try {
     await fs.access(targetPath, fsConstants.R_OK);
@@ -136,6 +194,7 @@ export async function prepareClaudePromptBundle(input: {
   skills: SkillEntry[];
   instructionsContents: string | null;
   onLog: AdapterExecutionContext["onLog"];
+  shippedSkills?: SkillEntry[];
 }): Promise<ClaudePromptBundle> {
   const { companyId, skills, instructionsContents, onLog } = input;
   const bundleKey = await buildClaudePromptBundleKey({
@@ -167,6 +226,7 @@ export async function prepareClaudePromptBundle(input: {
 
   return {
     bundleKey,
+    compatibilityKey: await buildCompatibilityKey({ skills, instructionsContents, shippedSkills: input.shippedSkills ?? [] }),
     rootDir,
     addDir: rootDir,
     instructionsFilePath,

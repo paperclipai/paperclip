@@ -133,7 +133,7 @@ const state = vi.hoisted(() => ({
     }),
   ),
   cancel: vi.fn(),
-  copyBackCodexAuth: vi.fn(async () => "kept-host"),
+  copyBackCodexAuth: vi.fn<typeof import("@paperclipai/adapter-codex-local/server").copyBackCodexAuth>(),
   toolAuthorityDefinitions: vi.fn(
     async (_binding: Record<string, unknown>) => [],
   ),
@@ -184,12 +184,13 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   parsePaperclipQuestionSet: (value: unknown) => value,
 }));
 
-vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => ({
-  ...(await importOriginal<
-    typeof import("@paperclipai/adapter-codex-local/server")
-  >()),
-  copyBackCodexAuth: state.copyBackCodexAuth,
-}));
+vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@paperclipai/adapter-codex-local/server")>();
+  // Observe ownership cleanup without replacing the real credential merge;
+  // actual sandbox-home copy-back tests must continue checking saved bytes.
+  state.copyBackCodexAuth.mockImplementation(original.copyBackCodexAuth);
+  return { ...original, copyBackCodexAuth: state.copyBackCodexAuth };
+});
 
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
   PaperclipRunnerToolAuthority: class {
@@ -298,6 +299,116 @@ beforeEach(() => {
 });
 
 describe("remote runner process supervision", () => {
+  it.runIf(process.platform === "linux" || !!process.env.PAPERCLIP_REMOTE_PROCESS_TEST_CONTAINER).each([
+    "live-parent", "exited-parent", "replaced-marker", "unverified-member", "unavailable-containment",
+    "cancel-pending-ownership", "cancel-pending-ownership-late-rejection",
+  ])("contains ownership-save failure without signalling unrelated remote processes (%s)", async (scenario) => {
+    const root = await mkdtemp(join(process.env.PAPERCLIP_REMOTE_PROCESS_TEST_ROOT ?? tmpdir(), "remote-ownership-"));
+    const container = process.env.PAPERCLIP_REMOTE_PROCESS_TEST_CONTAINER;
+    const execute = async (command: { command?: string; args?: string[]; cwd?: string; timeoutMs?: number }) => {
+      const result = spawnSync(container ? "docker" : command.command!, container
+        ? ["exec", container, command.command!, ...(command.args ?? [])]
+        : command.args ?? [], { cwd: command.cwd, timeout: command.timeoutMs ?? 10_000, encoding: "utf8" });
+      let stdout = result.stdout ?? "";
+      if (scenario === "unavailable-containment" && command.args?.[2] === "paperclip-runner-process-identity") {
+        stdout = stdout.split("\n").slice(0, 4).join("\n") + "\n";
+      }
+      return { exitCode: result.status, signal: result.signal, timedOut: result.error?.message.includes("ETIMEDOUT") ?? false,
+        stdout, stderr: result.stderr ?? "" };
+    };
+    const script = join(root, "runner.sh"), pidsPath = join(root, "pids"), unrelatedPath = join(root, "unrelated");
+    await writeFile(script, `#!/bin/sh
+trap '' TERM
+${scenario === "unverified-member" ? "env -u PAPERCLIP_RUNNER_PROCESS_NONCE " : ""}sh -c 'trap "" TERM; while :; do sleep 1; done' --runner-id owned-child &
+printf '%s %s\\n' "$$" "$!" > '${pidsPath}'
+while :; do sleep 1; done
+`);
+    const marker = join(root, "runner-process.identity"), checkpoint = join(root, "runner-state.json");
+    await writeFile(checkpoint, '{"keep":"original-checkpoint"}');
+    let pids: number[] = [], unrelated = 0, expectedMarker = "";
+    const cancelling = scenario.startsWith("cancel-pending-ownership");
+    const confirmed = scenario === "live-parent" || scenario === "exited-parent" || cancelling;
+    let cancelLaunch!: () => void;
+    let resolveOwnership!: () => void, rejectOwnership!: (error: Error) => void;
+    const pendingOwnership = new Promise<void>((resolve, reject) => { resolveOwnership = resolve; rejectOwnership = reject; });
+    try {
+      await execute({ command: "sh", args: ["-c", `nohup setsid sh -c 'echo $$ > "${unrelatedPath}"; exec sleep 300' </dev/null >/dev/null 2>&1 &`] });
+      await vi.waitFor(async () => { unrelated = Number((await readFile(unrelatedPath, "utf8")).trim()); expect(unrelated).toBeGreaterThan(1); });
+      const saveFailure = new Error("ownership-save-rejected");
+      const onSpawn = vi.fn(async () => {
+        await vi.waitFor(async () => { pids = (await readFile(pidsPath, "utf8")).trim().split(/\s+/).map(Number); expect(pids).toHaveLength(2); });
+        expectedMarker = await readFile(marker, "utf8");
+        if (scenario === "exited-parent") await execute({ command: "sh", args: ["-c", `kill -KILL ${pids[0]}`] });
+        if (scenario === "replaced-marker") {
+          const lines = expectedMarker.split("\n"); lines[1] = String(unrelated); expectedMarker = lines.join("\n");
+          await writeFile(marker, expectedMarker);
+        }
+        if (cancelling) {
+          cancelLaunch();
+          await pendingOwnership;
+          return;
+        }
+        throw saveFailure;
+      });
+      const launcher = createRemoteRunnerProcessLauncher({
+        target: { kind: "remote", transport: "sandbox", environmentId: "test", leaseId: "test", remoteCwd: root },
+        runner: { execute } as never, remoteBinary: "/bin/sh", processIdentityPath: marker,
+        stateDirectory: root, diagnosticsDirectory: join(root, "diagnostics"), runnerInstanceId: "runner-ownership-test", onSpawn,
+      });
+      const handle = launcher({ command: "/bin/sh", args: [script, "--runner-id", "runner-ownership-test"], cwd: root, environment: {} });
+      cancelLaunch = () => handle.cancelPendingLaunch?.();
+      const failure = await handle.completion.catch(error => error);
+      expect(failure).toBeInstanceOf(Error);
+      if (cancelling) expect(failure.message).toBe("runner_remote_process_launch_cancelled");
+      else if (confirmed) expect(failure).toBe(saveFailure);
+      else expect(failure.message).toContain("cleanup incomplete");
+      await expect(handle.ready).rejects.toBe(failure);
+      expect(handle.ownershipFailure).toEqual({ error: failure, containment: confirmed ? "confirmed" : "unconfirmed" });
+      expect(onSpawn).toHaveBeenCalledOnce();
+      if (scenario === "cancel-pending-ownership-late-rejection") rejectOwnership(new Error("late ownership save failure"));
+      else resolveOwnership();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await expect(handle.ready).rejects.toBe(failure);
+      handle.cancelPendingLaunch?.(); // A classified failure is immutable.
+      expect(handle.ownershipFailure).toEqual({ error: failure, containment: confirmed ? "confirmed" : "unconfirmed" });
+      for (const pid of pids) {
+        const observed = await execute({ command: "sh", args: ["-c", `test ! -r /proc/${pid}/stat || test "$(awk '{print $3}' /proc/${pid}/stat)" = Z`] });
+        expect(observed.exitCode, `remote owned process ${pid}`).toBe(confirmed ? 0 : 1);
+      }
+      expect((await execute({ command: "sh", args: ["-c", `kill -0 ${unrelated}`] })).exitCode).toBe(0);
+      expect(await readFile(checkpoint, "utf8")).toBe('{"keep":"original-checkpoint"}');
+      expect(await readFile(marker, "utf8")).toBe(expectedMarker);
+    } finally {
+      for (const pid of [...pids, unrelated].filter(pid => Number.isSafeInteger(pid) && pid > 1)) {
+        await execute({ command: "sh", args: ["-c", `kill -KILL ${pid} 2>/dev/null || true`] });
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+  it.each([false, true])("does not dispatch after cancellation while staging is pending (trace=%s)", async (traced) => {
+    let finishStaging!: () => void;
+    const staging = new Promise<void>(resolve => { finishStaging = resolve; });
+    const execute = vi.fn(), onSpawn = vi.fn(), onRunnerProcessSpawned = vi.fn();
+    const launcher = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", environmentId: "test", leaseId: "test", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-cancel",
+      ensureArtifact: () => staging, onSpawn, onRunnerProcessSpawned,
+      trace: traced ? { measure: (_name: string, action: () => Promise<void>) => action() } as never : undefined,
+    });
+    const handle = launcher({ command: "/runtime/runnerd", args: [], cwd: "/workspace", environment: {} });
+    handle.cancelPendingLaunch?.();
+    const failure = await handle.completion.catch(error => error);
+    expect(failure.message).toBe("runner_remote_process_launch_cancelled");
+    await expect(handle.ready).rejects.toBe(failure);
+    expect(handle.ownershipFailure).toEqual({ error: failure, containment: "confirmed" });
+    finishStaging();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(execute).not.toHaveBeenCalled();
+    expect(onSpawn).not.toHaveBeenCalled();
+    expect(onRunnerProcessSpawned).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("supervises detached runnerd and observes signal failures (%s)", async (signalFails) => {
     let launchNonce = "";
     const execute = vi.fn(
@@ -403,6 +514,10 @@ describe("remote runner process supervision", () => {
       code: null,
       stderr: "paperclip-runnerd: provider transport closed",
     });
+
+    await expect(handle.ready).resolves.toBeUndefined();
+    handle.cancelPendingLaunch?.();
+    expect(handle.ownershipFailure).toBeUndefined();
 
     const launch = execute.mock.calls.find(
       ([input]) => input.args?.[2] === "paperclip-runner-launch",
@@ -834,6 +949,11 @@ describe("remote provider pack manifest", () => {
       } else if (script.includes("for candidate in /opt/paperclip-runner/provider-pack")) {
         stdout = "/opt/paperclip-runner/provider-pack\n";
       } else if (command.args?.[0] === "-e") {
+        // This fixture starts with only the image pack. The staged-first
+        // recovery probe must miss before it verifies and links that pack.
+        if (command.args[2] !== "/opt/paperclip-runner/provider-pack") {
+          return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "missing staged pack" };
+        }
         const verified = spawnSync(process.execPath, ["-e", script, root, command.args![3]!], { encoding: "utf8" });
         return { exitCode: verified.status, signal: null, timedOut: false, stdout: verified.stdout, stderr: verified.stderr };
       } else if (command.command.endsWith("/node_modules/.bin/opencode") && command.args?.[0] === "--version") {
@@ -7188,11 +7308,15 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each([
-    ["open", "before-close"],
-    ["open", "during-close"],
-    ["recover", "before-close"],
-    ["recover", "during-close"],
-  ] as const)("preserves managed Codex credentials after %s session detachment %s", async (mode, timing) => {
+    ["open", "before-close", "local"],
+    ["open", "during-close", "local"],
+    ["recover", "before-close", "local"],
+    ["recover", "during-close", "local"],
+    ["open", "before-close", "sandbox"],
+    ["open", "during-close", "sandbox"],
+    ["recover", "before-close", "sandbox"],
+    ["recover", "during-close", "sandbox"],
+  ] as const)("preserves managed Codex credentials after %s session detachment %s (%s)", async (mode, timing, target) => {
     let finishClose!: () => void;
     const closing = new Promise<void>((resolve) => { finishClose = resolve; });
     const close = vi.fn(async () => {
@@ -7206,12 +7330,26 @@ describe("runnerd provider runtime wiring", () => {
       openSession: async () => rawSession,
       recoverSession: async () => ({ recovered: true, session: rawSession }),
     } as never);
+    const remoteExecute = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }));
     const backend = await createRunnerdBackend({
       db: leaseDb(execution),
       execution,
       runnerInstanceId: "runner-managed-credential-detach",
       managedAiCredentialHome: join(isolatedStateDirectory, "managed-home"),
+      ...(target === "sandbox" ? {
+        runnerExecutionTarget: {
+          kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/main",
+          workFolderHome: "/home/daytona", environmentId: "environment", leaseId: "lease", providerKey: "daytona",
+          runner: { execute: remoteExecute, syncIn: vi.fn() },
+        } as never,
+        runnerPublicUrl: "wss://paperclip.example.test",
+      } : {}),
     });
+    if (target === "sandbox") {
+      expect(state.createBackend.mock.calls.at(-1)![1].environment).toEqual(expect.objectContaining({
+        HOME: "/home/daytona", CODEX_HOME: "/home/daytona/.codex",
+      }));
+    }
     state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
     const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
     const authPath = join(root, "codex-home", "auth.json");
@@ -7237,6 +7375,9 @@ describe("runnerd provider runtime wiring", () => {
     expect(detach).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expect(state.copyBackCodexAuth).not.toHaveBeenCalled();
+    // The detached controller must neither read nor remove the successor's
+    // live sandbox auth at the actual $HOME/.codex path.
+    expect(remoteExecute).not.toHaveBeenCalled();
     await expect(readFile(authPath, "utf8")).resolves.toBe(auth);
   });
 
@@ -10024,6 +10165,63 @@ describe("runnerd provider runtime wiring", () => {
       PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
     }));
   });
+
+  it.each(["/home/daytona", undefined])(
+    "copies refreshed managed Codex auth from the actual remote CLI home (%s) and removes that copy",
+    async (workFolderHome) => {
+      const credentialHome = join(isolatedStateDirectory, "managed-credential");
+      await mkdir(credentialHome);
+      const auth = (refresh: string) => JSON.stringify({
+        tokens: { account_id: "same-account", id_token: "test-id",
+          access_token: `test-access-${refresh}`, refresh_token: `test-refresh-${refresh}` },
+        last_refresh: refresh,
+      });
+      const original = auth("2026-01-01T00:00:00Z");
+      const refreshed = auth("2026-01-02T00:00:00Z");
+      const hostAuth = join(credentialHome, "auth.json");
+      await writeFile(hostAuth, original, { mode: 0o600 });
+      let remoteAuthPath = "";
+      const operations: string[] = [];
+      const close = vi.fn(async () => { operations.push("close"); });
+      state.createBackend.mockReturnValueOnce({
+        kind: "test", openSession: async () => ({ close }),
+      } as never);
+      const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+        if (command.command === "base64") {
+          operations.push("read");
+          return { exitCode: command.args?.[0] === remoteAuthPath ? 0 : 1,
+            stdout: Buffer.from(refreshed).toString("base64"), stderr: "", timedOut: false };
+        }
+        if (command.command === "rm") operations.push("remove");
+        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+      });
+      const backend = await createRunnerdBackend({
+        db: leaseDb(execution), execution, runnerInstanceId: "managed-auth-runner",
+        managedAiCredentialHome: credentialHome,
+        runnerExecutionTarget: {
+          kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/main",
+          workFolderHome, environmentId: "environment", leaseId: "lease", providerKey: "daytona",
+          runner: { execute: remoteExecute, syncIn: vi.fn() },
+        } as never,
+        runnerPublicUrl: "wss://paperclip.example.test",
+      });
+      const providerEnvironment = state.createBackend.mock.calls.at(-1)![1].environment!;
+      remoteAuthPath = `${providerEnvironment.CODEX_HOME}/auth.json`;
+      if (workFolderHome) {
+        expect(providerEnvironment.HOME).toBe(workFolderHome);
+        expect(remoteAuthPath).toBe(`${workFolderHome}/.codex/auth.json`);
+      }
+      const session = await backend.openSession({} as never);
+      await session.close({} as never);
+      expect(await readFile(hostAuth, "utf8")).toBe(refreshed);
+      expect((await lstat(hostAuth)).mode & 0o777).toBe(0o600);
+      expect(operations).toEqual(["close", "read", "remove"]);
+      expect(remoteExecute).toHaveBeenCalledWith(expect.objectContaining({ command: "base64", args: [remoteAuthPath] }));
+      expect(remoteExecute).toHaveBeenCalledWith(expect.objectContaining({ command: "rm", args: ["-f", "--", remoteAuthPath] }));
+      await session.close({} as never);
+      expect(remoteExecute).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("uses the image's shared Codex without uploading or installing artifacts", async () => {
     const syncIn = vi.fn(async () => undefined);

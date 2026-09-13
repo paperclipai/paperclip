@@ -117,14 +117,15 @@ describe("openclaw_gateway execute dispatch boundary", () => {
   it.each([false, true])("sends conversation policy without the issue-completion workflow (resumed=%s)", async (resumed) => {
     const ctx = createContext();
     const directive = "Chat directive: clarify goals and hand plans off to project tasks.";
+    const description = "Discuss the authentication rollout before implementing it.";
     ctx.context = {
       ...ctx.context,
       conversationMode: true,
-      paperclipTaskMarkdown: directive,
+      paperclipTaskMarkdown: `${directive}\n\n${description}`,
       paperclipTaskMarkdownCompact: directive,
       paperclipWake: {
         reason: "issue_commented",
-        issue: { id: "issue-1", workMode: "planning", status: "in_progress" },
+        issue: { id: "issue-1", workMode: "planning", status: "in_progress", description },
         interactionKind: "request_confirmation",
         interactionStatus: "accepted",
       },
@@ -135,11 +136,22 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     expect(websocketState.messages).toHaveLength(1);
     const prompt = websocketState.messages[0]!;
     expect(prompt).toContain(directive);
+    expect(prompt.split(description)).toHaveLength(2);
     expect(prompt).toContain("X-Paperclip-Run-Id");
     expect(prompt).not.toContain("Execution contract:");
     expect(prompt).not.toContain("Create child issues");
     expect(prompt).not.toContain('"status":"done"');
     expect(prompt).not.toContain("GET /api/issues/{issueId}/comments");
+  });
+
+  it("retains the wake description when conversation task markdown is unavailable", async () => {
+    const ctx = createContext();
+    const description = "Keep this fallback brief available to the conversation.";
+    ctx.context = { ...ctx.context, conversationMode: true,
+      paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", description } } };
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(websocketState.messages[0]).toContain(description);
   });
 
   it("reports dispatch after transport setup and before the remote agent request", async () => {

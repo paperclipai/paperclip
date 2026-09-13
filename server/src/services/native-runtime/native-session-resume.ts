@@ -378,6 +378,18 @@ function sameWorkspaceScope(input: {
   );
 }
 
+/** Explains provider continuity without changing task configuration identity. */
+export type NativeSessionTransition = {
+  mode: "resumed" | "fresh";
+  reason:
+    | "checkpoint_compatible"
+    | "checkpoint_unavailable"
+    | "checkpoint_incompatible"
+    | "native_tool_contract_unverified"
+    | "native_tool_contract_changed";
+  taskContext: "resume" | "full";
+};
+
 /** A resume delta is valid only if the provider checkpoint really can be used. */
 export function buildNativeExecutionWithCheckpoint(input: {
   previousRun:
@@ -392,6 +404,7 @@ export function buildNativeExecutionWithCheckpoint(input: {
   execution: NativeExecutionInput;
   checkpoint: PersistedNativeSession | null;
   normalizedSessionId: string;
+  sessionTransition: NativeSessionTransition;
 } {
   const execution = input.buildExecution({
     normalizedSessionId: input.normalizedSessionId,
@@ -409,10 +422,23 @@ export function buildNativeExecutionWithCheckpoint(input: {
       execution,
       checkpoint,
       normalizedSessionId: input.normalizedSessionId,
+      sessionTransition: { mode: "resumed", reason: "checkpoint_compatible", taskContext: "resume" },
     };
   // Rebuild both task context and wake instructions. Merely rotating the ID
   // leaves a fresh provider with a compact delta and missing task context.
   const normalizedSessionId = randomUUID();
+  // This explains a native-provider transition independently of task config
+  // freshness. Missing historical contracts are unverified, not equivalent.
+  const storedToolContract = input.previousRun
+    ? record(input.previousRun.runnerProfileJson).nativeToolContractFingerprint
+    : null;
+  const reason: NativeSessionTransition["reason"] = !input.previousRun
+    ? "checkpoint_unavailable"
+    : typeof storedToolContract !== "string" || !storedToolContract
+      ? "native_tool_contract_unverified"
+      : storedToolContract !== nativeToolContractFingerprintForTarget(input.executionTargetKind ?? "local")
+        ? "native_tool_contract_changed"
+        : "checkpoint_incompatible";
   return {
     execution: input.buildExecution({
       normalizedSessionId,
@@ -420,6 +446,7 @@ export function buildNativeExecutionWithCheckpoint(input: {
     }),
     checkpoint: null,
     normalizedSessionId,
+    sessionTransition: { mode: "fresh", reason, taskContext: "full" },
   };
 }
 

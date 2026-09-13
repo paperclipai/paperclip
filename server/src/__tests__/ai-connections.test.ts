@@ -3,7 +3,7 @@ import { connectionIntentDeliveryService } from "../services/connection-intent-d
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +12,8 @@ import { createDb, companies, agents, heartbeatRuns, companyMemberships, connect
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, managedAiSessionFingerprintConfig, managedAiCredentialGeneration, managedAiCredentialIdentityMatches } from "../services/ai-connection-runtime.js";
+import { buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
@@ -130,6 +131,34 @@ describe("managed AI connections", () => {
     const account = await service.select({ ...input, userId: "alice" });
     await expect(service.select({ ...input, companyId: otherCompanyId, userId: "alice", binding: { ...binding, mode: "shared", connectionId: account.connection.id, grantId: account.grant.id } })).rejects.toThrow();
   });
+  it("keeps managed task sessions across temporary homes while detecting account and configuration changes", async () => {
+    const config = { model: "unchanged-model", env: { PLAIN_FLAG: "first" } };
+    const runtimes = await Promise.all(["alice", "alice", "bob"].map(responsibleUserId =>
+      prepareManagedAiRuntime(db, { ...input, responsibleUserId, config })));
+    try {
+      const fingerprint = async (runtime: typeof runtimes[number], effectiveConfig = runtime.config, managed = true) =>
+        (await buildEffectiveRunSessionConfigMetadata({
+          adapterType: input.adapterType,
+          effectiveAdapterConfig: managedAiSessionFingerprintConfig(effectiveConfig, managed ? runtime : undefined),
+          agentRuntimeConfig: { aiConnection: binding },
+          issueOverrides: null, workspaceConfig: null, environment: null,
+          environmentEnv: null, projectEnv: null, routineEnv: null, runtimeSkills: [],
+        })).fingerprint;
+      const [first, next, otherUser] = runtimes;
+      expect(first.config.env.HOME).not.toBe(next.config.env.HOME);
+      expect(first.identity).toBe(next.identity);
+      expect(await fingerprint(first)).toBe(await fingerprint(next));
+      expect(await fingerprint(first)).not.toBe(await fingerprint(otherUser));
+      expect(await fingerprint(next, { ...next.config, env: { ...next.config.env, PLAIN_FLAG: "changed" } })).not.toBe(await fingerprint(first));
+      expect(await fingerprint(next, { ...next.config, model: "changed-model" })).not.toBe(await fingerprint(first));
+      // Homes supplied by an ordinary local/SSH configuration remain meaningful.
+      expect(await fingerprint(first, first.config, false)).not.toBe(await fingerprint(next, next.config, false));
+      expect(first.config.env.HOME).toBeTruthy();
+      expect(next.config.env.CODEX_HOME).toBeTruthy();
+    } finally {
+      await Promise.all(runtimes.map(runtime => runtime.cleanup()));
+    }
+  });
   it("resolves shared encrypted credentials through the existing secret binding system", async () => {
     const created = await create("alice", "Shared credential proof", "shared");
     const selected = await service.select({ ...input, userId: "bob", binding: { ...binding, mode: "shared", ...created } });
@@ -233,6 +262,115 @@ describe("managed AI connections", () => {
     await writeFile(path.join(String(second.config.env.CODEX_HOME), "auth.json"), auth("stale-process", 13));
     await second.cleanup();
     expect(await service.credential(await service.select({ ...runInput, userId: "alice" }))).toBe(auth("reconnect", 12));
+  });
+  it("partitions subscription sessions by principal and account while retaining unknown credential changes", () => {
+    const jwt = (claims: Record<string, unknown>) => `${Buffer.from(JSON.stringify({ alg: "RS256" })).toString("base64url")}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.fixture-signature`;
+    const credential = (marker: string, account = "account", subject = "subject", user = "user", scope = "openid profile") => ({
+      auth_mode: "chatgpt", tokens: { account_id: account, refresh_token: `refresh-${marker}`,
+        id_token: jwt({ iss: "https://auth.openai.com", sub: subject, aud: "codex-client", exp: marker, "https://api.openai.com/auth": { chatgpt_account_id: account, chatgpt_user_id: user } }),
+        access_token: jwt({ iss: "https://auth.openai.com", sub: subject, aud: "api", scope, jti: marker, "https://api.openai.com/auth": { chatgpt_account_id: account, chatgpt_user_id: user } }),
+      }, last_refresh: marker,
+    });
+    const generation = (value: unknown) => managedAiCredentialGeneration("openai", "subscription", JSON.stringify(value));
+    const first = credential("first"), next = credential("next");
+    expect(generation(first)).toBe(generation(next));
+    const reorder = (value: unknown): unknown => Array.isArray(value) ? value.map(reorder) : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).reverse().map(([key, entry]) => [key, reorder(entry)])) : value;
+    expect(generation({ ...first, config: { first: 1, nested: { left: true, right: false } } })).toBe(generation(reorder({ ...next, config: { first: 1, nested: { left: true, right: false } } })));
+    const withClaims = (value: typeof first, mutate: (claims: Record<string, any>) => void) => {
+      const updated = structuredClone(value);
+      for (const key of ["id_token", "access_token"] as const) {
+        const claims = JSON.parse(Buffer.from(updated.tokens[key].split(".")[1], "base64url").toString("utf8"));
+        mutate(claims);updated.tokens[key] = jwt(claims);
+      }
+      return updated;
+    };
+    const alias = (claims: Record<string, any>) => { const auth = claims["https://api.openai.com/auth"];auth.user_id = auth.chatgpt_user_id;delete auth.chatgpt_user_id; };
+    expect(generation(withClaims(first, alias))).toBe(generation(withClaims(next, alias)));
+    expect(generation(withClaims(first, alias))).toBe(generation(first));
+    const membership = (id: string) => (claims: Record<string, any>) => { claims["https://api.openai.com/auth"].chatgpt_account_user_id = id; };
+    expect(generation(withClaims(first, membership("member-first")))).not.toBe(generation(withClaims(next, membership("member-next"))));
+    const ambiguous = (claims: Record<string, any>) => { claims["https://api.openai.com/auth"].user_id = "conflicting-user"; };
+    expect(generation(withClaims(first, ambiguous))).not.toBe(generation(withClaims(next, ambiguous)));
+    const scopes = (scp: unknown) => (claims: Record<string, any>) => { delete claims.scope;claims.scp = scp; };
+    expect(generation(withClaims(first, scopes(["openid", "profile"])))).toBe(generation(withClaims(next, scopes(["profile", "openid"]))));
+    expect(generation(withClaims(first, scopes(["openid"])))).not.toBe(generation(withClaims(next, scopes(["openid", "new-permission"]))));
+    expect(generation(withClaims(first, scopes({ malformed: true })))).not.toBe(generation(withClaims(next, scopes({ malformed: true }))));
+    for (const changed of [credential("next", "other-account"), credential("next", "account", "other-subject"), credential("next", "account", "subject", "other-user"), credential("next", "account", "subject", "user", "openid new-scope"), { ...next, unknownSetting: "changed" }, { ...next, tokens: { ...next.tokens, account_id: "mismatched-account" } }, { ...next, tokens: { ...next.tokens, access_token: credential("next", "account", "different-subject").tokens.access_token } }]) {
+      expect(generation(changed)).not.toBe(generation(first));
+    }
+    // A shared account alone cannot establish a principal. Unknown tokens keep byte-level identity.
+    for (const mutate of [
+      (value: typeof first) => ({ ...value, tokens: { ...value.tokens, id_token: "opaque" } }),
+      (value: typeof first) => ({ ...value, tokens: { ...value.tokens, access_token: "opaque" } }),
+      (value: typeof first) => ({ ...value, tokens: { ...value.tokens, id_token: jwt({ iss: "https://other.invalid", sub: "subject" }) } }),
+      (value: typeof first) => ({ ...value, tokens: { ...value.tokens, id_token: jwt({ iss: "https://auth.openai.com", aud: "client" }) } }),
+      (value: typeof first) => ({ ...value, OPENAI_API_KEY: "actual-api-key" }),
+    ]) expect(generation(mutate(first))).not.toBe(generation(mutate(next)));
+    for (const provider of ["openai", "anthropic", "openrouter", "xai"] as const) {
+      expect(managedAiCredentialGeneration(provider, "api_key", "first-key")).not.toBe(managedAiCredentialGeneration(provider, "api_key", "next-key"));
+    }
+    for (const provider of ["anthropic", "xai"] as const) {
+      expect(managedAiCredentialGeneration(provider, "subscription", "opaque-first")).not.toBe(managedAiCredentialGeneration(provider, "subscription", "opaque-next"));
+    }
+  });
+  it("keeps Claude opaque setup-token sessions stable only while the same token remains selected", async () => {
+    const intent = { provider: "anthropic", method: "subscription", name: "Opaque Claude session", ownership: "personal", agentIds: [], allAgents: true } as const;
+    const saved = await service.save(companyId, "alice", { ...intent, agentIds: [] }, "opaque-claude-first");
+    const runInput = { companyId, agentId, adapterType: "claude_local", responsibleUserId: "alice", binding: { provider: "anthropic", method: "subscription", mode: "delegated", ...saved } as const, config: { model: "same-model" } };
+    const first = await prepareManagedAiRuntime(db, runInput);await first.cleanup();
+    const unchanged = await prepareManagedAiRuntime(db, runInput);try { expect(unchanged.identity).toBe(first.identity); } finally { await unchanged.cleanup(); }
+    await service.save(companyId, "alice", { ...intent, agentIds: [], connectionId: saved.connectionId }, "opaque-claude-next");
+    const changed = await prepareManagedAiRuntime(db, runInput);try { expect(changed.identity).not.toBe(first.identity);expect(changed.config.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("opaque-claude-next"); } finally { await changed.cleanup(); }
+  });
+  it("preserves managed Codex session fingerprints after same-account credential refresh", async () => {
+    const jwt = (claims: Record<string, unknown>) => `${Buffer.from(JSON.stringify({ alg: "RS256" })).toString("base64url")}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.fixture-signature`;
+    const auth = (marker: string, hour: number) => JSON.stringify({ auth_mode: "chatgpt", tokens: {
+      account_id: "refresh-session-account",
+      id_token: jwt({ iss: "https://auth.openai.com", sub: "refresh-session-user", aud: ["codex-fixture-client"], exp: hour, "https://api.openai.com/auth": { chatgpt_account_id: "refresh-session-account", chatgpt_user_id: "refresh-session-user" } }),
+      access_token: jwt({ iss: "https://auth.openai.com", sub: "refresh-session-user", aud: ["https://api.openai.com/v1", "codex-service"], exp: hour, jti: marker, scp: ["openid", "profile"], "https://api.openai.com/auth": { chatgpt_account_id: "refresh-session-account", chatgpt_user_id: "refresh-session-user" } }), refresh_token: `refresh-${marker}`,
+    }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    const saved = await service.save(companyId, "alice", { provider: "openai", method: "subscription", name: "Stable refresh session", ownership: "personal", agentIds: [], allAgents: true }, auth("first", 10));
+    const selectedBinding = { provider: "openai", method: "subscription", mode: "delegated", ...saved } as const;
+    const runInput = { companyId, agentId, adapterType: "codex_local", responsibleUserId: "alice", binding: selectedBinding, config: { model: "same-model" } };
+    const metadata = async (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, config: Record<string, unknown> = runtime.config, legacy = true) => buildEffectiveRunSessionConfigMetadata({
+      adapterType: runInput.adapterType, effectiveAdapterConfig: managedAiSessionFingerprintConfig(config, runtime),
+      managedAiLegacyCredentialIdentity: legacy ? runtime.legacyCredentialIdentity : undefined,
+      agentRuntimeConfig: { aiConnection: selectedBinding }, issueOverrides: null, workspaceConfig: null,
+      environment: null, environmentEnv: null, projectEnv: null, routineEnv: null, runtimeSkills: [],
+    });
+    const fingerprint = async (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) => (await metadata(runtime)).fingerprint;
+    const first = await prepareManagedAiRuntime(db, runInput);
+    let firstFingerprint: string;
+    try {
+      firstFingerprint = await fingerprint(first);
+      const oldIdentity = `${saved.grantId}:alice:${createHash("sha256").update(auth("first", 10)).digest("hex").slice(0, 16)}`;
+      expect(first.legacyCredentialIdentity).toBe(oldIdentity);
+      expect(managedAiCredentialIdentityMatches(oldIdentity, first)).toBe(true);
+      expect(managedAiCredentialIdentityMatches(undefined, first)).toBe(false);
+      expect(managedAiCredentialIdentityMatches(oldIdentity.replace(":alice:", ":bob:"), first)).toBe(false);
+      const original = await metadata(first, { ...first.config, managedAiConnection: { ...first.config.managedAiConnection, identity: oldIdentity } }, false);
+      const current = await metadata(first);
+      const session = { __paperclipConfiguredModel: "same-model", __paperclipConfigFingerprint: original.fingerprint,
+        __paperclipConfigFingerprintVersion: original.version, __paperclipConfigCategories: original.categories,
+        __paperclipConfigCategoryFingerprints: original.categoryFingerprints };
+      expect(current.fingerprint).not.toBe(original.fingerprint);
+      expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "same-model", taskSessionParams: session, configMetadata: current }).reset).toBe(false);
+      for (const changed of [{ ...first.config, model: "different-model" }, { ...first.config, env: { ...first.config.env, CUSTOM_FLAG: "changed" } }]) {
+        expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "same-model", taskSessionParams: session, configMetadata: await metadata(first, changed) }).reset).toBe(true);
+      }
+      await writeFile(path.join(String(first.config.env.CODEX_HOME), "auth.json"), auth("refreshed", 11));
+    } finally { await first.cleanup(); }
+    expect(await service.credential(await service.select({ ...runInput, userId: "alice" }))).toBe(auth("refreshed", 11));
+    const next = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(next.identity).toBe(first.identity);
+      expect(await fingerprint(next)).toBe(firstFingerprint!);
+      expect(managedAiCredentialIdentityMatches(first.identity, next)).toBe(true);
+      // Exact old-byte compatibility cannot exempt another credential generation.
+      expect(managedAiCredentialIdentityMatches(first.legacyCredentialIdentity, next)).toBe(false);
+
+    } finally { await next.cleanup(); }
   });
   it("enforces the shared transport discriminator and existing harness compatibility", () => {
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "ai", transport: "mcp_remote" }).success).toBe(false);

@@ -315,7 +315,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
       expect(run).toMatchObject({ nativePhase: phase, errorCode: code });
       const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
-      expect(issue!.status).toBe(phase === "terminal_failure" ? "in_review" : "in_progress");
+      // Exhausted recovery has no completed result for human review.
+      expect(issue!.status).toBe(phase === "terminal_failure" ? "blocked" : "in_progress");
       expect(onSpawn).not.toHaveBeenCalled();
       expect(execute).toHaveBeenCalledTimes(scenario === "missing-host-state" ? 0 : 1);
       if (scenario !== "missing-host-state") expect(await readFile(journalPath, "utf8")).toBe(journal);

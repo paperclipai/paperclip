@@ -34,6 +34,7 @@ import {
   buildPaperclipEnv,
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
+  listPaperclipSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   joinPromptSections,
   buildInvocationEnvForLogs,
@@ -91,7 +92,7 @@ import {
 } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
-import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { prepareClaudePromptBundle, claudePromptBundleCanResume } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
@@ -132,12 +133,49 @@ export function claudeSessionMcpServersMatch(input: {
   currentIdentity: string;
   currentConnectionIds: readonly (string | null | undefined)[];
   legacyPlatformSession: boolean;
+  paperclipApiUrl?: string;
+  sandboxUpgrade?: boolean;
 }): boolean {
-  if (input.savedIdentity.length > 0) return input.savedIdentity === input.currentIdentity;
-  return input.currentConnectionIds.length === 0 || (
-    input.legacyPlatformSession
-    && input.currentConnectionIds.every((id) => id === "paperclip-runtime-tools")
-  );
+  if (!input.sandboxUpgrade) {
+    if (input.savedIdentity.length > 0) return input.savedIdentity === input.currentIdentity;
+    return input.currentConnectionIds.length === 0 || (input.legacyPlatformSession
+      && input.currentConnectionIds.every((id) => id === "paperclip-runtime-tools"));
+  }
+  if (input.savedIdentity === input.currentIdentity) return true;
+  const parse = (raw: string): Array<{ name: string; url: string; connectionId: string }> | null => {
+    try {
+      const value: unknown = JSON.parse(raw);
+      if (!Array.isArray(value) || !value.every((entry) => entry && typeof entry === "object"
+        && Object.keys(entry).length === 3
+        && typeof entry.name === "string" && typeof entry.url === "string" && typeof entry.connectionId === "string")) return null;
+      return value;
+    } catch { return null; }
+  };
+  const current = parse(input.currentIdentity);
+  const builtin = (entry: { name: string; url: string; connectionId: string }) => {
+    if (!input.paperclipApiUrl) return false;
+    try {
+      const base = new URL(input.paperclipApiUrl);
+      const expected = entry.connectionId === "paperclip-runtime-tools" && entry.name === "Paperclip connections"
+        ? "/mcp/runtime-tools" : entry.connectionId === "paperclip-project-tools" && entry.name === "Paperclip projects"
+          ? "/api/mcp/project-tools" : null;
+      return expected !== null && ["http:", "https:"].includes(base.protocol)
+        && base.pathname === "/" && !base.username && !base.password && !base.search && !base.hash
+        && entry.url === `${base.origin}${expected}`;
+    } catch { return false; }
+  };
+  if (!input.savedIdentity) {
+    if (!input.legacyPlatformSession) return false;
+    return current !== null && current.every(builtin)
+      && JSON.stringify(current.map((entry) => entry.connectionId)) === JSON.stringify(input.currentConnectionIds);
+  }
+  const saved = parse(input.savedIdentity);
+  if (!saved || !current) return false;
+  // Database order and JSON property order are not tool identity. Keep every
+  // occurrence so adding or removing a duplicate still changes the identity.
+  const externalIdentities = (entries: typeof saved) => entries.filter((entry) => !builtin(entry))
+    .map((entry) => JSON.stringify([entry.name, entry.url, entry.connectionId])).sort();
+  return JSON.stringify(externalIdentities(saved)) === JSON.stringify(externalIdentities(current));
 }
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {
@@ -559,13 +597,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Warning: skill "${entry.key}" is enabled for this agent but its files are unavailable and it was not mounted${entry.missingDetail ? `: ${entry.missingDetail}` : "."}\n`,
     );
   }
+  const shippedSkills = await listPaperclipSkillEntries(__moduleDir);
   const promptBundle = await prepareClaudePromptBundle({
+    shippedSkills,
     companyId: agent.companyId,
     skills: mountableSkillEntries,
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
   const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const runtimePaperclipApiUrl = env.PAPERCLIP_API_URL;
   const runtimeMcpIdentity = JSON.stringify(
     runtimeMcpServers.map(({ name, url, connectionId }) => ({ name, url, connectionId })),
   );
@@ -783,8 +824,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
-  const hasMatchingPromptBundle =
-    runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
+  const hasMatchingPromptBundle = executionTargetIsSandbox ? await claudePromptBundleCanResume({
+    companyId: agent.companyId, bundle: promptBundle, previousBundleKey: runtimePromptBundleKey,
+    previousCompatibilityKey: asString(runtimeSessionParams.promptCompatibilityKey, ""),
+    skills: mountableSkillEntries, shippedSkills, instructionsContents: combinedInstructionsContents,
+  }) : runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
   // Older codecs dropped this field. Only a host-verified legacy session using
   // the built-in platform server may migrate without an external-server identity.
   const hasMatchingMcpServers = claudeSessionMcpServersMatch({
@@ -792,6 +836,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     currentIdentity: runtimeMcpIdentity,
     currentConnectionIds: runtimeMcpServers.map((server) => server.connectionId),
     legacyPlatformSession: runtimeSessionParams.legacyPlatformMcpSession === true,
+    paperclipApiUrl: runtimePaperclipApiUrl,
+    sandboxUpgrade: executionTargetIsSandbox,
   });
   const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runtimeSessionId);
   const canResumeSession =
@@ -838,7 +884,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
     );
   }
-  if (runtimeSessionId && runtimePromptBundleKey.length > 0 && runtimePromptBundleKey !== promptBundle.bundleKey) {
+  if (runtimeSessionId && !hasMatchingPromptBundle) {
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for prompt bundle "${runtimePromptBundleKey}" and will not be resumed with "${promptBundle.bundleKey}".\n`,
@@ -1162,6 +1208,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionId: resolvedSessionId,
         cwd,
         promptBundleKey: promptBundle.bundleKey,
+        promptCompatibilityKey: promptBundle.compatibilityKey,
         mcpServerIdentity: runtimeMcpIdentity,
         ...(executionTargetIsRemote
           ? {
