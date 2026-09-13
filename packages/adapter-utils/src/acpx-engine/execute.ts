@@ -117,6 +117,7 @@ import type {
   TurnCompletion,
 } from "./run-contracts.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
+import { createAcpPermissionObserver, type AcpPermissionObserver } from "./permission-observer.js";
 import { settleAcpRun, type SettlementSteps } from "./settlement-sequence.js";
 import {
   runAttempt,
@@ -3998,6 +3999,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let prepared!: AcpxPreparedRuntime;
       let runtime!: AcpRuntime;
       let sessionHandle!: AcpRuntimeHandle;
+      // Observes the ACP permission handoff for the run log; it never answers
+      // a permission request. Assigned once `prepared` is ready (it reads the
+      // effective permission mode and the execution transport), so it stays
+      // undefined on a build failure that never reaches that point — the
+      // ledger would hold no entries at that point anyway.
+      let permissionObserver: AcpPermissionObserver | undefined;
       let childStderrState!: ChildStderrState;
       let processIdentitySink!: AcpxProcessIdentitySink;
       let resumedSession = false;
@@ -4129,6 +4136,21 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           }),
         );
         buildRuntimeSettled = true;
+        const observedExecutionTarget = ctx.executionTarget;
+        permissionObserver = createAcpPermissionObserver({
+          permissionMode: prepared.permissionMode,
+          // A missing execution target means the local environment, the same
+          // convention `describeAdapterExecutionTarget` already uses.
+          transport: !observedExecutionTarget || observedExecutionTarget.kind === "local"
+            ? "local"
+            : observedExecutionTarget.transport,
+          // Return the write's promise; do not swallow it here. The observer
+          // never awaits this on the permission critical path, but it keeps
+          // the promise so `finalizeRun` can drain every pending write before
+          // it returns, so the run never finalizes with a write still in
+          // flight.
+          emitLog: (payload) => emitAcpxLog(ctx, payload),
+        });
         // Capture the run's staging lease release now that the runtime built. The
         // run root `finally` releases it as the final settlement act.
         releaseStagingLease = prepared.sessionStagingLeaseRelease;
@@ -4215,6 +4237,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           agentRegistry: prepared.agentRegistry,
           permissionMode: prepared.permissionMode,
           nonInteractivePermissions: prepared.nonInteractivePermissions,
+          // Observation only: this hook always resolves to `undefined`, so it
+          // never changes which permission option acpx resolves on its own.
+          onPermissionRequest: permissionObserver?.handlePermissionRequest,
           mcpServers: prepared.mcpServers,
           timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
           // Scope ACPX runtime verbose logs to the claude agent only. Codex
@@ -4813,6 +4838,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                   kind: event.kind ?? previous?.kind,
                   status: event.status ?? previous?.status,
                 });
+                permissionObserver?.noteToolCallEvent(sessionHandle.backendSessionId, {
+                  toolCallId: event.toolCallId,
+                  status: event.status,
+                });
               }
             }
             if (event.type === "text_delta" && event.stream !== "thought") {
@@ -5333,6 +5362,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           const report = await settleAcpRun(runResourceLedger, cause, settlementSteps);
           recordDispositionReport(report);
           if (childStderrState) flushChildStderr(childStderrState);
+          // Report every permission request the run never saw settle. Not on
+          // the permission critical path. This call waits for every queued
+          // log write, including one still in flight from an earlier
+          // permission event, to reach durable storage before it returns.
+          await permissionObserver?.finalizeRun();
         },
         reproduceResult: async (): Promise<AdapterExecutionResult> => {
           if (!capturedResult) {

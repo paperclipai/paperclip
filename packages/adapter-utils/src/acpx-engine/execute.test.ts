@@ -2562,6 +2562,198 @@ describe("shared ACPX engine runtime behavior", () => {
   });
 });
 
+describe("ACPX engine permission-observer wiring", () => {
+  function parseLogEvents(logs: Array<{ stream: string; text: string }>): Array<Record<string, unknown>> {
+    return logs
+      .filter((entry) => entry.stream === "stdout")
+      .map((entry) => {
+        try {
+          return JSON.parse(entry.text) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .filter((parsed): parsed is Record<string, unknown> => parsed !== null);
+  }
+
+  it("passes the observer's hook as onPermissionRequest, and the settle step reports a request the turn never saw settle", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const runtimeOptions: Array<{ onPermissionRequest?: (...args: unknown[]) => unknown }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: (options) => {
+        runtimeOptions.push(options as unknown as { onPermissionRequest?: (...args: unknown[]) => unknown });
+        // The engine wires this before it calls createRuntime, so calling it
+        // here reproduces the same order acpx uses: request arrives, then the
+        // turn's tool-call events drain (or, as here, never arrive).
+        void options.onPermissionRequest?.(
+          {
+            sessionId: "backend-session",
+            inferredKind: "execute",
+            raw: { sessionId: "backend-session", toolCall: { toolCallId: "tool-never-closes" }, options: [] },
+          } as never,
+          { signal: new AbortController().signal },
+        );
+        return {
+          ensureSession: async () => ({
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          startTurn: () => ({
+            events: (async function* () {
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        } as never;
+      },
+    });
+
+    const result = await execute({
+      runId: "run-permission-wiring-unsettled",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(typeof runtimeOptions[0]?.onPermissionRequest).toBe("function");
+
+    const events = parseLogEvents(logs);
+    const observed = events.find((event) => event.type === "acpx.permission_observed");
+    expect(observed).toMatchObject({ toolCallId: "tool-never-closes", sessionId: "backend-session" });
+    const unsettled = events.find((event) => event.type === "acpx.permission_unsettled");
+    expect(unsettled).toMatchObject({ toolCallId: "tool-never-closes", sessionId: "backend-session" });
+  });
+
+  it("settles a permission request when the tool-call drain loop reports a matching terminal event", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: (options) => {
+        void options.onPermissionRequest?.(
+          {
+            sessionId: "backend-session",
+            inferredKind: "execute",
+            raw: { sessionId: "backend-session", toolCall: { toolCallId: "tool-1" }, options: [] },
+          } as never,
+          { signal: new AbortController().signal },
+        );
+        return {
+          ensureSession: async () => ({
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          startTurn: () => ({
+            events: (async function* () {
+              yield {
+                type: "tool_call",
+                text: "Bash (completed)",
+                title: "Bash",
+                status: "completed",
+                toolCallId: "tool-1",
+                tag: "tool_call",
+              };
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        } as never;
+      },
+    });
+
+    const result = await execute({
+      runId: "run-permission-wiring-settled",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+
+    const events = parseLogEvents(logs);
+    const settled = events.find((event) => event.type === "acpx.permission_settled");
+    expect(settled).toMatchObject({ toolCallId: "tool-1", sessionId: "backend-session", outcome: "completed" });
+    expect(events.find((event) => event.type === "acpx.permission_unsettled")).toBeUndefined();
+  });
+
+  it("bounds the observer's run-log event count when the agent sends more than 256 permission requests", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: string; text: string }> = [];
+    const REQUEST_COUNT = 300;
+    const execute = createAcpxEngineExecutor({
+      createRuntime: (options) => {
+        for (let i = 0; i < REQUEST_COUNT; i += 1) {
+          void options.onPermissionRequest?.(
+            {
+              sessionId: "backend-session",
+              inferredKind: "execute",
+              raw: { sessionId: "backend-session", toolCall: { toolCallId: `tool-${i}` }, options: [] },
+            } as never,
+            { signal: new AbortController().signal },
+          );
+        }
+        return {
+          ensureSession: async () => ({
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          startTurn: () => ({
+            events: (async function* () {
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        } as never;
+      },
+    });
+
+    const result = await execute({
+      runId: "run-permission-wiring-bounded",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+
+    const events = parseLogEvents(logs);
+    const observed = events.filter((event) => event.type === "acpx.permission_observed");
+    const unsettled = events.filter((event) => event.type === "acpx.permission_unsettled");
+    const summaries = events.filter((event) => event.type === "acpx.permission_observer_truncated");
+    expect(observed.length).toBeLessThanOrEqual(256);
+    expect(unsettled.length).toBeLessThanOrEqual(256);
+    expect(summaries).toHaveLength(1);
+  });
+});
+
 describe("findAncestorBin", () => {
   async function writeFakeBin(dir: string, name: string) {
     const binDir = path.join(dir, "node_modules", ".bin");
