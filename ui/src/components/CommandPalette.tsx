@@ -36,6 +36,12 @@ import {
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
 import {
+  useStopActions,
+  StopActionsMenuItems,
+  StopPickerGroup,
+  StopConfirmDialog,
+} from "./command-palette/StopActions";
+import {
   SEARCH_OPERATOR_QUICK_FILTERS,
   buildSearchPathFromQuery,
   parseSearchQuery,
@@ -164,6 +170,12 @@ export function CommandPalette() {
     enabled: !!selectedCompanyId && open && searchQuery.length === 0,
   });
 
+  const stop = useStopActions({ companyId: selectedCompanyId, open, query, issues });
+  useEffect(() => {
+    if (!open) stop.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   const { data: searchedIssues = [] } = useQuery({
     queryKey: queryKeys.issues.search(selectedCompanyId!, quickSearchQuery, undefined, 10),
     queryFn: () => issuesApi.list(selectedCompanyId!, { q: quickSearchQuery, limit: 10, includeRoutineExecutions: true }),
@@ -217,6 +229,7 @@ export function CommandPalette() {
     showSearchAll && visibleIssues.length === 0 && matchedProjects.length === 0;
 
   return (
+    <>
     <CommandDialog open={open} onOpenChange={(v) => {
         setOpen(v);
         if (v && isMobile) setSidebarOpen(false);
@@ -238,6 +251,10 @@ export function CommandPalette() {
         }}
       />
       <CommandList>
+        {stop.mode ? (
+          <StopPickerGroup stop={stop} onPicked={() => setOpen(false)} />
+        ) : (
+        <>
         <CommandEmpty>
           {showSearchAll ? (
             <span>
@@ -348,6 +365,12 @@ export function CommandPalette() {
             <Plus className="mr-2 h-4 w-4" />
             Create new project
           </CommandItem>
+          <StopActionsMenuItems
+            stop={stop}
+            onSelect={(next) => {
+              if (next === "all") setOpen(false);
+            }}
+          />
         </CommandGroup>
 
         <CommandSeparator />
@@ -444,7 +467,11 @@ export function CommandPalette() {
             </CommandGroup>
           </>
         )}
+        </>
+        )}
       </CommandList>
     </CommandDialog>
+    <StopConfirmDialog stop={stop} />
+    </>
   );
 }
