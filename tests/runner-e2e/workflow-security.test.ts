@@ -47,7 +47,7 @@ describe("public repository paid workflow security", () => {
         .filter((step) => step.includes("uses: pnpm/action-setup@"));
 
       expect(pnpmSetupSteps, workflowName).toHaveLength(
-        workflowName === "pr-trusted.yml" ? 8 : 7,
+        workflowName === "pr-trusted.yml" ? 8 : 5,
       );
       for (const step of pnpmSetupSteps) {
         expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
@@ -73,7 +73,7 @@ describe("public repository paid workflow security", () => {
     const workflows = [
       {
         name: "runner-full-stack-e2e.yml",
-        expectedCachedSetupNodeSteps: 4,
+        expectedCachedSetupNodeSteps: 3,
       },
       {
         name: "pr-trusted.yml",
@@ -92,7 +92,7 @@ describe("public repository paid workflow security", () => {
       );
 
       expect(pnpmSetupStepIndexes, name).toHaveLength(
-        name === "pr-trusted.yml" ? 8 : 7,
+        name === "pr-trusted.yml" ? 8 : 5,
       );
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
@@ -730,7 +730,7 @@ describe("public repository paid workflow security", () => {
       "Publish trusted summary and declared screenshots to public bundles",
     );
     expect(publisher).toContain(
-      "pnpm exec playwright install --with-deps --only-shell chromium",
+      "node tests/runner-e2e/reporting-runtime/node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium",
     );
     expect(workflow).toContain(
       "Package pruned dashboard with declared screenshots for GitHub Pages",
@@ -742,7 +742,7 @@ describe("public repository paid workflow security", () => {
     expect(workflow).not.toContain("dashboard_ready");
     expect(workflow).not.toContain("Publish latest screenshot dashboard");
     expect(
-      workflow.indexOf("pnpm test:e2e:runner:history:publish"),
+      workflow.indexOf("tests/runner-e2e/history-publish.ts"),
     ).toBeLessThan(workflow.indexOf("actions/upload-pages-artifact@"));
   });
 });

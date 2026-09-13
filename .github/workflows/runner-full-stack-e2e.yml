@@ -1047,31 +1047,18 @@ jobs:
         with:
           node-version: 24
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        env:
-          NPM_CONFIG_AUDIT: "false"
-          NPM_CONFIG_FUND: "false"
-          NPM_CONFIG_UPDATE_NOTIFIER: "false"
-        with:
-          version: 9.15.4
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Resolve trusted reporting lockfile without lifecycle scripts
+      - name: Install integrity-locked reporting runtime without lifecycle scripts
         run: |
           set -euo pipefail
-          # Resolve only this trusted checkout's lock, never the target artifact.
-          test -z "$(git status --porcelain)"
-          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
-          test -s pnpm-lock.yaml
-          git diff --exit-code HEAD -- . ':!pnpm-lock.yaml'
-          test -z "$(git ls-files --others --exclude-standard)"
-          sha256sum pnpm-lock.yaml
-
-      - run: pnpm install --frozen-lockfile
+          # This dedicated reviewed lock is independent of target and root locks.
+          # No workspace install, registry re-resolution, or lifecycle execution.
+          test ! -e node_modules
+          test ! -L node_modules
+          npm ci --prefix tests/runner-e2e/reporting-runtime --ignore-scripts --no-audit --no-fund
+          git diff --exit-code HEAD -- tests/runner-e2e/reporting-runtime/package.json tests/runner-e2e/reporting-runtime/package-lock.json pnpm-lock.yaml
+          mkdir -p tests/runner-e2e/reporting-runtime/node_modules/@paperclipai
+          ln -s "$PWD/packages/adapter-utils" tests/runner-e2e/reporting-runtime/node_modules/@paperclipai/adapter-utils
+          ln -s tests/runner-e2e/reporting-runtime/node_modules node_modules
 
       - name: Resolve workflow job attempts
         env:
@@ -1118,7 +1105,7 @@ jobs:
           PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: ${{ needs.catalog.outputs.execution_ids }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
-        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/select-rerun-artifacts.ts
+        run: node tests/runner-e2e/reporting-runtime/node_modules/tsx/dist/cli.mjs tests/runner-e2e/select-rerun-artifacts.ts
 
       - name: Collect blob reports
         run: |
@@ -1136,7 +1123,7 @@ jobs:
         if: always()
         env:
           PAPERCLIP_RUNNER_E2E_MERGED_REPORT_DIR: ${{ github.workspace }}/runner-e2e-merged-report
-        run: pnpm exec playwright merge-reports --config tests/runner-e2e/merge.config.ts merged-blob-reports
+        run: node tests/runner-e2e/reporting-runtime/node_modules/@playwright/test/cli.js merge-reports --config tests/runner-e2e/merge.config.ts merged-blob-reports
 
       - name: Aggregate normalized campaign results
         if: always()
@@ -1151,7 +1138,7 @@ jobs:
           PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}
         run: |
           set +e
-          pnpm test:e2e:runner:report
+          node tests/runner-e2e/reporting-runtime/node_modules/tsx/dist/cli.mjs tests/runner-e2e/report.ts
           report_status=$?
           set -e
           cat runner-e2e-merged-report/normalized/summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -1205,29 +1192,21 @@ jobs:
         with:
           node-version: 24
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        env:
-          NPM_CONFIG_AUDIT: "false"
-          NPM_CONFIG_FUND: "false"
-          NPM_CONFIG_UPDATE_NOTIFIER: "false"
-        with:
-          version: 9.15.4
-
-      - name: Resolve trusted reporting lockfile without lifecycle scripts
+      - name: Install integrity-locked reporting runtime without lifecycle scripts
         run: |
           set -euo pipefail
-          # Resolve only this trusted checkout's lock, never the target artifact.
-          test -z "$(git status --porcelain)"
-          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
-          test -s pnpm-lock.yaml
-          git diff --exit-code HEAD -- . ':!pnpm-lock.yaml'
-          test -z "$(git ls-files --others --exclude-standard)"
-          sha256sum pnpm-lock.yaml
-
-      - run: pnpm install --frozen-lockfile
+          # This dedicated reviewed lock is independent of target and root locks.
+          # No workspace install, registry re-resolution, or lifecycle execution.
+          test ! -e node_modules
+          test ! -L node_modules
+          npm ci --prefix tests/runner-e2e/reporting-runtime --ignore-scripts --no-audit --no-fund
+          git diff --exit-code HEAD -- tests/runner-e2e/reporting-runtime/package.json tests/runner-e2e/reporting-runtime/package-lock.json pnpm-lock.yaml
+          mkdir -p tests/runner-e2e/reporting-runtime/node_modules/@paperclipai
+          ln -s "$PWD/packages/adapter-utils" tests/runner-e2e/reporting-runtime/node_modules/@paperclipai/adapter-utils
+          ln -s tests/runner-e2e/reporting-runtime/node_modules node_modules
 
       - name: Install publisher-only Chromium
-        run: pnpm exec playwright install --with-deps --only-shell chromium
+        run: node tests/runner-e2e/reporting-runtime/node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
 
       - name: Download access-controlled normalized campaign
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1247,7 +1226,7 @@ jobs:
           RUNNER_E2E_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
           RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}
           RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}
-        run: pnpm test:e2e:runner:history:publish
+        run: node tests/runner-e2e/reporting-runtime/node_modules/tsx/dist/cli.mjs tests/runner-e2e/history-publish.ts
 
       - name: Resolve Pages artifact name
         id: pages_artifact_name
