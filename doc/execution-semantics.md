@@ -376,6 +376,13 @@ If the committed update assigns the issue to a user, clears the agent assignee, 
 
 Plain text is not assignment. Writing an agent's name, role, or team label in a comment does not change ownership and does not create an agent wake. Agent routing from comment text requires a structured agent mention that resolves inside the company, an explicit `assigneeAgentId` mutation, or an existing current agent assignee receiving normal issue-thread feedback.
 
+A delegation comment from the current assignee's run must not start competing work when the named worker already owns the referenced blocking child. This applies to issue updates with a comment and standalone comments. First verify that the comment references the child's identifier, the child has a blocker edge to this parent, and the child belongs to the same company and is assigned to the mentioned worker. Suppress the mention wake only in either of these states:
+
+- The parent is `blocked` and the child is `in_progress`. The child's execution or checkout run must still be `running`, belong to that worker and company, and name that child in its run context.
+- The parent and child are both `done`. The assignee's closing comment must not start another worker run for the completed delegation.
+
+The comment remains on the parent. This rule does not copy it into the child or change ownership. Board-user comments and unrelated mentions retain their normal wake behavior. If the child or run no longer meets these conditions, or the state lookup fails, use the normal mention wake path. Completion of the child still uses the existing blocker-resolution wake for the parent's assignee.
+
 Pause and tree-control previews should make the same distinction visible. They should report whether the affected subtree contains live running work, queued wakes, agent-owned work, or only human-owned/static issues, so a pause after a handoff does not look like it interrupted agent execution when no agent execution path existed.
 
 ### Adapter-backed workspace coherence

@@ -14,6 +14,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
@@ -261,6 +262,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({ unresolvedBlockerCount: 1 });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
@@ -675,6 +677,60 @@ describe("issue update comment wakeups", () => {
         reason: "issue_comment_mentioned",
       }),
     );
+  });
+
+  it.each((["post", "patch"] as const).flatMap((method) => [
+    "active_delegation", "completed_delegation", "human_comment", "completed_human_comment", "unrelated_comment", "completed_child",
+    "unrelated_child", "foreign_company", "stopped_run", "foreign_run", "unrelated_run", "lookup_failure",
+  ].map((scenario) => ({ method, scenario }))))("routes $method mentions correctly for $scenario", async ({ method, scenario }) => {
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "blocked", executionRunId: SOURCE_RUN_ID });
+    const child = makeIssue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", identifier: "PAP-1000",
+      parentId: existing.id, assigneeAgentId: MENTIONED_AGENT_ID, assigneeUserId: null,
+      status: "in_progress", executionRunId: "55555555-5555-4555-8555-555555555555",
+    });
+    const delegationBody = scenario === "unrelated_comment"
+      ? `[@QA](agent://${MENTIONED_AGENT_ID}) please review the parent task separately.`
+      : `Delegated to [@QA](agent://${MENTIONED_AGENT_ID}) via [${child.identifier}](/PAP/issues/${child.identifier}). Waiting for that task to finish.`;
+    // This unrelated mention must wake after the worker's routing decision.
+    // It gives the test an observable completion point for the async loop.
+    const body = `${delegationBody} [@Observer](agent://${PREVIOUS_AGENT_ID}) please review the parent separately.`;
+    const completedDelegation = scenario === "completed_delegation" || scenario === "completed_human_comment";
+    const humanComment = scenario === "human_comment" || scenario === "completed_human_comment";
+    if (scenario === "completed_child" || completedDelegation) child.status = "done";
+    if (completedDelegation) existing.status = "done";
+    if (scenario === "unrelated_child") child.parentId = "other-parent";
+    if (scenario === "foreign_company") child.companyId = "other-company";
+    mockIssueService.getById.mockImplementation(async (id) => {
+      if (id === child.id && scenario === "lookup_failure") throw new Error("temporary read failure");
+      return id === child.id ? child : existing;
+    });
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({ id: "delegation-note", issueId: existing.id, companyId: existing.companyId, body, createdByRunId: humanComment ? null : SOURCE_RUN_ID });
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID, PREVIOUS_AGENT_ID]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [child], blocks: [] });
+    mockHeartbeatService.getRun.mockImplementation(async (id) => ({
+      id, companyId: id === child.executionRunId && scenario === "foreign_run" ? "other-company" : existing.companyId,
+      status: id === child.executionRunId && scenario === "stopped_run" ? "succeeded" : "running",
+      agentId: id === child.executionRunId ? MENTIONED_AGENT_ID : ASSIGNEE_AGENT_ID,
+      contextSnapshot: { issueId: id === child.executionRunId && scenario !== "unrelated_run" ? child.id : existing.id },
+    }));
+    const app = await createApp();
+    const req = method === "post"
+      ? request(app).post(`/api/issues/${existing.id}/comments`)
+      : request(app).patch(`/api/issues/${existing.id}`);
+    if (!humanComment) req.set("X-Paperclip-Run-Id", SOURCE_RUN_ID);
+    const res = await req.send(method === "post" ? { body } : { comment: body });
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    await vi.waitFor(() => {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(PREVIOUS_AGENT_ID, expect.objectContaining({ reason: "issue_comment_mentioned" }));
+    });
+    if (scenario === "active_delegation" || scenario === "completed_delegation") {
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(MENTIONED_AGENT_ID, expect.objectContaining({ reason: "issue_comment_mentioned" }));
+    } else {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(MENTIONED_AGENT_ID, expect.objectContaining({ reason: "issue_comment_mentioned" }));
+    }
+    expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 
   it("preserves an explicit resume on a run-authenticated top-level comment", async () => {

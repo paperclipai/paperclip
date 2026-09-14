@@ -1,7 +1,7 @@
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -3675,6 +3675,54 @@ export function issueRoutes(
   function getIssueById(req: Request, id: string) {
     if (req.method !== "GET") return svc.getById(id);
     return memoizeIssueRead(req, id, () => svc.getById(id));
+  }
+
+  async function isRedundantDelegationMention(
+    parent: { id: string; companyId: string; status: string },
+    mentionedAgentId: string,
+    body: string,
+  ): Promise<boolean> {
+    if (parent.status !== "blocked" && parent.status !== "done") return false;
+    const references = new Set(extractIssueReferenceIdentifiers(body));
+    if (references.size === 0) return false;
+    try {
+      const { blockedBy } = await svc.getRelationSummaries(parent.id);
+      for (const blocker of blockedBy) {
+        if (
+          blocker.assigneeAgentId !== mentionedAgentId ||
+          !blocker.identifier ||
+          !references.has(blocker.identifier)
+        ) continue;
+        const child = await svc.getById(blocker.id);
+        if (
+          !child || child.companyId !== parent.companyId ||
+          child.parentId !== parent.id || child.assigneeAgentId !== mentionedAgentId
+        ) continue;
+        const completedDelegation = parent.status === "done" && child.status === "done";
+        let runId: string | null = null;
+        if (!completedDelegation) {
+          if (parent.status !== "blocked" || child.status !== "in_progress") continue;
+          runId = child.executionRunId ?? child.checkoutRunId;
+          if (!runId) continue;
+          const run = await heartbeat.getRun(runId);
+          if (
+            !run || run.companyId !== parent.companyId || run.agentId !== mentionedAgentId ||
+            run.status !== "running" || run.contextSnapshot?.issueId !== child.id
+          ) continue;
+        }
+        // The lead's linked delegation update remains on the parent. The
+        // worker either has the active child assignment or has finished it.
+        // A completion note must not start the same worker again. Human and
+        // unrelated mentions still wake.
+        logger.info({ issueId: parent.id, childIssueId: child.id, agentId: mentionedAgentId, runId, completedDelegation },
+          "skipped redundant parent delegation mention wake");
+        return true;
+      }
+    } catch (err) {
+      // A failed optimization must not drop an otherwise valid mention.
+      logger.warn({ err, issueId: parent.id }, "could not check delegation for mention");
+    }
+    return false;
   }
 
   const issueDetailEtag = privateJsonEtag();
@@ -14549,6 +14597,7 @@ export function issueRoutes(
               (commentIsFromAssigneeRun && mentionedId === assigneeId)
             )
               continue;
+            if (commentIsFromAssigneeRun && await isRedundantDelegationMention(issue, mentionedId, commentBody)) continue;
             addWakeup(mentionedId, {
               source: "automation",
               triggerDetail: "system",
@@ -17953,6 +18002,7 @@ export function issueRoutes(
             (commentIsFromAssigneeRun && mentionedId === assigneeId)
           )
             continue;
+          if (commentIsFromAssigneeRun && await isRedundantDelegationMention(currentIssue, mentionedId, req.body.body)) continue;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
