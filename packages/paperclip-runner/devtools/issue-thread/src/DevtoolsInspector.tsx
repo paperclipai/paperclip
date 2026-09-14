@@ -43,8 +43,8 @@ export interface EvalInspectorReport {
     startedAt: string;
     finishedAt: string;
     durationMs: number | null;
-    initialRevision: number;
-    finalRevision: number;
+    initialRevision: number | null;
+    finalRevision: number | null;
     usage: {
       agentTurns: number;
       providerRequests: number | null;
@@ -286,7 +286,9 @@ export function EvalReportInspector({
           <dd>
             {isPublic
               ? "Withheld from public replay"
-              : `r${evalReport.run.initialRevision} → r${evalReport.run.finalRevision}`}
+              : evalReport.run.initialRevision == null || evalReport.run.finalRevision == null
+                ? "unavailable"
+                : `r${evalReport.run.initialRevision} → r${evalReport.run.finalRevision}`}
           </dd>
         </div>
         <div>

@@ -104,8 +104,8 @@ interface EmbeddedEvalReport {
     startedAt: string;
     finishedAt: string;
     durationMs: number | null;
-    initialRevision: number;
-    finalRevision: number;
+    initialRevision: number | null;
+    finalRevision: number | null;
     finalStateSummary?: string;
     usage: {
       agentTurns: number;
