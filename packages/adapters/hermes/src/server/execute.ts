@@ -31,6 +31,9 @@ import {
   runChildProcess,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  isForbiddenConfigEnvKey,
+  sanitizeInheritedPaperclipEnv,
+  stripServerSigningSecretsFromEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -487,12 +490,23 @@ export async function execute(
 
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
+  const inheritedEnv = Object.fromEntries(
+    Object.entries(sanitizeInheritedPaperclipEnv(process.env)).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const safeUserEnv = Object.fromEntries(
+    Object.entries(userEnv && typeof userEnv === "object" ? userEnv : {}).filter(
+      ([key, value]) => typeof value === "string" && !isForbiddenConfigEnvKey(key),
+    ),
+  ) as Record<string, string>;
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
+    ...inheritedEnv,
+    ...safeUserEnv,
     ...buildPaperclipEnv(ctx.agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
+  stripServerSigningSecretsFromEnv(env);
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 

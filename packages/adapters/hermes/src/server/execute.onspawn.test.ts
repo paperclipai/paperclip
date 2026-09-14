@@ -204,4 +204,35 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
   });
+
+  it("does not forward server signing secrets from parent process or config env", async () => {
+    const previousJwt = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const previousBetter = process.env.BETTER_AUTH_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "synthetic-signing-master";
+    process.env.BETTER_AUTH_SECRET = "synthetic-better-auth";
+
+    try {
+      const { ctx } = makeCtx({
+        env: {
+          PAPERCLIP_AGENT_JWT_SECRET: "synthetic-config-signing-master",
+          BETTER_AUTH_SECRET: "synthetic-config-better-auth",
+          PAPERCLIP_TASK_ID: "issue-from-config",
+        },
+      });
+      await execute(ctx as any);
+
+      const mocked = vi.mocked(serverUtils.runChildProcess);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+      const opts = lastCall[3] as { env: Record<string, string> };
+      expect(Object.hasOwn(opts.env, "PAPERCLIP_AGENT_JWT_SECRET")).toBe(false);
+      expect(Object.hasOwn(opts.env, "BETTER_AUTH_SECRET")).toBe(false);
+      expect(opts.env.PAPERCLIP_TASK_ID).toBe("issue-1");
+      expect(opts.env.PAPERCLIP_AGENT_ID).toBe("agent-1");
+    } finally {
+      if (previousJwt === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousJwt;
+      if (previousBetter === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = previousBetter;
+    }
+  });
 });
