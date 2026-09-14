@@ -157,6 +157,14 @@ export function isEphemeralPostgresPidFile(paperclipHome: string, file: string):
   return /^instances\/[^/]+\/db\/postmaster\.pid$/.test(relative);
 }
 
+export function isEphemeralPostgresScanFile(paperclipHome: string, file: string): boolean {
+  const relative = path.relative(paperclipHome, file).split(path.sep).join("/");
+  // A relation can be unlinked during PostgreSQL shutdown/checkpoint. Existing
+  // files are always scanned; this predicate only permits ENOENT after readdir.
+  return isEphemeralPostgresPidFile(paperclipHome, file) ||
+    /^instances\/[^/]+\/db\/base\/\d+\/\d+(?:_(?:fsm|vm|init))?(?:\.\d+)?$/.test(relative);
+}
+
 export async function findSecretLeakInDirectory(
   root: string,
   secrets: readonly string[],

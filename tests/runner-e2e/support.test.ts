@@ -26,6 +26,7 @@ import {
   findSecretLeakInDirectory,
   isEphemeralCodexRuntimeAuthFile,
   isEphemeralPostgresPidFile,
+  isEphemeralPostgresScanFile,
   redactText,
   sanitizeJson,
 } from "./redaction.js";
@@ -978,6 +979,21 @@ describe("runner E2E evidence redaction", () => {
     })).resolves.toEqual({ file: persistedFile, reason: "exact secret value" });
     expect(isEphemeralPostgresPidFile(root, path.join(root, "workspace", "postmaster.pid"))).toBe(false);
     expect(isEphemeralPostgresPidFile(root, path.join(root, "instances", "test", "db", "records.bin"))).toBe(false);
+  });
+
+  it("handles a removed PostgreSQL relation but scans existing relation bytes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-relation-race-"));
+    cleanupDirectories.push(root);
+    const relation = path.join(root, "instances", "test", "db", "base", "16384", "16824");
+    const persisted = path.join(path.dirname(relation), "16825");
+    await mkdir(path.dirname(relation), { recursive: true });
+    await writeFile(relation, "old relation"); await writeFile(persisted, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: file => { if(file === relation)unlinkSync(file); return false; },
+      allowDisappearedFile: file => isEphemeralPostgresScanFile(root, file),
+    })).resolves.toEqual({file:persisted,reason:"exact secret value"});
+    expect(isEphemeralPostgresScanFile(root,path.join(root,"workspace","base","16384","16824"))).toBe(false);
+    expect(isEphemeralPostgresScanFile(root,path.join(root,"instances","test","db","base","records.json"))).toBe(false);
   });
 
   it("still detects secrets in an existing PostgreSQL PID file", async () => {

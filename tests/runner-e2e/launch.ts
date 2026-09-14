@@ -33,7 +33,7 @@ import {
   assertSecretFree,
   findSecretLeakInDirectory,
   isEphemeralCodexRuntimeAuthFile,
-  isEphemeralPostgresPidFile,
+  isEphemeralPostgresScanFile,
   normalizedSecrets,
   sanitizeJson,
 } from "./redaction.js";
@@ -791,7 +791,7 @@ async function runAttempt(input: {
             includeShapes: false,
             ignoreFile: (file) => expectedEphemeralCredentials.has(file),
             allowDisappearedFile: (file) =>
-              label === "Paperclip home" && isEphemeralPostgresPidFile(paperclipHome, file),
+              label === "Paperclip home" && isEphemeralPostgresScanFile(paperclipHome, file),
           });
           if (!leak) break;
           const isManagedCodexRuntimeAuth =

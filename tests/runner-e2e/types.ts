@@ -10,6 +10,7 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "everyday_workflow"
   | "agent_chat"
   | "governed_tool_review"
   | "single_turn"
@@ -168,6 +169,8 @@ export interface RunnerSuiteFixture {
   excludedExecutionIds?: readonly string[];
   expectedMatrixSize: number;
   definitionMetadata?: Readonly<Record<string, unknown>>;
+  /** Requires an explicit suite or execution ID; excluded from scheduled --all. */
+  manualOnly?: boolean;
 }
 
 export interface MatrixJob {

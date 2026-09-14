@@ -1,3 +1,5 @@
+import { runEverydayFlow } from "./everyday-flow.js";
+import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { runChatFlow } from "./chat-flow.js";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -298,88 +300,6 @@ async function writeSanitizedJson(
   await writeFile(path.join(directory, name), safe, "utf8");
 }
 
-async function createTaskThroughUi(input: {
-  page: Page;
-  issuePrefix: string;
-  agentName: string;
-  title: string;
-  prompt: string;
-  workMode: "standard" | "planning" | "ask";
-  projectName?: string;
-}) {
-  const issuesUrl = `/${encodeURIComponent(input.issuePrefix)}/issues`;
-  const newTask = input.page.getByRole("button", { name: "New Task" }).first();
-  let bootstrapError: unknown;
-  for (let bootstrapAttempt = 1; bootstrapAttempt <= 3; bootstrapAttempt += 1) {
-    try {
-      await input.page.goto(issuesUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 30_000,
-      });
-      await newTask.waitFor({ state: "visible", timeout: 20_000 });
-      bootstrapError = undefined;
-      break;
-    } catch (error) {
-      bootstrapError = error;
-      if (bootstrapAttempt < 3) await input.page.waitForTimeout(1_000);
-    }
-  }
-  if (bootstrapError) {
-    throw new Error(
-      `Browser bootstrap failed before task creation: ${bootstrapError instanceof Error ? bootstrapError.message : String(bootstrapError)}`,
-      { cause: bootstrapError },
-    );
-  }
-  await newTask.click();
-  await input.page.getByPlaceholder("Task title").fill(input.title);
-  await input.page
-    .getByRole("dialog")
-    .getByRole("textbox", { name: "editable markdown", exact: true })
-    .fill(input.prompt);
-  if (input.workMode !== "standard") {
-    await input.page
-      .getByRole("dialog")
-      .locator(`[data-issue-work-mode-chip="standard"]`)
-      .click();
-    await input.page
-      .locator(`[data-issue-work-mode="${input.workMode}"]`)
-      .click();
-  }
-  await input.page
-    .getByRole("button", { name: "Assignee", exact: true })
-    .click();
-  await input.page
-    .getByPlaceholder("Search assignees...")
-    .fill(input.agentName);
-  await input.page.getByText(input.agentName, { exact: true }).last().click();
-  if (input.projectName) {
-    const dialog = input.page.getByRole("dialog");
-    // Selecting the assignee advances focus to this selector and opens it.
-    // Focus is idempotent here; clicking would toggle an already-open popover
-    // closed before the search field can be filled.
-    await dialog.getByRole("button", { name: "Project", exact: true }).focus();
-    await dialog.getByPlaceholder("Search projects...").fill(input.projectName);
-    await dialog.getByText(input.projectName, { exact: true }).last().click();
-  }
-  const submittedAtMs = Date.now();
-  await input.page
-    .getByRole("button", { name: "Create Task", exact: true })
-    .click();
-  return submittedAtMs;
-}
-
-async function submitTaskReply(page: Page, body: string): Promise<number> {
-  const composer = page.getByTestId("task-chat-composer-input").last();
-  await expect(composer).toBeVisible({ timeout: 30_000 });
-  await composer
-    .locator('[contenteditable="true"], textarea')
-    .first()
-    .fill(body);
-  const submittedAtMs = Date.now();
-  await page.getByTestId("task-chat-composer-send").last().click();
-  return submittedAtMs;
-}
-
 async function submitTaskRevision(page: Page, body: string): Promise<number> {
   const revise = page
     .getByRole("button", { name: "Continue work", exact: true })
@@ -603,6 +523,7 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
+    const companyRunFlow = ["agent_chat", "everyday_workflow"].includes(execution.task.flow);
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     let fixtures: LiveFixtureValues | undefined;
@@ -672,10 +593,10 @@ for (const execution of executions) {
     };
 
     const cancelActiveRunsForCleanup = async () => {
-      if (!issue && !(execution.task.flow === "agent_chat" && fixtures)) return;
+      if (!issue && !(companyRunFlow && fixtures)) return;
       const cleanupIssueId = issue?.id;
       const runs = await api.get<RunRecord[]>(
-        execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
+        companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
       );
       const activeRunIds = [
         ...new Set(
@@ -696,7 +617,7 @@ for (const execution of executions) {
       await pollUntil({
         label: `cleanup cancellation for issue ${cleanupIssueId}`,
         deadlineAt: Date.now() + 45_000,
-        load: () => api.get<RunRecord[]>(execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
+        load: () => api.get<RunRecord[]>(companyRunFlow && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
         accept: (currentRuns) =>
           currentRuns
             .filter((run) => activeIds.has(run.id))
@@ -726,7 +647,7 @@ for (const execution of executions) {
           capture(() => api.get<IssueRecord>(`/api/issues/${issue!.id}`)),
           capture(() =>
             api.get<RunRecord[]>(
-              execution.task.flow === "agent_chat"
+              companyRunFlow
                 ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
                 : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
             ),
@@ -743,7 +664,7 @@ for (const execution of executions) {
           ),
         ]);
       const taskRuns = Array.isArray(listedRuns)
-        ? execution.task.flow === "agent_chat" ? listedRuns : matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
+        ? companyRunFlow ? listedRuns : matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
         : [];
       const detailedRuns = await Promise.all(
         taskRuns.map((candidate) =>
@@ -815,7 +736,7 @@ for (const execution of executions) {
         enableNativeRunner: boolean;
       }>("/api/instance/settings/experimental", {
         enableNativeRunner: true,
-        ...(execution.task.flow === "warm_three_turn"
+        ...(["warm_three_turn", "everyday_workflow"].includes(execution.task.flow)
           ? { enableIsolatedWorkspaces: true }
           : {}),
         ...(execution.profile.generation === "native" &&
@@ -858,7 +779,18 @@ for (const execution of executions) {
         secrets,
       );
 
-      if (execution.task.flow === "agent_chat") {
+      if (execution.task.flow === "everyday_workflow") {
+        const story = await runEverydayFlow({
+          page, api, fixtures, execution, nonce, workspacePath, privateDir,
+          deadlineAt: startedAtMs + deadlineMs,
+          restart: () => restartIsolatedPaperclipServer({ api, requestId: `story-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          observe: (storyIssue, storyRuns) => { issue = storyIssue; selectedRuns = storyRuns; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = story.issue; selectedRuns = story.runs;
+        matcherResults = story.evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: check.id, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "agent_chat") {
         const chat = await runChatFlow({
           page, api, fixtures, execution, nonce,
           restart: () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
@@ -934,7 +866,7 @@ for (const execution of executions) {
         const [currentIssue, runs, comments, interactions] = await Promise.all([
           api.get<IssueRecord>(`/api/issues/${issue!.id}`),
           api.get<RunRecord[]>(
-            execution.task.flow === "agent_chat"
+            companyRunFlow
                 ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
                 : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
           ),
@@ -2465,7 +2397,7 @@ for (const execution of executions) {
         });
         try {
           await cancelActiveRunsForCleanup();
-          if (execution.task.flow === "agent_chat") {
+          if (companyRunFlow) {
             const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
             selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
             await writeSanitizedJson(snapshotsDir, "chat-final-run-ledger.json", selectedRuns, secrets);

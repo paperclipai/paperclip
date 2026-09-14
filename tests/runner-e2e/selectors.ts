@@ -157,6 +157,7 @@ export function selectRunnerExecutions(
 
   const selected = matrix.filter((execution) => {
     if (options.ids.length > 0) return options.ids.includes(execution.id);
+    if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
     if (
       options.all ||
       (options.list &&
