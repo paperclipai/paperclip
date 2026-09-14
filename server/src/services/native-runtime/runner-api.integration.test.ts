@@ -34,7 +34,7 @@ describe("runner API against real HTTP routes", () => {
 import { createInterface } from 'node:readline';
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
 let step = 0;
-const calls = [{tool:'search_api',arguments:{query:'list projects'}},{tool:'call_api',arguments:{operationId:'GET /api/companies/{companyId}/projects'}}];
+const calls = [{tool:'search_api',arguments:{query:'list projects'}},{tool:'call_api',arguments:{operationId:'GET /api/companies/{companyId}/projects'}},{tool:'call_api',arguments:{operationId:'GET /api/projects/{id}',pathParams:{id:'${fixture.foreignProjectId}'}}}];
 const next = () => { const c=calls[step++]; if(c) send({id:'call-'+step,method:'item/tool/call',params:{threadId:'api-thread',turnId:'api-turn',itemId:'api-item-'+step,callId:'api-call-'+step,...c}}); else send({method:'turn/completed',params:{turn:{id:'api-turn',status:'completed'}}}); };
 for await (const line of createInterface({input:process.stdin})) {
 const m=JSON.parse(line);
@@ -57,15 +57,24 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       const params = request.params as any;
       const result = await fixture.authority.execute({ tool: params.tool, arguments: params.arguments, callId: params.callId });
       results.push(result);
-      return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, result }) }] };
+      // Match production's dynamicToolResponse: an extra test-only envelope
+      // hides collisions between API response fields and PRP tool identity.
+      return { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
     });
     try {
       await bundle.transport.request("initialize", {});
       await bundle.transport.request("thread/start", { cwd: fixture.workspace, dynamicTools: await fixture.authority.definitions() });
       await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Find the project" }] });
-      for await (const notification of bundle.transport.notifications()) if (notification.method === "turn/completed") break;
-      expect(results).toHaveLength(2);
-      expect(results[1]).toMatchObject({ status: 200, data: [{ id: fixture.projectId, name: "Aurora" }] });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          (async () => { for await (const notification of bundle.transport.notifications()) if (notification.method === "turn/completed") return; })(),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Native provider did not continue after the API tool result")), 10_000); }),
+        ]);
+      } finally { clearTimeout(timeout); }
+      expect(results).toHaveLength(3);
+      expect(results[1]).toMatchObject({ status: 200, apiOperationId: "GET /api/companies/{companyId}/projects", data: [{ id: fixture.projectId, name: "Aurora" }] });
+      expect(results[2]).toMatchObject({ ok: false, status: 404 });
       expect(bundle.evidence().diagnostics).toContain("runnerd authenticated to the durable PRP control plane");
     } finally { await bundle.transport.close(); }
   }, 30_000);
