@@ -3028,3 +3028,23 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
     max-height: min(var(--sz-300px), calc(100dvh - calc(var(--spacing) * 24))) !important;
   }
 }
+:root {
+  --announcement-width: 22rem;
+  --announcement-available-width: calc(100vw - var(--spacing) * 6);
+  --announcement-image-height: 8.5rem;
+  --announcement-image-mobile-height: 6rem;
+  --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
+  --announcement-max-height: calc(100dvh - var(--spacing) * 6);
+  --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);
+}
+
+.announcement-well {
+  animation: announcement-enter var(--motion-duration-fast) var(--motion-ease-standard) both;
+}
+@keyframes announcement-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .announcement-well { animation: none; }
+}

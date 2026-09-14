@@ -418,3 +418,9 @@ Per-component rationale:
 | Setup completion | `ConnectionSetupCompletionScreen` in the shared setup module | Page and dialog; identity, granted agent access and enabled actions |
 
 Independently addressable examples live under `Connections/In-task connections` in Storybook. The task composer remains available while a card is pending. These components use the existing token and primitive layers.
+
+## Announcements
+
+- `AnnouncementCard`: image, eyebrow, headline, description, navigation links and dismissal; accepts an announcement and `onDismiss`.
+- `AnnouncementWell`: one app-shell placement that owns eligibility, dismissal sync, modal deferral and toast priority. Use only once in Layout.
+- Preview variants live in `/design-guide` and Storybook under `Announcements/AnnouncementCard`.

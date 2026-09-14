@@ -1664,3 +1664,12 @@ with bounded continuation and visible recovery. Preserve explicit approvals,
 current task ownership, cancellation, dependencies, and newer task state. See
 `doc/architecture/native-status-arbitration.md` for finish feedback and the
 provenance-checked cleanup of historical automatic completion reviews.
+
+### In-app announcements
+
+A versioned remote JSON manifest supplies one optional board announcement.
+The instance validates/caches content, proxies its raster image, and stores
+user-scoped dismissals. Closing or following an action dismisses the ID; copy
+edits retain it. Writes are board-only, idempotent and transactionally audited
+using an authorized company's context. Viewers may dismiss their own card.
+See [Announcements](ANNOUNCEMENTS.md) for API and publishing details.

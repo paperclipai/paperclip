@@ -19,6 +19,7 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "announcements.ts": "/api",
   "ai-connections.ts": "/api",
   "attention.ts": "/api",
   "approvals.ts": "/api",
@@ -223,6 +224,25 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents personal board-only announcements and private responses", () => {
+    const { spec } = loadSpecRoutes();
+    const current = spec.paths["/api/announcements/current"].get;
+    const image = spec.paths["/api/announcements/{id}/image"].get;
+    const dismiss = spec.paths["/api/announcements/{id}/dismiss"].post;
+    for (const operation of [current, image, dismiss]) {
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      const success = operation.responses["200"] ?? operation.responses["204"];
+      expect(success.headers["Cache-Control"].schema.enum).toEqual(["private, no-store"]);
+    }
+    expect(current.responses["200"].content["application/json"].schema.nullable).toBe(true);
+    expect(Object.keys(image.responses["200"].content)).toEqual(["image/png", "image/jpeg", "image/webp"]);
+    expect(dismiss.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["companyId"], additionalProperties: false,
+    });
+    expect(dismiss.description).toContain("viewers may dismiss their own");
+  });
+
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const wake = res.body.paths["/api/agents/{id}/wakeup"].post;

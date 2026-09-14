@@ -1933,6 +1933,13 @@
       "when": 1789260211664,
       "tag": "0277_uneven_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 278,
+      "version": "7",
+      "when": 1789308547419,
+      "tag": "0278_nappy_colonel_america",
+      "breakpoints": true
     }
   ]
 }
