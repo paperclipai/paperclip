@@ -18,7 +18,7 @@ import { taskWatchdogService } from "../services/task-watchdogs.js";
 vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
-vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => ({ track: vi.fn() }) }));
+vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => ({ track: vi.fn(), hashPrivateRef: vi.fn(() => "test-private-ref") }) }));
 
 describe("authenticated timer checkout liveness", () => {
   let db: ReturnType<typeof createDb>;
