@@ -267,7 +267,7 @@ describe("gemini_local ACP lane", () => {
     expect(nodeVersionMeetsGeminiAcpMinimum()).toBe(true);
   });
 
-  it("defaults to ACP when prerequisites pass and falls back to CLI only for auto resolution", async () => {
+  it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-gemini-acp-default-");
     const commandPath = path.join(root, "bin", "gemini");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
@@ -299,19 +299,19 @@ describe("gemini_local ACP lane", () => {
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("Node"),
+      unavailableReason: expect.stringContaining("Node"),
     });
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { engine: "acp", command: "/missing/gemini" },
         executionTarget: null,
       }),
-    ).resolves.toEqual({ engine: "acp", explicit: true });
+    ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
-  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+  it("reports unavailable ACP for non-sandbox remote auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
@@ -333,13 +333,13 @@ describe("gemini_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+      unavailableReason: expect.stringContaining("sandbox remote targets only"),
     });
   });
 
-  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+  it("reports unavailable ACP for one-shot sandbox auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
@@ -352,9 +352,9 @@ describe("gemini_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
@@ -747,7 +747,7 @@ describe("gemini_local ACP lane", () => {
     }
   });
 
-  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+  it("reports unavailable ACP for a runner-less sandbox even when the ACP command is set", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
@@ -760,9 +760,9 @@ describe("gemini_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 

@@ -39,6 +39,7 @@ import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts
 import * as environmentsModule from "../services/environments.ts";
 import { logger } from "../middleware/logger.ts";
 import { environmentService } from "../services/environments.ts";
+import { remoteExecutionHasStopped } from "../services/remote-execution-termination.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
@@ -462,6 +463,34 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     return { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease };
   }
+
+  it.each(["stopped", "missing", "wrong-lease", "error"])(
+    "startup cancellation is run-scoped and needs a matching receipt: %s",
+    async (outcome) => {
+      const { pluginId, companyId, runId, reusableLease, environment } = await seedReusablePluginSandboxLease();
+      const other = await environmentService(db).acquireLease({
+        companyId, environmentId: environment.id, heartbeatRunId: null,
+        leasePolicy: "ephemeral", provider: "fake-plugin", providerLeaseId: "other-sandbox",
+      });
+      const call = vi.fn(async () => {
+        if (outcome === "error") throw new Error("provider unavailable");
+        if (outcome === "missing") return undefined;
+        return { providerLeaseId: outcome === "wrong-lease" ? "other-sandbox" : reusableLease.providerLeaseId, state: "stopped" };
+      });
+      const workerManager = {
+        isRunning: () => true, call,
+        getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }),
+      } as unknown as PluginWorkerManager;
+      const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+      await runtimeWithPlugin.releaseRunLeases(runId, "released", undefined, "stop_and_retain", true);
+      expect(call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", expect.objectContaining({
+        companyId, providerLeaseId: reusableLease.providerLeaseId, cancelActiveWork: true,
+      }), expect.any(Number));
+      expect(call).toHaveBeenCalledOnce();
+      expect(await remoteExecutionHasStopped(db, companyId, runId)).toBe(outcome === "stopped");
+      await expect(environmentService(db).getLeaseById(other.id)).resolves.toMatchObject({ status: "active" });
+    },
+  );
 
   it("retains a successful reusable sandbox lease without stopping the provider resource", async () => {
     const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
@@ -1133,7 +1162,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           };
         }
         if (method === "environmentDestroyLease") {
-          return undefined;
+          return { providerLeaseId: "plugin-lease-1", state: "destroyed" };
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
@@ -1165,6 +1194,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(leaseRows).toHaveLength(1);
     expect(leaseRows[0]?.status).toBe("expired");
     expect(leaseRows[0]?.cleanupStatus).toBe("success");
+    expect(leaseRows[0]?.metadata?.remoteExecutionTermination).toMatchObject({
+      companyId, runId, leaseId: leaseRows[0]!.id, providerLeaseId: "plugin-lease-1", state: "destroyed",
+    });
 
     // The acquire provisioned the remote plugin sandbox, so it destroys the
     // sandbox on the rejection. Without this teardown the rejected insert leaks a
@@ -3014,7 +3046,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
     const lease = await environmentService(db).getLeaseById(orphan.id);
-    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
+    vi.mocked(workerManager.call).mockImplementationOnce(async (_pluginId, _method, args: any) => {
+      destroyConfigs.push(args.config);
+      return { providerLeaseId: args.providerLeaseId, state: "destroyed" };
+    });
+    await expect(runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! }))
+      .resolves.toEqual({ providerLeaseId: orphan.providerLeaseId, state: "destroyed" });
     expect(destroyConfigs).toHaveLength(1);
     // The recorded secret ref resolved to the old credential, and the resolved
     // value reached the provider teardown instead of the secret ref.
@@ -6218,7 +6255,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentDestroyLease") {
-          return undefined;
+          return { providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" };
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
@@ -6245,6 +6282,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       status: "expired",
       failureReason: "environment_deleted",
       cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+        leaseId: reusableLease.id, runId, providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" } },
     });
   });
 

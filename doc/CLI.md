@@ -427,7 +427,7 @@ npx paperclipai issue get <issue-id-or-identifier>
 npx paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 npx paperclipai issue delete <issue-id> --yes
-npx paperclipai issue comment <issue-id> --body "..." [--reopen]
+npx paperclipai issue comment <issue-id> --body "..." [--attachment-id <id...>] [--reopen]
 npx paperclipai issue comments <issue-id> [--limit 50]
 npx paperclipai issue comment:get <issue-id> <comment-id>
 npx paperclipai issue comment:delete <issue-id> <comment-id>

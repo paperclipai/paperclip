@@ -7,7 +7,7 @@ import {
   publishActivity,
   type ActivityPublication,
 } from "./activity-log.js";
-import { visibleIssueCondition } from "./issue-visibility.js";
+import { executionIssueCondition } from "./issue-visibility.js";
 import {
   executeIssuePostCommitActions,
   issueService,
@@ -41,7 +41,7 @@ export function stalledReviewDecisionService(db: Db) {
           .where(and(
             eq(issues.id, input.issueId),
             eq(issues.companyId, input.companyId),
-            visibleIssueCondition(),
+            executionIssueCondition(),
           ))
           .for("update")
           .then((rows) => rows[0] ?? null);

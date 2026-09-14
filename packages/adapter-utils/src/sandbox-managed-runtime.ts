@@ -1127,7 +1127,17 @@ export async function prepareSandboxManagedRuntime(input: {
           readGitWorkspaceSnapshot(input.workspaceLocalDir),
         )
     : null;
-  const gitIgnoredExcludes = gitSnapshot?.ignoredPaths;
+  // A selected subfolder has no cloneable Git snapshot, but its parent
+  // repository's ignore rules still govern which files may leave the host.
+  // Use the same bounded, path-relative resolver as referenced project trees.
+  const directoryIgnore = syncWorkspace && !gitSnapshot
+    ? await resolveReferencedSourceIgnore(input.workspaceLocalDir)
+    : null;
+  if (directoryIgnore?.kind === "failed") {
+    throw new Error(`Workspace ignore scan failed: ${directoryIgnore.reason}`);
+  }
+  const gitIgnoredExcludes = gitSnapshot?.ignoredPaths
+    ?? (directoryIgnore?.kind === "git" ? directoryIgnore.ignoredPaths : undefined);
   const workspaceArchiveExclude = mergeExcludes(
     SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     [...GIT_ARCHIVE_EXCLUDES],

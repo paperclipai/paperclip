@@ -13,6 +13,8 @@ import type {
   TaskChatRuntimeRequestDecision,
 } from "./task-chat-model";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
+import { RichWorkProductCard } from "./RichWorkProductCard";
 import { stateChipFor } from "./RichWorkProductCard";
 
 function workProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
@@ -177,6 +179,77 @@ describe("TaskChatProtocolCard", () => {
     expect(chip?.className).toContain("border-dashed");
     expect(container.textContent).toContain("Image · 2.0 KB");
     expect(container.textContent).toContain("Open gallery");
+  });
+
+  it.each(["image/png", "video/webm"])("opens %s artifacts in the task gallery", (contentType) => {
+    const openGallery = vi.fn(() => true);
+    const contentPath = "/api/attachments/media/content";
+    flushSync(() => root.render(
+      <IssueGalleryContext.Provider value={openGallery}>
+        <RichWorkProductCard
+          workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
+          href={contentPath}
+          variant="compact"
+        />
+      </IssueGalleryContext.Provider>,
+    ));
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Open gallery:"]');
+    expect(button).not.toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+    flushSync(() => button!.click());
+    expect(openGallery).toHaveBeenCalledWith(contentPath);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it.each(["text/html", "application/zip"])("labels %s artifact links as downloads", (contentType) => {
+    const contentPath = "/api/attachments/file/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.textContent).toContain("Download");
+    expect(container.textContent).not.toContain("Open preview");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+  });
+
+  it.each(["application/pdf", "text/plain", "text/markdown", "application/json", "text/csv"])("downloads %s artifacts through the download route", (contentType) => {
+    const contentPath = "/api/attachments/file/content";
+    const downloadPath = `${contentPath}?download=1`;
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath, openPath: contentPath, downloadPath } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.querySelector('a[aria-label^="Download:"]')?.getAttribute("href")).toBe(downloadPath);
+  });
+
+  it("downloads a legacy attachment with only a content href", () => {
+    const contentPath = "/api/attachments/legacy-file/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType: "application/pdf" } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.querySelector('a[aria-label^="Download:"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+  });
+
+  it("opens standalone artifact media in a modal with a download", async () => {
+    const contentPath = "/api/attachments/media/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", title: "Screenshot", metadata: { contentType: "image/png", contentPath, originalFilename: "proof.png", downloadPath: `${contentPath}?download=1` } })}
+        href={contentPath}
+      />,
+    ));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open gallery: Screenshot"]')!.click());
+    expect(document.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe(contentPath);
+    expect(document.querySelector('a[aria-label="Download proof.png"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+    await act(async () => document.querySelector<HTMLButtonElement>('button[title="Close"]')!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it("keeps completed and approved states out of the state-chip policy", () => {
@@ -567,14 +640,22 @@ describe("TaskChatProtocolCard", () => {
       (button) => button.textContent?.includes("Production"),
     );
     await act(async () => production?.click());
+    // Single selection advances; multi-selection waits for Next.
+    const nextButton = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.trim() === "Next",
+      );
+    expect(container.textContent).toContain("2 of 3");
+    expect(onDecision).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       "Which regions should receive the release?",
     );
-    const progress = Array.from(
-      container.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.textContent?.trim() === "Continue");
-    expect(progress).not.toBeUndefined();
-    await act(async () => progress?.click());
+    expect(
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Continue",
+      ),
+    ).toBeUndefined();
+    await act(async () => nextButton()?.click());
     expect(container.textContent).toContain("Anything else we should know?");
     const submit = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Continue",

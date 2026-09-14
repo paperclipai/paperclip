@@ -86,7 +86,7 @@ export function resolveTaskDetailSubtaskState(items: Issue[]) {
   };
 }
 
-function SharedSubtaskList({
+export function TaskDetailTaskList({
   items,
   ariaLabel,
   issueLinkState,
@@ -166,7 +166,7 @@ export function TaskDetailSubtasksPanel({
           <h3 id="task-next-action-heading" className="text-xs font-medium text-muted-foreground">
             {nextAction.status === "blocked" ? "Blocked subtask" : "Next action"}
           </h3>
-          <SharedSubtaskList
+          <TaskDetailTaskList
             items={[nextAction]}
             ariaLabel="Next subtask action"
             issueLinkState={issueLinkState}
@@ -185,7 +185,7 @@ export function TaskDetailSubtasksPanel({
           <h3 id="task-other-subtasks-heading" className="text-xs font-medium text-muted-foreground">
             {nextAction ? "Other subtasks" : "Subtasks"}
           </h3>
-          <SharedSubtaskList
+          <TaskDetailTaskList
             items={remainingItems}
             ariaLabel={nextAction ? "Other subtasks" : "Subtasks"}
             issueLinkState={issueLinkState}

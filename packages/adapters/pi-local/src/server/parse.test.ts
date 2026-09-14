@@ -271,3 +271,20 @@ describe("isPiUnknownSessionError", () => {
     expect(isPiUnknownSessionError("working fine", "no errors")).toBe(false);
   });
 });
+
+
+describe("terminal provider failures", () => {
+  it("surfaces and deduplicates errors from Pi assistant messages", () => {
+    const message = { role: "assistant", content: [], stopReason: "error", errorMessage: "400 Context limit exceeded" };
+    const parsed = parsePiJsonl([
+      { type: "message_end", message },
+      { type: "turn_end", message },
+      { type: "agent_end", messages: [message] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual(["400 Context limit exceeded"]);
+  });
+  it("reports an error even when the provider omitted its message", () => {
+    expect(parsePiJsonl(JSON.stringify({ type: "turn_end", message: { role: "assistant", stopReason: "error" } })).errors)
+      .toEqual(["Pi provider request failed."]);
+  });
+});

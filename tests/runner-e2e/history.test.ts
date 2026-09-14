@@ -195,8 +195,8 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("Runner E2E campaigns");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
-    expect(index).toContain("68/68 passed");
-    expect(index).toContain("67/68 passed");
+    expect(index).toContain("92/92 passed");
+    expect(index).toContain("91/92 passed");
     expect(index).toContain("Open report&nbsp;→");
     expect(index).toContain(
       "campaigns/complete-red/public-images/campaign-summary.png",
@@ -501,9 +501,25 @@ describe("historical publication security", () => {
     ).rejects.toThrow("does not match its raster file type");
   });
 
+  it("refuses a public bundle when any declared screenshot is absent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-missing-screenshot-"));
+    temporaryDirectories.push(root);
+    const directory = path.join(root, "evidence", "agent-chat.runner-codex.local.plan-handoff", "attempt-1");
+    await mkdir(directory, { recursive: true });
+    const base = "evidence/agent-chat.runner-codex.local.plan-handoff/attempt-1";
+    const declared = new Set([`${base}/final-state.png`, `${base}/chat-plan-draft.png`]);
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    await writeFile(path.join(directory, "final-state.png"), png);
+    await expect(createBundleManifest(root, "campaign-1", false, declared))
+      .rejects.toThrow(`Declared public screenshots are missing from the historical bundle: ${base}/chat-plan-draft.png`);
+    await writeFile(path.join(directory, "chat-plan-draft.png"), png);
+    const manifest = await createBundleManifest(root, "campaign-1", false, declared);
+    expect(new Set(manifest.files.map((file) => file.path))).toEqual(declared);
+  });
+
   it("requires trusted-fixture opt-in and rejects unsafe screenshot paths", () => {
     const execution = runnerMatrix[0]!;
-    const campaign = buildRunnerCampaign({
+    expect(() => buildRunnerCampaign({
       campaignId: "unsafe-screenshot",
       generatedAt: "2026-08-28T00:01:00.000Z",
       expected: [execution.id],
@@ -520,10 +536,7 @@ describe("historical publication security", () => {
           ],
         },
       ],
-    });
-    expect(() => publicScreenshotPaths(campaign)).toThrow(
-      "Cannot publish unsafe screenshot path",
-    );
+    })).toThrow("Invalid retained runner result field: result.screenshots[0].file");
 
     const failedCampaign = buildRunnerCampaign({
       campaignId: "failed-screenshot",

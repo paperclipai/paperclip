@@ -21,6 +21,7 @@ import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
 import { IssueFiltersPopover } from "@/components/IssueFiltersPopover";
 import { IssueGroupHeader } from "@/components/IssueGroupHeader";
 import { IssueLinkQuicklook, IssueQuicklookCard } from "@/components/IssueLinkQuicklook";
+import { useLocation } from "@/lib/router";
 import { IssueProperties } from "@/components/IssueProperties";
 import { IssueRunLedgerContent } from "@/components/IssueRunLedger";
 import { IssuesList } from "@/components/IssuesList";
@@ -191,6 +192,7 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(companyId), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(companyId), storybookProjects);
+  queryClient.setQueryData(queryKeys.projects.list(companyId, { includeArchived: true }), storybookProjects);
   queryClient.setQueryData(queryKeys.issues.list(companyId), storybookIssues);
   queryClient.setQueryData(queryKeys.issues.labels(companyId), storybookIssueLabels);
   queryClient.setQueryData(queryKeys.issues.documents(primaryIssue.id), storybookIssueDocuments);
@@ -282,6 +284,7 @@ function LongValueStorybookData({ children }: { children: React.ReactNode }) {
   const [ready] = useState(() => {
     hydrateStorybookQueries(queryClient);
     queryClient.setQueryData(queryKeys.projects.list(companyId), [longProject, ...storybookProjects]);
+    queryClient.setQueryData(queryKeys.projects.list(companyId, { includeArchived: true }), [longProject, ...storybookProjects]);
     queryClient.setQueryData(queryKeys.issues.list(companyId), [
       longValueIssue,
       longParentIssue,
@@ -318,6 +321,62 @@ function IssuePropertiesLongValuePane({ inline = false }: { inline?: boolean }) 
               />
             </div>
           </ScrollArea>
+        </div>
+      </div>
+    </LongValueStorybookData>
+  );
+}
+
+const relationshipChildren: Issue[] = ["in_progress", "todo", "in_review", "done"].map((status, index) => ({
+  ...storybookIssues[0]!,
+  id: `relationship-child-${index}`,
+  identifier: `PAP-${18312 + index}`,
+  title: ["Implement task badges", "Review task relationships", "Verify keyboard navigation", "Ship task properties"][index]!,
+  status: status as Issue["status"],
+  parentId: "relationship-demo",
+}));
+const relationshipIssue: Issue = {
+  ...longValueIssue,
+  id: "relationship-demo",
+  projectId: primaryIssue.projectId,
+  project: primaryIssue.project,
+  identifier: "PAP-18311",
+  labels: [],
+  labelIds: [],
+  blockedBy: [relationshipChildren[1]!, relationshipChildren[2]!],
+  blocks: [relationshipChildren[3]!],
+};
+
+function IssuePropertiesRelationshipBadgesPane({ inline = false }: { inline?: boolean }) {
+  const [issue, setIssue] = useState(relationshipIssue);
+  const location = useLocation();
+  return (
+    <LongValueStorybookData>
+      <div className="paperclip-story flex flex-wrap items-start gap-6 p-6">
+        <div className="w-80 max-w-full border border-border bg-card">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={issue}
+              childIssues={relationshipChildren}
+              inline={inline}
+              sidePanelContentOnly
+              onUpdate={(patch) => setIssue((current) => ({
+                ...current,
+                ...patch,
+                blockedBy: patch.blockedByIssueIds
+                  ? [...relationshipChildren, ...storybookIssues, longParentIssue, longValueIssue].filter((child) => (patch.blockedByIssueIds as string[]).includes(child.id))
+                  : current.blockedBy,
+              }))}
+            />
+          </div>
+        </div>
+        <div className="max-w-sm space-y-3 text-sm">
+          <h2 className="font-semibold">Task relationship badges</h2>
+          <p className="text-muted-foreground">Click a status icon or task ID to navigate. Hover or focus a blocker to reveal its remove button. Only the X removes that blocker.</p>
+          <p className="text-muted-foreground">The arrow opens the relationship picker. Badge widths stay fixed on hover.</p>
+          <p>Current route: <code data-testid="relationship-route" className="font-mono text-xs">{location.pathname}</code></p>
+          <Button variant="outline" size="sm" onClick={() => setIssue(relationshipIssue)}>Reset blockers</Button>
         </div>
       </div>
     </LongValueStorybookData>
@@ -851,4 +910,17 @@ export const IssuePropertiesMobileBlockerActions: Story = {
   name: "IssueProperties - mobile blocker actions open",
   render: () => <IssuePropertiesMobileBlockerActionsPane />,
   globals: { viewport: { value: "mobile1" } },
+};
+
+// Keep preview stories passive. Interaction coverage lives in
+// tests/storybook-visual/relationship-badges.spec.ts so switching stories never
+// automatically focuses, navigates, removes, or restores a visible badge.
+export const IssuePropertiesRelationshipBadges: Story = {
+  name: "IssueProperties - relationship badges",
+  render: () => <IssuePropertiesRelationshipBadgesPane />,
+};
+
+export const IssuePropertiesRelationshipBadgesInline: Story = {
+  name: "IssueProperties - relationship badges inline",
+  render: () => <IssuePropertiesRelationshipBadgesPane inline />,
 };

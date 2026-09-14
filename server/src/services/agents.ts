@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  toolConnectionInstalls,
   agentConfigRevisions,
   agentApiKeys,
   agentRuntimeState,
@@ -113,6 +114,7 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
+  aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
@@ -725,6 +727,18 @@ export function agentService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
 
+      const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+      const afterConfig = isPlainRecord(updated.adapterConfig) ? updated.adapterConfig : {};
+      const changedExecution = updated.adapterType !== existing.adapterType
+        || (updated.adapterType === "paperclip_runner" && ["provider", "acpxAgent", "model"].some(
+          (key) => priorAdapterConfig[key] !== afterConfig[key],
+        ));
+      if (changedExecution) {
+        await txDb.delete(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, existing.companyId), eq(agentTaskSessions.agentId, id)));
+        await txDb.update(agentRuntimeState).set({ adapterType: updated.adapterType, sessionId: null, stateJson: {}, updatedAt: new Date() })
+          .where(and(eq(agentRuntimeState.companyId, existing.companyId), eq(agentRuntimeState.agentId, id)));
+      }
+
       if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
         if (bindingDecision) {
           await enforceClaudeOAuthBindingClaim(txDb, {
@@ -845,6 +859,13 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        if (options?.aiConnectionInstall) {
+          await tx.insert(toolConnectionInstalls).values({
+            companyId, connectionId: options.aiConnectionInstall.connectionId,
+            targetType: "agent", targetId: created.id,
+            createdByUserId: options.aiConnectionInstall.createdByUserId,
+          }).onConflictDoNothing();
+        }
         await syncAgentSecretBindings(created, txDb);
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {

@@ -46,7 +46,9 @@ describe("public repository paid workflow security", () => {
         .split(/\n(?= {6}- )/u)
         .filter((step) => step.includes("uses: pnpm/action-setup@"));
 
-      expect(pnpmSetupSteps, workflowName).toHaveLength(7);
+      expect(pnpmSetupSteps, workflowName).toHaveLength(
+        workflowName === "pr-trusted.yml" ? 8 : 7,
+      );
       for (const step of pnpmSetupSteps) {
         expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
         expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
@@ -75,7 +77,7 @@ describe("public repository paid workflow security", () => {
       },
       {
         name: "pr-trusted.yml",
-        expectedCachedSetupNodeSteps: 7,
+        expectedCachedSetupNodeSteps: 8,
       },
     ];
 
@@ -89,7 +91,9 @@ describe("public repository paid workflow security", () => {
         step.includes("uses: pnpm/action-setup@") ? [index] : [],
       );
 
-      expect(pnpmSetupStepIndexes, name).toHaveLength(7);
+      expect(pnpmSetupStepIndexes, name).toHaveLength(
+        name === "pr-trusted.yml" ? 8 : 7,
+      );
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
         const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;

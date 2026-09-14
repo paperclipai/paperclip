@@ -1090,7 +1090,7 @@ export function RunnerInspector({
                   <StatCard label="Operations" value={operations.length} detail="correlated groups" />
                   <StatCard label="PRP events" value={events.length} detail={`${visibleEventCount} visible`} />
                   <StatCard label="Mappings" value={interpretations.length} detail={`${ignoredCount} ignored`} />
-                  <StatCard label="Run status" value={run?.status ?? "unknown"} detail={traceBadgeLabel(inspection?.trace?.status ?? "expired", inspection?.trace?.expiresAt ?? new Date(0))} />
+                  <StatCard label="Run status" value={run?.status ?? "unknown"} detail={inspection?.trace ? traceBadgeLabel(inspection.trace.status, inspection.trace.expiresAt) : "Raw capture off"} />
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <section className="rounded-lg border border-border bg-card p-4">

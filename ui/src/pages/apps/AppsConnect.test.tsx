@@ -3,16 +3,24 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 import { AppsConnect } from "./AppsConnect";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const experimentalMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: {
+  getExperimental: experimentalMock,
+  get: async () => ({ defaultEnvironmentId: "local-env" }),
+  getGeneral: async () => ({}),
+} }));
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
+const getConnectionMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
@@ -57,6 +65,7 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
+    getConnection: (id: string) => getConnectionMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
@@ -203,6 +212,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    experimentalMock.mockResolvedValue({ enableChatConnectors: false });
     window.sessionStorage.clear();
     mockCompany.value = {
       selectedCompanyId: "company-1",
@@ -308,6 +318,44 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(document.activeElement).toBe(urlInput);
   });
 
+  it.each(["config-url", "transport-url", "transport-serverUrl"] as const)("reloads a generic task reconnect endpoint from %s with selection-only card metadata", async (source) => {
+    const endpoint = "https://archive.example.test/mcp";
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault",
+      config: source === "config-url" ? { url: endpoint } : {},
+      transportConfig: source === "transport-url" ? { url: endpoint } : source === "transport-serverUrl" ? { serverUrl: endpoint } : {},
+    }] });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
+    expect(input?.value).toBe(endpoint);
+    expect(listConnectionsMock).toHaveBeenCalledWith("company-1");
+    await act(async () => { buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    await passAccessStep();
+    await act(async () => { buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      link: endpoint, reconnectConnectionId: choice.id,
+    }));
+  });
+
+  it("preserves an edited task reconnect endpoint after refreshing connection data", async () => {
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp" } }] });
+    await render(client, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
+    expect(input?.value).toBe("https://archive.example.test/mcp");
+    await act(async () => setInputValue(input!, "https://edited.example.test/mcp"));
+    listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://refreshed.example.test/mcp" } }] });
+    await act(async () => { await client.invalidateQueries(); });
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')?.value).toBe("https://edited.example.test/mcp");
+  });
+
   it("an unrecognized URL routes to a minimal frame with the URL and key choice", async () => {
     await render();
     await gotoLinkFrame(container, "https://www.example.com/actions");
@@ -346,10 +394,94 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Does it need a key?");
   });
 
+  it.each([false, true])("gates chat-only cards in the embedded tool gallery without hiding GitHub (%s)", async (enabled) => {
+    experimentalMock.mockResolvedValue({ enableChatConnectors: enabled });
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB, getAppStoreDefinition("discord"), getAppStoreDefinition("telegram")] });
+    await render();
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent?.includes("Discord")).toBe(enabled);
+    expect(container.textContent?.includes("Telegram")).toBe(enabled);
+    expect(container.textContent).not.toContain("Chat with an agent");
+  });
+
+  it.each([
+    ["telegram", "Telegram", "https://t.me/example_bot"],
+    ["discord", "Discord", "https://discord.com/channels/example"],
+  ])("does not reveal hidden %s setup from a pasted link or its generic follow-up", async (slug, name, url) => {
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB, getAppStoreDefinition(slug)] });
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')!;
+    await act(async () => setInputValue(input, url));
+    await flushReact();
+    expect(container.textContent).not.toContain(`This looks like ${name}`);
+    expect(buttonByText(`Use ${name}`)).toBeUndefined();
+    await act(async () => buttonByText("Continue")!.click());
+    await flushReact();
+    await passAccessStep();
+    expect(container.textContent).toContain("Connect your own MCP server");
+    expect(container.textContent).not.toContain(`guided setup for ${name}`);
+    expect(buttonByText(`Use ${name}`)).toBeUndefined();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("matches GitHub tool URLs independently of gallery search while chat connectors are hidden", async () => {
+    await render();
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[placeholder="Search apps…"]')!, "no matching cards"));
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')!, "https://github.com/example/repository"));
+    await flushReact();
+    expect(container.textContent).toContain("This looks like GitHub");
+    expect(buttonByText("Use GitHub")).toBeTruthy();
+    await act(async () => buttonByText("Use GitHub")!.click());
+    await flushReact();
+    expect(container.textContent).toContain("Connect GitHub as");
+    expect(container.textContent).toContain("My GitHub account");
+    expect(container.textContent).not.toContain("Chat with an agent");
+  });
+
   // -------------------------------------------------------------------------
   // Access step (PAP-17835). Identity and agent reach are chosen before any
   // credential is entered.
   // -------------------------------------------------------------------------
+
+  it.each([false, true])("offers both Anthropic methods without the obsolete REST option (task repair: %s)", async (taskRepair) => {
+    const createAiAccount = vi.spyOn(aiConnectionsApi, "create").mockResolvedValue({
+      connectionId: "anthropic-ai-account", grantId: "anthropic-ai-grant",
+    });
+    mockParams.appKey = "anthropic";
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("anthropic")] });
+    const client = new QueryClient({ defaultOptions: { queries: {
+      retry: false,
+      staleTime: Infinity,
+    } } });
+    client.setQueryData(queryKeys.environments.list("company-1"), [
+      { id: "local-env", name: "Local", driver: "local", status: "active", config: {} },
+    ]);
+    client.setQueryData(queryKeys.environments.capabilities("company-1"), {});
+    client.setQueryData(queryKeys.instance.settings, { defaultEnvironmentId: "local-env" });
+    client.setQueryData(queryKeys.instance.generalSettings, {});
+    client.setQueryData(queryKeys.health, { deploymentMode: "authenticated", localAiLoginSupported: false });
+    await render(client, false, taskRepair ? <ConnectionSetupFlow host="dialog" serviceSlug="anthropic" interactionId="ai-intent" requestedAgentId="agent-1" aiConnection={{ provider: "anthropic", method: "subscription", mode: "responsible_user" }} /> : undefined);
+    await passAccessStep();
+    expect(container.textContent).toContain("Connect account");
+    expect(container.textContent).toContain("Connection name");
+    expect(container.textContent).not.toContain("How do you want to connect?");
+    expect(radioContaining("Use an API key")).toBeUndefined();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => buttonContaining("Use API key instead")!.click());
+    await act(async () => buttonContaining("Claude")!.click());
+    await flushReact();
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(key).toBeTruthy();
+    await act(async () => setInputValue(key!, "fixture-anthropic-ai-key"));
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(createAiAccount).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      provider: "anthropic", method: "api_key", apiKey: "fixture-anthropic-ai-key",
+    }));
+    if (!taskRepair) expect(mockNavigate).toHaveBeenCalledWith("/apps/anthropic-ai-account/permissions");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Connect for tool access instead");
+  });
 
   it("asks for a GitHub identity and defaults to the current user and every agent", async () => {
     mockParams.appKey = "github";
@@ -734,6 +866,84 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it.each([false, true])("retains task access and interaction through enrollment (popup blocked: %s)", async (popupBlocked) => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(popupBlocked ? null : popup as unknown as Window);
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+      ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+    }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
+    await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
+    await passAccessStep();
+    await act(async () => buttonByText("Connect with Paperclip")?.click());
+    await flushReact();
+    expect(open).toHaveBeenCalled();
+    if (popupBlocked) {
+      expect(popup.location.assign).not.toHaveBeenCalled();
+    } else {
+      expect(popup.location.assign).toHaveBeenCalledWith("https://my-staging.paperclip.app/connections/enroll?id=enroll-test");
+    }
+    const fallback = container.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(fallback?.textContent).toBe("Open authorization in a new tab");
+    expect(fallback?.href).toBe("https://my-staging.paperclip.app/connections/enroll?id=enroll-test");
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith("company-1", "Paperclip", "/apps/connect?source=gmail&stage=setup&intent=intent-1&enrollment_host=dialog");
+    listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "active" });
+    await act(async () => { await client.invalidateQueries({ queryKey: ["cloud-connector", "enrollment"] }); });
+    await flushReact();
+    await flushReact();
+    if (!popupBlocked) expect(popup.close).toHaveBeenCalled();
+    expect(container.textContent).toContain("What should Paperclip be able to do?");
+    expect(container.textContent).toContain("Step 2 of 2");
+    connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "per_user" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });
+    await act(async () => buttonByText("Continue to sign in")?.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ grantKind: "user" }));
+    expect(startOAuthMock).toHaveBeenCalledWith("gmail-1", { asCurrentUser: true, interactionId: "intent-1" });
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  it.each(["request", "missing-url", "invalid-url"])("closes the reserved enrollment popup after %s failure", async (failure) => {
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+      ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+    }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
+    if (failure === "request") {
+      startCloudConnectorEnrollmentMock.mockRejectedValue(new Error("Enrollment unavailable"));
+    } else {
+      startCloudConnectorEnrollmentMock.mockResolvedValue({
+        status: "pending",
+        verificationUrl: failure === "missing-url" ? undefined : "javascript:alert(1)",
+      });
+    }
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
+    await passAccessStep();
+    await act(async () => buttonByText("Connect with Paperclip")?.click());
+    await flushReact();
+    expect(popup.close).toHaveBeenCalledOnce();
+    expect(popup.location.assign).not.toHaveBeenCalled();
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Finish authorization in the opened window");
+  });
+
+  it("binds OAuth to the task even when setup resumes in the page host", async () => {
+    mockSearch.value = "source=gmail&stage=setup&intent=intent-1";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
+    connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "shared" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });
+    await render();
+    await act(async () => buttonByText("Continue to sign in")?.click());
+    await flushReact();
+    expect(startOAuthMock).toHaveBeenCalledWith("gmail-1", { asCurrentUser: false, interactionId: "intent-1" });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith("https://example.test/unbound");
+  });
+
   it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
     "revalidates a cached pending enrollment before continuing (expiry %s)",
     async (expiresAt) => {
@@ -852,7 +1062,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Connect with Paperclip");
   });
 
-  it("uses GitHub's advertised PAT fallback when an enrolled Cloud omits the managed profile", async () => {
+  it("explains unavailable GitHub sign-in without silently switching to a PAT", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [{
@@ -864,19 +1074,21 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(container.textContent).toContain("Your GitHub key");
-    expect(container.textContent).not.toContain("Connect with Paperclip");
-    expect(container.textContent).not.toContain("Continue to GitHub");
-    const connect = buttonByText("Connect");
-    expect(connect?.disabled).toBe(true);
-    const tokenInput = container.querySelector<HTMLInputElement>('input[type="password"]');
-    expect(tokenInput).toBeTruthy();
-    await act(async () => setInputValue(tokenInput!, "github_pat_test"));
+    expect(container.textContent).not.toContain("Chat with an agent");
+    expect(container.textContent).not.toContain("GitHub App ID");
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(buttonByText("Try again")?.disabled).toBe(false);
+
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    await act(async () => buttonByText("Try again")!.click());
     await flushReact();
-    expect(connect?.disabled).toBe(false);
+    expect(container.textContent).toContain("Continue to GitHub");
+    expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
   });
 
-  it("replaces a hidden managed method after enrollment recovery reveals an advertised PAT fallback", async () => {
+  it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [{
@@ -907,10 +1119,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Your GitHub key");
-    expect(container.textContent).not.toContain("Connect with Paperclip");
-    expect(container.textContent).not.toContain("Continue to GitHub");
-    expect(buttonByText("Connect")?.disabled).toBe(true);
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(buttonByText("Try again")?.disabled).toBe(false);
   });
 
   it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
@@ -1019,6 +1230,74 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       grantKind: "agent",
       subjectAgentId: "agent-1",
     }));
+  });
+
+  it.each([...new Set(Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug))]
+    .flatMap((slug) => [false, true].map((enrollmentReturn) => ({ slug, enrollmentReturn }))))(
+    "preserves personal Workspace access for $slug when changing method (enrollment return: $enrollmentReturn)",
+    async ({ slug, enrollmentReturn }) => {
+      const definition = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug)!;
+      const readMethod = definition.methods.find((method) => method.key === "paperclip-read")!;
+      mockSearch.value = enrollmentReturn
+        ? `source=${slug}&stage=setup&cloud_connector=enrolled`
+        : `source=${slug}`;
+      if (enrollmentReturn) {
+        window.sessionStorage.setItem(`paperclip.connector-enrollment-access:${slug}`, JSON.stringify({
+          companyId: "company-1", grantKind: "user", installChoice: "all", agentIds: [],
+        }));
+      }
+      listGalleryMock.mockResolvedValue({ apps: [{
+        ...definition, ownershipAvailability: { ...definition.ownershipAvailability, platform_shared: true },
+      }] });
+      await render();
+      if (!enrollmentReturn) {
+        await act(async () => {
+          radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await passAccessStep();
+      }
+
+      if (definition.methods.some((method) => method.capabilityProfile?.key !== "read")) {
+        const readChoice = radioContaining(readMethod.capabilityProfile!.label);
+        expect(readChoice).not.toBeNull();
+        await act(async () => {
+          readChoice!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+      }
+      await flushReact();
+      // Change auth methods too, including apps with only one capability.
+      expect(container.textContent).not.toContain("How do you want to connect?");
+      expect(container.textContent).not.toContain("Connect with Paperclip");
+      expect(container.textContent).not.toContain("Your OAuth app");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+      const customerAuth = buttonByText("Use your own Google OAuth app");
+      expect(customerAuth).toBeDefined();
+      expect(customerAuth?.getAttribute("aria-expanded")).toBe("false");
+      await act(async () => {
+        customerAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(container.textContent).toContain("Your OAuth app");
+      expect(container.textContent).toContain("Client ID");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+      const managedAuth = buttonByText("Use Paperclip instead");
+      expect(managedAuth).toBeDefined();
+      expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
+      const fieldsRegion = document.getElementById(managedAuth!.getAttribute("aria-controls")!);
+      expect(fieldsRegion?.getAttribute("role")).toBe("region");
+      expect(fieldsRegion?.textContent).toContain("Client ID");
+      await act(async () => {
+        managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(container.textContent).not.toContain("Your OAuth app");
+      await act(async () => {
+        buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        galleryKey: slug, connectionMethodKey: "paperclip-read", grantKind: "user",
+      }));
   });
 
   it("never renders self-host enrollment when the connector identity is already active", async () => {
@@ -1433,6 +1712,35 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => dialogRoot.unmount());
   });
 
+  it("returns a standalone GitHub popup to its host only after verifying the saved connection", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-github", application: { id: "app-github", name: "GitHub" },
+      connection: { id: "conn-github", credentialPolicy: "per_user" },
+      actions: { readOnly: [], canMakeChanges: [] }, catalog: [], suggestedDefaults: {},
+      auth: { kind: "oauth" },
+    });
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const onComplete = vi.fn();
+    getConnectionMock.mockResolvedValue({ id: "conn-github", status: "active" });
+    const dialogRoot = await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="github" forceNewConnection onComplete={onComplete} />);
+    await passAccessStep();
+    await act(async () => buttonByText("Continue to GitHub")!.click());
+    await flushReact();
+    await flushReact();
+    expect(connectAppMock, container.textContent ?? "").toHaveBeenCalled();
+    expect(startOAuthMock, container.textContent ?? "").toHaveBeenCalledWith("conn-github", { asCurrentUser: true });
+    expect(onComplete).not.toHaveBeenCalled();
+    popup.location.href = `${window.location.origin}/CO/apps/conn-github/permissions?success=1`;
+    await act(async () => {
+      await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: "conn-github" }), { timeout: 2500 });
+    });
+    expect(getConnectionMock).toHaveBeenCalledWith("conn-github");
+    expect(popup.close).toHaveBeenCalled();
+    await act(async () => dialogRoot.unmount());
+  });
+
   it("keeps the task dialog recoverable when the browser blocks its reserved OAuth popup", async () => {
     listGalleryMock.mockResolvedValue({ apps: [NOTION] });
     connectAppMock.mockResolvedValue({
@@ -1461,9 +1769,13 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Allow popups for this site and try again");
+    expect(container.textContent).toContain("Open sign-in in a new tab to continue");
     expect(container.textContent).toContain("Try again");
     expect(onPhaseChange).toHaveBeenCalledWith("needs_retry");
+    const fallback = container.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(fallback?.textContent).toBe("Open sign-in in a new tab");
+    expect(fallback?.href).toContain("https://mcp.notion.com/authorize");
+    expect(fallback?.rel).toBe("noopener noreferrer");
 
     openSpy.mockRestore();
     await act(async () => dialogRoot.unmount());
@@ -1643,6 +1955,26 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=resumed",
     );
+  });
+
+  it("shows installation recovery for GitHub even when an advanced PAT method is available", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=github_installation_required&installation_url=https%3A%2F%2Fgithub.com%2Fapps%2Fpaperclip-for-github%2Finstallations%2Fnew`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", status: "draft", metadata: { sourceTemplateKey: "github" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: connectionId, applicationId: "app-github", authKind: "oauth", credentialPolicy: "per_user", status: "draft",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" }, transportConfig: {},
+    }] });
+    await render();
+    await flushReact();
+    expect(container.textContent).toContain("Install Paperclip and grant at least one repository");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-for-github/installations/new"]')?.textContent).toBe("Install Paperclip on GitHub");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    await act(async () => buttonByText("Try again")!.click());
+    await flushReact();
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+    expect(connectAppMock).not.toHaveBeenCalled();
   });
 
   it("returns a declined OAuth draft to the same one-action resume checkpoint", async () => {

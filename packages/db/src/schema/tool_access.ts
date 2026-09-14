@@ -32,6 +32,7 @@ import type {
   ToolConnectionKind,
   ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
+  ToolConnectionPurpose,
   ToolConnectionInstallTargetType,
   ToolConnectionStatus,
   ToolConnectionTransport,
@@ -119,6 +120,7 @@ export const toolConnections = pgTable(
     name: text("name").notNull(),
     uid: text("uid").notNull(),
     connectionKind: text("connection_kind").$type<ToolConnectionKind>().notNull().default("managed"),
+    connectionPurpose: text("connection_purpose").$type<ToolConnectionPurpose>().notNull().default("tool"),
     ownership: text("ownership").$type<ToolConnectionOwnership>().notNull().default("customer"),
     transport: text("transport").$type<ToolConnectionTransport>().notNull(),
     authKind: text("auth_kind").$type<ToolConnectionAuthKind>().notNull().default("none"),
@@ -144,7 +146,15 @@ export const toolConnections = pgTable(
   },
   (table) => [
     check("tool_connections_ownership_check", sql`${table.ownership} in ('platform_shared', 'platform_provisioned', 'customer', 'dcr')`),
-    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio')`),
+    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')`),
+    check("tool_connections_purpose_check", sql`${table.connectionPurpose} in ('tool', 'channel', 'ai')`),
+    check("tool_connections_channel_transport_check", sql`(
+      (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'runtime_auth'))
+      or
+      (${table.connectionPurpose} = 'channel' and (${table.transport} = 'chat_sdk' or (${table.transport} = 'rest_api' and ${table.config}->>'provider' = 'agentmail')))
+      or
+      (${table.connectionPurpose} = 'ai' and ${table.transport} = 'runtime_auth')
+    )`),
     check("tool_connections_auth_kind_check", sql`${table.authKind} in ('oauth', 'api_key', 'none')`),
     check("tool_connections_credential_source_check", sql`${table.credentialSource} in ('paperclip_vault', 'vercel_connect')`),
     check("tool_connections_credential_source_one_of_check", sql`(
@@ -194,9 +204,12 @@ export const connectionGrants = pgTable(
         repositorySelection: "all" | "selected" | "mixed" | "none";
         installationIds: string[];
         installationOwnerLogins: string[];
+        /** Repository metadata visible to this credential; refreshed from GitHub. */
+        repositories?: Array<{ id: string; fullName: string; installationId: string; private?: boolean }>;
         installationUrl?: string;
         managementUrl?: string;
         appSlug?: string;
+        accessRevision?: string;
         lastAccessRefreshAt?: string;
         lastWebhookAt?: string;
         webhookHealth?: "pending" | "healthy" | "unhealthy";

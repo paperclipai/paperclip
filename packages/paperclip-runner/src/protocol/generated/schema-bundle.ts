@@ -236,6 +236,87 @@ export const capabilitiesSchema = {
   "additionalProperties": true
 } as const;
 
+export const capabilitiesV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/capabilities.schema.json",
+  "title": "PRP v2 negotiated capabilities",
+  "type": "object",
+  "required": [
+    "schema",
+    "sessionReusePolicy",
+    "driver",
+    "steer",
+    "interrupt",
+    "resume",
+    "runtimeRequests",
+    "structuredResult",
+    "typedEvents",
+    "sessionGoals"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.capabilities.v2"
+    },
+    "sessionReusePolicy": {
+      "enum": [
+        "new_per_run",
+        "reuse_per_issue",
+        "reuse_per_workspace"
+      ]
+    },
+    "driver": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "additionalProperties": true
+    },
+    "steer": {
+      "type": "boolean"
+    },
+    "interrupt": {
+      "type": "boolean"
+    },
+    "resume": {
+      "type": "boolean"
+    },
+    "runtimeRequests": {
+      "type": "boolean"
+    },
+    "structuredResult": {
+      "type": "boolean"
+    },
+    "typedEvents": {
+      "type": "boolean"
+    },
+    "sessionGoals": {
+      "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+    },
+    "unsupported": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": true
+} as const;
+
 export const commandSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paperclip.dev/schemas/prp/v1/command.schema.json",
@@ -327,6 +408,147 @@ export const commandSchema = {
       "additionalProperties": true
     }
   },
+  "additionalProperties": true
+} as const;
+
+export const commandV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/command.schema.json",
+  "title": "PRP v2 runner command",
+  "type": "object",
+  "required": [
+    "schema",
+    "commandId",
+    "controllerSeq",
+    "type",
+    "issuedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.command.v2"
+    },
+    "commandId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "controllerSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "enum": [
+        "run.prepare",
+        "run.attach",
+        "session.open",
+        "turn.start",
+        "turn.steer",
+        "turn.interrupt",
+        "turn.stop",
+        "request.resolve",
+        "interaction.receipt",
+        "semantic_tool.result",
+        "session.snapshot",
+        "session.close",
+        "session.budget.increase",
+        "session.destroy",
+        "run.cancel",
+        "runner.drain",
+        "runner.suspend",
+        "runner.shutdown",
+        "session.goal.get",
+        "session.goal.set",
+        "session.goal.clear"
+      ]
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deadlineAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "precondition": {
+      "type": "object",
+      "properties": {
+        "runnerState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "runState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sessionState": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "activeTurnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "session.goal.set"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "objective": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "status": {
+                "enum": [
+                  "active",
+                  "paused"
+                ]
+              },
+              "tokenBudget": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": true
 } as const;
 
@@ -3903,6 +4125,435 @@ export const eventSchema = {
   "additionalProperties": true
 } as const;
 
+export const eventV2Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/event.schema.json",
+  "title": "PRP v2 native event",
+  "type": "object",
+  "required": [
+    "schema",
+    "sourceEventId",
+    "sourceSeq",
+    "sourceInstanceId",
+    "sourceKind",
+    "runId",
+    "eventType",
+    "schemaVersion",
+    "priority",
+    "emittedAt",
+    "payload"
+  ],
+  "properties": {
+    "schema": {
+      "const": "paperclip.prp.event.v2"
+    },
+    "sourceEventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "sourceInstanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "sourceKind": {
+      "enum": [
+        "runner",
+        "control_plane"
+      ]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "normalizedSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "turnId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "itemId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "eventType": {
+      "enum": [
+        "runner.connected",
+        "runner.reconnected",
+        "runner.reconciled",
+        "runner.disconnected",
+        "runner.draining",
+        "runner.suspending",
+        "runner.suspended",
+        "runner.stopped",
+        "runner.diagnostic",
+        "runtime.phase.changed",
+        "sandbox.metric",
+        "workspace.ready",
+        "workspace.change.updated",
+        "workspace.diff.recorded",
+        "workspace.file.referenced",
+        "harness.starting",
+        "harness.ready",
+        "harness.exited",
+        "harness.diagnostic",
+        "plan.updated",
+        "tool.execution.started",
+        "tool.execution.progressed",
+        "tool.execution.completed",
+        "research.started",
+        "research.progressed",
+        "research.completed",
+        "delegation.started",
+        "delegation.updated",
+        "delegation.completed",
+        "model.route.changed",
+        "model.verification.updated",
+        "context.compacted",
+        "artifact.viewed",
+        "artifact.generated",
+        "review.mode.changed",
+        "hook.started",
+        "hook.completed",
+        "memory.citation.referenced",
+        "safety.review.started",
+        "safety.review.completed",
+        "terminal.input.sent",
+        "wait.started",
+        "wait.completed",
+        "provider.notice.recorded",
+        "session.starting",
+        "session.started",
+        "session.resuming",
+        "session.resumed",
+        "session.reconciled",
+        "session.updated",
+        "session.closed",
+        "session.failed",
+        "session.capabilities.updated",
+        "session.goal.snapshot",
+        "session.goal.updated",
+        "session.goal.cleared",
+        "turn.submitted",
+        "turn.accepted",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "turn.interrupted",
+        "turn.cancelled",
+        "item.started",
+        "item.delta",
+        "item.completed",
+        "item.failed",
+        "usage.reported",
+        "semantic_tool.input",
+        "semantic_tool.result",
+        "mcp_app.discovered",
+        "mcp_app.resource.resolved",
+        "mcp_app.initializing",
+        "mcp_app.ready",
+        "mcp_app.tool_input",
+        "mcp_app.tool_result",
+        "mcp_app.action.requested",
+        "mcp_app.action.resolved",
+        "mcp_app.host_context.changed",
+        "mcp_app.failed",
+        "mcp_app.teardown",
+        "runtime_request.created",
+        "runtime_request.resolved",
+        "runtime_request.expired",
+        "runtime_request.cancelled",
+        "interaction.request.proposed",
+        "interaction.request.materialized",
+        "interaction.request.rejected",
+        "interaction.response.progressed",
+        "interaction.response.resolved",
+        "interaction.response.delivered",
+        "run.attached",
+        "run.detached",
+        "run.result.proposed",
+        "run.result.accepted",
+        "run.result.rejected",
+        "attention.request.proposed",
+        "attention.request.routed",
+        "attention.request.resolved",
+        "attention.request.expired",
+        "attention.request.superseded",
+        "work.assessment.recorded",
+        "issue.status.decision.recorded",
+        "issue.status.decision.applied",
+        "issue.status.decision.rejected",
+        "issue.status.decision.superseded",
+        "run.terminal"
+      ]
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "priority": {
+      "enum": [
+        0,
+        1,
+        2
+      ]
+    },
+    "emittedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "enum": [
+              "session.goal.snapshot",
+              "session.goal.updated"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "goal"
+            ],
+            "properties": {
+              "goal": {
+                "oneOf": [
+                  {
+                    "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/snapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "session.capabilities.updated"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "sessionGoals"
+            ],
+            "properties": {
+              "sessionGoals": {
+                "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+} as const;
+
+export const sessionGoalSchema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json",
+  "title": "PRP v2 session goal capability and snapshot",
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": [
+        "availability",
+        "actions",
+        "autonomousUpdates",
+        "persistentAcrossResume",
+        "maxObjectiveChars",
+        "tokenBudgetControl",
+        "usageReporting"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "available",
+            "unsupported",
+            "policy_disabled"
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "set",
+              "pause",
+              "resume",
+              "clear"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "autonomousUpdates": {
+          "type": "boolean"
+        },
+        "persistentAcrossResume": {
+          "type": "boolean"
+        },
+        "maxObjectiveChars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000
+        },
+        "tokenBudgetControl": {
+          "type": "boolean"
+        },
+        "usageReporting": {
+          "type": "boolean"
+        },
+        "reasonCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      },
+      "additionalProperties": true
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "objective",
+        "status",
+        "tokenBudget",
+        "tokensUsed",
+        "elapsedSeconds",
+        "iterations",
+        "lastReason",
+        "createdAt",
+        "updatedAt",
+        "completedAt",
+        "workingNow"
+      ],
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "limited",
+            "usage_limited",
+            "budget_limited",
+            "complete"
+          ]
+        },
+        "tokenBudget": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "tokensUsed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "elapsedSeconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "iterations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "lastReason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4000
+        },
+        "createdAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "workingNow": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+} as const;
+
 export const fixtureSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paperclip.dev/schemas/prp/v1/fixture.schema.json",
@@ -3928,7 +4579,10 @@ export const fixtureSchema = {
       "const": 1
     },
     "protocolVersion": {
-      "const": 1
+      "enum": [
+        1,
+        2
+      ]
     },
     "name": {
       "type": "string",
@@ -3944,19 +4598,40 @@ export const fixtureSchema = {
       "$ref": "https://paperclip.dev/schemas/prp/v1/identity.schema.json"
     },
     "capabilities": {
-      "$ref": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json"
+      "oneOf": [
+        {
+          "$ref": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json"
+        },
+        {
+          "$ref": "https://paperclip.dev/schemas/prp/v2/capabilities.schema.json"
+        }
+      ]
     },
     "commands": {
       "type": "array",
       "items": {
-        "$ref": "https://paperclip.dev/schemas/prp/v1/command.schema.json"
+        "oneOf": [
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v1/command.schema.json"
+          },
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v2/command.schema.json"
+          }
+        ]
       }
     },
     "events": {
       "type": "array",
       "minItems": 1,
       "items": {
-        "$ref": "https://paperclip.dev/schemas/prp/v1/event.schema.json"
+        "oneOf": [
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v1/event.schema.json"
+          },
+          {
+            "$ref": "https://paperclip.dev/schemas/prp/v2/event.schema.json"
+          }
+        ]
       }
     },
     "requests": {
@@ -3975,7 +4650,9 @@ export const fixtureSchema = {
 export const prpSchemaBundle = {
   "identity": identitySchema,
   "capabilities": capabilitiesSchema,
+  "capabilities-v2": capabilitiesV2Schema,
   "command": commandSchema,
+  "command-v2": commandV2Schema,
   "provider-descriptor": providerDescriptorSchema,
   "provider-event": providerEventSchema,
   "workspace-diff": workspaceDiffSchema,
@@ -3990,5 +4667,7 @@ export const prpSchemaBundle = {
   "request": requestSchema,
   "result": resultSchema,
   "event": eventSchema,
+  "event-v2": eventV2Schema,
+  "session-goal": sessionGoalSchema,
   "fixture": fixtureSchema,
 } as const;

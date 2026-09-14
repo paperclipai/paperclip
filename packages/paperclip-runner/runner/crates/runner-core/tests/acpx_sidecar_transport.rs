@@ -180,3 +180,37 @@ fn redacts_sidecar_stderr_when_the_process_exits() {
     assert!(message.contains("[REDACTED]"));
     assert!(!message.contains("amber-signal-7305"));
 }
+
+#[cfg(unix)]
+#[test]
+fn preserves_only_allowlisted_stderr_categories_when_the_process_exits() {
+    let mut transport = AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".to_owned(),
+            "printf '%s\n' 'TypeError [ERR_INVALID_ARG_TYPE]: token=amber-signal-7305' '    at /private/secret-project/session-123.js:42' 'triggerUncaughtException(err, true /* fromPromise */);' 'Error: ACPX provider spawned after ownership admission was sealed' 'code: EPIPE' 'UnknownProviderError: private-value' 'prefixECONNRESETsuffix' >&2; exit 1".to_owned(),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(1),
+        shutdown_grace: Duration::from_millis(50),
+    })
+    .expect("diagnostic fixture should start");
+    let error = transport
+        .poll_event(Duration::from_secs(1))
+        .expect_err("exited sidecar must fail");
+    let message = error.to_string();
+    assert!(message.contains("stderrCategories=broken_pipe,invalid_argument_type,javascript_type_error,provider_spawn_after_ownership_seal,unhandled_rejection"));
+    assert!(message.contains("stderrTail="));
+    assert!(message.contains("[REDACTED]"));
+    for sensitive in [
+        "amber-signal-7305",
+        "secret-project",
+        "session-123",
+        "private-value",
+        "UnknownProviderError",
+        "connection_reset",
+        "TypeError",
+    ] {
+        assert!(!message.contains(sensitive));
+    }
+}

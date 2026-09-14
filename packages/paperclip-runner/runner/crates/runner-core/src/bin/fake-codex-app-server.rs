@@ -15,6 +15,8 @@ struct FakeState {
     active_turn_id: Option<String>,
     #[serde(default)]
     next_turn: u64,
+    #[serde(default)]
+    goal: Option<Value>,
 }
 
 fn argument(args: &[String], name: &str) -> Option<String> {
@@ -57,9 +59,13 @@ fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
     }))
 }
 
-fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
+fn finish_split_event_burst_with_send(
+    state: &FakeState,
+    count: usize,
+    mut send: impl FnMut(Value) -> io::Result<()>,
+) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
-    for index in 0..48 {
+    for index in 0..count {
         send(json!({
             "method": "item/agentMessage/delta",
             "params": {
@@ -73,19 +79,73 @@ fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
     Ok(())
 }
 
-fn load_state(path: &Path) -> FakeState {
-    fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| FakeState {
+fn finish_split_event_turn_with_send(
+    state_path: &Path,
+    state: &mut FakeState,
+    count: usize,
+    lifecycle: Option<&str>,
+    mut send: impl FnMut(Value) -> io::Result<()>,
+) -> io::Result<()> {
+    if lifecycle == Some("settled-before-output") {
+        // This explicit fixture mode models completed work whose output is
+        // still blocked in the pipe. Keep the original turn identity for all
+        // suffix and terminal frames, but persist completion before any send.
+        let suffix_state = state.clone();
+        let mut suffix_sent = false;
+        return finish_turn_with_send(state_path, state, "completed", |message| {
+            if !suffix_sent {
+                finish_split_event_burst_with_send(&suffix_state, count, &mut send)?;
+                suffix_sent = true;
+            }
+            send(message)
+        });
+    }
+    finish_split_event_burst_with_send(state, count, &mut send)?;
+    if lifecycle == Some("active-after-output") {
+        // Adversarial counterpart: no completion claim or durable settlement.
+        // A later physical stop must not authorize this reported active turn.
+        return Ok(());
+    }
+    finish_turn_with_send(state_path, state, "completed", send)
+}
+
+fn load_state(path: &Path) -> io::Result<FakeState> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(FakeState {
             thread_id: "codex-thread-1".to_owned(),
             active_turn_id: None,
             next_turn: 0,
-        })
+            goal: None,
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 fn save_state(path: &Path, state: &FakeState) -> io::Result<()> {
-    fs::write(path, serde_json::to_vec_pretty(state)?)
+    save_state_with_write(path, state, |path, bytes| {
+        let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })
+}
+
+fn save_state_with_write(
+    path: &Path,
+    state: &FakeState,
+    write: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    // A stopped fake provider must leave either the previous complete counter
+    // or the next complete counter, never a truncated file that looks fresh.
+    // Unique sibling files also keep delayed interrupt writers independent.
+    let temporary = path.with_file_name(format!(".fake-codex-state-{}.tmp", uuid::Uuid::new_v4()));
+    let bytes = serde_json::to_vec_pretty(state)?;
+    let saved = write(&temporary, &bytes).and_then(|()| fs::rename(&temporary, path));
+    if saved.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    saved
 }
 
 fn log_call(path: Option<&Path>, method: &str) -> io::Result<()> {
@@ -116,7 +176,13 @@ fn matches_task_context_result(result: &Value, expected_canonical: Option<&Value
     };
     if result.get("ok") != Some(&json!(true))
         || result.get("operationId").and_then(Value::as_str) != Some("get_task_context")
-        || result.get("callId").and_then(Value::as_str) != Some("semantic-call-1")
+        || result.get("callId").and_then(Value::as_str)
+            != Some(
+                expected
+                    .get("callId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("semantic-call-1"),
+            )
     {
         return false;
     }
@@ -130,7 +196,8 @@ fn matches_task_context_result(result: &Value, expected_canonical: Option<&Value
     .all(|(actual_pointer, expected_pointer)| {
         let actual = result.pointer(actual_pointer).and_then(Value::as_str);
         let expected = expected.pointer(expected_pointer).and_then(Value::as_str);
-        actual.is_some_and(|value| !value.is_empty()) && actual == expected
+        actual.is_some_and(|value| !value.is_empty())
+            && (actual == expected || (expected_pointer == "/runId" && expected.is_none()))
     })
 }
 
@@ -240,13 +307,26 @@ mod tests {
 }
 
 fn finish_turn(state_path: &Path, state: &mut FakeState, status: &str) -> io::Result<()> {
+    finish_turn_with_send(state_path, state, status, send)
+}
+
+fn finish_turn_with_send(
+    state_path: &Path,
+    state: &mut FakeState,
+    status: &str,
+    mut send: impl FnMut(Value) -> io::Result<()>,
+) -> io::Result<()> {
     let turn_id = state
         .active_turn_id
         .clone()
         .unwrap_or_else(|| "provider-turn-1".to_owned());
+    // Terminal visibility permits the supervisor to stop this process at once.
+    // Persist the fixture's settled state before publishing that permission.
+    state.active_turn_id = None;
+    save_state(state_path, state)?;
     send(json!({
         "method": "item/completed",
-        "params": {"item": {
+        "params": {"threadId": state.thread_id, "turnId": turn_id, "item": {
             "id": "message-1",
             "type": "agentMessage",
             "status": "completed",
@@ -267,8 +347,7 @@ fn finish_turn(state_path: &Path, state: &mut FakeState, status: &str) -> io::Re
         "method": "turn/completed",
         "params": {"turn": {"id": turn_id, "status": status}}
     }))?;
-    state.active_turn_id = None;
-    save_state(state_path, state)
+    Ok(())
 }
 
 fn emit_ambiguous_turn_evidence(
@@ -297,10 +376,10 @@ fn emit_ambiguous_turn_evidence(
     }
 }
 
-fn emit_ambiguous_turn_item() -> io::Result<()> {
+fn emit_ambiguous_turn_item(state: &FakeState) -> io::Result<()> {
     send(json!({
         "method": "item/completed",
-        "params": {"item": {
+        "params": {"threadId": state.thread_id, "item": {
             "id": "replacement-message-before-terminal",
             "type": "agentMessage",
             "status": "completed",
@@ -515,9 +594,22 @@ fn send_runtime_request_flood(
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let state_path =
-        PathBuf::from(argument(&args, "--state-file").ok_or("--state-file is required")?);
+    let state_path = if args
+        .iter()
+        .any(|value| value == "--state-file-in-codex-home")
+    {
+        PathBuf::from(std::env::var("CODEX_HOME")?).join("fake-codex-state.json")
+    } else {
+        PathBuf::from(argument(&args, "--state-file").ok_or("--state-file is required")?)
+    };
+    let reject_missing_resume_state = args
+        .iter()
+        .any(|value| value == "--require-existing-resume-state")
+        && !state_path.exists();
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
+    if args.iter().any(|value| value == "--record-process-start") {
+        log_call(call_log.as_deref(), "process-start")?;
+    }
     let emit_question = args.iter().any(|value| value == "--emit-question");
     let emit_runtime_question = args.iter().any(|value| value == "--runtime-question");
     let emit_opencode_proxy_runtime_question = args
@@ -526,6 +618,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
     let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
+    let split_event_suffix_count = argument(&args, "--split-event-suffix-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(48);
+    if !(1..=4096).contains(&split_event_suffix_count) {
+        return Err("split event suffix count must be between 1 and 4096".into());
+    }
+    let split_event_suffix_lifecycle = argument(&args, "--split-event-suffix-lifecycle");
+    if split_event_suffix_lifecycle
+        .as_deref()
+        .is_some_and(|value| {
+            !emit_split_event_burst
+                || !matches!(value, "settled-before-output" | "active-after-output")
+        })
+    {
+        return Err(
+            "split event suffix lifecycle requires an explicit supported split-burst mode".into(),
+        );
+    }
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
@@ -533,6 +644,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--require-codex-home-auth");
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
+    let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
+    let expected_canonical_task_context_file =
+        argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
     let replay_completed_tool_call = args
         .iter()
@@ -635,6 +749,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--omit-ambiguous-turn-started");
     let fail_after_thread_read = args.iter().any(|value| value == "--fail-after-thread-read");
     let fail_first_interrupt = args.iter().any(|value| value == "--fail-first-interrupt");
+    let ignore_repeated_interrupt = args
+        .iter()
+        .any(|value| value == "--ignore-repeated-interrupt");
     let accept_interrupt_without_terminal_once = args
         .iter()
         .any(|value| value == "--accept-interrupt-without-terminal-once");
@@ -678,9 +795,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--question-before-failed-turn");
     let fail_turn_immediately = args.iter().any(|value| value == "--fail-turn-immediately");
     let reuse_question_id = args.iter().any(|value| value == "--reuse-question-id");
+    let descendant_notifications = args
+        .iter()
+        .any(|value| value == "--descendant-notifications");
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
+    let goal_policy_disabled = args.iter().any(|value| value == "--goal-policy-disabled");
+    let goal_autostart = args.iter().any(|value| value == "--goal-autostart");
+    let goal_autocontinue = args.iter().any(|value| value == "--goal-autocontinue");
+    let goal_item_trigger = argument(&args, "--goal-item-trigger");
+    let reject_goal_set = args.iter().any(|value| value == "--reject-goal-set");
+    let agent_created_goal = args
+        .iter()
+        .any(|value| value == "--agent-created-goal-on-open");
     if require_skill_instructions {
         let skill_path = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -705,7 +833,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    let mut state = load_state(&state_path);
+    let mut state = load_state(&state_path)?;
     let mut turn_start_count = 0_u64;
     let mut interrupt_count = 0_u64;
     let mut delayed_interrupt_terminal_scheduled = false;
@@ -762,8 +890,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if message.pointer("/result/success") != Some(&json!(true)) {
                 return Err("split event burst semantic tool failed".into());
             }
-            finish_split_event_burst(&state)?;
-            finish_turn(&state_path, &mut state, "completed")?;
+            finish_split_event_turn_with_send(
+                &state_path,
+                &mut state,
+                split_event_suffix_count,
+                split_event_suffix_lifecycle.as_deref(),
+                send,
+            )?;
             continue;
         }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
@@ -782,7 +915,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(Value::as_str)
                 .ok_or("semantic tool response omitted content text")?;
             let result: Value = serde_json::from_str(text)?;
-            if !matches_task_context_result(&result, expected_canonical_task_context.as_ref()) {
+            let expected_from_file = if let Some(path) = &expected_canonical_task_context_file {
+                Some(serde_json::from_str::<Value>(&std::fs::read_to_string(
+                    path,
+                )?)?)
+            } else {
+                None
+            };
+            if !matches_task_context_result(
+                &result,
+                expected_from_file
+                    .as_ref()
+                    .or(expected_canonical_task_context.as_ref()),
+            ) {
                 return Err("semantic tool response changed the operation result".into());
             }
             log_call(call_log.as_deref(), &format!("tool-response:{text}"))?;
@@ -823,10 +968,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         log_call(call_log.as_deref(), method)?;
         let id = message.get("id").cloned();
         match method {
-            "initialize" => send(json!({
+            "initialize" => {
+                if args
+                    .iter()
+                    .any(|value| value == "--require-startup-spawn-receipt")
+                {
+                    let receipt: Value = serde_json::from_slice(&fs::read(
+                        state_path.with_file_name("codex-provider-state.json"),
+                    )?)?;
+                    if receipt.pointer("/startupAttempt/phase") != Some(&json!("spawned"))
+                        || receipt.pointer("/startupAttempt/processId")
+                            != Some(&json!(std::process::id()))
+                    {
+                        return Err(
+                            "initialize arrived before durable exact-child spawn receipt".into(),
+                        );
+                    }
+                }
+                send(json!({
                 "id": id,
                 "result": {"user": {"sessionId": "codex-account-session"}}
-            }))?,
+                }))?;
+            }
             "initialized" => {}
             "thread/start" => {
                 if require_external_sandbox
@@ -849,6 +1012,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 state.thread_id = "codex-thread-1".to_owned();
                 state.active_turn_id = None;
+                if agent_created_goal {
+                    state.goal = Some(json!({
+                        "objective": "Goal created by the Codex agent",
+                        "status": "active",
+                        "tokenBudget": null,
+                        "tokensUsed": 0,
+                        "timeUsedSeconds": 0,
+                        "iterations": 0,
+                        "createdAt": "2026-08-28T00:00:00.000Z",
+                        "updatedAt": "2026-08-28T00:00:00.000Z",
+                        "completedAt": null
+                    }));
+                }
                 save_state(&state_path, &state)?;
                 if pre_response_notification {
                     send(json!({
@@ -860,8 +1036,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
+                if agent_created_goal {
+                    send(json!({
+                        "method": "thread/goal/updated",
+                        "params": {"threadId": state.thread_id, "goal": state.goal}
+                    }))?;
+                }
             }
             "thread/resume" => {
+                if reject_missing_resume_state {
+                    send(json!({"id": id, "error": {
+                        "code": -32600,
+                        "message": "no rollout found for thread id"
+                    }}))?;
+                    continue;
+                }
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/excludeTurns") != Some(&json!(true))
+                {
+                    return Err("thread/resume must exclude turns".into());
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())
@@ -890,6 +1086,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
+                if args.iter().any(|arg| arg == "--resume-usage-snapshot")
+                    && state.active_turn_id.is_none()
+                    && state.next_turn > 0
+                {
+                    for _ in 0..2 {
+                        send(json!({"method": "thread/tokenUsage/updated", "params": {
+                            "threadId": state.thread_id, "turnId": format!("provider-turn-{}", state.next_turn),
+                            "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                        }}))?;
+                    }
+                }
+                if descendant_notifications {
+                    // Restoration must retain lineage without a replay of thread/started.
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "descendant-299", "turnId": "child-turn", "status": "completed"
+                    }}))?;
+                }
                 if emit_tool_call_on_resume {
                     if let Some(turn_id) = state.active_turn_id.as_deref() {
                         send(json!({
@@ -906,7 +1119,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            "thread/turns/list" => {
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/itemsView") != Some(&json!("notLoaded"))
+                {
+                    return Err("turn metadata must not hydrate items".into());
+                }
+                if args.iter().any(|arg| arg == "--repeat-history-cursor")
+                    || (args.iter().any(|arg| arg == "--paginated-history")
+                        && message.pointer("/params/cursor").is_none_or(Value::is_null))
+                {
+                    send(json!({"id": id, "result": {"data": [], "nextCursor": "next-page"}}))?;
+                    continue;
+                }
+                let turns = state.active_turn_id.as_ref()
+                    .map(|turn_id| vec![json!({"id": turn_id, "status": "inProgress", "items": [], "itemsView": "notLoaded"})])
+                    .unwrap_or_default();
+                send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
+            }
             "thread/read" => {
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/includeTurns") != Some(&json!(false))
+                {
+                    return Err("thread/read must not hydrate turns".into());
+                }
                 let turns = state
                     .active_turn_id
                     .as_ref()
@@ -914,13 +1154,133 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_default();
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "turns": turns}}
+                    "result": {"thread": {"id": state.thread_id, "status": {"type": if state.active_turn_id.is_some() { "active" } else { "idle" }}, "turns": turns}}
                 }))?;
                 if fail_after_thread_read {
                     return Err("configured failure after thread read".into());
                 } else if exit_after_thread_read {
                     return Ok(());
                 }
+            }
+            "thread/goal/get" if goal_policy_disabled => send(json!({
+                "id": id,
+                "error": {"code": -32004, "message": "goal feature disabled by provider policy"}
+            }))?,
+            "thread/goal/get" => {
+                send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                if args
+                    .iter()
+                    .any(|value| value == "--idle-protocol-failure-on-goal-probe")
+                {
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "foreign-idle-thread", "turnId": "never-started-idle-turn", "status": "completed"
+                    }}))?;
+                }
+                if args
+                    .iter()
+                    .any(|value| value == "--idle-descendant-overflow-on-goal-probe")
+                {
+                    send(json!({"method": "thread/started", "params": {"thread": {
+                        "id": "descendant-overflow",
+                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                    }}}))?;
+                }
+            }
+            "thread/goal/set" => {
+                if reject_goal_set {
+                    send(json!({
+                        "id": id,
+                        "error": {"code": -32000, "message": "goal set rejected"}
+                    }))?;
+                    continue;
+                }
+                let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+                let previous = state.goal.clone().unwrap_or_else(|| json!({}));
+                let objective = params
+                    .get("objective")
+                    .cloned()
+                    .or_else(|| previous.get("objective").cloned())
+                    .unwrap_or_else(|| json!("Fake Codex goal"));
+                let status = params
+                    .get("status")
+                    .cloned()
+                    .or_else(|| previous.get("status").cloned())
+                    .unwrap_or_else(|| json!("active"));
+                let token_budget = params
+                    .get("tokenBudget")
+                    .cloned()
+                    .or_else(|| previous.get("tokenBudget").cloned())
+                    .unwrap_or(Value::Null);
+                state.goal = Some(json!({
+                    "objective": objective,
+                    "status": status,
+                    "tokenBudget": token_budget,
+                    "tokensUsed": previous.get("tokensUsed").cloned().unwrap_or_else(|| json!(0)),
+                    "timeUsedSeconds": previous.get("timeUsedSeconds").cloned().unwrap_or_else(|| json!(0)),
+                    "iterations": previous.get("iterations").cloned().unwrap_or_else(|| json!(0)),
+                    "createdAt": previous.get("createdAt").cloned().unwrap_or_else(|| json!("2026-08-28T00:00:00.000Z")),
+                    "updatedAt": "2026-08-28T00:00:01.000Z",
+                    "completedAt": null
+                }));
+                if goal_autostart
+                    && state
+                        .goal
+                        .as_ref()
+                        .and_then(|goal| goal.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("active")
+                {
+                    state.active_turn_id = Some("provider-goal-turn-1".to_owned());
+                }
+                save_state(&state_path, &state)?;
+                send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                send(json!({
+                    "method": "thread/goal/updated",
+                    "params": {"threadId": state.thread_id, "goal": state.goal}
+                }))?;
+                if state.active_turn_id.is_some() {
+                    send(json!({
+                        "method": "turn/started",
+                        "params": {"turn": {"id": "provider-goal-turn-1"}}
+                    }))?;
+                    if let Some(trigger) = goal_item_trigger.clone() {
+                        let thread_id = state.thread_id.clone();
+                        thread::spawn(move || {
+                            for _ in 0..3_000 {
+                                if PathBuf::from(&trigger).is_file() {
+                                    if send(json!({"method":"item/started", "params":{
+                                        "threadId":thread_id, "turnId":"provider-goal-turn-1",
+                                        "item":{"id":"mid-recovery-item", "type":"agentMessage", "text":"Continuing after disconnect"}
+                                    }})).is_ok() {
+                                        let _ = fs::write(format!("{trigger}.sent"), "sent");
+                                    }
+                                    break;
+                                }
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                        });
+                    }
+                    if goal_autocontinue {
+                        send(json!({"method":"turn/completed", "params":{
+                            "threadId":state.thread_id,
+                            "turn":{"id":"provider-goal-turn-1", "status":"completed", "items":[]}
+                        }}))?;
+                        state.active_turn_id = Some("provider-goal-turn-2".to_owned());
+                        save_state(&state_path, &state)?;
+                        send(json!({"method":"turn/started", "params":{
+                            "threadId":state.thread_id, "turn":{"id":"provider-goal-turn-2"}
+                        }}))?;
+                    }
+                }
+            }
+            "thread/goal/clear" => {
+                state.goal = None;
+                save_state(&state_path, &state)?;
+                send(json!({"id": id, "result": {"cleared": true}}))?;
+                send(json!({
+                    "method": "thread/goal/cleared",
+                    "params": {"threadId": state.thread_id}
+                }))?;
             }
             "turn/start" => {
                 if require_external_sandbox
@@ -1019,7 +1379,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if malformed_error_second_turn_start && turn_start_count == 2 {
                     if hold_ambiguous_second_turn_after_item {
-                        emit_ambiguous_turn_item()?;
+                        emit_ambiguous_turn_item(&state)?;
                     }
                     send(json!({"id": id, "error": {}}))?;
                     if emits_ambiguous_turn_evidence
@@ -1040,7 +1400,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "result": {"turn": {"status": "inProgress"}}
                     }))?;
                     if hold_ambiguous_second_turn_after_item {
-                        emit_ambiguous_turn_item()?;
+                        emit_ambiguous_turn_item(&state)?;
                         continue;
                     }
                     if emits_ambiguous_turn_evidence
@@ -1070,6 +1430,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if descendant_notifications {
+                    for index in 0..300 {
+                        send(json!({"method": "thread/started", "params": {"thread": {
+                            "id": format!("descendant-{index}"),
+                            "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        }}}))?;
+                    }
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "descendant-299", "turnId": "child-turn", "status": "completed"
+                    }}))?;
+                }
+                if args.iter().any(|value| value == "--descendant-overflow") {
+                    send(json!({"method": "thread/started", "params": {"thread": {
+                        "id": "descendant-overflow",
+                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                    }}}))?;
+                }
                 if fail_after_second_turn_start && turn_start_count == 2 {
                     return Err("configured failure after second turn start".into());
                 } else if fail_turn_immediately {
@@ -1175,7 +1552,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "params": {
                             "threadId": state.thread_id,
                             "turnId": provider_turn_id,
-                            "callId": "semantic-call-1",
+                            "callId": if durable_tool_ids { format!("semantic-call-{}", state.next_turn) } else { "semantic-call-1".to_owned() },
                             "tool": "get_task_context",
                             "arguments": {}
                         }
@@ -1236,11 +1613,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }),
                             json!({
                                 "method": "rawResponseItem/completed",
-                                "params": {"item": {"id": "raw-tail", "type": "reasoning"}}
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "item": {"id": "raw-tail", "type": "reasoning"}}
                             }),
                             json!({
                                 "method": "rawResponse/completed",
-                                "params": {"response": {"id": "response-tail"}}
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "response": {"id": "response-tail"}}
                             }),
                             json!({
                                 "method": "thread/goal/updated",
@@ -1255,24 +1632,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     if emit_post_completion_foreign_turn {
-                        if let Some(gate) = post_completion_notification_gate.as_ref() {
-                            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                            while !gate.is_file() {
-                                if std::time::Instant::now() >= deadline {
-                                    return Err(
-                                        "post-completion notification gate timed out".into()
-                                    );
+                        let gate = post_completion_notification_gate.clone();
+                        let thread_id = state.thread_id.clone();
+                        // Keep serving authoritative goal reads while the test waits
+                        // for the completed turn before releasing the tail frame.
+                        thread::spawn(move || {
+                            let result = (|| -> io::Result<()> {
+                                if let Some(gate) = gate.as_ref() {
+                                    let deadline =
+                                        std::time::Instant::now() + Duration::from_secs(5);
+                                    while !gate.is_file() {
+                                        if std::time::Instant::now() >= deadline {
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::TimedOut,
+                                                "post-completion notification gate timed out",
+                                            ));
+                                        }
+                                        thread::sleep(Duration::from_millis(1));
+                                    }
                                 }
-                                thread::sleep(Duration::from_millis(1));
+                                send(json!({
+                                    "method": "turn/started",
+                                    "params": {"threadId": thread_id, "turn": {"id": "unowned-turn"}}
+                                }))?;
+                                if let Some(gate) = gate.as_ref() {
+                                    fs::write(gate.with_extension("emitted"), b"emitted")?;
+                                }
+                                Ok(())
+                            })();
+                            if let Err(error) = result {
+                                eprintln!("failed to emit post-completion foreign turn: {error}");
                             }
-                        }
-                        send(json!({
-                            "method": "turn/started",
-                            "params": {"threadId": state.thread_id, "turn": {"id": "unowned-turn"}}
-                        }))?;
-                        if let Some(gate) = post_completion_notification_gate.as_ref() {
-                            fs::write(gate.with_extension("emitted"), b"emitted")?;
-                        }
+                        });
                     }
                     if fail_after_turn_completion {
                         if let Some(delay_ms) = fail_after_turn_completion_delay_ms {
@@ -1312,6 +1703,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "turn/interrupt" => {
                 interrupt_count += 1;
+                if ignore_repeated_interrupt && interrupt_count > 1 {
+                    continue;
+                }
                 if fail_first_interrupt && interrupt_count == 1 {
                     send(json!({
                         "id": id,
@@ -1376,5 +1770,186 @@ fn main() -> ExitCode {
             eprintln!("fake-codex-app-server: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod state_persistence_tests {
+    use super::*;
+
+    struct StateFixture(PathBuf);
+
+    impl StateFixture {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("fake-codex-state-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn path(&self) -> PathBuf {
+            self.0.join("state.json")
+        }
+    }
+
+    impl Drop for StateFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn active_state() -> FakeState {
+        FakeState {
+            thread_id: "test-thread".to_owned(),
+            active_turn_id: Some("provider-turn-1".to_owned()),
+            next_turn: 1,
+            goal: None,
+        }
+    }
+
+    #[test]
+    fn failed_partial_state_write_preserves_the_previous_turn_counter() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let previous = active_state();
+        save_state(&path, &previous).unwrap();
+        let previous_bytes = fs::read(&path).unwrap();
+        let mut next = previous.clone();
+        next.next_turn = 2;
+        let failure = save_state_with_write(&path, &next, |target, _| {
+            fs::write(target, b"{")?;
+            Err(io::Error::other("injected interrupted fixture write"))
+        });
+        assert!(failure.is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous_bytes);
+        assert_eq!(load_state(&path).unwrap().next_turn, 1);
+        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn malformed_existing_state_does_not_reset_the_provider_turn_counter() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        assert_eq!(load_state(&path).unwrap().next_turn, 0);
+        fs::write(&path, b"{").unwrap();
+        assert!(load_state(&path).is_err());
+    }
+
+    #[test]
+    fn terminal_notification_observes_already_persisted_settled_state() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        save_state(&path, &state).unwrap();
+        let mut terminal_count = 0;
+        finish_turn_with_send(&path, &mut state, "completed", |message| {
+            if message.get("method").and_then(Value::as_str) == Some("turn/completed") {
+                let persisted = load_state(&path)?;
+                assert_eq!(persisted.next_turn, 1);
+                assert!(persisted.active_turn_id.is_none());
+                assert_eq!(
+                    message.pointer("/params/turn/id"),
+                    Some(&json!("provider-turn-1"))
+                );
+                terminal_count += 1;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(terminal_count, 1);
+    }
+
+    #[test]
+    fn settled_split_suffix_persists_before_output_even_when_the_first_write_fails() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        save_state(&path, &state).unwrap();
+        let failure = finish_split_event_turn_with_send(
+            &path,
+            &mut state,
+            1024,
+            Some("settled-before-output"),
+            |message| {
+                assert_eq!(message["method"], "item/agentMessage/delta");
+                assert_eq!(message["params"]["turnId"], "provider-turn-1");
+                let persisted = load_state(&path)?;
+                assert!(persisted.active_turn_id.is_none());
+                assert_eq!(persisted.next_turn, 1);
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected suffix write failure",
+                ))
+            },
+        );
+        assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        assert!(load_state(&path).unwrap().active_turn_id.is_none());
+    }
+
+    #[test]
+    fn active_split_suffix_retains_the_original_work_without_a_terminal_claim() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        save_state(&path, &state).unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut messages = Vec::new();
+        finish_split_event_turn_with_send(
+            &path,
+            &mut state,
+            1024,
+            Some("active-after-output"),
+            |message| {
+                messages.push(message);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 1024);
+        assert!(messages
+            .iter()
+            .all(|message| message["method"] == "item/agentMessage/delta"
+                && message["params"]["turnId"] == "provider-turn-1"));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(state.active_turn_id.as_deref(), Some("provider-turn-1"));
+        assert_eq!(state.next_turn, 1);
+    }
+
+    #[test]
+    fn settled_split_suffix_keeps_the_original_identity_and_terminal_after_all_output() {
+        let fixture = StateFixture::new();
+        let path = fixture.path();
+        let mut state = active_state();
+        state.active_turn_id = Some("provider-turn-7".to_owned());
+        state.next_turn = 7;
+        save_state(&path, &state).unwrap();
+        let mut messages = Vec::new();
+        finish_split_event_turn_with_send(
+            &path,
+            &mut state,
+            1024,
+            Some("settled-before-output"),
+            |message| {
+                assert!(load_state(&path)?.active_turn_id.is_none());
+                messages.push(message);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(messages.len(), 1027);
+        assert!(messages[..1024]
+            .iter()
+            .all(|message| message["method"] == "item/agentMessage/delta"
+                && message["params"]["turnId"] == "provider-turn-7"));
+        assert_eq!(messages.last().unwrap()["method"], "turn/completed");
+        assert_eq!(
+            messages.last().unwrap()["params"]["turn"]["id"],
+            "provider-turn-7"
+        );
+        assert_eq!(
+            messages.last().unwrap()["params"]["turn"]["status"],
+            "completed"
+        );
+        assert_eq!(load_state(&path).unwrap().next_turn, 7);
     }
 }

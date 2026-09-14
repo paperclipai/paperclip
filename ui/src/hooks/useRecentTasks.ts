@@ -7,6 +7,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import {
   RECENT_TASKS_UPDATED_EVENT,
   getRecentTasksStorageKey,
+  mergeRecentTaskSnapshot,
+  migrateRecentTasks,
   pruneRecentTasks,
   readRecentTasks,
   updateRecentTaskSnapshots,
@@ -17,6 +19,8 @@ type RecentTasksUpdatedDetail = {
   storageKey: string;
   entries: RecentTaskEntry[];
 };
+
+const RECENT_TASK_ORDER_DEBOUNCE_MS = 1_000;
 
 export function useRecentTasks({
   companyId,
@@ -34,6 +38,7 @@ export function useRecentTasks({
   ));
 
   useEffect(() => {
+    if (storageKey && companyId) migrateRecentTasks(storageKey, companyId);
     setEntries(storageKey && companyId ? readRecentTasks(storageKey, companyId) : []);
   }, [companyId, storageKey]);
 
@@ -57,8 +62,11 @@ export function useRecentTasks({
     };
   }, [companyId, storageKey]);
 
+  // Keep query observers in a fixed order when activity changes the display order.
+  const queryEntries = [...entries].sort((left, right) => left.id.localeCompare(right.id));
+  const membership = JSON.stringify(queryEntries.map((entry) => entry.id));
   const detailQueries = useQueries({
-    queries: entries.map((entry) => ({
+    queries: queryEntries.map((entry) => ({
       queryKey: queryKeys.issues.detail(entry.id),
       queryFn: () => issuesApi.get(entry.id),
       retry: false,
@@ -66,15 +74,11 @@ export function useRecentTasks({
     })),
   });
 
-  const refreshedEntries = entries.map((entry, index) => {
-    const issue = detailQueries[index]?.data;
+  const issueById = new Map(detailQueries.flatMap((query) => query.data ? [[query.data.id, query.data] as const] : []));
+  const refreshedEntries = entries.map((entry) => {
+    const issue = issueById.get(entry.id);
     if (!issue || issue.companyId !== companyId || issue.hiddenAt) return entry;
-    return {
-      ...entry,
-      title: issue.title,
-      identifier: issue.identifier,
-      status: issue.status,
-    };
+    return mergeRecentTaskSnapshot(entry, issue);
   });
   const queryRevision = detailQueries
     .map((query) => `${query.dataUpdatedAt}:${query.errorUpdatedAt}:${query.status}`)
@@ -86,7 +90,7 @@ export function useRecentTasks({
     const resolvedIssues: Issue[] = [];
     const removeIds = new Set<string>();
     detailQueries.forEach((query, index) => {
-      const entry = entries[index];
+      const entry = queryEntries[index];
       if (!entry) return;
       if (query.data) {
         if (query.data.companyId !== companyId || query.data.hiddenAt) {
@@ -101,12 +105,30 @@ export function useRecentTasks({
 
     updateRecentTaskSnapshots(storageKey, companyId, resolvedIssues);
     pruneRecentTasks(storageKey, companyId, removeIds);
-    // queryRevision is the stable notification boundary for the useQueries result array.
+    // Publish only when queries or membership change. A storage notification must
+    // not feed the same cached query results back into storage in every tab.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [companyId, entries, queryRevision, storageKey]);
+  }, [companyId, membership, queryRevision, storageKey]);
+
+  const [settledOrder, setSettledOrder] = useState(() => entries.map((entry) => entry.id));
+  const activityRevision = JSON.stringify(entries.map((entry) => [entry.id, entry.recordedAt]));
+  useEffect(() => {
+    const latestOrder = (JSON.parse(activityRevision) as Array<[string, number]>).map(([id]) => id);
+    // Additions and removals are immediate. Only activity-driven moves wait for quiet.
+    if (JSON.stringify([...settledOrder].sort((a, b) => a.localeCompare(b))) !== membership) {
+      setSettledOrder(latestOrder);
+      return;
+    }
+    if (latestOrder.every((id, index) => id === settledOrder[index])) return;
+    const timeout = window.setTimeout(() => setSettledOrder(latestOrder), RECENT_TASK_ORDER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [activityRevision, membership, settledOrder, storageKey]);
+
+  const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
+  const hasSameMembership = settledOrder.length === entries.length && settledOrder.every((id) => entryById.has(id));
 
   return {
-    entries: refreshedEntries,
+    entries: hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries,
     storageKey,
   };
 }

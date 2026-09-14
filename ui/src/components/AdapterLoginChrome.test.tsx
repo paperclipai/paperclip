@@ -94,9 +94,11 @@ describe("the connect step's cards", () => {
     expect(key!.className).toBe(code!.className);
   });
 
-  it("masks a key and does not mask a one-time code", () => {
-    // A provider key is a credential that goes on living; a browser code is
-    // single-use and about to be pasted somewhere the customer can see.
+  it("masks only when asked", () => {
+    // The primitive leaves the choice to each card rather than guessing from
+    // the label. The key card asks, and so does the Claude card for its code —
+    // that call site is pinned by the wizard's paste test. What this pins is
+    // that asking is what does it, and that not asking shows the value.
     render(
       <>
         <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />

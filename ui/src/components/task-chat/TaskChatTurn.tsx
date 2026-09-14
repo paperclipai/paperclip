@@ -119,6 +119,7 @@ export function TaskChatTurn({
                 key={child.id}
                 data-testid="task-chat-turn-timeline-row"
                 data-timeline-row-id={child.id}
+                data-thread-anchor={child.id}
               >
                 {renderChild(child)}
               </div>
@@ -156,6 +157,10 @@ export function TaskChatTurn({
   const [open, setOpen] = useState(
     () => !item.settled && item.liveStatus == null,
   );
+  // Historical folds can contain thousands of tool/reasoning rows. Mount them
+  // on first inspection, then retain them for closing motion and child state.
+  const [historyMounted, setHistoryMounted] = useState(open);
+  if (open && !historyMounted) setHistoryMounted(true);
   const [prevSettled, setPrevSettled] = useState(item.settled);
   const [wasParentRow, setWasParentRow] = useState(parentRow);
 
@@ -268,7 +273,7 @@ export function TaskChatTurn({
       >
         <div>
           <div className="flex flex-col gap-2 pt-1">
-            {foldedItems.map((child) => (
+            {historyMounted && foldedItems.map((child) => (
               <div key={child.id}>{renderChild(child)}</div>
             ))}
           </div>

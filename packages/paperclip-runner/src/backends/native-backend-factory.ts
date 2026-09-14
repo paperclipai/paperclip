@@ -50,6 +50,7 @@ export function createNativeSessionBackend(
 ): NativeSessionBackend {
   if (options.codexTransportFactory) {
     return createRunnerdNativeSessionBackend(input, {
+      completionFeedback: options.completionFeedback,
       runnerInstanceId: options.runnerInstanceId,
       onSpawn: options.onSpawn,
       dynamicTools: options.dynamicTools,
@@ -104,6 +105,7 @@ export function createNativeSessionBackend(
   }
 
   return createCodexNativeSessionBackend(input, {
+    completionFeedback: options.completionFeedback,
     runnerInstanceId: options.runnerInstanceId,
     onSpawn: options.onSpawn,
     dynamicTools: options.dynamicTools,

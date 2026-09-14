@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import type {
   AcpElicitationHandler,
   AcpRuntimeEvent,
@@ -5,6 +7,11 @@ import type {
 } from "acpx/runtime";
 
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
+import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
+import {
+  materializeNativeRuntimeSkills,
+  releaseMaterializedNativeRuntimeSkills,
+} from "../runtime-context-materializer.js";
 import {
   startRunnerToolBridge,
   type RunnerToolBridge,
@@ -20,6 +27,7 @@ import {
   type VerifiedAcpxCommandLease,
   type VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
+import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import {
   requireVerifiedAcpxModel,
   type AcpxModelStatus,
@@ -66,6 +74,24 @@ export interface AcpxRuntimePortIdentity {
   agentSessionId: string;
 }
 
+export interface AcpxRuntimeGoalCapability {
+  version: number;
+  controlMethod: string;
+  actions: Array<"set" | "pause" | "resume" | "clear">;
+}
+
+export interface AcpxRuntimeGoalSnapshot {
+  objective: string;
+  status: "active" | "paused" | "blocked" | "limited" | "complete";
+  tokenBudget?: number | null;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  iterations?: number;
+  lastReason?: string | null;
+  createdAt?: number | string | null;
+  updatedAt?: number | string | null;
+}
+
 export interface AcpxRuntimeTurnInput {
   text: string;
   requestId: string;
@@ -87,12 +113,20 @@ export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
   setModel?(model: string): Promise<void>;
+  goalCapability?(): AcpxRuntimeGoalCapability | null;
+  goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
+  controlGoal?(
+    action: "set" | "pause" | "resume" | "clear",
+    objective?: string,
+  ): Promise<AcpxRuntimeGoalSnapshot | null>;
   startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn;
   close(input: { reason: string }): Promise<void>;
 }
 
 export interface AcpxRuntimePortOpenOptions {
   command: VerifiedAcpxCommandLease;
+  /** Replace a consumed launch snapshot after an ephemeral control session. */
+  refreshConsumedCommand?: () => Promise<void>;
   profile: QualifiedAcpxProfile;
   cwd: string;
   stateDirectory: string;
@@ -110,6 +144,7 @@ export interface AcpxRuntimePortOpenOptions {
   /** Abort provider admission and clean any runtime that resolves too late. */
   signal?: AbortSignal;
   mcpServers: readonly AcpxMcpServerBinding[];
+  onGoalUpdate?: (goal: AcpxRuntimeGoalSnapshot | null) => void;
   /**
    * Transfer the provider cleanup proof before a failed open settles. The host
    * keeps credentials fenced until this exact cleanup succeeds.
@@ -167,6 +202,7 @@ export interface OpenAcpxRuntimeHostOptions {
   model: string;
   permissionMode: NativeAcpxPermissionMode;
   systemInstructions?: string;
+  runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
   managedCodexCredentialSourcePath?: string;
   expectedIdentity?: AcpxExpectedSessionIdentity;
@@ -175,6 +211,7 @@ export interface OpenAcpxRuntimeHostOptions {
   /** Abort admission without admitting resources that resolve afterward. */
   signal?: AbortSignal;
   semanticTools?: AcpxSemanticToolSession;
+  onGoalUpdate?: (goal: AcpxRuntimeGoalSnapshot | null) => void;
 }
 
 const RETAINED_CLEANUP_RETRY_INITIAL_DELAY_MS = 10;
@@ -337,6 +374,7 @@ export class AcpxRuntimeHost {
             binding,
             agent: options.agent,
             environment: options.environment,
+            tools: options.semanticTools?.tools,
           }),
         dependencies.retainAdmissionCleanup,
       );
@@ -367,6 +405,18 @@ export class AcpxRuntimeHost {
             dependencies.reportRetainedCleanupFailure(failure),
         });
       }
+      if (options.agent === "claude") {
+        // The lifetime lease proves the previous provider has stopped. Refresh
+        // the assigned snapshot before every launch, including durable resume;
+        // Claude discovers user skills beneath its isolated CLAUDE_CONFIG_DIR.
+        const skillsHome = join(sandbox.agentHomeDirectory, "skills");
+        await releaseMaterializedNativeRuntimeSkills(skillsHome);
+        await materializeNativeRuntimeSkills(
+          options.runtimeContext ?? null,
+          skillsHome,
+        );
+        options.signal?.throwIfAborted();
+      }
       command = await acquireAbortableAdmissionResource({
         signal: options.signal,
         acquire: () => installation.openCommand(),
@@ -375,6 +425,11 @@ export class AcpxRuntimeHost {
         reportFailure: (failure) =>
           dependencies.reportRetainedCleanupFailure(failure),
       });
+      const commandOwner = createAcpxCommandLeaseOwner(
+        command,
+        () => installation.openCommand(),
+      );
+      command = commandOwner.command;
       toolBridge = options.semanticTools
         ? await acquireAbortableAdmissionResource({
             signal: options.signal,
@@ -395,6 +450,7 @@ export class AcpxRuntimeHost {
           options.assertWorkspaceHeld?.();
           return dependencies.openRuntime({
             command: command!,
+            refreshConsumedCommand: commandOwner.refreshConsumedCommand,
             profile,
             cwd: binding.workspacePath,
             stateDirectory: sandbox.stateDirectory,
@@ -422,6 +478,9 @@ export class AcpxRuntimeHost {
                   },
                 ]
               : [],
+            ...(options.onGoalUpdate === undefined
+              ? {}
+              : { onGoalUpdate: options.onGoalUpdate }),
             retainFailedAdmissionCleanup,
           });
         },
@@ -549,6 +608,24 @@ export class AcpxRuntimeHost {
 
   async status(): Promise<AcpxModelStatus> {
     return structuredClone(await this.#runtime.getStatus());
+  }
+
+  goalCapability(): AcpxRuntimeGoalCapability | null {
+    return this.#runtime.goalCapability?.() ?? null;
+  }
+
+  goalSnapshot(): AcpxRuntimeGoalSnapshot | null {
+    return this.#runtime.goalSnapshot?.() ?? null;
+  }
+
+  async controlGoal(
+    action: "set" | "pause" | "resume" | "clear",
+    objective?: string,
+  ): Promise<AcpxRuntimeGoalSnapshot | null> {
+    if (!this.#runtime.controlGoal) {
+      throw new Error("ACPX runtime does not expose session goal controls");
+    }
+    return await this.#runtime.controlGoal(action, objective);
   }
 
   startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn {

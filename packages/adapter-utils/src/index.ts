@@ -120,6 +120,8 @@ export {
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerModel,
+  paperclipRunnerTransitionConfig,
+  normalizeLegacyRunnerProvider,
   resolvePaperclipRunnerPermissionMode,
 } from "./paperclip-runner-permissions.js";
 export {

@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { loadShardDurations } from "../general-server-shard.mjs";
+import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
 import { IGNORED_SPECS, listE2eSpecs, selectE2eShard } from "../e2e-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -128,8 +128,10 @@ test("the duration manifest only names specs that still exist", () => {
 test("the weighted partition keeps the shards close to balanced", () => {
   const durations = loadShardDurations(durationsManifest);
   const specs = listE2eSpecs();
+  // New specs use the scheduler's median estimate until measured durations exist.
+  const fallbackWeight = defaultSuiteWeight(durations);
   const weights = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? 0), 0),
+    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0),
   );
 
   const heaviest = Math.max(...weights);
@@ -140,7 +142,7 @@ test("the weighted partition keeps the shards close to balanced", () => {
   // of on the PR critical path. A single indivisible spec (smoke-lab) can
   // legitimately exceed the even cut on its own, so the bound is floored at
   // the largest per-spec weight — the best any file-level partition can do.
-  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? 0));
+  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? fallbackWeight));
   const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
   assert.ok(
     heaviest <= bound,
@@ -222,6 +224,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   for (const jobId of [
     "typecheck_release_registry",
     "general_tests",
+    "verify_paperclip_runner",
     "build",
     "verify_serialized_server",
     "canary_dry_run",
@@ -243,11 +246,16 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity\]$/m,
+    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity\]$/m,
   );
   assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
   assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
   assert.match(verify, /test "\$GENERAL_TESTS_RESULT" = "skipped"/);
+  // Runner verification must participate in the legacy aggregate required
+  // check, or a runner regression could be merged while `verify` succeeds.
+  assert.match(verify, /RUNNER_VERIFICATION_RESULT: \$\{\{ needs\.verify_paperclip_runner\.result \}\}/);
+  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "success"/);
+  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "skipped"/);
   assert.match(verify, /test "\$BUILD_RESULT" = "skipped"/);
   // Both halves of the docker-context lane's gating: the result must be
   // wired into the aggregate's env AND asserted successful on full CI —
@@ -308,10 +316,11 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
     /policy:\n    needs: \[gate\][\s\S]{0,160}timeout-minutes: 10/,
     "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
   );
-  assert.match(
-    workflow,
-    /- name: Setup Node\.js\n        uses: actions\/setup-node@[0-9a-f]+[^\n]*\n        with:\n          node-version: 24\n          cache: pnpm/,
-    "the policy job must restore the pnpm cache before dependency resolution",
+  const policy = workflow.split("  policy:\n")[1].split("  typecheck_release_registry:\n")[0];
+  assert.doesNotMatch(
+    policy,
+    /cache: pnpm|uses: actions\/cache/,
+    "resolution-only policy must not restore or save a dependency store",
   );
   assert.match(
     workflow,
@@ -327,7 +336,7 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
   const restoreSteps = workflow.match(
     /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
   ) ?? [];
-  assert.equal(restoreSteps.length, 6, "every downstream install job must restore a required regenerated artifact");
+  assert.equal(restoreSteps.length, 7, "every downstream install job must restore a required regenerated artifact");
   assert.doesNotMatch(
     workflow,
     /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,

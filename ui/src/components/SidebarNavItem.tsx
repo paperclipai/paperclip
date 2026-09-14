@@ -182,7 +182,7 @@ export function SidebarNavItem({
         </Badge>
       )}
       {!rail && (hasLive || liveAccessory) && (
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap">
           {liveAccessory}
           {hasLive && (
             <>

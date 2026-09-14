@@ -74,6 +74,7 @@ export async function resumeNativeWorkspaceFinalization(input: {
   const previous = await input.db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, bound.companyId),
     eq(workspaceOperations.heartbeatRunId, input.runId),
+    eq(workspaceOperations.issueId, bound.issueId),
     eq(workspaceOperations.phase, "workspace_finalize"),
   )).orderBy(desc(workspaceOperations.createdAt)).limit(1).then((rows) => rows[0] ?? null);
 
@@ -98,7 +99,10 @@ export async function resumeNativeWorkspaceFinalization(input: {
   const recorder = workspaceOperationService(input.db).createRecorder({
     companyId: bound.companyId,
     heartbeatRunId: input.runId,
-    executionWorkspaceId: workspace?.id ?? workspaceId,
+    // The native binding also uses this field as a directory-only containment token.
+    // Only attach it to the operation when it resolves to a company-owned row, because
+    // workspace_operations.execution_workspace_id is a real execution-workspace FK.
+    executionWorkspaceId: workspace?.id ?? null,
     issueId: bound.issueId,
   });
   return recorder.recordOperation({

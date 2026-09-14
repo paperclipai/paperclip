@@ -54,6 +54,7 @@ export function normalizeIssueQueuedCommentQueue(
     .map((entry, position) => ({ ...entry, position }));
   const disposition = source?.steeringDisposition;
   const state = source?.state;
+  const wait = record(source?.executionWait);
 
   return {
     issueId:
@@ -80,6 +81,9 @@ export function normalizeIssueQueuedCommentQueue(
         ? (disposition as IssueQueuedCommentSteeringDisposition)
         : "unsupported",
     entries,
+    executionWait: typeof wait?.reason === "string" && typeof wait?.message === "string"
+      ? { reason: wait.reason, message: wait.message }
+      : null,
   };
 }
 
@@ -145,5 +149,6 @@ export function mergePendingIssueQueuedComments(params: {
         ? "temporarily_unavailable"
         : "unsupported"),
     entries,
+    executionWait: params.authoritativeQueue?.executionWait ?? null,
   };
 }

@@ -73,6 +73,60 @@ describe("deriveRecoveryDisplayState", () => {
 
   const waitBase = { ...base, kind: "deliberate_wait_without_target" as const };
 
+  it.each([null, "delegated"] as const)(
+    "shows a board-owned watchdog as needing recovery, not observing work (%s)",
+    (outcome) => {
+      const action = {
+        ...base,
+        kind: "active_run_watchdog" as const,
+        ownerType: "board" as const,
+        outcome,
+        wakePolicy: null,
+        evidence: {
+          runId: "failed-native-run",
+          sourceFailureCode: "native_event_replay_conflict",
+          recoveryDisposition: "native_event_replay_conflict",
+        },
+      };
+      expect(deriveRecoveryDisplayState(action)).toBe("needed");
+      expect(deriveActiveRecoveryDisplayState(action)).toBe("needed");
+      expect(
+        recoveryChipLabel(
+          deriveActiveRecoveryDisplayState(action)!,
+          action.kind,
+        ),
+      ).toBe("Recovery needed");
+    },
+  );
+
+  it.each([
+    ["resolved", "resolved"],
+    ["cancelled", "resolved"],
+    ["escalated", "escalated"],
+  ] as const)(
+    "keeps %s precedence for a board-owned watchdog",
+    (status, expected) => {
+      expect(
+        deriveRecoveryDisplayState({
+          ...base,
+          kind: "active_run_watchdog",
+          ownerType: "board",
+          status,
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it("preserves observation for an agent-owned watchdog", () => {
+    expect(
+      deriveRecoveryDisplayState({
+        ...base,
+        kind: "active_run_watchdog",
+        ownerType: "agent",
+      }),
+    ).toBe("observe_only");
+  });
+
   it("stays quiet while a bounded owner retry is stored", () => {
     expect(
       deriveRecoveryDisplayState({

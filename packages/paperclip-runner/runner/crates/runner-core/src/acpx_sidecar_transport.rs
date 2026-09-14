@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
@@ -82,6 +82,7 @@ pub struct AcpxSidecarTransport {
     last_event_sequence: u64,
     buffered_events: VecDeque<AcpxSidecarEvent>,
     stderr_tail: BoundedLogBuffer,
+    stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
 }
 
@@ -154,6 +155,7 @@ impl AcpxSidecarTransport {
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
+            stderr_categories: BTreeSet::new(),
             poisoned: false,
         })
     }
@@ -323,7 +325,7 @@ impl AcpxSidecarTransport {
             match self.process.recv_timeout(remaining) {
                 Ok(ProcessOutput::Stdout(line)) => return Ok(Some(line)),
                 Ok(ProcessOutput::Stderr(line)) => {
-                    self.stderr_tail.push(redact_diagnostic(&line));
+                    self.record_stderr(&line);
                 }
                 Ok(ProcessOutput::StdoutError(message)) => {
                     return Err(LocalRunnerError::invalid(format!(
@@ -412,7 +414,7 @@ impl AcpxSidecarTransport {
             };
             match output {
                 Some(ProcessOutput::Stderr(line)) => {
-                    self.stderr_tail.push(redact_diagnostic(&line));
+                    self.record_stderr(&line);
                 }
                 Some(ProcessOutput::StderrClosed) | None => break,
                 Some(ProcessOutput::Stdout(_))
@@ -424,11 +426,31 @@ impl AcpxSidecarTransport {
 
     fn diagnostic_suffix(&self) -> String {
         let diagnostics = self.stderr_tail.snapshot().lines.join("\n");
-        if diagnostics.is_empty() {
+        let categories = if self.stderr_categories.is_empty() {
             String::new()
         } else {
-            format!(" stderrTail={diagnostics:?}")
+            format!(
+                " stderrCategories={}",
+                self.stderr_categories
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        if diagnostics.is_empty() {
+            categories
+        } else {
+            format!("{categories} stderrTail={diagnostics:?}")
         }
+    }
+
+    fn record_stderr(&mut self, line: &str) {
+        // Only fixed categories cross this boundary. Raw errors, stack paths,
+        // identifiers, and credential-bearing strings remain fully redacted.
+        self.stderr_categories
+            .extend(stderr_diagnostic_categories(line));
+        self.stderr_tail.push(redact_diagnostic(line));
     }
 
     fn poison(&mut self) {
@@ -598,6 +620,53 @@ fn redact_diagnostic(value: &str) -> String {
     }
 }
 
+fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
+    const CATEGORIES: &[(&str, &str)] = &[
+        ("TypeError", "javascript_type_error"),
+        ("ReferenceError", "javascript_reference_error"),
+        ("SyntaxError", "javascript_syntax_error"),
+        ("RangeError", "javascript_range_error"),
+        ("AssertionError", "javascript_assertion_error"),
+        ("UnhandledPromiseRejection", "unhandled_rejection"),
+        ("ERR_UNHANDLED_REJECTION", "unhandled_rejection"),
+        ("ERR_UNHANDLED_ERROR", "unhandled_event_error"),
+        ("ERR_INVALID_ARG_TYPE", "invalid_argument_type"),
+        ("ERR_INVALID_ARG_VALUE", "invalid_argument_value"),
+        ("ERR_STREAM_WRITE_AFTER_END", "stream_write_after_end"),
+        ("ERR_STREAM_DESTROYED", "stream_destroyed"),
+        ("ERR_IPC_CHANNEL_CLOSED", "ipc_channel_closed"),
+        ("ERR_SOCKET_CLOSED", "socket_closed"),
+        ("ERR_MODULE_NOT_FOUND", "module_not_found"),
+        ("MODULE_NOT_FOUND", "module_not_found"),
+        ("EPIPE", "broken_pipe"),
+        ("ECONNRESET", "connection_reset"),
+        ("EADDRINUSE", "address_in_use"),
+        ("ENOENT", "file_not_found"),
+        ("EACCES", "permission_denied"),
+        ("EPERM", "permission_denied"),
+        (
+            "ACPX_PERSISTED_SESSION_IDENTITY_MISMATCH",
+            "persisted_session_identity_mismatch",
+        ),
+        ("SESSION_RESUME_REQUIRED", "session_resume_required"),
+    ];
+    let mut categories: BTreeSet<&'static str> = value
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter_map(|token| {
+            CATEGORIES
+                .iter()
+                .find_map(|(known, category)| (token == *known).then_some(*category))
+        })
+        .collect();
+    if value.contains("triggerUncaughtException") && value.contains("fromPromise") {
+        categories.insert("unhandled_rejection");
+    }
+    if value.contains("ACPX provider spawned after ownership admission was sealed") {
+        categories.insert("provider_spawn_after_ownership_seal");
+    }
+    categories
+}
+
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
@@ -642,6 +711,17 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         _ => {}
     }
     match error.message.as_str() {
+        "ACPX provider spawned after ownership admission was sealed" => {
+            "provider_spawn_after_ownership_seal"
+        }
+        "ACPX recovery identity conflicts with the immutable session configuration" => {
+            "recovery_configuration_mismatch"
+        }
+        "ACPX recovery identity does not match the persisted runtime record" => {
+            "recovery_identity_mismatch"
+        }
+        "ACPX provider lifetime lease is unavailable" => "provider_lifetime_unavailable",
+        "Managed Codex credential home already has an active lease" => "provider_lifetime_owned",
         "ACPX session handshake exceeded its admission deadline" => "session_handshake_timeout",
         "ACPX provider lifetime guardian exited before ownership transfer" => {
             "provider_guardian_exit"
@@ -733,6 +813,39 @@ mod tests {
                 "bounded provider admission failed",
             )),
             "session_handshake_timeout"
+        );
+        for (message, classification) in [
+            (
+                "ACPX recovery identity conflicts with the immutable session configuration",
+                "recovery_configuration_mismatch",
+            ),
+            (
+                "ACPX recovery identity does not match the persisted runtime record",
+                "recovery_identity_mismatch",
+            ),
+            (
+                "ACPX provider lifetime lease is unavailable",
+                "provider_lifetime_unavailable",
+            ),
+        ] {
+            assert_eq!(
+                response_error_classification(&error("acpx_sidecar_command_failed", message)),
+                classification
+            );
+            assert_eq!(
+                response_error_classification(&error(
+                    "acpx_sidecar_command_failed",
+                    &format!("{message}: private-provider-detail")
+                )),
+                "unclassified"
+            );
+        }
+        assert_eq!(
+            response_error_classification(&error(
+                "acpx_sidecar_command_failed",
+                "Managed Codex credential home already has an active lease"
+            )),
+            "provider_lifetime_owned"
         );
         let admission_failures = [
             (

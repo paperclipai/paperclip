@@ -1,0 +1,17 @@
+{
+  "prompt": "What would you like to do?",
+  "submitLabel": "Continue",
+  "options": [
+    {
+      "id": "interview",
+      "label": "Interview me and propose a plan and an agent team to execute it.",
+      "description": "A few questions about what you're building, then a short plan and the team to carry it out, for you to approve."
+    },
+    {
+      "id": "task",
+      "label": "I have a task in mind",
+      "description": "Describe it and I'll propose how to get it done.",
+      "freeText": true
+    }
+  ]
+}

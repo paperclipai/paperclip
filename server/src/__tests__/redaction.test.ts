@@ -206,6 +206,7 @@ describe("redaction", () => {
       "runner.turn.submit",
       "runner.session.startup",
       "provider.turn.queue",
+      "question_response.to_run_created",
       "native.session.execute",
       "native.result.finalize",
       "task.run.measured",

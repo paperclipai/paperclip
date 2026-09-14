@@ -186,11 +186,13 @@ vi.mock("./InlineEntitySelector", async () => {
       {
         value: string;
         placeholder?: string;
+        className?: string;
+        triggerDataSlot?: string;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, renderTriggerValue }, ref) {
+    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, renderTriggerValue }, ref) {
       return (
-        <button ref={ref} type="button">
+        <button ref={ref} type="button" className={className} data-slot={triggerDataSlot}>
           {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
         </button>
       );
@@ -410,6 +412,31 @@ describe("NewIssueDialog", () => {
     expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
+  });
+
+  it("uses the compact composer control proportions for mobile task fields", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const compactControls = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="new-issue-compact-control"]'),
+    );
+    const prefix = compactControls.find((control) => control.textContent === "PAP");
+    const assignee = compactControls.find((control) => control.textContent === "Assignee");
+    const project = compactControls.find((control) => control.textContent === "Project");
+    const status = compactControls.find((control) => control.textContent?.trim() === "Todo");
+    const upload = compactControls.find((control) => control.textContent?.trim() === "Upload");
+    const mode = compactControls.find((control) => control.hasAttribute("data-issue-work-mode-chip"));
+    const more = container.querySelector<HTMLElement>('[data-testid="new-issue-more-menu-trigger"]');
+
+    expect(prefix?.className).toContain("p-1.5");
+    for (const control of [assignee, project, status, upload, mode]) {
+      expect(control?.className).toContain("h-8");
+      expect(control?.className).toContain("px-2.5");
+    }
+    expect(more?.className).toContain("size-8");
+
+    act(() => root.unmount());
   });
 
   it("submits parent and goal context for sub-issues", async () => {

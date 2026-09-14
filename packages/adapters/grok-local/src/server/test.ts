@@ -12,11 +12,16 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   describeAdapterExecutionTarget,
+  prepareAdapterExecutionTargetRuntime,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
+import { rm } from "node:fs/promises";
+import path from "node:path";
+import { stageGrokHomeForSync } from "./grok-home.js";
+import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { parseGrokJsonl } from "./parse.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
@@ -145,6 +150,24 @@ export async function testEnvironment(
   }
 
   const env = normalizeEnv(config.env);
+  let stagedHome: string | undefined;
+  let restore: (() => Promise<void>) | undefined;
+  try {
+    if (config.managedAiConnection && targetIsRemote) {
+      const hostHome = env.GROK_HOME;
+      stagedHome = await stageGrokHomeForSync(hostHome, { runId });
+      const prepared = await prepareAdapterExecutionTargetRuntime({
+        runId, target, adapterKey: "grok", workspaceLocalDir: cwd,
+        assets: [{ key: "home", localDir: stagedHome, followSymlinks: true,
+          restore: async ({ assetDir, readFile }) => { await copyBackGrokAuth({
+            readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+            hostHomeDir: hostHome, log: () => {},
+          }); },
+        }],
+      });
+      env.GROK_HOME = prepared.assetDirs.home;
+      restore = () => prepared.restoreWorkspace(() => {});
+    }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
 
   try {
@@ -343,4 +366,5 @@ export async function testEnvironment(
     checks,
     testedAt: new Date().toISOString(),
   };
+  } finally { try { await restore?.(); } finally { if (stagedHome) await rm(stagedHome, { recursive: true, force: true }); } }
 }

@@ -6,6 +6,7 @@ const websocketState = vi.hoisted(() => ({
   failConnectAttempts: 0,
   failAgentRequests: 0,
   events: [] as string[],
+  messages: [] as string[],
 }));
 
 vi.mock("ws", async () => {
@@ -35,7 +36,8 @@ vi.mock("ws", async () => {
     }
 
     send(payload: string) {
-      const request = JSON.parse(payload) as { id: string; method: string };
+      const request = JSON.parse(payload) as { id: string; method: string; params?: { message?: string } };
+      if (request.method === "agent") websocketState.messages.push(request.params?.message ?? "");
       websocketState.events.push(`send:${request.method}`);
       if (request.method === "agent" && websocketState.failAgentRequests > 0) {
         websocketState.failAgentRequests--;
@@ -105,10 +107,39 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     websocketState.failConnectAttempts = 0;
     websocketState.failAgentRequests = 0;
     websocketState.events = [];
+    websocketState.messages = [];
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it.each([false, true])("sends conversation policy without the issue-completion workflow (resumed=%s)", async (resumed) => {
+    const ctx = createContext();
+    const directive = "Chat directive: clarify goals and hand plans off to project tasks.";
+    ctx.context = {
+      ...ctx.context,
+      conversationMode: true,
+      paperclipTaskMarkdown: directive,
+      paperclipTaskMarkdownCompact: directive,
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "issue-1", workMode: "planning", status: "in_progress" },
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    };
+    if (resumed) ctx.runtime.sessionId = "prior-session";
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(websocketState.messages).toHaveLength(1);
+    const prompt = websocketState.messages[0]!;
+    expect(prompt).toContain(directive);
+    expect(prompt).toContain("X-Paperclip-Run-Id");
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("Create child issues");
+    expect(prompt).not.toContain('"status":"done"');
+    expect(prompt).not.toContain("GET /api/issues/{issueId}/comments");
   });
 
   it("reports dispatch after transport setup and before the remote agent request", async () => {

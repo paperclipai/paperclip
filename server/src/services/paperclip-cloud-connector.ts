@@ -10,6 +10,8 @@ import {
   type KeyObject,
 } from "node:crypto";
 import {
+  DEFAULT_OWNERSHIP_AVAILABILITY,
+  type AppDefinition,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isGitHubConnectorProfileId,
@@ -487,7 +489,34 @@ export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
   return value === "paperclip_cloud_connector" || value === "paperclip_id_connector";
 }
 
+/** Use the same signed instance profiles for catalog display and setup validation. */
+export function appWithPaperclipCloudConnectorAvailability(
+  app: AppDefinition,
+  profiles: readonly string[],
+): AppDefinition {
+  const enabledProfiles = new Set(profiles);
+  const methods = app.methods.filter((method) =>
+    !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+  );
+  return {
+    ...app,
+    methods,
+    ownershipAvailability: {
+      ...DEFAULT_OWNERSHIP_AVAILABILITY,
+      ...app.ownershipAvailability,
+      platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
+    },
+  };
+}
+
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;
+let capabilityCacheGeneration = 0;
+
+export function invalidatePaperclipCloudConnectorCapabilities(): void {
+  capabilityCacheGeneration += 1;
+  capabilityCache = null;
+}
 
 export async function paperclipCloudConnectorCapabilitiesFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -506,9 +535,12 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
   if (!config) return [];
   const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
   if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
+  const generation = capabilityCacheGeneration;
   const connector = createPaperclipCloudConnector({ config });
   const profiles = await connector.getCapabilities();
-  capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  if (generation === capabilityCacheGeneration) {
+    capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  }
   return profiles;
 }
 

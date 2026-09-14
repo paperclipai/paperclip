@@ -87,6 +87,7 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       name: "kv-demo",
       uid: "app-gallery-link-test/kv-demo",
       connectionKind: "managed",
+      connectionPurpose: "tool",
       ownership: "customer",
       transport: "mcp_remote",
       authKind: "none",

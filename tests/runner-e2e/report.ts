@@ -1,3 +1,4 @@
+import { discoverReportCatalog } from "./report-catalog.js";
 import path from "node:path";
 import {
   copyFile,
@@ -188,6 +189,13 @@ async function main() {
     ]);
   }
 
+  const reportCatalog = discoverReportCatalog({
+    catalog: runnerMatrix,
+    expected,
+    results: [...candidates.values()].flatMap((entries) =>
+      entries.map((entry) => entry.result),
+    ),
+  });
   const selected: AggregatedResult[] = [];
   for (const executionId of expected) {
     const attempts = (candidates.get(executionId) ?? []).sort((left, right) => {
@@ -205,9 +213,9 @@ async function main() {
     });
     if (attempts.length === 0) {
       const now = new Date().toISOString();
-      const execution = runnerMatrix.find(
+      const execution = reportCatalog.find(
         (candidate) => candidate.id === executionId,
-      );
+      )!;
       const missing: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2",
         executionId,

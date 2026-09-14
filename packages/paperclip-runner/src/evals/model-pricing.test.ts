@@ -31,13 +31,15 @@ describe("model pricing", () => {
   });
 
   it.each([
+    ["gpt-5.6-luna", 0.2, 0.02, 1.2],
+    ["claude-sonnet-5", 2, 0.2, 10],
     ["openrouter/anthropic/claude-sonnet-5", 2, 0.2, 10],
     ["openrouter/qwen/qwen3.8-max-0902", 2, 0.25, 6],
     ["openrouter/google/gemini-3.8-flash", 0.75, 0.075, 3.75],
     ["openrouter/z-ai/glm-5.3", 1.4, 0.14, 4.4],
-    ["openrouter/deepseek/deepseek-v4-flash-0731", 0.065, 0.016, 0.18],
+    ["openrouter/deepseek/deepseek-v4-flash-0731", 0.14, 0.028, 0.28],
     ["openrouter/openai/gpt-6-astra", 10, 1, 50],
-  ])("pins the OpenRouter breadth price for %s", (model, input, cachedInput, output) => {
+  ])("pins the provider list price for %s", (model, input, cachedInput, output) => {
     expect(
       estimateModelCostNanodollars(model, {
         inputTokens: 1_000,

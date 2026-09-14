@@ -1214,6 +1214,7 @@ export function toolAccessPolicyService(db: Db) {
     const matchingPolicies = policies
       .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
       .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+    const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
     for (const { policy, conditionEvaluation } of matchingPolicies) {
       const policyExplanation = {
         policyId: policy.id,
@@ -1255,6 +1256,10 @@ export function toolAccessPolicyService(db: Db) {
         const rule = trustRuleConfig(policy);
         if (!rule || !trustRuleIsActive(policy)) continue;
         if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
+        // Remembered permissions cannot override an explicit block. Preserve
+        // priority semantics for ordinary allow/require-approval policies.
+        if (explicitBlock) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
+
         if (trustRuleNeedsReview(policy, ctx)) {
           return decision(
             "require_approval",
@@ -1678,7 +1683,12 @@ export function toolAccessPolicyService(db: Db) {
       scope: input.body.scope,
     });
     assertReviewedTrustRuleSelectors(selectors, reviewedSelectors);
-    const filters = assertReviewedTrustRuleArgumentFilters(invocation, input.body.argumentFilters);
+    if (input.body.argumentMode === "action" && (input.actor?.agentId || !invocation.agentId || !invocation.connectionId || actionRequest.approvalId)) {
+      throw unprocessable("Action-wide permission requires a human-approved agent connection action without a formal approval gate");
+    }
+    const filters = input.body.argumentMode === "action"
+      ? { allowAny: true }
+      : assertReviewedTrustRuleArgumentFilters(invocation, input.body.argumentFilters);
     const approvalThreshold = input.body.approvalThreshold ?? 2;
     const approvedCount = await matchingApprovedActionRequestCount({
       companyId: input.companyId,

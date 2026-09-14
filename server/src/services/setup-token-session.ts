@@ -109,6 +109,7 @@ export const SETUP_TOKEN_CANCELLABLE_STATES: readonly SetupTokenSessionState[] =
  * per environment.
  */
 export interface SetupTokenSessionScope {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   companyId: string;
   ownerUserId: string;
   // The adapter of the login. It is part of the session identity.
@@ -218,6 +219,7 @@ export interface SetupTokenLeaseManager {
  * column on the row.
  */
 export interface SetupTokenCleanupRecord {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   sessionId: string;
   companyId: string;
   ownerUserId: string;
@@ -684,6 +686,7 @@ export interface SetupTokenPromptView {
  * response returns the login URL through the confidential transport guard.
  */
 export interface SetupTokenSessionDescriptor {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   sessionId: string;
   state: SetupTokenSessionState;
   environmentId: string;
@@ -906,6 +909,7 @@ export class SetupTokenSessionService {
 
     try {
       await this.store.record({
+        aiConnection: scope.aiConnection,
         sessionId,
         companyId: scope.companyId,
         ownerUserId: scope.ownerUserId,
@@ -1118,6 +1122,7 @@ export class SetupTokenSessionService {
       environmentId: session.scope.environmentId,
       deadline: session.deadline,
       loginUrl: session.loginUrl,
+      ...(session.scope.aiConnection ? { aiConnection: session.scope.aiConnection } : {}),
     };
   }
 
@@ -1192,6 +1197,7 @@ export class SetupTokenSessionService {
     if (!durable) return null;
     return {
       sessionId: durable.sessionId,
+      ...(durable.aiConnection ? { aiConnection: durable.aiConnection } : {}),
       state: durable.state,
       environmentId: durable.environmentId,
       deadline: durable.deadline,
@@ -1452,6 +1458,7 @@ type AdapterAuthSessionRow = typeof adapterAuthSessions.$inferSelect;
 function toCleanupRecord(row: AdapterAuthSessionRow): SetupTokenCleanupRecord {
   return {
     sessionId: row.publicSessionId,
+    ...(row.aiConnection ? { aiConnection: row.aiConnection } : {}),
     companyId: row.companyId,
     ownerUserId: row.startedByUserId,
     adapterType: row.adapterType,
@@ -1540,6 +1547,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
       // service session id, which the service builds from a CSPRNG at start.
       await db.insert(adapterAuthSessions).values({
         companyId: record.companyId,
+        aiConnection: record.aiConnection,
         environmentId: record.environmentId,
         adapterType: record.adapterType as AgentAdapterType,
         startedByUserId: record.ownerUserId,

@@ -1,3 +1,4 @@
+import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -12,6 +13,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueRecoveryActions,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
@@ -579,6 +581,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       if (!claim || claim.kind !== "resume_dead_runner") {
         throw new Error("Expected dead-runner recovery claim");
       }
+      expect(await hasNativeLocalProcessStop(fixture.db, companyId, fixture.runId)).toBe(true);
+      const [stoppedRun] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(stoppedRun.processPid).toBeNull();
+      expect(stoppedRun.processGroupId).toBeNull();
 
       restored = createRunnerdCodexTransport({
         ...options,
@@ -969,6 +975,23 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     ).resolves.toEqual([
       { controllerGeneration: 5, providerAttempt: 0 },
     ]);
+  });
+
+  it("terminalizes the recorded failed-checkpoint incident atomically instead of resuming it on upgrade", async () => {
+    const fixture = await seedRun("FAILED-CHECKPOINT");
+    await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: {
+      terminal: { runTerminalState: "failed", turnTerminalState: "failed" },
+      providerSessionId: "unusable-provider-session",
+    } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const input = { db: fixture.db, controller: successor, restartKind: "hard" as const, runIds: [fixture.runId] };
+    expect(await claimNativeRestartRecoveries(input)).toEqual([{ kind: "blocked", runId: fixture.runId, reason: "provider_checkpoint_permanently_failed" }]);
+    expect(await claimNativeRestartRecoveries(input)).toEqual([]);
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(run).toMatchObject({ status: "failed", nativePhase: "terminal_failure", errorCode: "native_restart_recovery_blocked" });
+    expect(issue).toMatchObject({ assigneeAgentId: agentId, executionRunId: null });
+    expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(1);
   });
 
   it("classifies every requested recovery candidate without an implicit 100-run cap", async () => {

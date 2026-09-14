@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import type { TaskChatProtocolItem, TaskChatProviderActivityItem } from "./task-chat-model";
-import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
+import { TaskChatProtocolActivityRow, TaskChatProtocolActivityDetails } from "./TaskChatProtocolActivityRow";
 
 describe("TaskChatProtocolActivityRow", () => {
   let container: HTMLDivElement;
@@ -119,6 +119,20 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(container.querySelector('[data-testid="task-chat-workspace-change-details"] pre')).toBeNull();
   });
 
+  it.each(["javascript:alert(1)", "java\nscript:alert(1)", "data:text/html,unsafe", "file:///etc/passwd", "vbscript:unsafe"])("rejects unsafe resource URLs in rows and details: %s", (href) => {
+    const item: TaskChatProtocolItem = { id: "unsafe-resource", kind: "protocol", surface: "resource", resourceKind: "document", title: "Notes", subtitle: "Document", href };
+    render(item);
+    expect(container.querySelector("a")).toBeNull();
+    act(() => root.render(<TaskChatProtocolActivityDetails item={item} />));
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toContain("Notes");
+  });
+
+  it.each(["https://example.com/report", "http://example.com/report", "/documents/notes", "#notes"])("allows safe resource links in details: %s", (href) => {
+    act(() => root.render(<TaskChatProtocolActivityDetails item={{ id: "resource", kind: "protocol", surface: "resource", resourceKind: "document", title: "Notes", subtitle: "Document", href }} />));
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(href);
+  });
+
   it("renders durable resources as direct compact links", () => {
     render({
       id: "resource",
@@ -162,6 +176,24 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(row?.textContent).toContain("Searching the task index · Paperclip · search_tasks");
     expect(row?.textContent).not.toMatch(/Ran a tool|Tool execution|tool call/i);
     expect(row?.querySelector('[data-testid="task-chat-protocol-activity-icon"]')?.querySelectorAll("path")).toHaveLength(3);
+  });
+
+  it("shows a notice as a warning and full-width message without metadata or a disclosure", () => {
+    const summary = "Project-local configuration is disabled.\nTrust the repository to load its hooks.";
+    render({
+      id: "notice", kind: "protocol", surface: "provider_activity", family: "provider_notice",
+      eventType: "provider.notice.recorded", status: "informational", title: "Provider notice", summary,
+      details: [
+        { label: "Category", value: "configWarning" },
+        { label: "Recoverable", value: "Yes" },
+        { label: "Summary", value: summary },
+      ], steps: [], links: [], children: [],
+    });
+    expect(container.textContent).toBe(`Warning${summary}`);
+    expect(container.querySelector("p")?.textContent).toBe(summary);
+    expect(container.querySelector("dl")).toBeNull();
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-protocol-activity-icon"]')).not.toBeNull();
   });
 
   it("does not make an informational row focusable when it has no details", () => {

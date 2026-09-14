@@ -1,9 +1,18 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  NATIVE_RUNTIME_ASSET_SCHEMA,
+  PAPERCLIP_EXECUTION_PROMPT,
+  PAPERCLIP_EXECUTION_PROMPT_REVISION,
+  canonicalNativeRuntimeContextDigest,
+  nativeRuntimePromptDigest,
+  type NativeRuntimeContextSnapshot,
+} from "../../contracts/runtime-context.js";
+import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
@@ -166,6 +175,112 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it("automatically permits only admitted Paperclip reads in the Claude SDK", async () => {
+    const fixture = await hostFixture();
+    const dependencies = fixture.dependencies({
+      openRuntime: async (options) => {
+        const settings = JSON.parse(await readFile(
+          join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "settings.json"),
+          "utf8",
+        ));
+        expect(settings.permissions).toEqual({
+          allow: ["mcp__paperclip__get_task_context"],
+        });
+        expect(options.mcpServers).toMatchObject([
+          { name: "paperclip", runnerOwned: true },
+        ]);
+        return runtimePort({
+          getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }),
+        });
+      },
+    });
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options,
+      agent: "claude",
+      model: "claude-sonnet-5",
+      permissionMode: "approve-reads",
+      semanticTools: {
+        tools: ["get_task_context", "write_document", "unknown_read"].map((name) => ({
+          name,
+          inputSchema: { type: "object" },
+          // Supplied hints cannot grant write or unknown operations read access.
+          annotations: { readOnlyHint: true, effect: "read" },
+        })),
+        handler: async () => ({}),
+      },
+    }, dependencies);
+    await host.close({ reason: "read permission verified" });
+  });
+
+  it("loads assigned Claude skills before launch and refreshes them when reopening", async () => {
+    const fixture = await hostFixture();
+    const skillRoot = join(fixture.root, "assigned-source");
+    await mkdir(join(skillRoot, "references"), { recursive: true });
+    await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Read the reference.\n---\nRead references/answer.txt.");
+    await writeFile(join(skillRoot, "references", "answer.txt"), "ASSIGNED_SKILL_MARKER");
+    const digest = "0".repeat(64);
+    const bundle = {
+      schema: NATIVE_RUNTIME_ASSET_SCHEMA,
+      digest,
+      manifestDigest: digest,
+      rootPath: skillRoot,
+      fileCount: 2,
+      totalBytes: 100,
+    };
+    const snapshot = {
+      prompt: {
+        revision: PAPERCLIP_EXECUTION_PROMPT_REVISION,
+        text: PAPERCLIP_EXECUTION_PROMPT,
+        digest: nativeRuntimePromptDigest(),
+      },
+      instructions: { entryPath: "AGENTS.md", bundle },
+      skills: [{ key: "assigned", runtimeName: "assigned", versionId: "v1", bundle }],
+      mcp: { assignmentSetId: "none", digest, bindingId: null },
+    } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
+    const context = {
+      ...snapshot,
+      aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot),
+    };
+    let skillsHome = "";
+    let assigned = true;
+    const dependencies = fixture.dependencies({
+      openRuntime: async (options) => {
+        skillsHome = join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "skills");
+        expect(await readdir(skillsHome)).toEqual(assigned ? ["assigned"] : []);
+        if (assigned) {
+          const reference = join(skillsHome, "assigned", "references", "answer.txt");
+          expect(await readFile(reference, "utf8")).toBe("ASSIGNED_SKILL_MARKER");
+          expect((await stat(reference)).mode & 0o222).toBe(0);
+        }
+        return runtimePort({
+          getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }),
+        });
+      },
+    });
+    const options = {
+      ...fixture.options,
+      agent: "claude" as const,
+      model: "claude-sonnet-5",
+      permissionMode: "deny-all" as const,
+    };
+    try {
+      // Fresh open and a provider reopen both have the complete bundle.
+      for (let index = 0; index < 2; index += 1) {
+        const host = await AcpxRuntimeHost.open(
+          { ...options, runtimeContext: context },
+          dependencies,
+        );
+        await host.close({ reason: "reopen test" });
+      }
+      // No stale assignment survives a later launch without runtime context.
+      assigned = false;
+      const host = await AcpxRuntimeHost.open(options, dependencies);
+      await host.close({ reason: "test complete" });
+    } finally {
+      if (skillsHome) await releaseMaterializedNativeRuntimeSkills(skillsHome);
+    }
+  });
+
   it("rejects a pre-aborted admission before acquiring provider resources", async () => {
     const fixture = await hostFixture();
     const controller = trackedAdmissionController();
@@ -551,14 +666,14 @@ describe("ACPX runtime host", () => {
     const fixture = await hostFixture();
     let selected = false;
     const setModel = vi.fn(async (model: string) => {
-      expect(model).toBe("sonnet");
+      expect(model).toBe("claude-sonnet-5");
       selected = true;
     });
     const runtime = runtimePort({
       getStatus: async () => ({
         models: {
-          currentModelId: selected ? "sonnet" : "default",
-          availableModelIds: ["default", "sonnet"],
+          currentModelId: selected ? "claude-sonnet-5" : "default",
+          availableModelIds: ["default", "claude-sonnet-5"],
         },
       }),
       setModel,

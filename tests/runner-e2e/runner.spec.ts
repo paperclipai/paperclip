@@ -1,3 +1,4 @@
+import { runChatFlow } from "./chat-flow.js";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
 import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
+import { setupConnectionReview } from "./connection-reviews.js";
 import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, type MatcherResult } from "./matchers.js";
 import {
@@ -604,6 +606,7 @@ for (const execution of executions) {
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     let fixtures: LiveFixtureValues | undefined;
+    let reviewProvider: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
     let issue: IssueRecord | undefined;
     let selectedRuns: RunRecord[] = [];
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
@@ -626,6 +629,7 @@ for (const execution of executions) {
 
     const isReviewedFixtureScreenshotRoute = () =>
       isPublicRunnerScreenshotRoute(page.url(), {
+        chatAgentId: execution.task.flow === "agent_chat" ? fixtures?.agent.id : undefined,
         issuePrefix: fixtures?.company.issuePrefix,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier,
@@ -668,10 +672,10 @@ for (const execution of executions) {
     };
 
     const cancelActiveRunsForCleanup = async () => {
-      if (!issue) return;
-      const cleanupIssueId = issue.id;
+      if (!issue && !(execution.task.flow === "agent_chat" && fixtures)) return;
+      const cleanupIssueId = issue?.id;
       const runs = await api.get<RunRecord[]>(
-        `/api/issues/${cleanupIssueId}/runs`,
+        execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
       );
       const activeRunIds = [
         ...new Set(
@@ -692,7 +696,7 @@ for (const execution of executions) {
       await pollUntil({
         label: `cleanup cancellation for issue ${cleanupIssueId}`,
         deadlineAt: Date.now() + 45_000,
-        load: () => api.get<RunRecord[]>(`/api/issues/${cleanupIssueId}/runs`),
+        load: () => api.get<RunRecord[]>(execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
         accept: (currentRuns) =>
           currentRuns
             .filter((run) => activeIds.has(run.id))
@@ -702,7 +706,16 @@ for (const execution of executions) {
     };
 
     const captureFailureApiState = async () => {
-      if (!fixtures || !issue) return;
+      if (!fixtures) return;
+      if (execution.task.flow === "agent_chat" && !issue) {
+        const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
+        selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
+        // Settings are already restored on failure, so chat resolution may be
+        // gated. Direct task access still permits evidence and usage capture.
+        const sourceId = selectedRuns.map(run => record(run.contextSnapshot).issueId).find(id => typeof id === "string");
+        if (typeof sourceId === "string") issue = await api.get<IssueRecord>(`/api/issues/${sourceId}`);
+      }
+      if (!issue) return;
       const capture = async <T>(operation: () => Promise<T>) =>
         operation().catch((error) => ({
           evidenceCaptureError:
@@ -713,7 +726,9 @@ for (const execution of executions) {
           capture(() => api.get<IssueRecord>(`/api/issues/${issue!.id}`)),
           capture(() =>
             api.get<RunRecord[]>(
-              `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
+              execution.task.flow === "agent_chat"
+                ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
+                : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
             ),
           ),
           capture(() =>
@@ -728,7 +743,7 @@ for (const execution of executions) {
           ),
         ]);
       const taskRuns = Array.isArray(listedRuns)
-        ? matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
+        ? execution.task.flow === "agent_chat" ? listedRuns : matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
         : [];
       const detailedRuns = await Promise.all(
         taskRuns.map((candidate) =>
@@ -796,11 +811,9 @@ for (const execution of executions) {
     });
 
     try {
-      const initialExperimental = await api.get<{
+      const experimental = await api.patch<{
         enableNativeRunner: boolean;
-      }>("/api/instance/settings/experimental");
-      expect(initialExperimental.enableNativeRunner).toBe(false);
-      await api.patch("/api/instance/settings/experimental", {
+      }>("/api/instance/settings/experimental", {
         enableNativeRunner: true,
         ...(execution.task.flow === "warm_three_turn"
           ? { enableIsolatedWorkspaces: true }
@@ -810,6 +823,7 @@ for (const execution of executions) {
           ? { enableRunnerPreviewIngress: true }
           : {}),
       });
+      expect(experimental.enableNativeRunner).toBe(true);
 
       fixtures = await setupLiveFixtures({
         api,
@@ -844,11 +858,25 @@ for (const execution of executions) {
         secrets,
       );
 
+      if (execution.task.flow === "agent_chat") {
+        const chat = await runChatFlow({
+          page, api, fixtures, execution, nonce,
+          restart: () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          observe: (chatIssue, chatRuns) => { issue = chatIssue; selectedRuns = chatRuns; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = chat.issue; selectedRuns = chat.runs;
+        matcherResults = [{ matcher: { kind: "issue_status", expected: "in_review" }, passed: true, detail: "Chat workflow and durable handoff/session assertions passed" }];
+      } else {
       const issuePrefix = fixtures.company.issuePrefix;
       if (!issuePrefix)
         throw new Error(
           "Created fixture company did not return an issue prefix",
         );
+      if (execution.task.flow === "governed_tool_review") {
+        reviewProvider = await setupConnectionReview({ page, api, prefix: issuePrefix, companyId: fixtures.company.id, agentId: fixtures.agent.id, marker });
+      }
       turnSubmissionTimesMs.push(
         await createTaskThroughUi({
           page,
@@ -906,7 +934,9 @@ for (const execution of executions) {
         const [currentIssue, runs, comments, interactions] = await Promise.all([
           api.get<IssueRecord>(`/api/issues/${issue!.id}`),
           api.get<RunRecord[]>(
-            `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
+            execution.task.flow === "agent_chat"
+                ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
+                : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
           ),
           api.get<CommentRecord[]>(
             `/api/issues/${issue!.id}/comments?order=asc`,
@@ -948,7 +978,24 @@ for (const execution of executions) {
         interactionId: string;
         optionId: string;
       } | null = null;
-      if (execution.task.flow === "plan_revision_acceptance") {
+      if (execution.task.flow === "governed_tool_review") {
+        await expect(page.getByRole("button", { name: "Approve & run", exact: true })).toBeVisible({ timeout: Math.max(1, deadlineAt - Date.now()) });
+        expect(reviewProvider!.invocationCount()).toBe(0);
+        await pollUntil({ label: "governed waiting turn", deadlineAt, load: loadTaskState, accept: state => state.taskRuns.length === 1 && state.taskRuns.every(run => TERMINAL_RUN_STATUSES.has(run.status)) });
+        await captureScreenshot("tool-review-pending", "Connection review awaiting a human", "tool-review-pending.png");
+        await page.getByRole("button", { name: "Dismiss Approve tool action" }).click();
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
+        if (execution.task.toolReviewDecision === "restart") {
+          await restartIsolatedPaperclipServer({ api, requestId: `tool-review-${nonce}`, deadlineAt });
+          await page.reload();
+        }
+        if (execution.task.toolReviewDecision === "always") {
+          await page.getByRole("button", { name: "Approval options", exact: true }).click();
+          await page.getByRole("menuitem", { name: "Always allow", exact: true }).click();
+        } else {
+          await page.getByRole("button", { name: execution.task.toolReviewDecision === "decline" ? "Decline" : "Approve & run", exact: true }).click();
+        }
+      } else if (execution.task.flow === "plan_revision_acceptance") {
         const planMarkers = execution.task.buildPlanMarkers?.(nonce);
         const revisionRequest = execution.task.buildRevisionRequest?.(nonce);
         if (!planMarkers || !revisionRequest) {
@@ -1542,6 +1589,12 @@ for (const execution of executions) {
 
       issue = terminal.currentIssue;
       selectedRuns = terminal.taskRuns;
+      if (reviewProvider) {
+        expect(reviewProvider.invocationCount()).toBe(execution.task.toolReviewDecision === "decline" ? 0 : execution.task.toolReviewDecision === "always" ? 2 : 1);
+        const pending = await api.get<{ actionRequests: unknown[] }>(`/api/companies/${fixtures.company.id}/tools/action-requests?status=pending`);
+        expect(pending.actionRequests).toHaveLength(0);
+        await writeSanitizedJson(snapshotsDir, "connection-review.json", { source: "local MCP fixture", connectionId: reviewProvider.connectionId, providerCalls: reviewProvider.invocationCount(), decision: execution.task.toolReviewDecision, issueId: issue.id }, secrets);
+      }
       if (selectedRuns.length !== execution.task.expectedRunCount) {
         const runLogs = await Promise.all(
           selectedRuns.map(async (candidate) => ({
@@ -2349,6 +2402,7 @@ for (const execution of executions) {
           `Runtime invariant failure: ${invariantFailures.join("; ")}`,
         );
       }
+      }
     } catch (error) {
       primaryError = error;
       try {
@@ -2384,6 +2438,7 @@ for (const execution of executions) {
         }
       }
     } finally {
+      await reviewProvider?.close();
       try {
         await writeSanitizedJson(
           snapshotsDir,
@@ -2410,6 +2465,11 @@ for (const execution of executions) {
         });
         try {
           await cancelActiveRunsForCleanup();
+          if (execution.task.flow === "agent_chat") {
+            const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
+            selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
+            await writeSanitizedJson(snapshotsDir, "chat-final-run-ledger.json", selectedRuns, secrets);
+          }
           await fixtures.teardown();
           cleanup = "passed";
         } catch (error) {

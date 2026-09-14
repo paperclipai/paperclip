@@ -317,6 +317,7 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "provider.session.resume",
   "provider.time_to_first_agent_event",
   "provider.turn.queue",
+  "question_response.to_run_created",
   "runner.artifact.discover",
   "runner.artifact.prepare",
   "runner.prp.authenticate",

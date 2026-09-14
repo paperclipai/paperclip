@@ -495,3 +495,116 @@ fn terminal_events_clear_pending_requests_and_reject_late_turn_events() {
         ))
         .is_err());
 }
+
+#[test]
+fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    let plan = format!(
+        "{}\nThe token CHAT8322bda781b81 must be included in the document.",
+        "Relevant context. ".repeat(400)
+    );
+    let input = json!({
+        "title": "Write project description",
+        "description": "The document must contain the token CHAT8322bda781b81.",
+        "initialPlan": plan,
+        "idempotencyKey": "CHAT8322bda781b81-task",
+        "apiToken": "actual-credential",
+    });
+    let mut expected = input.clone();
+    expected["apiToken"] = json!("[REDACTED]");
+    let emitted = state
+        .accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            Some("turn-1"),
+            json!({"callId": "call-1", "operationId": "create_task", "input": input}),
+        ))
+        .unwrap();
+    assert_eq!(state.pending_tool("call-1").unwrap().input, expected);
+    let projected = project_acpx_state_event(
+        &AcpxEventProjectionContext {
+            run_id: "run-1".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            provider_turn_id: None,
+            item_id: "call-1".to_owned(),
+        },
+        &emitted[0],
+    )
+    .unwrap();
+    assert_eq!(projected[0].event_type, "semantic_tool.input");
+    assert_eq!(projected[0].payload["semantic_tool"]["input"], expected);
+    assert_eq!(
+        projected[0].payload["semantic_tool"]["content"]["digest"],
+        json!(paperclip_runner_core::provider_bridge::semantic_value_digest(&expected))
+    );
+
+    for (operation, field, prose, preserved) in [
+        (
+            "write_document",
+            "body",
+            "Include the token CHAT8322bda781b81.",
+            true,
+        ),
+        (
+            "create_project",
+            "description",
+            "Include the token CHAT8322bda781b81.",
+            true,
+        ),
+        (
+            "get_task_context",
+            "description",
+            "Include the token CHAT8322bda781b81.",
+            false,
+        ),
+        (
+            "mcp__untrusted__create_task",
+            "description",
+            "Include the token CHAT8322bda781b81.",
+            false,
+        ),
+        (
+            "create_task",
+            "description",
+            "Authorization: Bearer actual-credential",
+            false,
+        ),
+        (
+            "create_task",
+            "initialPlan",
+            "access token actual-credential",
+            false,
+        ),
+    ] {
+        state
+            .complete_tool(
+                "call-1",
+                state
+                    .pending_tool("call-1")
+                    .unwrap()
+                    .operation_id
+                    .clone()
+                    .as_str(),
+            )
+            .unwrap();
+        let emitted = state
+            .accept_event(&event(
+                2,
+                GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+                Some("turn-1"),
+                json!({"callId": "call-1", "operationId": operation, "input": {field: prose}}),
+            ))
+            .unwrap();
+        let AcpxProviderStateEvent::ToolCall { input, .. } = &emitted[0] else {
+            panic!("expected tool call");
+        };
+        assert_eq!(
+            input[field] == json!(prose),
+            preserved,
+            "{operation}: {prose}"
+        );
+        assert!(!input.to_string().contains("actual-credential"));
+    }
+}

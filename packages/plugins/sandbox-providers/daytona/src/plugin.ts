@@ -33,6 +33,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentStartInteractiveSetupParams,
   PluginEnvironmentSyncInParams,
@@ -964,7 +965,9 @@ function sandboxAccountDiscriminator(config: DaytonaDriverConfig): string {
   return createHash("sha256")
     .update(stableStringify({
       apiUrl: config.apiUrl,
-      target: config.target,
+      // Target is a creation placement hint, not account identity: the SDK
+      // resolves existing sandboxes by ID. Lease metadata fills an omitted
+      // target with the actual region, which must not split admission state.
       apiKey: resolvedApiKey,
     }))
     .digest("hex");
@@ -1125,7 +1128,11 @@ const sandboxHandleActivityGates = (() => {
     gates.clear();
   }
 
-  return { begin, waitForIdle, end, reset };
+  function isActive(scope: SandboxScope): boolean {
+    return gates.has(sandboxHandleCacheKey(scope));
+  }
+
+  return { begin, waitForIdle, isActive, end, reset };
 })();
 
 type SandboxLeaseAdmissionOptions = {
@@ -2186,6 +2193,11 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
+    // A confirmed stop may precede completion of an old SDK request. Do not
+    // restart its sandbox under that request; it could still write or execute.
+    if (sandboxHandleLeaseAdmissionStates.isClosed(scope) && sandboxHandleActivityGates.isActive(scope)) {
+      throw new Error("The stopped Daytona sandbox is still settling cancelled work. Retry shortly.");
+    }
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
@@ -2262,7 +2274,7 @@ const plugin = definePlugin({
 
   async onEnvironmentReleaseLease(
     params: PluginEnvironmentReleaseLeaseParams,
-  ): Promise<void> {
+  ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
     const scope: SandboxScope = {
@@ -2279,15 +2291,28 @@ const plugin = definePlugin({
     sandboxHandleLeaseAdmissionStates.close(scope);
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
-      if (!sandbox) return;
+      if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
 
       evictSandboxHandle(scope);
+      if (params.cancelActiveWork) {
+        // Graceful release waits for activity below. Stop must not wait on the
+        // command it is cancelling. Admission is already closed for this lease.
+        const timeoutSeconds = Math.min(toTimeoutSeconds(config.timeoutMs), 30);
+        await withLivenessTimeout("sandbox.refreshData", Math.min(config.livenessTimeoutMs, 30_000), () => sandbox.refreshData());
+        if (sandbox.state !== "stopped") await sandbox.stop(timeoutSeconds);
+        sandboxHandleSessionStore.clear(scope);
+        await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+        return { providerLeaseId: params.providerLeaseId, state: "stopped" };
+      }
       await sandboxHandleActivityGates.waitForIdle(scope);
       await teardownSession(sandbox, scope);
       // Close every duplex channel on this lease before the stop or the delete,
       // so no channel outlives the sandbox and no stored channel id survives.
       await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
 
+      // A cached stopped state is not a receipt: the resource could have been
+      // resumed since the handle was cached. Read provider state at this boundary.
+      await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
           try {
@@ -2296,14 +2321,11 @@ const plugin = definePlugin({
             console.warn(
               `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
             );
-            await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch((deleteError) => {
-              console.warn(
-                `Failed to delete Daytona sandbox after stop failure: ${formatErrorMessage(deleteError)}`,
-              );
-            });
+            await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+            return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
           }
         }
-        return;
+        return { providerLeaseId: params.providerLeaseId, state: "stopped" };
       }
 
       if (config.archiveOnRelease) {
@@ -2313,7 +2335,7 @@ const plugin = definePlugin({
           }
           await sandbox.setAutoDeleteInterval(ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES);
           await sandbox.archive();
-          return;
+          return { providerLeaseId: params.providerLeaseId, state: "stopped" };
         } catch (error) {
           console.warn(
             `Failed to archive Daytona sandbox during lease release: ${formatErrorMessage(error)}. Falling back to delete.`,
@@ -2321,7 +2343,8 @@ const plugin = definePlugin({
         }
       }
 
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+      return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
@@ -2330,7 +2353,7 @@ const plugin = definePlugin({
 
   async onEnvironmentDestroyLease(
     params: PluginEnvironmentDestroyLeaseParams,
-  ): Promise<void> {
+  ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
     const scope: SandboxScope = {
@@ -2346,7 +2369,7 @@ const plugin = definePlugin({
     sandboxHandleLeaseAdmissionStates.close(scope);
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
-      if (!sandbox) return;
+      if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
 
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
@@ -2354,7 +2377,8 @@ const plugin = definePlugin({
       // Close every duplex channel on this lease before the delete, so no channel
       // outlives the sandbox and no stored channel id survives.
       await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+      return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);

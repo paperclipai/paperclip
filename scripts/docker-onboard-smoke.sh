@@ -11,6 +11,16 @@ SMOKE_DETACH="${SMOKE_DETACH:-false}"
 SMOKE_METADATA_FILE="${SMOKE_METADATA_FILE:-}"
 PAPERCLIP_DEPLOYMENT_MODE="${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"
 PAPERCLIP_DEPLOYMENT_EXPOSURE="${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
+# Serve api.anthropic.com from a mock inside the harness. Connecting a model
+# is live-verified against provider endpoints that are deliberately hardcoded
+# in the product (see validateAiApiKey), so a smoke that finishes onboarding
+# needs the provider to say yes — and a release gate must not depend on a real
+# paid credential or a provider's uptime. The product is not touched: the
+# container's DNS for that one hostname points at the mock, and the mock's
+# self-signed certificate is trusted via NODE_EXTRA_CA_CERTS. What the gate
+# proves is that the artifact can finish onboarding when the provider accepts
+# the credential — the provider's actual verdict is not this artifact's code.
+SMOKE_PROVIDER_MOCK="${SMOKE_PROVIDER_MOCK:-true}"
 PAPERCLIP_PUBLIC_URL="${PAPERCLIP_PUBLIC_URL:-http://localhost:${HOST_PORT}}"
 SMOKE_AUTO_BOOTSTRAP="${SMOKE_AUTO_BOOTSTRAP:-true}"
 # Seconds to wait for /api/health after the container starts. The container
@@ -27,6 +37,8 @@ SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-paperclip-smoke-password}"
 # need one.
 CONTAINER_NAME="${SMOKE_CONTAINER_NAME:-$IMAGE_NAME}"
 CONTAINER_NAME="${CONTAINER_NAME//[^a-zA-Z0-9_.-]/-}"
+PROVIDER_MOCK_CONTAINER_NAME="$CONTAINER_NAME-provider-mock"
+PROVIDER_MOCK_DIR="$DATA_DIR-provider-mock"
 # Where the container's logs are written before it is torn down. See
 # `dump_container_logs`.
 SMOKE_LOG_FILE="${SMOKE_LOG_FILE:-${TMPDIR:-/tmp}/${CONTAINER_NAME}.log}"
@@ -77,6 +89,8 @@ cleanup() {
   if [[ "$PRESERVE_CONTAINER_ON_EXIT" != "true" ]]; then
     docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$PROVIDER_MOCK_CONTAINER_NAME" >/dev/null 2>&1 || true
+    rm -rf "$PROVIDER_MOCK_DIR" >/dev/null 2>&1 || true
   fi
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
@@ -297,6 +311,87 @@ docker build \
   -t "$IMAGE_NAME" \
   "$REPO_ROOT"
 
+# Extra `docker run` arguments for the app container when the provider mock is
+# on: the DNS override, the mock's CA, and the mount that carries it.
+PROVIDER_MOCK_RUN_ARGS=()
+
+start_provider_mock() {
+  rm -rf "$PROVIDER_MOCK_DIR"
+  mkdir -p "$PROVIDER_MOCK_DIR"
+  chmod 755 "$PROVIDER_MOCK_DIR"
+
+  # A self-signed leaf is its own trust anchor: presented by the mock and
+  # listed in NODE_EXTRA_CA_CERTS, the one-certificate chain verifies and the
+  # SAN satisfies hostname verification for api.anthropic.com.
+  openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 7 \
+    -keyout "$PROVIDER_MOCK_DIR/key.pem" \
+    -out "$PROVIDER_MOCK_DIR/ca.pem" \
+    -subj "/CN=api.anthropic.com" \
+    -addext "subjectAltName=DNS:api.anthropic.com" >/dev/null 2>&1
+  # Only the certificate is public. The key stays 600 — the mock container
+  # runs as root and reads it through that — and is never mounted into the
+  # app container, which gets the lone certificate file below.
+  chmod 644 "$PROVIDER_MOCK_DIR/ca.pem"
+  chmod 600 "$PROVIDER_MOCK_DIR/key.pem"
+
+  # Only the one endpoint credential validation calls. Everything else 404s,
+  # so an unexpected provider call fails the flow loudly instead of being
+  # silently blessed by the mock.
+  cat >"$PROVIDER_MOCK_DIR/server.mjs" <<'MOCK_EOF'
+import { createServer } from "node:https";
+import { readFileSync } from "node:fs";
+
+const server = createServer(
+  {
+    cert: readFileSync("/provider-mock/ca.pem"),
+    key: readFileSync("/provider-mock/key.pem"),
+  },
+  (req, res) => {
+    const path = new URL(req.url, "https://api.anthropic.com").pathname;
+    console.log(`[provider-mock] ${req.method} ${req.url}`);
+    if (req.method === "GET" && path === "/v1/models") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "claude-sonnet-5", type: "model" }], has_more: false }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { type: "not_found_error", message: "provider mock: unexpected endpoint" } }));
+  },
+);
+server.listen(443, () => console.log("[provider-mock] listening on 443"));
+MOCK_EOF
+
+  docker rm -f "$PROVIDER_MOCK_CONTAINER_NAME" >/dev/null 2>&1 || true
+  # The smoke image doubles as the mock's runtime: it already has node and is
+  # already built, so the mock costs no extra pull. Root, because binding 443
+  # inside the container needs it, and 443 is not negotiable — the product's
+  # provider endpoints are hardcoded https URLs.
+  docker run -d \
+    --name "$PROVIDER_MOCK_CONTAINER_NAME" \
+    --user 0 \
+    -v "$PROVIDER_MOCK_DIR:/provider-mock:ro" \
+    "$IMAGE_NAME" node /provider-mock/server.mjs >/dev/null
+
+  local mock_ip
+  mock_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$PROVIDER_MOCK_CONTAINER_NAME")"
+  if [[ -z "$mock_ip" ]]; then
+    echo "Smoke bootstrap failed: provider mock container has no IP address" >&2
+    docker logs "$PROVIDER_MOCK_CONTAINER_NAME" >&2 || true
+    return 1
+  fi
+  PROVIDER_MOCK_RUN_ARGS=(
+    --add-host "api.anthropic.com:$mock_ip"
+    -v "$PROVIDER_MOCK_DIR/ca.pem:/provider-mock/ca.pem:ro"
+    -e NODE_EXTRA_CA_CERTS=/provider-mock/ca.pem
+  )
+  echo "    Provider mock: api.anthropic.com -> $mock_ip (container $PROVIDER_MOCK_CONTAINER_NAME)"
+}
+
+if [[ "$SMOKE_PROVIDER_MOCK" == "true" ]]; then
+  echo "==> Starting provider mock"
+  start_provider_mock
+fi
+
 echo "==> Running onboard smoke container"
 echo "    UI should be reachable at: http://localhost:$HOST_PORT"
 echo "    Public URL: $PAPERCLIP_PUBLIC_URL"
@@ -325,6 +420,7 @@ docker run -d \
   -e PAPERCLIP_DEPLOYMENT_EXPOSURE="$PAPERCLIP_DEPLOYMENT_EXPOSURE" \
   -e PAPERCLIP_PUBLIC_URL="$PAPERCLIP_PUBLIC_URL" \
   -v "$DATA_DIR:/paperclip" \
+  ${PROVIDER_MOCK_RUN_ARGS[@]+"${PROVIDER_MOCK_RUN_ARGS[@]}"} \
   "$IMAGE_NAME" >/dev/null
 
 if [[ "$SMOKE_DETACH" != "true" ]]; then

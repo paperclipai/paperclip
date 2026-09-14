@@ -116,8 +116,8 @@ export function selectBundledDependencyPatches(
   return selectedPatches;
 }
 
-export function applyBundledDependencyPatches(destinationDir, bundledDependencies) {
-  const rootPackage = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
+export function applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot = repoRoot) {
+  const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
   const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
 
   for (const { packageName, patchPath } of selectBundledDependencyPatches(
@@ -129,14 +129,14 @@ export function applyBundledDependencyPatches(destinationDir, bundledDependencie
       "patch",
       ["-p1", "--forward", "-d", resolve(destinationDir, "node_modules", packageName)],
       {
-        input: readFileSync(resolve(repoRoot, patchPath)),
+        input: readFileSync(resolve(sourceRoot, patchPath)),
         stdio: ["pipe", "inherit", "inherit"],
       },
     );
   }
 }
 
-export function prepareBundledPackage(sourceDir, destinationDir) {
+export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = repoRoot } = {}) {
   const sourcePackagePath = resolve(sourceDir, "package.json");
   const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, "utf8"));
   const bundledDependencies = sourcePackage.bundleDependencies ?? sourcePackage.bundledDependencies ?? [];
@@ -166,7 +166,7 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
     { cwd: destinationDir, stdio: "inherit" },
   );
   writeFileSync(deployedPackagePath, `${JSON.stringify(publishManifest, null, 2)}\n`);
-  applyBundledDependencyPatches(destinationDir, bundledDependencies);
+  applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot);
 
   if (bundledDependencies.includes("acpx")) {
     const acpxPackage = JSON.parse(

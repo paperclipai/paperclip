@@ -9,6 +9,32 @@ import { nativeSha256 } from "./canonical.js";
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
 export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v3";
 
+export function nativeCompletionRequestsForComments(
+  comments: readonly {
+    body: string;
+    attachments?: readonly unknown[];
+  }[],
+  options: { requiredFullWakeCommentCount?: number } = {},
+): string[] {
+  if (
+    Number.isSafeInteger(options.requiredFullWakeCommentCount) &&
+    (options.requiredFullWakeCommentCount ?? 0) > 0
+  ) {
+    return [
+      `Read every server-bound pending external-chat comment with read_current_wake_comments until complete=true, then answer all ${options.requiredFullWakeCommentCount} accepted comments in order without omitting a request. Report any unavailable attachment honestly; metadata alone is not its content.`,
+    ];
+  }
+  return comments.flatMap((comment, index) => {
+    const body = comment.body.trim();
+    if (body) return [body];
+    // A file-only message is still the current request. Never fall back to an
+    // older imperative title or treat a user-controlled filename as policy.
+    return comment.attachments?.length
+      ? [`Inspect and respond to the attached file(s) on pending comment ${index + 1}.`]
+      : [];
+  });
+}
+
 export function resolveNativeCompletionPolicy(issue: {
   reviewPolicy?: string | null;
 }) {
@@ -24,19 +50,38 @@ export function buildNativeCompletionContract(
   options: {
     readonly revision?: number;
     readonly immediateRequest?: string | null;
+    readonly immediateRequests?: readonly string[] | null;
   } = {},
 ): StrictCompletionContractInput {
-  const followUp = options.immediateRequest?.trim();
+  const immediateRequests = (
+    options.immediateRequests ??
+    (options.immediateRequest == null ? [] : [options.immediateRequest])
+  )
+    .map((request) => request.trim())
+    .filter((request) => request.length > 0);
+  const hasFollowUp = immediateRequests.length > 0;
   return {
     revision: String(options.revision ?? 1),
-    objective: followUp
-      ? `Respond to the latest comment on ${issue.title}`
+    objective: hasFollowUp
+      ? immediateRequests.length === 1
+        ? "Respond to the latest comment"
+        : "Respond to all pending comments in order"
       : issue.title,
-    criteria: [{
-      id: "objective",
-      requirement:
-        followUp || issue.description?.trim() || `Complete: ${issue.title}`,
-    }],
+    criteria: hasFollowUp
+      ? immediateRequests.map((request, index) => ({
+          id:
+            immediateRequests.length === 1
+              ? "objective"
+              : `pending_comment_${index + 1}`,
+          requirement: request,
+        }))
+      : [
+          {
+            id: "objective",
+            requirement:
+              issue.description?.trim() || `Complete: ${issue.title}`,
+          },
+        ],
   };
 }
 
@@ -51,6 +96,7 @@ export async function ensureNativeCompletionContract(input: {
   };
   actorId: string;
   immediateRequest?: string | null;
+  immediateRequests?: readonly string[] | null;
 }) {
   return input.db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${[
@@ -73,6 +119,7 @@ export async function ensureNativeCompletionContract(input: {
     const latestCandidate = buildNativeCompletionContract(input.issue, {
       revision: latestRevision,
       immediateRequest: input.immediateRequest,
+      immediateRequests: input.immediateRequests,
     });
     const latestCandidateSha256 = nativeSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
@@ -88,6 +135,7 @@ export async function ensureNativeCompletionContract(input: {
     const contract = buildNativeCompletionContract(input.issue, {
       revision: nextRevision,
       immediateRequest: input.immediateRequest,
+      immediateRequests: input.immediateRequests,
     });
     const canonicalSha256 = nativeSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,

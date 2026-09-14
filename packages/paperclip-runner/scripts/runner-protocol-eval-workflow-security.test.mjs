@@ -136,6 +136,19 @@ test("publishes only the separately sanitized Evalbook through trusted OIDC code
     /Upload access-controlled canonical Evalbook and raw attempts/u,
   );
   assert.match(report, /Upload publisher-only sanitized Evalbook/u);
+  assert.match(
+    report,
+    /verify-runner-evalbook-viewer\.mjs --report-root runner-protocol-merged\/public-report/u,
+  );
+  assert.match(
+    report,
+    /verify-runner-evalbook-viewer\.mjs --report-root runner-protocol-merged\/report/u,
+  );
+  assert.match(
+    report,
+    /--viewer-root runner-protocol-build\/extracted\/dist-issue-thread\s*\\\n\s*--public-viewer/u,
+  );
+  assert.equal([...report.matchAll(/--viewer-root /gu)].length, 2);
 
   const publisher = workflow.slice(workflow.indexOf("  publish_history:"));
   assert.match(publisher, /ref: \$\{\{ github\.sha \}\}/u);
@@ -143,6 +156,10 @@ test("publishes only the separately sanitized Evalbook through trusted OIDC code
   assert.match(publisher, /runner-protocol-eval-public-/u);
   assert.match(publisher, /publish-runner-protocol-eval-history\.mjs/u);
   assert.match(publisher, /runner-protocol-evals/u);
+  assert.match(publisher, /runner-protocol-viewer-/u);
+  assert.match(publisher, /PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR/u);
+  assert.match(publisher, /url: \$\{\{ steps\.publish\.outputs\.report_url \}\}/u);
+  assert.match(publisher, /Publish versioned report and refresh the root index\n\s+id: publish/u);
   assert.doesNotMatch(publisher, /(?:OPENAI|ANTHROPIC|OPENROUTER)_API_KEY/u);
   assert.doesNotMatch(publisher, /paperclipai\/paperclip-evals/u);
   assert.doesNotMatch(publisher, /downloaded-runner-protocol-evals/u);

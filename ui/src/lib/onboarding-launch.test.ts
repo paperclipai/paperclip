@@ -109,20 +109,29 @@ describe("onboarding launch payloads", () => {
     expect(
       buildOnboardingIssuePayload({
         title: "  Hire your first engineer  ",
-        description: "  Kick off the hiring plan  ",
         assigneeAgentId: "agent-1",
         projectId: "project-1",
         goalId: "goal-1",
       }),
     ).toEqual({
       title: "Hire your first engineer",
-      description: "Kick off the hiring plan",
       assigneeAgentId: "agent-1",
       projectId: "project-1",
       goalId: "goal-1",
       status: "todo",
       onboardingFirstTask: true,
     });
+  });
+
+  it("sends no client description — the server owns the first task's brief", () => {
+    const payload = buildOnboardingIssuePayload({
+      title: "Task",
+      assigneeAgentId: "agent-1",
+      projectId: "project-1",
+      goalId: null,
+    });
+    expect(payload).not.toHaveProperty("description");
+    expect(payload.onboardingFirstTask).toBe(true);
   });
 
   it("omits goal links when no default company goal exists", () => {
@@ -134,7 +143,6 @@ describe("onboarding launch payloads", () => {
     expect(
       buildOnboardingIssuePayload({
         title: "Task",
-        description: "",
         assigneeAgentId: "agent-1",
         projectId: "project-1",
         goalId: null,

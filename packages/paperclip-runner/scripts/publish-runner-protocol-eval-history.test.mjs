@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,9 +14,28 @@ import {
   renderProtocolEvalHistoryIndex,
   validateProtocolEvalHistoryDestination,
   validatePublicProtocolEvalReport,
+  writeProtocolEvalPublicationLinks,
 } from "./publish-runner-protocol-eval-history.mjs";
 
 const roots = [];
+test("successful publication exposes exact report and history links to Actions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "evalbook-publication-links-"));
+  roots.push(root);
+  const environment = { GITHUB_OUTPUT: join(root, "outputs"), GITHUB_STEP_SUMMARY: join(root, "summary") };
+  const result = {
+    campaignId: "gha-42-2",
+    reportUrl: "https://reports.example/runner-protocol-evals/campaigns/gha-42-2/index.html",
+    historyUrl: "https://reports.example/runner-protocol-evals/index.html",
+  };
+  await writeProtocolEvalPublicationLinks(result, environment);
+  assert.equal(await readFile(environment.GITHUB_OUTPUT, "utf8"), `report_url=${result.reportUrl}\nhistory_url=${result.historyUrl}\n`);
+  const summary = await readFile(environment.GITHUB_STEP_SUMMARY, "utf8");
+  assert.ok(summary.includes(`[Open this run's Evalbook](<${result.reportUrl}>)`));
+  assert.ok(summary.includes(`[All eval runs](<${result.historyUrl}>)`));
+  await assert.rejects(writeProtocolEvalPublicationLinks({ ...result, reportUrl: "https://example.test/\nreport_url=bad" }, environment));
+  assert.throws(() => renderProtocolEvalHistoryIndex(emptyProtocolEvalHistory(), "https://untrusted.example/style.css"));
+});
+
 test.afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -111,12 +130,13 @@ test("keeps publication to the canonical static Evalbook surface", () => {
     "inventory.html",
     "tests/get-context.html",
     "attempts/attempt-01.html",
+    "attempts/attempt-01/index.html",
+    "viewer/assets/index-build.js",
     "campaign.json",
   ]) {
     assert.equal(isPublicProtocolEvalPath(file), true, file);
   }
   for (const file of [
-    "attempts/attempt-01/index.html",
     "runs/attempt/artifact.json",
     "provider-trace.log",
     "../secret",
@@ -177,7 +197,10 @@ test("retains immutable history and independent latest-green pointers", () => {
   const pointers = buildProtocolEvalPointers(history);
   assert.equal(pointers.latest.campaign.campaignId, "gha-43-1");
   assert.equal(pointers.latestGreen.campaign.campaignId, "gha-42-1");
-  const index = renderProtocolEvalHistoryIndex(history);
+  const index = renderProtocolEvalHistoryIndex(history, "campaigns/gha-43-1/viewer/assets/index.css");
+  assert.match(index, /class="evalbook-site"/);
+  assert.match(index, /href="campaigns\/gha-43-1\/viewer\/assets\/index.css"/);
+  assert.doesNotMatch(index, /<style>|color-scheme:light/);
   assert.match(index, /Runner protocol eval campaigns/);
   assert.match(index, /Open Evalbook/);
   assert.match(index, /34\/35/);
@@ -188,7 +211,61 @@ test("retains immutable history and independent latest-green pointers", () => {
   );
 });
 
-test("retains the latest green pointer outside the 200 newest campaigns", () => {
+test("report refreshes never replace qualification pointers or evict older measurements", () => {
+  const record = (value) =>
+    protocolEvalHistoryRecord(
+      value,
+      "https://reports.example/runner-protocol-evals",
+    );
+  let history = mergeProtocolEvalHistory(
+    emptyProtocolEvalHistory(),
+    record(campaign()),
+  );
+  history = mergeProtocolEvalHistory(
+    history,
+    record(
+      campaign({
+        campaignId: "gha-43-1",
+        generatedAt: "2026-09-06T00:00:00.000Z",
+        allPassed: false,
+      }),
+    ),
+  );
+  for (let index = 0; index < 205; index++) {
+    history = mergeProtocolEvalHistory(
+      history,
+      record(
+        campaign({
+          campaignId: `gha-42-1-report-refresh-${index}`,
+          // Defend even against an incorrectly timestamped refresh producer.
+          generatedAt: "2026-09-07T00:00:00.000Z",
+          reportRevision: {
+            sourceCampaignId: "gha-42-1",
+            renderedAt: "2026-09-07T00:00:00.000Z",
+            providerCalls: 0,
+          },
+        }),
+      ),
+    );
+  }
+  assert.equal(history.latestCampaignId, "gha-43-1");
+  assert.equal(history.latestGreenCampaignId, "gha-42-1");
+  assert.equal(
+    buildProtocolEvalPointers(history).latest.campaign.campaignId,
+    "gha-43-1",
+  );
+  assert.equal(
+    buildProtocolEvalPointers(history).latestGreen.campaign.campaignId,
+    "gha-42-1",
+  );
+  assert.equal(history.campaigns.length, 207);
+  assert.match(
+    renderProtocolEvalHistoryIndex(history, "campaigns/gha-42-1-report-chat-v1/viewer/assets/index.css"),
+    /Report refresh · no new model calls/,
+  );
+});
+
+test("retains every run and the latest green pointer beyond 200 campaigns", () => {
   const green = protocolEvalHistoryRecord(
     campaign(),
     "https://reports.example/runner-protocol-evals",
@@ -210,7 +287,7 @@ test("retains the latest green pointer outside the 200 newest campaigns", () => 
     );
   }
 
-  assert.equal(history.campaigns.length, 200);
+  assert.equal(history.campaigns.length, 202);
   assert.equal(history.latestCampaignId, "gha-243-1");
   assert.equal(history.latestGreenCampaignId, "gha-42-1");
   assert.equal(history.campaigns.at(-1).campaignId, "gha-42-1");

@@ -327,7 +327,7 @@ describe("markdown work product review row", () => {
     expect(looseLink?.getAttribute("href")).toBe("/api/attachments/22222222-2222-4222-8222-222222222222/content");
   });
 
-  it("keeps non-markdown work products on the raw link row", async () => {
+  it("keeps non-markdown work products on the download row", async () => {
     const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
     mockIssuesApi.listWorkProducts.mockResolvedValue([
       makeMarkdownWorkProduct({
@@ -348,7 +348,8 @@ describe("markdown work product review row", () => {
       const row = container.querySelector('[data-testid="task-chat-rich-work-product-artifact"]');
       const link = row?.querySelector("a");
       expect(row?.textContent).toContain("Verification report");
-      expect(link?.getAttribute("href")).toBe(contentPath);
+      expect(link?.getAttribute("aria-label")).toBe("Download: Verification report");
+      expect(link?.getAttribute("href")).toBe(`${contentPath}?download=1`);
     });
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
   });
@@ -398,7 +399,7 @@ describe("markdown work product review row", () => {
       expect(container.querySelector('article[data-variant="compact"]')).not.toBeNull();
       expect(container.querySelector(`img[src="${imagePath}"]`)).not.toBeNull();
       expect(container.querySelector('a[aria-label="Open on GitHub: Artifact grouping PR"]')).not.toBeNull();
-      expect(container.querySelector('a[aria-label="Open gallery: Artifacts screenshot"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="Open gallery: Artifacts screenshot"]')).not.toBeNull();
     });
 
     const typeSelect = container.querySelector('select[aria-label="Filter artifacts by type"]') as HTMLSelectElement;

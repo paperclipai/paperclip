@@ -10,6 +10,7 @@ import {
   getRecentTasksStorageKey,
   readRecentTasks,
   recordRecentTask,
+  pruneRecentTasks,
 } from "@/lib/recent-tasks";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -75,6 +76,7 @@ describe("SidebarRecentTasks", () => {
     act(() => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   async function render() {
@@ -167,6 +169,69 @@ describe("SidebarRecentTasks", () => {
     );
     expect(actions).not.toBeNull();
     expect(actions?.className).toContain("opacity-0");
+  });
+
+  it("keeps rows stable during alternating activity and applies the final order after quiet", async () => {
+    const tasks = [1, 2, 3].map((id) => ({
+      id: `issue-${id}`,
+      companyId: "company-1",
+      title: `Task ${id}`,
+      identifier: `PAP-${id}`,
+      status: "done" as const,
+      hiddenAt: null,
+      updatedAt: new Date(id),
+    }));
+    tasks.forEach((task) => recordRecentTask(task, "user-1"));
+    mockIssuesApi.get.mockImplementation(async (id: string) => tasks.find((task) => task.id === id));
+    const queryClient = await render();
+    const order = () => Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"));
+    const originalOrder = ["/issues/issue-3", "/issues/issue-2", "/issues/issue-1"];
+    expect(order()).toEqual(originalOrder);
+    vi.useFakeTimers();
+
+    for (let index = 0; index < 6; index += 1) {
+      const task = tasks[index % 2]!;
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.issues.detail(task.id), {
+          ...task, title: `Updated ${task.id}`, updatedAt: new Date(100 + index),
+        });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(order()).toEqual(originalOrder);
+      expect(container.textContent).toContain(`Updated ${task.id}`);
+    }
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(499); });
+    expect(order()).toEqual(originalOrder);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(order()).toEqual(["/issues/issue-2", "/issues/issue-1", "/issues/issue-3"]);
+    expect(mockIssuesApi.get).toHaveBeenCalledTimes(3);
+    queryClient.clear();
+  });
+
+  it("adds and removes tasks immediately while an activity reorder is pending", async () => {
+    const task = (id: string, recordedAt: number) => ({
+      id, companyId: "company-1", title: id, identifier: id,
+      status: "todo" as const, updatedAt: new Date(recordedAt),
+    });
+    recordRecentTask(task("first", 1), "user-1");
+    recordRecentTask(task("second", 2), "user-1");
+    mockIssuesApi.get.mockImplementation(async (id: string) => task(id, 0));
+    const queryClient = await render();
+    vi.useFakeTimers();
+    act(() => recordRecentTask(task("first", 3), "user-1"));
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/second");
+    await act(async () => {
+      recordRecentTask(task("new", 4), "user-1");
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/new");
+    act(() => pruneRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1", new Set(["second"])));
+    expect(container.querySelector('a[href="/issues/second"]')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(container.querySelector('a[href="/issues/second"]')).toBeNull();
+    queryClient.clear();
   });
 
   it("opens the compact task actions menu from the ellipsis button", async () => {
@@ -424,6 +489,33 @@ describe("SidebarRecentTasks", () => {
     });
 
     expect(container.querySelector('a[href="/issues/issue-2"]')?.textContent).toContain("Cross-tab task");
+  });
+
+  it("preserves pending restart wake retries from before the snapshot storage migration", async () => {
+    const issue = {
+      id: "issue-1", companyId: "company-1", title: "Retry after upgrade", identifier: "PAP-1",
+      status: "in_progress" as const, assigneeAgentId: "agent-1", hiddenAt: null, updatedAt: new Date(1),
+    };
+    window.localStorage.setItem("paperclip.recentTasks:company-1:user-1", JSON.stringify([{ ...issue, recordedAt: 1 }]));
+    window.localStorage.setItem("paperclip.recentTasks:company-1:user-1:restart-wake-retry", JSON.stringify([issue.id]));
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
+    mockAgentsApi.wakeup.mockResolvedValue({ id: "run-1" });
+
+    await render();
+    await openActions("Retry after upgrade");
+    await act(async () => {
+      menuItem("Pause/Restart")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(mockIssuesApi.createTreeHold).not.toHaveBeenCalled();
+    expect(mockIssuesApi.releaseTreeHold).not.toHaveBeenCalled();
+    expect(mockAgentsApi.wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
+      reason: "recent_task_restart_retry",
+    }), "company-1");
+    expect(window.localStorage.getItem("paperclip.recentTasks:company-1:user-1:restart-wake-retry")).toBeNull();
   });
 
   it("prunes tasks that become hidden", async () => {

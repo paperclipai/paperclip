@@ -92,6 +92,10 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   } catch {
     return null;
   }
+  return parseClaudeCredentialToken(raw);
+}
+
+function parseClaudeCredentialToken(raw: string): string | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -137,11 +141,19 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
-export async function readClaudeToken(): Promise<string | null> {
+export async function readClaudeToken(options: { allowKeychain?: boolean } = {}): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
+  }
+  // Only an explicit local-account import may consult the user's Keychain.
+  // A custom auth home must never fall through to a different account.
+  if (options.allowKeychain && process.platform === "darwin" && !process.env.CLAUDE_CONFIG_DIR?.trim()) {
+    try {
+      const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+      return parseClaudeCredentialToken(stdout);
+    } catch { return null; }
   }
   return null;
 }

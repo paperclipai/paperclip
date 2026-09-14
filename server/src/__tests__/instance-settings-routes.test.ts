@@ -281,6 +281,18 @@ describe("instance settings routes", () => {
       .expect(404);
   });
 
+  it.each([true, false])("allows only instance admins to change chat connector visibility (%s)", async (isInstanceAdmin) => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", isInstanceAdmin, companyIds: ["company-1"] });
+    const response = await request(app).patch("/api/instance/settings/experimental").send({ enableChatConnectors: true });
+    expect(response.status).toBe(isInstanceAdmin ? 200 : 403);
+    if (isInstanceAdmin) {
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enableChatConnectors: true });
+      expect(mockLogActivity).toHaveBeenCalled();
+    } else {
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    }
+  });
+
   it("accepts the instance-wide Streamlined UI preference", async () => {
     const app = await createApp({
       type: "board",

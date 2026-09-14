@@ -7,6 +7,8 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  environmentLeases,
+  environments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -221,6 +223,65 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
     expect(observed.releaseCallCount).toBe(1);
   });
 
+  it.each(["in_review", "done"])(
+    "preserves an authentication-blocked native run and lease despite issue status %s",
+    async (issueStatus) => {
+      const { companyId, agentId, runId, issueId } = await seed({
+        issueStatus,
+        runStatus: "running",
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          runtimeMode: "native",
+          nativeIssueId: issueId,
+          nativePhase: "terminal_failure",
+          errorCode: "native_execution_ownership_unverified",
+        })
+        .where(eq(heartbeatRuns.id, runId));
+      const observed = await runTeardownSequenceObservingRelease({
+        runId,
+        companyId,
+        agentId,
+        providerResourceDisposition: "destroy",
+      });
+      expect(observed.statusThreadedToRelease).toBe("running");
+      expect(observed.dbStatusAtRelease).toBe("running");
+      expect(observed.releaseCallCount).toBe(0);
+      expect(observed.ordering).toEqual([]);
+    },
+  );
+
+  it("revalidates a stale pre-hold snapshot at the terminalization write", async () => {
+    const { runId, issueId, run } = await seed({
+      issueStatus: "done",
+      runStatus: "running",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        runtimeMode: "native",
+        nativeIssueId: issueId,
+        nativePhase: "terminal_failure",
+        errorCode: "native_execution_ownership_unverified",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.terminalizeRunOnLeaseRelease(run);
+    expect(result).toMatchObject({
+      status: "running",
+      errorCode: "native_execution_ownership_unverified",
+      finishedAt: null,
+    });
+    expect(await runStatus(runId)).toBe("running");
+    expect(
+      await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId)),
+    ).toEqual([]);
+  });
+
   it("does not destroy a terminal lease while its warm native session is busy", async () => {
     const { companyId, agentId, runId } = await seed({ issueStatus: "done", runStatus: "running" });
     const releaseRunLeases = vi.fn(async () => []);
@@ -238,6 +299,23 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
     });
 
     expect(releaseRunLeases).not.toHaveBeenCalled();
+  });
+
+  it.each(["daytona", "local"])("destroy after failed checkpoint requires a terminal remote owner: %s", async provider => {
+    const { companyId, agentId, runId } = await seed({ issueStatus: "blocked", runStatus: "running" });
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    const [environment] = await db.insert(environments).values({ name: `cleanup-${runId}`, driver: "sandbox" }).returning();
+    await db.insert(environmentLeases).values({ companyId, environmentId: environment.id,
+      heartbeatRunId: runId, agentId, provider, providerLeaseId: "sandbox-owned",
+      status: "active", leasePolicy: "ephemeral" });
+    const releaseRunLeases = vi.fn(async () => []);
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: { releaseRunLeases } as unknown as HeartbeatEnvironmentRuntime,
+      closeWarmNativeSessionsForRun: async () => ({ closed: 0, busy: 0, failed: 1 }),
+    });
+    await heartbeat.releaseEnvironmentLeasesForRun({ runId, companyId, agentId,
+      status: "cancelled", providerResourceDisposition: "destroy" });
+    expect(releaseRunLeases).toHaveBeenCalledTimes(provider === "daytona" ? 1 : 0);
   });
 
   it("terminalizes a running run to succeeded before release when the issue reached done", async () => {

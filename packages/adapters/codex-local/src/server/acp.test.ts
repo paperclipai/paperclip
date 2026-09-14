@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -288,7 +289,7 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("codex_local ACP lane", () => {
-  it("defaults to ACP when prerequisites pass and falls back to CLI only for auto resolution", async () => {
+  it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-default-");
     const commandPath = path.join(root, "bin", "codex-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
@@ -320,44 +321,44 @@ describe("codex_local ACP lane", () => {
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("Node"),
+      unavailableReason: expect.stringContaining("Node"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { engine: "acp", agentCommand: "/missing/codex-acp" },
         executionTarget: null,
       }),
-    ).resolves.toEqual({ engine: "acp", explicit: true });
+    ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
-  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+  it("requires explicit CLI selection for local filesystem or network scope", async () => {
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { filesystemScope: "workspace" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("spawn-level confinement"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { engine: "acp", filesystemScope: "workspace" },
         executionTarget: null,
       }),
-    ).rejects.toThrow("ACP confinement is not supported");
+    ).resolves.toMatchObject({ engine: "acp", unavailableReason: expect.stringContaining("ACP confinement is not supported") });
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { networkScope: "allowlist" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("network scope"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({
@@ -367,7 +368,7 @@ describe("codex_local ACP lane", () => {
     ).rejects.toThrow('filesystemScope must be "workspace"');
   });
 
-  it("selects the CLI lane for in-place realization and rejects explicitly required ACP", async () => {
+  it("requires explicit CLI selection for in-place realization", async () => {
     const executionTarget = {
       kind: "remote" as const,
       transport: "sandbox" as const,
@@ -382,13 +383,13 @@ describe("codex_local ACP lane", () => {
     await expect(
       resolveCodexExecutionEngineForRun({ config: {}, executionTarget }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("without ACP archive staging"),
+      unavailableReason: expect.stringContaining("ACP archive staging"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({ config: { engine: "acp" }, executionTarget }),
-    ).rejects.toThrow("In-place workspace realization requires the Codex CLI engine");
+    ).resolves.toMatchObject({ engine: "acp", unavailableReason: expect.stringContaining("In-place workspace realization requires the Codex CLI engine") });
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
@@ -417,7 +418,7 @@ describe("codex_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: false });
   });
 
-  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+  it("reports unavailable ACP for one-shot sandbox auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
@@ -430,13 +431,13 @@ describe("codex_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
-  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+  it("reports unavailable ACP for non-sandbox remote auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
@@ -458,9 +459,27 @@ describe("codex_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+      unavailableReason: expect.stringContaining("sandbox remote targets only"),
+    });
+  });
+
+  it("enables workspace networking for ACP without changing other env settings", () => {
+    expect(buildCodexAcpConfig({ env: { CUSTOM: "kept" } })).toMatchObject({
+      env: { CUSTOM: "kept", PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "true" },
+    });
+  });
+
+  it.each([
+    { env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" } },
+    { extraArgs: ["-c", "sandbox_workspace_write.network_access=false"] },
+    { extraArgs: ["--config=sandbox_workspace_write.network_access=false"] },
+    { args: ["-csandbox_workspace_write.network_access=false"] },
+    { extraArgs: ["-c", "sandbox_workspace_write.network_access=true", "-c", "sandbox_workspace_write.network_access=false"] },
+  ])("preserves explicit ACP network denial %j", (config) => {
+    expect(buildCodexAcpConfig(config)).toMatchObject({
+      env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" },
     });
   });
 
@@ -1019,7 +1038,7 @@ describe("codex_local ACP lane", () => {
     // `disposeStaged`, fired only when the runtime is dropped. So after a CLEAN
     // turn the engine caches the staged runtime warm and its host staged home is
     // still on disk for the next compatible resume to reuse.
-    const runId = "run-keep-staged-home";
+    const runId = `run-keep-staged-home-${randomUUID()}`;
     const root = await makeTempRoot("paperclip-codex-acp-keep-staged-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
@@ -1097,7 +1116,7 @@ describe("codex_local ACP lane", () => {
     // failed turn), the one-time `disposeStaged` fires and removes the host
     // staged-home temp dir — while the per-run copy-back (`teardown`) STILL fires
     // on the unclean exit path, so a rotated sandbox credential is never lost.
-    const runId = "run-drop-staged-home";
+    const runId = `run-drop-staged-home-${randomUUID()}`;
     const root = await makeTempRoot("paperclip-codex-acp-drop-staged-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
@@ -1218,7 +1237,7 @@ describe("codex_local ACP lane", () => {
     );
   });
 
-  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+  it("reports unavailable ACP for a runner-less sandbox even when the ACP command is set", async () => {
     setNodeVersion("v24.11.0");
     // Isolate the missing bidirectional runner as the sole fallback cause:
     // provide a valid ACP command and Node version so the only difference from
@@ -1234,9 +1253,9 @@ describe("codex_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 

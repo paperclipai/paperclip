@@ -27,6 +27,7 @@ export {
 export * from "./native-session-runtime.js";
 export {
   DurablePrpControlPlane,
+  inspectWarmRunTransition,
   type DurablePrpControlPlaneOptions,
   type PrpWireConnection,
   type PrpWireAttachment,
@@ -52,7 +53,14 @@ export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,
+  readRunnerdArtifactBinding,
+  drainRetainedRunnerdMaintenanceOperations,
   resolveSourceCodexHome,
+  settleRetainedRunnerdSession,
+  retainedRunnerdCleanupProofIsCurrent,
+  retainedRunnerdMaintenanceIsIdle,
+  type RetainedRunnerdCleanupProof,
+  type RetainedRunnerdMaintenanceEpochReceipt,
   type RunnerdCodexTransport,
   type RunnerdCodexTransportOptions,
 } from "./live/runnerd-codex-transport.js";

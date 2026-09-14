@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ManagedAiConnectionDetails } from "@/components/ai-connections/ManagedAiConnectionDetails";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
+import { EmailConnectionInboxes } from "./chat/EmailEndpointSetup";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
@@ -10,6 +13,7 @@ import type {
 import {
   connectionDisplaySecondaryHint,
   humanizeConnectionDisplayName,
+  aiSubscriptionNeedsIsolatedLogin,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
 import { Navigate, useParams, useNavigate, useSearchParams } from "@/lib/router";
@@ -58,7 +62,10 @@ import {
 
 export { connectionAddress, connectionTransportLabel };
 
-export function AppDetail() {
+export function AppDetail({ renderActions, onReconnect }: {
+  renderActions?: (connection: ToolConnection) => ReactNode;
+  onReconnect?: (connection: ToolConnection) => void;
+} = {}) {
   const { connectionId = "", tab } = useParams<{ connectionId: string; tab?: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -149,7 +156,7 @@ export function AppDetail() {
     grant.kind === "organization" && grant.isDefault
   )) ?? grantRows.find((grant) => grant.kind === "organization") ?? null;
   const managedIdentityGrant = connection?.credentialPolicy === "per_user"
-    ? retainedPersonalGrant
+    ? currentUserPersonalGrant ?? retainedPersonalGrant
     : connection?.credentialPolicy === "per_agent"
       ? retainedAgentGrant
     : connection?.credentialPolicy === "per_user_with_fallback"
@@ -233,17 +240,18 @@ export function AppDetail() {
     () => installStateFrom(installsQuery.data?.installs ?? connection?.installs),
     [connection?.installs, installsQuery.data?.installs],
   );
-  const access = useMemo(() => accessFrom(profile, install), [profile, install]);
+  const access = useMemo(() => accessFrom(connection?.connectionPurpose === "ai" ? undefined : profile, install), [connection?.connectionPurpose, profile, install]);
   const agents = agentsQuery.data ?? [];
   const [pending, setPending] = useState(false);
   const persist = useMutation({
-    mutationFn: (next: {
+    mutationFn: async (next: {
       enabled: Set<string>;
       askFirst: Set<string>;
       access: AccessDraft;
       reviewed?: Set<string>;
-    }) =>
-      toolsApi.finishApp(selectedCompanyId!, connectionId, {
+    }) => connection?.connectionPurpose === "ai"
+      ? toolsApi.putConnectionInstalls(connectionId, next.access.mode === "all" ? [{ targetType: "company", targetId: selectedCompanyId! }] : [...next.access.agentIds].map(targetId => ({ targetType: "agent" as const, targetId })))
+      : toolsApi.finishApp(selectedCompanyId!, connectionId, {
         enabledCatalogEntryIds: [...next.enabled],
         askFirstCatalogEntryIds: [...next.askFirst].filter((id) => next.enabled.has(id)),
         ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
@@ -251,6 +259,7 @@ export function AppDetail() {
       }),
     onMutate: () => setPending(true),
     onSuccess: () => {
+      void installsQuery.refetch();
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccessesForConnection(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.catalog(connectionId) });
@@ -475,13 +484,17 @@ export function AppDetail() {
     );
   }
 
-  const status = statusFor(connection);
-  const needsReconnect = status.tone === "attention" && connection.healthStatus !== "unknown";
+  const aiGrantRevoked = connection.connectionPurpose === "ai"
+    && grantRows.length > 0 && grantRows.every((grant) => grant.status === "revoked");
+  const status: StatusInfo = aiGrantRevoked ? { label: "Revoked", tone: "attention" } : statusFor(connection);
+  const needsReconnect = connection.requiresReauthorization
+    ?? (status.tone === "attention" && connection.healthStatus !== "unknown");
   const quarantined = catalog.filter((e) => e.status === "quarantined");
   const active = catalog.filter((e) => e.status === "active");
   const readOnly = active.filter((e) => e.isReadOnly);
   const canChange = active.filter((e) => !e.isReadOnly);
-  const actionCount = catalogQuery.data ? active.length : null;
+  const actionsContent = renderActions?.(connection) ?? (connection.connectionPurpose === "ai" ? <ManagedAiConnectionDetails connection={connection} /> : undefined);
+  const actionCount = actionsContent !== undefined ? null : catalogQuery.data ? active.length : null;
   const reviewLoading = catalogQuery.isLoading || profilesQuery.isLoading || policiesQuery.isLoading;
   const permissionsLoading = reviewLoading || installsQuery.isLoading || agentsQuery.isLoading;
   const reviewFailed = catalogQuery.isError || profilesQuery.isError || policiesQuery.isError;
@@ -512,12 +525,21 @@ export function AppDetail() {
         }}
       />
 
+      {status.tone === "attention" && connection.requiresReauthorization === false && (
+        <div role="status">
+          <p>{connection.healthMessage || "GitHub access could not be checked. Try again."}</p>
+          <Button variant="outline" disabled={refreshGitHubAccess.isPending} onClick={() => refreshGitHubAccess.mutate()}>
+            Retry access
+          </Button>
+        </div>
+      )}
       {needsReconnect && (
         <ReconnectCard
           connection={connection}
           galleryEntry={logoEntry}
           canReconnect={canReconnect}
           reconnectUnavailableMessage={reconnectUnavailableMessage}
+          onReconnect={onReconnect ? () => onReconnect(connection) : connection.connectionPurpose === "ai" ? () => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`) : undefined}
           onReconnected={() => {
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });
@@ -557,6 +579,8 @@ export function AppDetail() {
           : permissionsLoading
           ? <ToolsLoading />
           : <div className="space-y-10">
+              {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
+              {connection.config?.provider === "agentmail" ? <EmailConnectionAccess companyId={connection.companyId} connectionId={connection.id} agents={agents} /> : <>
               <IdentitiesSection
                 appName={appName}
                 credentialPolicy={connection.credentialPolicy}
@@ -580,8 +604,8 @@ export function AppDetail() {
                   setAudienceOpenGrantId(null);
                   setAudienceError(null);
                 }}
-                onConnectAsMe={() => startPersonalAuth.mutate()}
-                onConnectOrganization={() => startOAuth.mutate()}
+                onConnectAsMe={() => onReconnect ? onReconnect(connection) : startPersonalAuth.mutate()}
+                onConnectOrganization={() => onReconnect ? onReconnect(connection) : startOAuth.mutate()}
                 onConnectAgent={(agentId) => startOAuth.mutate({ asAgentId: agentId })}
                 onRefreshAccess={() => refreshGitHubAccess.mutate()}
                 refreshAccessPending={refreshGitHubAccess.isPending}
@@ -589,12 +613,13 @@ export function AppDetail() {
                   replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
               />
               <PermissionsPanel
+                actions={actionsContent}
                 connectionId={connectionId}
                 capabilities={grantsQuery.data?.capabilities}
                 appName={appName}
                 agents={agents}
                 access={access}
-                install={install}
+                install={connection.connectionPurpose === "ai" ? installStateFrom([]) : install}
                 readOnly={readOnly}
                 canChange={canChange}
                 quarantined={quarantined}
@@ -607,11 +632,12 @@ export function AppDetail() {
                     ? "Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls."
                     : undefined
                 }
-                onSaveAccess={(next) => apply({ access: accessIncludingInstalls(next, install) })}
+                onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" ? next : accessIncludingInstalls(next, install) })}
                 onRefreshActions={() => refreshTools.mutate()}
                 onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
                 onReviewQuarantined={reviewQuarantined}
               />
+              </>}
             </div>
       )}
     </div>
@@ -700,7 +726,7 @@ function AppDetailHeader({
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge status={status} />
-            {actionCount !== null && (
+            {connection.config?.provider !== "agentmail" && actionCount !== null && (
               <span className="text-xs text-muted-foreground">
                 {actionCount} {actionCount === 1 ? "action" : "actions"} available
               </span>
@@ -765,7 +791,7 @@ function statusFor(connection: ToolConnection): StatusInfo {
   if (connection.enabled === false || connection.status === "disabled") {
     return { label: "Paused", tone: "paused" };
   }
-  if (isAttentionHealthStatus(connection.healthStatus)) {
+  if (isAttentionHealthStatus(connection.healthStatus) || (connection.connectionPurpose === "ai" && (connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(connection.config)))) {
     return { label: "Needs attention", tone: "attention" };
   }
   return { label: "Connected", tone: "connected" };

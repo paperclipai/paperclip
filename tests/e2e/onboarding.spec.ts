@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { mockOnboardingLocalAiConnection } from "./helpers/onboarding-ai-connection";
 
 /**
  * E2E: Onboarding wizard flow (NUX Phase 2 expanded wizard).
@@ -389,15 +390,19 @@ test.describe("Onboarding wizard", () => {
     // route, and keeping the pre-Connect part of this test the same as the
     // ordinary sign-in test above.
     let sessionStarted = false;
+    let aiConnection: Record<string, unknown> | undefined;
     await page.route("**/setup-token-login-sessions", (route) => {
       if (route.request().method() === "POST") {
         startCalls += 1;
         sessionStarted = true;
+        aiConnection = route.request().postDataJSON().aiConnection;
       }
       return route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
           sessionId: SESSION_ID,
+          environmentId: FAKE_SANDBOX_ENVIRONMENT_ID,
+          aiConnection,
           status: "pending",
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         }),
@@ -418,6 +423,8 @@ test.describe("Onboarding wizard", () => {
         contentType: "application/json",
         body: JSON.stringify({
           sessionId: SESSION_ID,
+          environmentId: FAKE_SANDBOX_ENVIRONMENT_ID,
+          aiConnection,
           status: "pending",
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         }),
@@ -438,6 +445,8 @@ test.describe("Onboarding wizard", () => {
         contentType: "application/json",
         body: JSON.stringify({
           sessionId: SESSION_ID,
+          environmentId: FAKE_SANDBOX_ENVIRONMENT_ID,
+          aiConnection,
           status: "pending",
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
           panelMode: "submitted_browser_code",
@@ -512,14 +521,12 @@ test.describe("Onboarding wizard", () => {
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 
-  test("connect step blocks the hire when the environment probe fails and no sign-in is needed", async ({
+  test("connect step blocks the hire when the environment probe fails after account connection", async ({
     page,
   }) => {
-    // The other half of what the test above used to cover. The two claims are
-    // different situations now: there, an absent credential makes Connect start
-    // a sign-in; here there is no sandbox to sign in against — this throwaway
-    // instance only auto-creates the local environment, and nothing below adds
-    // one — so Connect goes straight to the probe, and the probe is the gate.
+    // A successful local account connection still requires a passing
+    // environment probe before the wizard may hire the agent.
+    await mockOnboardingLocalAiConnection(page);
     const pageErrors: string[] = [];
     page.on("pageerror", (err) => pageErrors.push(err.message));
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -225,9 +225,9 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   // partway through, without touching any other table's update path.
   // tablesByCall maps a 0-based db.transaction() call index (in call order)
   // to the table that call should fail on; a call index with no entry runs
-  // every update for real. For example { 0: issues } fails only the
-  // issue-lock write inside releaseRunClaimedJustBeforeSuppression's
-  // transaction.
+  // every update for real. For example { 1: issues } lets the atomic stale-run
+  // validation transaction complete, then fails only the issue-lock write
+  // inside releaseRunClaimedJustBeforeSuppression's transaction.
   function withFailingTransactionalUpdate(realDb: typeof db, tablesByCall: Record<number, unknown>) {
     let callIndex = 0;
     return new Proxy(realDb, {
@@ -262,7 +262,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     // Fault the release transaction on the issue-lock write, so executeRun's
     // suppression branch catches the failure, logs it, and returns instead
     // of throwing. There is no in-process fallback or retry for this path.
-    const failingDb = withFailingTransactionalUpdate(db, { 0: issues });
+    const failingDb = withFailingTransactionalUpdate(db, { 1: issues });
     const heartbeat = heartbeatService(failingDb);
 
     const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
@@ -311,8 +311,14 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     expect(status.activeRuns).toBe(0);
     expect(status.quiescent).toBe(true);
 
-    // The run's row is still "running", so the orphan reaper finds it,
-    // finalizes it, and releases the issue lock on its own cycle.
+    // Missing local tracking cannot override the durable controller lease.
+    // Once that unrenewed lease expires, the reaper finalizes the orphan and
+    // releases the issue lock on its own cycle.
+    const beforeExpiry = await heartbeat.reapOrphanedRuns();
+    expect(beforeExpiry.runIds).not.toContain(runId);
+    await db.update(heartbeatRuns).set({
+      controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+    }).where(eq(heartbeatRuns.id, runId));
     const reapResult = await heartbeat.reapOrphanedRuns();
     expect(reapResult.runIds).toContain(runId);
 

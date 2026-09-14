@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
@@ -18,6 +18,7 @@ import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
+import { AnnouncementWell } from "./AnnouncementWell";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
@@ -66,6 +67,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "browse",
   "connections",
   "connect",
+  "chat",
   "vercel-connect",
   "review",
   "attention",
@@ -74,7 +76,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "app",
 ]);
 
-export function Layout() {
+export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -200,7 +202,7 @@ export function Layout() {
       />
     )
   ) : null;
-  const secondarySidebar = streamlinedUiEnabled && shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  const secondarySidebar = shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <RoutineContextualSidebar routineId={routineId} />
@@ -234,7 +236,7 @@ export function Layout() {
       const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   });
   const keyboardShortcutsEnabled = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -653,7 +655,7 @@ export function Layout() {
                 {hasSecondarySidebar ? (
                   <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
                 ) : (
-                  <Sidebar />
+                  <Sidebar>{sidebarSections}</Sidebar>
                 )}
               </div>
             </div>
@@ -677,7 +679,7 @@ export function Layout() {
               {replacesPrimarySidebar ? (
                 <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
               ) : (
-                <Sidebar />
+                <Sidebar>{sidebarSections}</Sidebar>
               )}
             </div>
             <SidebarAccountMenu
@@ -738,7 +740,7 @@ export function Layout() {
                   ? ({
                       "--tc-composer-bottom": mobileNavVisible
                         ? "var(--sz-calc-14)"
-                        : "var(--sz-calc-8)",
+                        : "var(--tc-composer-hidden-nav-offset)",
                     } as CSSProperties)
                   : undefined
               }
@@ -752,7 +754,9 @@ export function Layout() {
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
                 isMobile
-                  ? "overflow-visible pb-(--sz-calc-14)"
+                  ? isTaskDetailRoute && !mobileNavVisible
+                    ? "overflow-visible pb-(--tc-composer-hidden-nav-offset)"
+                    : "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
@@ -780,6 +784,7 @@ export function Layout() {
       <NewAgentDialog />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
+      <AnnouncementWell health={health} />
       </div>
     </GeneralSettingsProvider>
   );

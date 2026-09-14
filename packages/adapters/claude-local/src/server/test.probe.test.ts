@@ -512,6 +512,16 @@ describe("claude auth mode hints", () => {
     ).toBe(false);
   });
 
+  it("reports an intentionally selected managed API account without a subscription warning", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+    const result = await testEnvironment({ companyId: "company-1", adapterType: "claude_local",
+      config: { engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", method: "api_key" }, env: { ANTHROPIC_API_KEY: "api-test-key" } },
+      executionTarget: sandboxTarget, environmentName: "Daytona",
+    });
+    expect(result.checks.find(check => check.code === "claude_anthropic_api_key_overrides_subscription")).toMatchObject({ level: "info", message: "Using the selected Claude API connection." });
+    expect(JSON.stringify(result.checks)).not.toContain("Unset ANTHROPIC_API_KEY");
+  });
+
   it("keeps the API-key warning authoritative when both ANTHROPIC_API_KEY and the token are set", async () => {
     probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
 

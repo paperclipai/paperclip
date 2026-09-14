@@ -25,7 +25,7 @@ export const finishTaskAction = {
   },
   "documentation": {
     "title": "Finish active task",
-    "description": "Finish the active mock task with a durable summary.",
+    "description": "Finish the active task with a durable summary.",
     "note": null
   },
   "examples": {
@@ -66,7 +66,7 @@ export const finishTaskAction = {
       "operationId": "finish_task",
       "version": 1,
       "title": "Finish active task",
-      "description": "Finish the active mock task with a durable summary.",
+      "description": "Finish the active task with a durable summary.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -100,7 +100,7 @@ export const finishTaskAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -116,7 +116,7 @@ export const finishTaskAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

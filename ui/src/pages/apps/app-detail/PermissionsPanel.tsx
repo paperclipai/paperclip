@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Ban, Check, FlaskConical, Loader2, RefreshCw, Search, ShieldQuestion } from "lucide-react";
 import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
@@ -37,6 +37,7 @@ export function PermissionsPanel({
   refreshPending,
   capabilities,
   permissionChangeWarning,
+  actions,
 }: Pick<
   AppDetailSectionProps,
   | "appName"
@@ -58,6 +59,8 @@ export function PermissionsPanel({
   refreshPending: boolean;
   capabilities: ToolConnectionCapabilities | undefined;
   permissionChangeWarning?: string;
+  /** A credential-only connection can supply its account controls instead of tool actions. */
+  actions?: ReactNode;
 }) {
   const [searchParams] = useSearchParams();
   return (
@@ -70,7 +73,7 @@ export function PermissionsPanel({
         disabled={pending}
         onSave={onSaveAccess}
       />
-      <ActionsSection
+      {actions !== undefined ? actions : <ActionsSection
         key={connectionId}
         connectionId={connectionId}
         appName={appName}
@@ -87,7 +90,7 @@ export function PermissionsPanel({
         onSetPermission={onSetActionPermission}
         onReviewQuarantined={onReviewQuarantined}
         onRefreshActions={onRefreshActions}
-      />
+      />}
     </div>
   );
 }

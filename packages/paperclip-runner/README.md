@@ -41,10 +41,49 @@ route/service authorities; it does not copy those rules into this package.
 
 ## Quick start
 
+Native provider debug-trace correlation uses an incremental index owned by its transport. Pending
+event lookups read only newly appended bytes, with a 1 MiB read budget per lookup;
+they retry until the observed suffix is indexed. Partial records remain pending,
+and trace replacement or truncation invalidates the index. Closing a transport
+clears its index. Other active transports cannot evict its progress. Records over
+64 KiB are skipped by the correlation index without buffering or parsing their
+full contents; the original trace file retains them. Do not restore a full
+synchronous trace scan for each pending event: it blocks event delivery and can
+leave the board showing an active run after the provider turn has already ended.
+
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
 stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
 validates the exact model, session identity, tool catalog, structured input,
 and terminal settlement at the process boundary. Pi remains unavailable.
+
+Native Claude skill assignments travel in the runtime-context snapshot through
+runnerd to the ACPX sidecar. After acquiring the provider lifetime lease, the
+host materializes the assigned bundles under the isolated Claude home's
+`skills/` directory before launch. Reopening a provider refreshes that snapshot;
+project and ambient host settings remain excluded. This path is separate from
+the legacy `claude_local` adapter's remote skill staging.
+
+The isolated Claude settings pin both `model` and `availableModels` to the
+user's requested ID. This keeps ACP from replacing an exact ID with a picker
+alias during selection and verification. Users can keep selecting models from
+the normal Claude catalog or entering custom IDs; unavailable models still fail
+at the provider rather than silently falling back.
+
+For ACPX Claude, `approve-reads` is shown as **Allow Paperclip reads**. The host
+intersects the run's public tools with the implementation catalog's read effects
+and writes exact MCP permission rules into the isolated Claude settings. The
+`paperclip` connection is always the runner's authenticated tool bridge; ambient
+MCP configuration is excluded. Tool hints and provider permission metadata cannot
+grant access. Unassigned tools, writes, external tools, and provider-native
+operations do not receive automatic read permission. Protocol completion and
+task-delivery controls keep their existing separate allowance.
+
+This runtime has no interactive permission handler. An operation that still
+requires approval stops the turn with `approval_required`. The server marks the
+task blocked, exposes the permission action to the operator, and disables
+automatic retry. The operator must review the operation and the agent's
+permission setting before retrying. Company access checks still run when each
+Paperclip tool executes.
 
 Runnerd selects only qualified provider profiles. Claude Managed and AWS
 AgentCore receive immutable company-profile snapshots with explicit retention,
@@ -218,8 +257,8 @@ pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
 pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 ```
 
-`report:runner-live-evals` is a paid, provider-backed command. Native Codex and
-the ACPX Codex profile require `OPENAI_API_KEY`; ACPX Claude requires
+`report:runner-live-evals` is a paid, provider-backed command. Native Codex
+requires `OPENAI_API_KEY`; ACPX Claude requires
 `ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
 matrix admits no Pi profile and does not persist credential values. Set
 `PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD` to a positive finite number to bound

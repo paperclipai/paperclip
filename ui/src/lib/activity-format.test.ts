@@ -8,6 +8,11 @@ describe("activity formatting", () => {
     ["agent-approver", { id: "agent-approver", name: "Approver Bot" } as Agent],
   ]);
 
+  it("uses readable verbs for task read-state changes", () => {
+    expect(formatActivityVerb("issue.read_marked")).toBe("read");
+    expect(formatActivityVerb("issue.read_unmarked")).toBe("marked unread");
+  });
+
   it("formats blocker activity using linked issue identifiers", () => {
     const details = {
       addedBlockedByIssues: [
@@ -64,6 +69,15 @@ describe("activity formatting", () => {
     expect(formatIssueActivityAction("issue.monitor_triggered")).toBe("triggered a monitor");
     expect(formatIssueActivityAction("issue.monitor_cleared")).toBe("cleared a monitor");
     expect(formatIssueActivityAction("issue.monitor_recovery_issue_created")).toBe("created a monitor recovery issue");
+  });
+
+  it("labels each queued-comment queue mutation", () => {
+    expect(formatActivityVerb("issue.queued_comment_edited")).toBe("edited a queued comment on");
+    expect(formatActivityVerb("issue.queued_comments_reordered")).toBe("reordered queued comments on");
+    expect(formatActivityVerb("issue.queued_comment_discarded")).toBe("discarded a queued comment on");
+    expect(formatIssueActivityAction("issue.queued_comment_edited")).toBe("edited a queued comment");
+    expect(formatIssueActivityAction("issue.queued_comments_reordered")).toBe("reordered queued comments");
+    expect(formatIssueActivityAction("issue.queued_comment_discarded")).toBe("discarded a queued comment");
   });
 
   // PAP-16506 P4: agents can now resolve an interaction, including a review of

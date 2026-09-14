@@ -33,7 +33,12 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
 } = vi.hoisted(() => {
-  const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
+  const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
+    locals: {
+      toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
+      toolActionDeliveries: { sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
+    },
+  }) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({
     select: vi.fn(() => ({
@@ -59,6 +64,8 @@ const {
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
+    recoverPendingSessionGoalActions: vi.fn(async () => ({ scanned: 0, enqueued: 0, alreadyQueued: 0, invalid: 0 })),
+    recoverActiveSessionGoals: vi.fn(async () => ({ scanned: 0, enqueued: 0 })),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
       assignmentDispatched: 0,
       dispatchRequeued: 0,
@@ -73,7 +80,6 @@ const {
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
     sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
-    reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
@@ -223,6 +229,16 @@ vi.mock("../app.js", () => ({
   createApp: createAppMock,
 }));
 
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({
+  verifyStoppedNativeSessionForReplacement: vi.fn(async () => null),
+}));
+
+// This suite verifies server startup scheduling; replacement correctness is
+// exercised by the dedicated DB-backed recovery suites.
+vi.mock("../services/native-runtime/native-safe-replacement.js", () => ({
+  reconcileSafeNativeReplacements: vi.fn(async () => ({ scanned: 0, scheduled: 0 })),
+}));
+
 vi.mock("../config.js", () => ({
   loadConfig: loadConfigMock,
 }));
@@ -333,6 +349,12 @@ vi.mock("../services/index.js", () => ({
   })),
 }));
 
+vi.mock("../services/connection-intent-delivery.js", () => ({
+  connectionIntentDeliveryService: vi.fn(() => ({
+    sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
+  })),
+}));
+
 vi.mock("../services/question-response-delivery.js", () => ({
   questionResponseDeliveryService: vi.fn(() => ({
     sweepPending: vi.fn(async () => ({
@@ -388,6 +410,8 @@ vi.mock("../auth/better-auth.js", () => ({
 }));
 
 import { startServer } from "../index.ts";
+import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
+import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -504,6 +528,60 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("never invokes the retired review detector at startup or on periodic recovery", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    const retiredDetector = vi.fn(async () => ({ created: 1, updated: 1, failed: 0 }));
+    const runtime = Object.assign(heartbeatServiceMock, { reconcileProductivityReviews: retiredDetector });
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(retiredDetector).not.toHaveBeenCalled();
+    } finally {
+      delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("reconciles native replacements at startup and on the execution-control interval", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    let executionControlTick: (() => void) | undefined;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void,
+      interval: number,
+    ) => {
+      if (interval === EXECUTION_RECONCILIATION_INTERVAL_MS) executionControlTick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reconcileSafeNativeReplacements).toHaveBeenCalledExactlyOnceWith(
+        createDbMock.mock.results[0]?.value,
+        expect.any(Date),
+        { verifyStoppedSession: expect.any(Function) },
+      );
+
+      expect(executionControlTick).toBeDefined();
+      executionControlTick?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reconcileSafeNativeReplacements).toHaveBeenCalledTimes(2);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {

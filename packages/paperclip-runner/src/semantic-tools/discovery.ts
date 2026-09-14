@@ -20,12 +20,14 @@ export interface CapabilityDiscoveryResult {
 const MAX_DISCOVERY_RESULTS = 10;
 
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
+  search_api: "api_fallback",
+  call_api: "api_fallback",
   get_task_context: "active_task", get_task_history: "active_task",
   list_documents: "documents", read_document: "documents", list_document_revisions: "documents",
   report_progress: "active_task", answer_status_question: "active_task", write_document: "documents",
   request_human_input: "documents", register_deliverable: "documents", finish_task: "active_task",
   block_task: "active_task", request_review: "active_task", search_tasks: "discovery",
-  list_agents: "discovery", get_agent: "discovery", create_task: "delegation",
+  list_agents: "discovery", get_agent: "discovery", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
   set_dependencies: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",
@@ -34,6 +36,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
 });
 
 export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
+  { name: "api_fallback", description: "API escape hatch for work unsupported by available dedicated tools." },
   { name: "discovery", description: "Find company tasks and agents." },
   { name: "delegation", description: "Create bounded child work and task dependencies." },
   { name: "governance", description: "Read, request, discuss, and decide approvals." },

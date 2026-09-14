@@ -24,6 +24,7 @@ use crate::durable::{
     AcpxLaunchProfile, Command, CommandExecution, CommandExecutor, DurableRunnerConfig,
     DurableRunnerError, EventPriority, PolledEvent,
 };
+use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand;
 use crate::process_supervisor::{VerifiedProcessArgument, VerifiedProcessLaunch};
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedToolSet, ToolResult, TOOL_SET_SCHEMA,
@@ -144,9 +145,9 @@ impl AcpxProviderDescriptor {
             "claude" => (
                 "claude-sonnet-5",
                 "@agentclientprotocol/claude-agent-acp",
-                "0.70.0",
+                "0.73.0",
                 Some("@anthropic-ai/claude-agent-sdk"),
-                Some("0.3.232"),
+                Some("0.3.263"),
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             ),
             "codex" => (
@@ -154,8 +155,8 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/codex-acp",
                 "1.6.2",
                 Some("@openai/codex"),
-                Some("0.148.0"),
-                "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
+                Some("0.153.4"),
+                "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
             ),
             "pi" => return Err(DurableRunnerError::invalid(
                 "ACPX agent pi is not executable through the verified runnerd provider boundary",
@@ -171,7 +172,9 @@ impl AcpxProviderDescriptor {
             || self.driver != "acpx_runtime"
             || self.provider_version != "0.13.1"
             || self.acpx_version != "0.13.1"
-            || self.model != expected.0
+            || (self.agent != "claude" && self.model != expected.0)
+            || self.model.trim().is_empty()
+            || self.model.len() > 1024
             || self.agent_server_package != expected.1
             || self.agent_server_version != expected.2
             || self.agent_runtime_package.as_deref() != expected.3
@@ -245,6 +248,7 @@ impl AcpxProviderDescriptor {
             permission_mode: self.permission_mode,
             permission_mode_pinned: self.permission_mode_pinned,
             system_instructions: self.instructions.clone(),
+            runtime_context: self.runtime_context.clone(),
             tool_set,
             expected_identity,
         })
@@ -361,6 +365,12 @@ struct AcpxDurableState {
     #[serde(default)]
     semantic_result: Option<Value>,
     #[serde(default)]
+    goal_projection: Value,
+    #[serde(default)]
+    goal_revision: u64,
+    #[serde(default)]
+    goal_source_revision: Option<u64>,
+    #[serde(default)]
     pending_events: VecDeque<PolledEvent>,
     #[serde(default = "initial_event_sequence")]
     next_event_sequence: u64,
@@ -382,6 +392,9 @@ impl AcpxDurableState {
             active_turn_id: None,
             provider_exit_unconfirmed: false,
             semantic_result: None,
+            goal_projection: Value::Null,
+            goal_revision: 0,
+            goal_source_revision: None,
             pending_events: VecDeque::new(),
             next_event_sequence: initial_event_sequence(),
         }
@@ -620,7 +633,9 @@ impl AcpxCommandExecutor {
                 event_type: "run.terminal".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
+                    "schema": "paperclip.prp.terminal.v1",
                     "status": "failed",
+                    "turnTerminalState": "failed",
                     "runTerminalState": "failed",
                     "reportedWorkDisposition": "unknown",
                     "provider": "acpx",
@@ -841,6 +856,7 @@ impl AcpxCommandExecutor {
         state.active_turn_id = None;
         state.lifecycle = "session_open".to_owned();
         let payload = session_event_payload(&state.descriptor, &identity, process_id);
+        let goal = self.goal_control("session.goal.get", &json!({}))?;
         self.save_state()?;
         Ok(CommandExecution {
             result: json!({
@@ -852,7 +868,7 @@ impl AcpxCommandExecutor {
                 "sessionId": identity.agent_session_id,
                 "processId": process_id,
             }),
-            events: vec![(
+            events: [(
                 if resumed {
                     "session.resumed"
                 } else {
@@ -861,7 +877,98 @@ impl AcpxCommandExecutor {
                 .to_owned(),
                 EventPriority::P0,
                 payload,
-            )],
+            )]
+            .into_iter()
+            .chain(goal.events)
+            .collect(),
+        })
+    }
+
+    fn goal_control(
+        &mut self,
+        command: &str,
+        payload: &Value,
+    ) -> Result<CommandExecution, DurableRunnerError> {
+        let sidecar_command = match command {
+            "session.goal.get" => GeneratedAcpxSidecarCommand::SessionGoalGet,
+            "session.goal.set" => GeneratedAcpxSidecarCommand::SessionGoalSet,
+            "session.goal.clear" => GeneratedAcpxSidecarCommand::SessionGoalClear,
+            _ => return Err(DurableRunnerError::invalid("unknown ACPX goal control")),
+        };
+        if command != "session.goal.get" {
+            let action = if command == "session.goal.clear" {
+                "clear"
+            } else if payload.get("objective").is_some() {
+                "set"
+            } else if payload.get("status").and_then(Value::as_str) == Some("paused") {
+                "pause"
+            } else {
+                "resume"
+            };
+            let available = self.state.as_ref().is_some_and(|state| {
+                state
+                    .goal_projection
+                    .pointer("/sessionGoals/availability")
+                    .and_then(Value::as_str)
+                    == Some("available")
+                    && state
+                        .goal_projection
+                        .pointer("/sessionGoals/actions")
+                        .and_then(Value::as_array)
+                        .is_some_and(|actions| {
+                            actions.iter().any(|value| value.as_str() == Some(action))
+                        })
+            });
+            if !available {
+                return Ok(CommandExecution::result(
+                    json!({"status":"rejected", "code":"session_goal_action_unavailable", "message":"The negotiated ACP extension does not support this goal action"}),
+                ));
+            }
+        }
+        let mut projection = self
+            .session
+            .as_mut()
+            .ok_or_else(|| {
+                DurableRunnerError::invalid("ACPX goal control requires an open session")
+            })?
+            .goal_control(sidecar_command, payload.clone())
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!("ACPX goal control failed: {error}"))
+            })?;
+        if projection.get("schema").and_then(Value::as_str)
+            != Some("paperclip.session_goal.snapshot.v1")
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX returned an invalid goal snapshot",
+            ));
+        }
+        let state = self
+            .state
+            .as_mut()
+            .expect("open ACPX session has durable state");
+        state.goal_revision += 1;
+        state.goal_source_revision = projection.get("providerRevision").and_then(Value::as_u64);
+        projection["revision"] = json!(state.goal_revision);
+        if let Some(request_id) = payload.get("requestId") {
+            projection["requestId"] = request_id.clone();
+        }
+        state.goal_projection = projection.clone();
+        self.save_state()?;
+        let event_type = match command {
+            "session.goal.clear" => "session.goal.cleared",
+            "session.goal.set" => "session.goal.updated",
+            _ => "session.goal.snapshot",
+        };
+        Ok(CommandExecution {
+            result: projection.clone(),
+            events: vec![
+                (
+                    "session.capabilities.updated".to_owned(),
+                    EventPriority::P0,
+                    json!({"sessionGoals":projection["sessionGoals"]}),
+                ),
+                (event_type.to_owned(), EventPriority::P0, projection),
+            ],
         })
     }
 
@@ -1236,11 +1343,40 @@ impl AcpxCommandExecutor {
                     )
                     .then(|| event.event_type.clone())
                 });
+                if terminal.is_some() {
+                    let snapshot = self.goal_control("session.goal.get", &json!({}))?;
+                    let state = self.state.as_mut().expect("ACPX session has durable state");
+                    for (event_type, priority, payload) in snapshot.events {
+                        state.push(NormalizedProviderEvent {
+                            event_type,
+                            priority,
+                            payload,
+                        })?;
+                    }
+                }
                 let state = self
                     .state
                     .as_mut()
                     .expect("ACPX state remains available while polling");
-                for event in normalized {
+                for mut event in normalized {
+                    if matches!(
+                        event.event_type.as_str(),
+                        "session.goal.updated" | "session.goal.cleared"
+                    ) {
+                        let revision = event
+                            .payload
+                            .get("providerRevision")
+                            .and_then(Value::as_u64);
+                        // Requests consume a newer authoritative snapshot while
+                        // older notifications may still be queued in the transport.
+                        if !goal_notification_is_newer(revision, state.goal_source_revision) {
+                            continue;
+                        }
+                        state.goal_source_revision = revision;
+                        state.goal_revision += 1;
+                        event.payload["revision"] = json!(state.goal_revision);
+                        state.goal_projection = event.payload.clone();
+                    }
                     if event.event_type == "run.result.proposed" {
                         state.semantic_result = Some(event.payload.clone());
                     }
@@ -1250,27 +1386,41 @@ impl AcpxCommandExecutor {
                     state.active_turn_id = None;
                     state.lifecycle = "session_open".to_owned();
                     provider_turn_settled = true;
-                    let status = match event_type.as_str() {
-                        "turn.completed" => "succeeded",
-                        "turn.cancelled" => "cancelled",
-                        "turn.interrupted" => "interrupted",
-                        _ => "failed",
-                    };
-                    let disposition = state
-                        .semantic_result
-                        .as_ref()
-                        .and_then(|result| result.get("reportedWorkDisposition"))
+                    // An ACP goal has session lifetime, not prompt lifetime.
+                    // Out-of-prompt goal updates remain observable after quiescence.
+                    if state
+                        .goal_projection
+                        .pointer("/goal/status")
                         .and_then(Value::as_str)
-                        .unwrap_or(if status == "succeeded" {
-                            "done"
-                        } else {
-                            "needs_review"
-                        });
+                        == Some("active")
+                    {
+                        continue;
+                    }
+                    let (turn_terminal_state, status) = match event_type.as_str() {
+                        "turn.completed" => ("completed", "succeeded"),
+                        "turn.cancelled" => ("cancelled", "cancelled"),
+                        "turn.interrupted" => ("interrupted", "cancelled"),
+                        _ => ("failed", "failed"),
+                    };
+                    let disposition = goal_terminal_disposition(
+                        state
+                            .goal_projection
+                            .pointer("/goal/status")
+                            .and_then(Value::as_str),
+                        state
+                            .semantic_result
+                            .as_ref()
+                            .and_then(|result| result.get("reportedWorkDisposition"))
+                            .and_then(Value::as_str),
+                        status == "succeeded",
+                    );
                     state.push(NormalizedProviderEvent {
                         event_type: "run.terminal".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({
+                            "schema": "paperclip.prp.terminal.v1",
                             "status": status,
+                            "turnTerminalState": turn_terminal_state,
                             "runTerminalState": status,
                             "reportedWorkDisposition": disposition,
                             "provider": "acpx",
@@ -1284,6 +1434,23 @@ impl AcpxCommandExecutor {
             self.save_state()?;
         }
         Ok(())
+    }
+}
+
+fn goal_notification_is_newer(next: Option<u64>, last: Option<u64>) -> bool {
+    next.is_some_and(|next| last.is_none_or(|last| next > last))
+}
+
+fn goal_terminal_disposition<'a>(
+    goal_status: Option<&str>,
+    semantic_disposition: Option<&'a str>,
+    succeeded: bool,
+) -> &'a str {
+    match goal_status {
+        Some("blocked") => "blocked",
+        Some("paused" | "limited" | "usage_limited" | "budget_limited") => "yielded",
+        Some("complete") => "done",
+        _ => semantic_disposition.unwrap_or(if succeeded { "done" } else { "needs_review" }),
     }
 }
 
@@ -1317,6 +1484,9 @@ impl CommandExecutor for AcpxCommandExecutor {
                 Ok(execution)
             }
             "session.open" => self.open_session(),
+            "session.goal.get" | "session.goal.set" | "session.goal.clear" => {
+                self.goal_control(&command.command_type, &command.payload)
+            }
             "turn.start" => self.start_turn(&command.payload),
             "turn.steer" => Ok(CommandExecution::result(json!({
                 "status": "rejected",
@@ -1362,6 +1532,13 @@ impl CommandExecutor for AcpxCommandExecutor {
             return Ok(Vec::new());
         }
         self.poll_provider()?;
+        self.retained_events()
+    }
+
+    fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        // Explicit drain runs while control traffic suppresses provider polling.
+        // Expose the already-retained suffix so runnerd can commit and ACK it
+        // before suspension, without restoring or advancing the provider.
         Ok(self
             .state
             .as_ref()
@@ -1599,9 +1776,9 @@ mod tests {
                 (
                     "claude-sonnet-5",
                     "@agentclientprotocol/claude-agent-acp",
-                    "0.70.0",
+                    "0.73.0",
                     json!("@anthropic-ai/claude-agent-sdk"),
-                    json!("0.3.232"),
+                    json!("0.3.263"),
                     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
                 )
             } else {
@@ -1610,8 +1787,8 @@ mod tests {
                     "@agentclientprotocol/codex-acp",
                     "1.6.2",
                     json!("@openai/codex"),
-                    json!("0.148.0"),
-                    "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
+                    json!("0.153.4"),
+                    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
                 )
             };
         json!({
@@ -1641,6 +1818,57 @@ mod tests {
     }
 
     #[test]
+    fn retained_events_exposes_terminal_suffix_without_restoring_provider() {
+        let directory = temporary_directory("retained-terminal-suffix");
+        let config = test_config(&directory, None);
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        // Invalid on-disk state would fail restoration. Retained-only reads
+        // must neither restore a provider nor inspect a different state owner.
+        fs::write(executor.state_path(), b"not provider state").unwrap();
+        assert!(executor.retained_events().unwrap().is_empty());
+
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let mut state = AcpxDurableState::new(
+            serde_json::from_value(descriptor("claude")).unwrap(),
+            tool_set,
+            "retained-only-test".to_owned(),
+        );
+        state.lifecycle = "session_open".to_owned();
+        for event_type in ["turn.completed", "run.usage", "run.completed"] {
+            state
+                .push(NormalizedProviderEvent {
+                    event_type: event_type.to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
+                })
+                .unwrap();
+        }
+        executor.state = Some(state);
+        let suffix = executor.retained_events().unwrap();
+        assert_eq!(
+            suffix
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["turn.completed", "run.usage", "run.completed"],
+        );
+        // Reading is not acknowledgement: a retry sees the exact same FIFO.
+        assert_eq!(executor.retained_events().unwrap(), suffix);
+        assert!(executor.session.is_none());
+        assert_eq!(
+            fs::read(executor.state_path()).unwrap(),
+            b"not provider state"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn admits_only_exact_qualified_claude_and_codex_descriptors() {
         for agent in ["claude", "codex"] {
             let descriptor: AcpxProviderDescriptor =
@@ -1651,6 +1879,38 @@ mod tests {
         drifted["commandDigest"] = json!(format!("sha256:{}", "a".repeat(64)));
         let drifted: AcpxProviderDescriptor = serde_json::from_value(drifted).unwrap();
         assert!(drifted.validate(&context()).is_err());
+    }
+
+    #[test]
+    fn authoritative_clear_fences_queued_and_unsequenced_goal_notifications() {
+        assert!(!goal_notification_is_newer(Some(3), Some(4)));
+        assert!(!goal_notification_is_newer(Some(4), Some(4)));
+        assert!(!goal_notification_is_newer(None, Some(4)));
+        assert!(goal_notification_is_newer(Some(5), Some(4)));
+        assert!(goal_notification_is_newer(Some(1), None));
+    }
+
+    #[test]
+    fn goal_state_overrides_optimistic_prompt_disposition() {
+        assert_eq!(
+            goal_terminal_disposition(Some("blocked"), Some("done"), true),
+            "blocked"
+        );
+        for status in ["paused", "limited", "usage_limited", "budget_limited"] {
+            assert_eq!(
+                goal_terminal_disposition(Some(status), Some("done"), true),
+                "yielded"
+            );
+        }
+        assert_eq!(
+            goal_terminal_disposition(Some("complete"), Some("yielded"), true),
+            "done"
+        );
+        assert_eq!(
+            goal_terminal_disposition(None, Some("yielded"), true),
+            "yielded"
+        );
+        assert_eq!(goal_terminal_disposition(None, None, false), "needs_review");
     }
 
     #[test]
@@ -1972,6 +2232,8 @@ mod tests {
         assert_eq!(events[0].event_type, "turn.failed");
         assert_eq!(events[0].payload["providerShutdownFailed"], true);
         assert_eq!(events[1].event_type, "run.terminal");
+        assert_eq!(events[1].payload["schema"], "paperclip.prp.terminal.v1");
+        assert_eq!(events[1].payload["turnTerminalState"], "failed");
         let cleanup_error = recovered
             .shutdown()
             .expect_err("cleanup must not succeed while the original lifetime remains active");
@@ -2084,9 +2346,39 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn lifetime_fence_fixtures_do_not_reuse_a_retired_provider_quorum() {
+        let (original_candidates, original_lifetime_fence) = reserve_provider_lifetime_fence();
+        drop(original_lifetime_fence);
+        let (other_candidates, _other_lifetime_fence) = reserve_provider_lifetime_fence();
+
+        assert!(
+            original_candidates
+                .iter()
+                .all(|candidate| !other_candidates.contains(candidate)),
+            "another fixture must not impersonate a retired provider lifetime"
+        );
+        assert_eq!(
+            acquire_provider_lifetime_fence(original_candidates)
+                .expect("unrelated live fixture must not block the original cleanup proof")
+                .len(),
+            2
+        );
+    }
+
     fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // A fixture releases its original listeners before proving cleanup.
+        // Never give those candidate ports to another parallel fixture in that
+        // gap: its listeners would impersonate the original provider lifetime.
+        static NEXT_CANDIDATE_PORT: AtomicU32 = AtomicU32::new(49_152);
         let mut listeners = Vec::new();
-        for port in 49_152..=u16::MAX {
+        loop {
+            let Ok(port) = u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, Ordering::Relaxed))
+            else {
+                break;
+            };
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
                 listeners.push(listener);
                 if listeners.len() == 3 {

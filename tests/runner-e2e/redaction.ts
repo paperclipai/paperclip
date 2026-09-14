@@ -152,12 +152,18 @@ export function assertSecretFree(
   if (leak) throw new Error(`Secret leak in ${label}: ${leak}`);
 }
 
+export function isEphemeralPostgresPidFile(paperclipHome: string, file: string): boolean {
+  const relative = path.relative(paperclipHome, file).split(path.sep).join("/");
+  return /^instances\/[^/]+\/db\/postmaster\.pid$/.test(relative);
+}
+
 export async function findSecretLeakInDirectory(
   root: string,
   secrets: readonly string[],
   options: {
     includeShapes?: boolean;
     ignoreFile?: (file: string) => boolean;
+    allowDisappearedFile?: (file: string) => boolean;
   } = {},
 ): Promise<{ file: string; reason: string } | null> {
   const overlap = Math.max(
@@ -179,14 +185,22 @@ export async function findSecretLeakInDirectory(
       } else if (entry.isFile()) {
         if (options.ignoreFile?.(file)) continue;
         let carry = Buffer.alloc(0);
-        for await (const chunk of createReadStream(file)) {
-          const data = Buffer.concat([
-            carry,
-            Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk),
-          ]);
-          const reason = findSecretLeak(data, secrets, options);
-          if (reason) return { file, reason };
-          carry = data.subarray(Math.max(0, data.length - overlap));
+        try {
+          for await (const chunk of createReadStream(file)) {
+            const data = Buffer.concat([
+              carry,
+              Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk),
+            ]);
+            const reason = findSecretLeak(data, secrets, options);
+            if (reason) return { file, reason };
+            carry = data.subarray(Math.max(0, data.length - overlap));
+          }
+        } catch (error) {
+          // PostgreSQL removes its PID file on shutdown, possibly after readdir.
+          // Existing contents are still scanned; only the caller's exact
+          // transient paths may disappear. Evidence and other I/O errors fail.
+          if ((error as NodeJS.ErrnoException)?.code !== "ENOENT" ||
+              !options.allowDisappearedFile?.(file)) throw error;
         }
       }
     }

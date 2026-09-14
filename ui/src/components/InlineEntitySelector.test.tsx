@@ -129,6 +129,8 @@ describe("InlineEntitySelector", () => {
 
     const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
+    expect(searchInput?.className).toContain("text-base");
+    expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
     expect(document.activeElement).toBe(searchInput);
 
     act(() => {

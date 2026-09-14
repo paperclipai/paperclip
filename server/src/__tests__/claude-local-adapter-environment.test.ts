@@ -125,7 +125,7 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
   });
 
-  it("returns a warning (not an error) when ANTHROPIC_API_KEY is set in adapter env", async () => {
+  it("reports an explicitly configured API key as normal authentication", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
@@ -143,12 +143,12 @@ describe("claude_local environment diagnostics", () => {
       },
     });
 
-    expect(result.status).toBe("warn");
+    expect(result.status).toBe("pass");
     expect(
       result.checks.some(
         (check) =>
           check.code === "claude_anthropic_api_key_overrides_subscription" &&
-          check.level === "warn",
+          check.level === "info",
       ),
     ).toBe(true);
     expect(result.checks.some((check) => check.level === "error")).toBe(false);

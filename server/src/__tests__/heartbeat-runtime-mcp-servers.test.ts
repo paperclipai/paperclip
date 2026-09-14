@@ -13,6 +13,7 @@ import {
   toolApplications,
   toolConnectionInstalls,
   toolConnections,
+  toolCatalogEntries,
   toolMcpGateways,
   toolMcpGatewayTokens,
   toolProfileBindings,
@@ -24,6 +25,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
+
+import { toolAccessService } from "../services/tool-access.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -201,6 +204,84 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         issueId: null,
       }),
     ).resolves.toBeNull();
+  });
+
+  it("preserves exact permissions when an aggregate assignment exceeds the public 250-entry edit limit", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({
+      name: "Large MCP assignment",
+      issuePrefix: `LM${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent, gatewayReader] = await db.insert(agents).values([
+      { companyId: company!.id, name: "Cursor Cloud", role: "engineer", adapterType: "cursor_cloud" },
+      { companyId: company!.id, name: "Gateway reader", role: "engineer", adapterType: "cursor_cloud" },
+    ]).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id, applicationKey: "large-mcp", name: "Large MCP", type: "mcp_http",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id, applicationId: application!.id,
+      name: "Large MCP", uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "active", enabled: true,
+      config: { url: "https://large.example.test/mcp" },
+    }).returning();
+    const catalogInput = (name: string) => ({
+      companyId: company!.id, applicationId: application!.id, connectionId: connection!.id,
+      name, toolName: name, versionHash: "fixture", status: "active" as const,
+    });
+    const catalog = await db.insert(toolCatalogEntries).values([
+      ...Array.from({ length: 251 }, (_, index) => catalogInput(`allowed_${index}`)),
+      catalogInput("excluded"), catalogInput("unassigned"),
+    ]).returning();
+    const allowed = catalog.slice(0, 251);
+    const excluded = catalog[251]!;
+    // Multiple valid profiles can each have fewer than 250 entries while their
+    // union exceeds the HTTP edit-request limit.
+    const profiles = await db.insert(toolProfiles).values(["first", "second"].map((key) => ({
+      companyId: company!.id, profileKey: key, name: key, defaultAction: "deny" as const,
+    }))).returning();
+    await db.insert(toolProfileEntries).values([
+      ...[...allowed, excluded].map((tool, index) => ({
+        companyId: company!.id, profileId: profiles[index < 200 ? 0 : 1]!.id,
+        selectorType: "catalog_entry" as const, effect: "include" as const,
+        applicationId: application!.id, connectionId: connection!.id, catalogEntryId: tool.id,
+      })),
+      {
+        companyId: company!.id, profileId: profiles[1]!.id,
+        selectorType: "catalog_entry" as const, effect: "exclude" as const,
+        applicationId: application!.id, connectionId: connection!.id, catalogEntryId: excluded.id,
+      },
+    ]);
+    await db.insert(toolProfileBindings).values(profiles.map((profile) => ({
+      companyId: company!.id, profileId: profile.id, targetType: "agent" as const, targetId: agent!.id,
+    })));
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id, connectionId: connection!.id, targetType: "agent", targetId: agent!.id,
+    });
+
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
+    expect(servers).toHaveLength(1);
+    const [gateway] = await db.select().from(toolMcpGateways);
+    const generatedEntries = await db.select().from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, gateway!.profileId!));
+    expect(generatedEntries).toHaveLength(251);
+    expect(generatedEntries.every((entry) => entry.selectorType === "catalog_entry")).toBe(true);
+    expect(generatedEntries.map((entry) => entry.catalogEntryId).sort()).toEqual(allowed.map((tool) => tool.id).sort());
+
+    // Evaluate the generated profile independently of the original assignments,
+    // including a tool discovered after the immutable profile was created.
+    await db.insert(toolCatalogEntries).values(catalogInput("new_after_snapshot"));
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id, profileId: gateway!.profileId!, targetType: "agent", targetId: gatewayReader!.id,
+    });
+    const effective = await toolAccessService(db).getEffectiveProfilesForAgent(company!.id, gatewayReader!.id);
+    expect(effective.allowedTools.map((tool) => tool.id).sort()).toEqual(allowed.map((tool) => tool.id).sort());
+    expect(effective.allowedToolNames).not.toContain("excluded");
+    expect(effective.allowedToolNames).not.toContain("unassigned");
+    expect(effective.allowedToolNames).not.toContain("new_after_snapshot");
+
+    const reused = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
+    expect(reused[0]!.connectionId).toBe(servers[0]!.connectionId);
+    expect(await db.select().from(toolMcpGateways)).toHaveLength(1);
   });
 
   it("exposes only the dedicated GitHub connection when a personal connection is also installed", async () => {

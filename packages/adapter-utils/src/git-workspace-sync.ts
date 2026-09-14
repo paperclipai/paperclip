@@ -146,6 +146,19 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
       return null;
     }
 
+    const toplevelResult = await runLocalGit(localDir, ["rev-parse", "--show-toplevel"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    // Git discovers a parent repository from a nested project directory, but
+    // that directory is not a fetch source. Keep the selected workspace
+    // boundary: subfolders use directory sync instead of importing the parent.
+    const [workspacePath, repositoryPath] = await Promise.all([
+      fs.realpath(localDir),
+      fs.realpath(toplevelResult.stdout.trim()),
+    ]);
+    if (workspacePath !== repositoryPath) return null;
+
     const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
       runLocalGit(localDir, ["rev-parse", "HEAD"], {
         timeout: 10_000,
@@ -278,6 +291,15 @@ async function runHardenedReadOnlyGit(
  * surface as a failure and never look like "no Git tree here".
  */
 function isNotAGitRepositoryError(error: unknown): boolean {
+  // The host scheduler keeps bounded subprocess diagnostics under details.
+  // Only a completed Git exit may establish that no repository exists.
+  if (error && typeof error === "object" && "code" in error &&
+      typeof error.code === "string" && error.code.startsWith("workspace_git_scan_")) {
+    const details = "details" in error && error.details && typeof error.details === "object"
+      ? error.details as Record<string, unknown> : {};
+    return error.code === "workspace_git_scan_failed" && details.exitCode === 128 && details.signal === null &&
+      typeof details.stderr === "string" && /not a git repository/i.test(details.stderr);
+  }
   const stderr = error && typeof error === "object" && "stderr" in error ? String((error as { stderr: unknown }).stderr) : "";
   const message = error instanceof Error ? error.message : String(error);
   return /not a git repository/i.test(stderr) || /not a git repository/i.test(message);

@@ -20,9 +20,9 @@ function emptyRunDay(date: string): DashboardRunActivityDay {
 }
 
 const runSegmentColors = {
-  succeeded: "var(--hex-10b981)",
+  succeeded: "var(--status-task-icon-done)",
   recovered: "var(--status-task-todo)",
-  failed: "var(--hex-ef4444)",
+  failed: "var(--status-task-icon-blocked)",
   other: "var(--hex-737373)",
 } as const;
 
@@ -166,7 +166,7 @@ export function RunActivityChart(props: RunChartProps) {
 }
 
 const priorityColors: Record<string, string> = {
-  critical: "var(--hex-ef4444)",
+  critical: "var(--status-task-icon-blocked)",
   high: "var(--hex-f97316)",
   medium: "var(--hex-eab308)",
   low: "var(--hex-6b7280)",
@@ -223,14 +223,15 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 // status vocabulary; badge, row, chart, and log agree). Previously an
 // independent palette (todo blue, in_progress violet, etc.). `backlog`
 // deliberately keeps --project-none (pre-B5, per user ruling); the
-// priority series and success-rate tints below are not status hues and
-// are left alone.
+// non-red priority series and warning success-rate tints retain their own hues.
+// Progress, done, and blocked use the icon hues so bars and legends match
+// the task icons in each theme.
 const statusColors: Record<string, string> = {
   todo: "var(--status-task-todo)",
-  in_progress: "var(--status-task-in_progress)",
+  in_progress: "var(--status-task-icon-in_progress)",
   in_review: "var(--status-task-in_review)",
-  done: "var(--status-task-done)",
-  blocked: "var(--status-task-blocked)",
+  done: "var(--status-task-icon-done)",
+  blocked: "var(--status-task-icon-blocked)",
   cancelled: "var(--status-task-cancelled)",
   backlog: "var(--project-none)",
 };
@@ -309,7 +310,7 @@ export function SuccessRateChart(props: RunChartProps) {
           // rather than dragging it down as failures.
           const effectiveSucceeded = entry.succeeded + entry.recovered;
           const rate = entry.total > 0 ? effectiveSucceeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "var(--hex-10b981)" : rate >= 0.5 ? "var(--hex-eab308)" : "var(--hex-ef4444)";
+          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "var(--status-task-icon-done)" : rate >= 0.5 ? "var(--hex-eab308)" : "var(--status-task-icon-blocked)";
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${effectiveSucceeded}/${entry.total})`}>
               {entry.total > 0 ? (

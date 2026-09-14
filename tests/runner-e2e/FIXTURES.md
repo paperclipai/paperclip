@@ -154,3 +154,21 @@ pnpm test:e2e:runner -- --list
 
 Then run the narrowest paid cell that exercises the fixture. A full matrix is a
 manual or scheduled campaign, not a PR requirement.
+
+
+## Persistent chat fixtures
+
+`chat-cases.ts` defines the six-case `agent-chat` suite; `chat-flow.ts` drives the
+production composer, plan revision/approval controls, questions, reset command,
+and project cards. Keep its 24 local cells intentional. `expectedRunCount`
+counts provider turns, including cancelled and handed-off task runs, but excludes
+synthetic `/new` runs. Assertions must inspect all company runs because ordinary
+issue lists exclude the source conversation. `assertChatHandoff` rejects missing
+projects/plans, chat children, wrong assignees, and execution before plan commit.
+
+Retained `api-state.json`, `chat-handoff.json`, and plan-revision evidence
+include persisted comments, session generations, run context and logs, project
+workspaces, task documents, and ordering. They pass through the normal sanitizer.
+Screenshots are allowlisted to the exact disposable agent chat. Cleanup cancels
+all active runs in the isolated company, including handed-off work; usage from
+failed and cancelled runs must not disappear from campaign totals.

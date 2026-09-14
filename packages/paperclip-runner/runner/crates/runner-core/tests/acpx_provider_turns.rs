@@ -46,6 +46,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
         system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
         expected_identity: None,
     }

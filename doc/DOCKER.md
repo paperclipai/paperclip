@@ -18,11 +18,54 @@ Build arguments:
 |-----|---------|---------|
 | `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
 | `USER_GID` | `1000` | GID for the container `node` group |
+| `CLI_TOOLS_CACHE_EPOCH` | empty | Refresh the CLI-install layer; CI supplies the current ISO week |
+| `PAPERCLIP_BUILD_VERSION` | empty | Runtime version when Git metadata is unavailable |
+| `PAPERCLIP_BUILD_COMMIT` | empty | Source commit written into the server build stamp and runtime environment |
+
+Changing the build version or commit preserves the CLI-install cache. The
+tool layer refreshes when its weekly epoch, base image, installation command,
+or earlier build inputs change. Local builds can set a new epoch explicitly
+to refresh tools without clearing the entire build cache.
 
 ```sh
 docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
+
+## Cloud image addresses
+
+The Docker workflow publishes the managed deployment image for Linux AMD64.
+`Cloud readiness` starts `Docker cloud` on each master push independently of the
+multi-platform self-hosted build. Different commits use separate concurrency groups and existing
+GitHub-hosted runners, so an older production or cloud build does not hold the
+new commit in a workflow queue. Available GitHub runner capacity still applies.
+Release tags and manual `Docker` dispatches call the same cloud build workflow.
+
+Each commit exports to its own `buildcache-cloud-<FULL_SHA>` registry tag.
+Builds import the current commit and nine first-parent ancestors, plus the
+legacy `buildcache-cloud` fallback. This preserves reusable layers without
+letting concurrent builds overwrite one shared cache manifest. Retain recent
+cache tags if registry cleanup is configured; deleting them makes builds colder.
+
+Cloud CI skips SDK and cache cleanup when both the Docker data filesystem and
+the checkout filesystem have at least 64 GiB available. Below that conservative
+headroom threshold, or when the measurement fails, it retains the existing
+cleanup. The threshold selects the fast path; it is not a new minimum disk
+requirement for local builds or smaller runners.
+
+After the pushed image passes its Sentry and orphan-reaping checks, the workflow verifies its
+commit label and platform and adds `ghcr.io/paperclipai/paperclip:sha-<full-commit-sha>-cloud`.
+This address lets commit-based deployment tooling reuse the normal build.
+Existing short-SHA and release tags remain available.
+
+The full-SHA tag identifies the source commit. It does not certify that source
+tests passed or that a compatible database migrator is available. Deployment
+tooling must still check those prerequisites and pin the resolved image digest;
+a rebuild of the same source can update the tag's digest.
+
+The separate [cloud readiness check](cloud-build-readiness.md) combines source
+verification, successful cloud image checks, and exact-source migrator
+availability. It runs outside the full npm release's concurrency queue.
 
 ## One-liner (build + run)
 
@@ -295,3 +338,51 @@ Notes:
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
+
+## Native Runner build cache
+
+The image compiles the native Runner in `runner-build`, before copying the
+application source. A pinned `cargo-chef` generates a dependency recipe in
+`runner-plan`. The separate `runner-deps` stage compiles that recipe with the
+package-owned Rust compiler. Both the dependency build and the real binary use
+the release profile and locked Cargo dependencies. The recipe stage never
+modifies source in the checkout.
+
+Changes to Rust source or embedded protocol inputs rebuild the real binary but
+can reuse compiled dependencies when the recipe is unchanged. Dependency
+manifests, the Cargo lockfile, target metadata, or compiler changes invalidate
+the relevant cache. Ordinary server or UI changes can reuse the entire native
+build through the existing registry cache (`mode=max`). Each platform gets its
+own native build; no cross-architecture binary is reused. No additional GitHub
+Actions cache is created. A cold build also installs the recipe generator and
+compiles dependencies, so the savings apply after those layers are available.
+
+Cloud builds import one registry cache: the first available full-SHA cache in
+the current commit's ten-entry first-parent ancestry, with the legacy cache
+as a final fallback. Each build still exports its own SHA cache with
+`mode=max`. In fresh-builder checks, importing several historical manifests
+missed native layers that a single matching manifest reused. The selector
+inspects metadata after Docker login, stops at the first available cache, and
+permits a cold build if no cache can be read.
+
+The application build inherits that stage and still runs the normal server
+build, including Cargo, binary staging, and generated-contract checks. Rust
+input file times are normalized in both stages so fresh checkouts do not force
+Cargo to rebuild unchanged source. Changes made by build scripts still reach
+Cargo's normal validation. The final application copy excludes Cargo's target
+directory as before. Cache misses only cost compilation time.
+
+Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
+inputs also build the isolated `runner-build` target in `Docker Runner check`.
+The check runs `bash scripts/check-docker-runner-cache.sh` against a disposable
+copy of tracked source and the actual Docker ignore rules. It compiles a baseline
+and exports a local cache, removes that builder, changes a Rust metadata constant,
+and rebuilds on a fresh builder using only the exported cache. It requires a
+cached dependency build, an unchanged dependency recipe, and changed metadata
+from the real binary. It also verifies that a dependency declaration change
+alters the recipe. The probe exports small metadata results instead of importing
+a large test image into the Docker daemon. Temporary builders and cache files
+are removed afterward. It catches missing embedded inputs before the post-merge
+build. It uses a GitHub-hosted runner with read-only repository access and never
+publishes images or registry caches. Allow up to 20 minutes for its cold build and
+source rebuild.

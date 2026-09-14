@@ -1,3 +1,4 @@
+import { validateRetainedRunnerResult } from "./result-validation.js";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -313,10 +314,14 @@ export async function createBundleManifest(
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(campaignId)) {
     throw new Error("Campaign ID is unsafe for immutable object storage");
   }
+  const retainedPaths = await relativeFiles(root, root, allowPublicSummary, publicScreenshots);
+  const retained = new Set(retainedPaths);
+  const missingScreenshots = [...publicScreenshots].filter((relative) => !retained.has(relative));
+  if (missingScreenshots.length > 0) {
+    throw new Error(`Declared public screenshots are missing from the historical bundle: ${missingScreenshots.sort().join(", ")}`);
+  }
   const files = await Promise.all(
-    (await relativeFiles(root, root, allowPublicSummary, publicScreenshots))
-      .sort()
-      .map(async (relative) => {
+    retainedPaths.sort().map(async (relative) => {
         const absolute = path.join(root, ...relative.split("/"));
         if (
           relative === "public-images/campaign-summary.png" ||
@@ -513,6 +518,7 @@ async function main() {
   const campaign = JSON.parse(
     await readFile(path.join(reportRoot, "normalized-results.json"), "utf8"),
   ) as RunnerE2ECampaign;
+  for (const result of campaign.results ?? []) validateRetainedRunnerResult(result);
   if (campaign.schema !== "paperclip.runner-e2e.campaign/v2") {
     throw new Error("Historical publishing requires a v2 normalized campaign");
   }
