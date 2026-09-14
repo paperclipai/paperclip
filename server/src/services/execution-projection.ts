@@ -29,6 +29,7 @@ const executionRunColumns = {
   status: heartbeatRuns.status,
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+    'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;

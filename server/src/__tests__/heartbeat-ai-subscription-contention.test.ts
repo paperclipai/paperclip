@@ -13,6 +13,7 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
 import { executionFailureRetryCount } from "../services/execution-recovery-attempt.js";
+import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import type { AdapterExecutionContext } from "../adapters/index.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: AdapterExecutionContext) => ({
@@ -129,6 +130,10 @@ describe("heartbeat AI subscription contention", () => {
         expect(successor).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: count + 2 });
         expect(executionFailureRetryCount(successor)).toBe(0);
         retry = successor!;
+        const projections = await executionProjectionsForRuns(db, f.companyId, [retry.id]);
+        expect(projections.get(retry.id)).toMatchObject({
+          phase: "retry_scheduled", label: "Waiting for AI subscription", attempt: 1,
+        });
       }
       expect(execute).not.toHaveBeenCalled();
       await f.release();
