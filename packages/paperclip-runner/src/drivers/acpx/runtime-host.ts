@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { nativeMcpLaunchBinding } from "../native-mcp.js";
 
 import type {
   AcpElicitationHandler,
@@ -287,6 +288,13 @@ export class AcpxRuntimeHost {
         "ACPX pi is unavailable until its runtime has descriptor-confined verified launch",
       );
     }
+    const nativeMcp = nativeMcpLaunchBinding(options.environment);
+    if (nativeMcp?.name === "paperclip") {
+      throw new Error("assigned native MCP name conflicts with the task bridge");
+    }
+    if (options.runtimeContext?.mcp.bindingId && !nativeMcp) {
+      throw new Error("assigned native MCP launch binding is unavailable");
+    }
     const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
     const binding = await runAbortableAdmissionStage(
       options.signal,
@@ -468,16 +476,14 @@ export class AcpxRuntimeHost {
               ? {}
               : { assertWorkspaceHeld: options.assertWorkspaceHeld }),
             ...(options.signal === undefined ? {} : { signal: options.signal }),
-            mcpServers: toolBridge
-              ? [
-                  {
-                    name: "paperclip",
-                    url: toolBridge.url,
-                    bearerToken: toolBridge.secret,
-                    runnerOwned: true,
-                  },
-                ]
-              : [],
+            mcpServers: [
+              ...(toolBridge ? [{ name: "paperclip", url: toolBridge.url,
+                bearerToken: toolBridge.secret, runnerOwned: true }] : []),
+              // This is Paperclip's authenticated gateway, not a direct upstream
+              // binding. Its existing grants and approval checks remain authoritative.
+              ...(nativeMcp ? [{ name: nativeMcp.name, url: nativeMcp.url,
+                bearerToken: nativeMcp.token, runnerOwned: true }] : []),
+            ],
             ...(options.onGoalUpdate === undefined
               ? {}
               : { onGoalUpdate: options.onGoalUpdate }),

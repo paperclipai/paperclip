@@ -16,7 +16,7 @@ describe("manual everyday workflow catalog", () => {
     const selected = selectRunnerExecutions(
       parseRunnerSelectors(["--suite", "everyday-workflows"]),
     );
-    expect(selected).toHaveLength(30);
+    expect(selected).toHaveLength(32);
     expect(selected.every((e) => e.profile.generation === "native")).toBe(true);
     expect(
       selectRunnerExecutions(

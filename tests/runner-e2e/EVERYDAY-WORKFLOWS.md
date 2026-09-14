@@ -14,7 +14,7 @@ exact execution ID explicitly.
 | Delegate and incorporate late feedback | `delegate-feedback` | One child assigned to Riley; send feedback while the child runs; find it in the child history and independently test `--max-length` in the delivered ZIP. The worker must not execute on the parent. |
 | Hire a teammate and use them again | `hire-reuse` | One Morgan QA reporting to the lead, native runner and the same encrypted connection bindings, real child execution, then a second usable delivery from that same agent. |
 | Connect to a service with a human decision | `service-approve`, `service-decline` | Configure a real local MCP fixture through the connection UI; no provider call before approval; exactly one call after approval and a document containing the actual returned verification code; no call after decline. |
-| Preserve work and queued input across interruption | `recover-runner`, `recover-controller` | Observe source before interruption, persist the user message, kill only a daemon whose command line proves ownership or restart the isolated controller; inspect continuation and the delivered result. |
+| Preserve work and queued input across interruption | `recover-runner-uncertain`, `recover-runner-safe`, `recover-controller` | Observe source before interruption, persist the user message, kill only a daemon whose command line proves ownership or restart the isolated controller; inspect continuation and the delivered result. |
 | Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
 
 For normal completion, all story tasks must reach Done, with no active run,
@@ -90,3 +90,36 @@ model ranking. Before promotion, freeze both source revisions and harness
 digest, run at least three independent local repetitions, qualify the six
 remote cells against a verified image, and review every failure. Keep model
 quality, lifecycle correctness, infrastructure availability, and latency separate.
+
+## Revised evaluation contract (14 September, second campaign)
+
+The catalog now has 32 cells: the original local stories plus two local Codex
+text-only safe-replacement probes, and the unchanged six remote cells. The old
+`recover-runner` results remain historical; `recover-runner-uncertain` is a new
+case that expects a visible Blocked safety stop, preserved source and queued
+input, and no unverified provider replay. Its Retry control is inspected, not
+claimed to restore work. Successful manual recovery remains unqualified.
+
+`recover-runner-safe` interrupts a text-only Codex turn and queues new direction.
+A pass requires the server's durable `verified_safe_replacement` evidence and the
+new answer. No safety proof is injected or fabricated. If that premise cannot be
+verified in a live probe, report it as an unqualified recovery boundary, not an
+established product defect. Claude has no catalog cell for this Codex-specific
+replacement proof. Deterministic native-safe-replacement tests cover its proof
+and admission gates independently of model behavior.
+
+Delegation now requests direct delivery to the existing child without prescribing
+parent-comment syntax. The child history and downloaded behavior remain required.
+The separate issue-update-comment-wakeup route tests exercise exact supported
+mention routing, including access, dependency, identity, and duplicate-wake gates.
+
+The approval case provisions an authenticated local service through the public
+API, with a random server-held credential that never enters the agent environment
+or browser trace. Approval/decline interactions still use the browser. Provider
+captures distinguish rejected unauthenticated requests from accepted calls. The
+old public-endpoint attempts remain boundary evidence, not an isolation promise.
+
+Stop now waits for the owned runner to exit, records project file hashes, and
+checks them again after the new response. This proves stability over that interval,
+not indefinite monitoring. Hiring and declined-access policy changes are deferred
+by user decision; their old results must not be presented as new campaign runs.

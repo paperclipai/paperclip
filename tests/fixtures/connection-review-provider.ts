@@ -3,8 +3,9 @@ import { listenOnFetchAllowedPort } from "../e2e/fetch-allowed-port.js";
 
 export async function startReviewProvider(
   successText = "Pages: Roadmap, Meeting notes",
+  bearerToken?: string,
 ) {
-  const captures: Array<{ method: string; toolName: string | null }> = [];
+  const captures: Array<{ method: string; toolName: string | null; authorized?: boolean }> = [];
   const server: Server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -15,10 +16,17 @@ export async function startReviewProvider(
       method?: string;
       params?: { name?: string; arguments?: { query?: string } };
     };
+    const authorized = !bearerToken || req.headers.authorization === `Bearer ${bearerToken}`;
     captures.push({
       method: String(payload.method ?? "<unknown>"),
       toolName: payload.params?.name ?? null,
+      ...(bearerToken ? { authorized } : {}),
     });
+    if (!authorized) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Service credential required" }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     if (payload.method === "tools/list") {
       res.end(

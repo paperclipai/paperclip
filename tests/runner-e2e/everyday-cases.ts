@@ -63,9 +63,15 @@ const definitions = [
     2,
   ],
   [
-    "recover-runner",
-    "Recover work after the owned runner crashes",
+    "recover-runner-uncertain",
+    "Preserve work when crash recovery cannot be verified",
     SLUGIFY_REQUIREMENTS,
+    3,
+  ],
+  [
+    "recover-runner-safe",
+    "Recover an interrupted text-only conversation",
+    `Without using tools or changing files, explain how a small team can review a software change. Write 1500 words with concrete examples.`,
     3,
   ],
   [

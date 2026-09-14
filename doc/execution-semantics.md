@@ -1250,3 +1250,12 @@ awaits it. That background invocation observes rejection immediately, including
 when a remote sandbox has already disappeared. The owner's awaited close still
 receives the original failure; containment never fabricates a successful close
 or permission to reuse an unverified execution.
+
+### Assigned connections in native ACPX sessions
+
+Native ACPX sessions register the assigned Paperclip MCP gateway alongside the
+task tool bridge. Gateway calls retain the existing connection grants and action
+approvals. Missing assigned bindings and names that collide with the task bridge
+stop admission. Upstream credentials remain with the gateway; providers receive
+its scoped access binding. This does not restrict arbitrary network access to a
+public service outside the gateway.

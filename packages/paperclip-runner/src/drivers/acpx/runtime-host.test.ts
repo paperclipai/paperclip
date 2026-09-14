@@ -175,6 +175,40 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it.each([
+    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned" },
+    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
+    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned", PAPERCLIP_NATIVE_MCP_URL: "http://external.example/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
+  ])("rejects invalid assigned connection bindings before runtime launch", async (environment) => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn();
+    await expect(AcpxRuntimeHost.open({ ...fixture.options, environment }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/assigned native MCP/);
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it("registers the assigned connection gateway alongside the Claude task bridge", async () => {
+    const fixture = await hostFixture();
+    let servers: AcpxRuntimePortOpenOptions["mcpServers"] = [];
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options,
+      agent: "claude", model: "claude-sonnet-5",
+      environment: { ...fixture.options.environment,
+        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateway",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-gateway-token-".repeat(3),
+      },
+      semanticTools: { tools: [], handler: async () => ({}) },
+    }, fixture.dependencies({ openRuntime: async (options) => {
+      servers = options.mcpServers;
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
+    } }));
+    try {
+      expect(servers.map(server => server.name)).toEqual(["paperclip", "paperclip-assigned"]);
+      expect(servers[1]).toEqual({ name: "paperclip-assigned", url: "http://127.0.0.1:3211/mcp/gateway",
+        bearerToken: "fixture-gateway-token-".repeat(3), runnerOwned: true });
+    } finally { await host.close({ reason: "gateway test complete" }); }
+  });
+
   it("automatically permits only admitted Paperclip reads in the Claude SDK", async () => {
     const fixture = await hostFixture();
     const dependencies = fixture.dependencies({

@@ -893,11 +893,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
     groups: ["native"], profiles: everydayProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
-    tasks: everydayTasks, expectedMatrixSize: 30,
-    excludedExecutionIds: everydayProfiles.flatMap(profile => everydayTasks
+    tasks: everydayTasks, expectedMatrixSize: 32,
+    excludedExecutionIds: ["everyday-workflows.runner-acpx-claude.local.recover-runner-safe", ...everydayProfiles.flatMap(profile => everydayTasks
       .filter(task => !["build-revise", "delegate-feedback", "recover-controller"].includes(task.id))
-      .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`)),
-    definitionMetadata: { version: 1, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only" },
+      .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`))],
+    definitionMetadata: { version: 2, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",

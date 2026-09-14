@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { pollUntil, type RunnerApi } from "./api.js";
@@ -122,6 +122,33 @@ export async function runEverydayFlow(input: Input) {
   let review: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
   let project = fixtures.project;
   const caseId = execution.task.id;
+  const uncertainCrash = caseId === "recover-runner-uncertain";
+  const safeCrash = caseId === "recover-runner-safe";
+  let stoppedWorkspace: Record<string, string> | undefined;
+  async function workspaceFiles() {
+    const files: Record<string, string> = {};
+    for (const entry of await readdir(input.workspacePath, {
+      withFileTypes: true,
+    })) {
+      if (entry.isFile() && /\.(py|md|zip)$/.test(entry.name))
+        files[entry.name] = createHash("sha256")
+          .update(await readFile(path.join(input.workspacePath, entry.name)))
+          .digest("hex");
+    }
+    return files;
+  }
+  async function runnerStopped(run: StoryRun) {
+    if (!run.processPid) return false;
+    const identity = await runCommand("ps", [
+      "-p",
+      String(run.processPid),
+      "-o",
+      "command=",
+    ]);
+    return (
+      identity.code !== 0 || !identity.stdout.includes(`--run-id ${run.id} `)
+    );
+  }
   async function refresh() {
     const listed = await api.get<StoryRun[]>(
       `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`,
@@ -425,6 +452,7 @@ export async function runEverydayFlow(input: Input) {
         companyId: fixtures.company.id,
         agentId: fixtures.agent.id,
         marker: `Pages: Roadmap, Meeting notes. Verification code: SERVICE_${nonce}`,
+        authenticated: caseId === "service-approve",
       });
     await createTaskThroughUi({
       page,
@@ -471,13 +499,14 @@ export async function runEverydayFlow(input: Input) {
         activeRunIds: ev.runs.filter(isActiveStoryRun).map((r) => r.id),
       });
       await reply(
-        `Please pass this addition to Riley on the existing child task, using a progress comment here that mentions Riley and links ${child.identifier}. ${LATE_REQUIREMENT}`,
+        `Please pass this addition to Riley on the existing child task, deliver the requirement directly to ${child.identifier} and verify Riley receives it. ${LATE_REQUIREMENT}`,
       );
       note("late-feedback-submitted");
     }
     if (
       caseId === "recover-controller" ||
-      caseId === "recover-runner" ||
+      uncertainCrash ||
+      safeCrash ||
       caseId === "stop-redirect"
     ) {
       if (execution.environment.id === "daytona") {
@@ -496,6 +525,25 @@ export async function runEverydayFlow(input: Input) {
           load: refresh,
           accept: (s) => s.runs.some(isActiveStoryRun),
         });
+      } else if (safeCrash) {
+        await pollUntil({
+          label: "text turn accepted before crash",
+          deadlineAt: input.deadlineAt,
+          intervalMs: 100,
+          load: async () => {
+            await refresh();
+            const running = ev.runs.find(
+              (r) => r.status === "running" && r.processPid,
+            );
+            if (!running) return false;
+            const events = await api.get<Row[]>(
+              `/api/heartbeat-runs/${running.id}/events?limit=1000`,
+            );
+            return JSON.stringify(events).includes('"turn.accepted"');
+          },
+          accept: Boolean,
+        });
+        note("text-only-crash-probe-started");
       } else await sourceReady();
       const active = ev.runs.find((r) => r.status === "running");
       if (!active)
@@ -506,13 +554,26 @@ export async function runEverydayFlow(input: Input) {
         await page.getByTestId("task-chat-composer-stop").last().click();
         ev.allowedInterruptedRuns.push(active.id);
         note("stop-clicked", { runId: active.id });
+        await pollUntil({
+          label: "owned runner stopped",
+          deadlineAt: input.deadlineAt,
+          load: () => runnerStopped(active),
+          accept: Boolean,
+          intervalMs: 250,
+        });
+        stoppedWorkspace = await workspaceFiles();
+        note("stopped-workspace-snapshot", stoppedWorkspace);
         await reply(
           `Change direction. Leave the project as it is. Reply with just this short note: "The studio is ready. Reference ${nonce}."`,
         );
         note("new-direction-submitted");
         await page.reload();
       } else {
-        await reply(LATE_REQUIREMENT);
+        await reply(
+          safeCrash
+            ? `Change direction. Reply with exactly: "Recovered conversation ${nonce}." Do not use tools or change files.`
+            : LATE_REQUIREMENT,
+        );
         note("followup-submitted-before-interruption");
         ev.allowedInterruptedRuns.push(active.id);
         if (caseId === "recover-controller") {
@@ -555,6 +616,59 @@ export async function runEverydayFlow(input: Input) {
         await openParent();
       }
     }
+    if (uncertainCrash) {
+      await pollUntil({
+        label: "uncertain recovery safely stopped",
+        deadlineAt: input.deadlineAt,
+        load: refresh,
+        accept: (state) =>
+          state.issues.some(
+            (i) => i.id === parent!.id && i.status === "blocked",
+          ) && !state.runs.some(isActiveStoryRun),
+      });
+      const queue = ev.issues
+        .find((i) => i.id === parent!.id)!
+        .queuedComments.entries.map((e: Row) => e.comment.id);
+      check(
+        "safety.queued-input-preserved",
+        submittedCommentIds.every((id) => queue.includes(id)),
+        "The queued change remains available after the crash.",
+      );
+      check(
+        "safety.no-unverified-replay",
+        ev.runs.every(
+          (r) =>
+            ev.allowedInterruptedRuns.includes(r.id) ||
+            r.errorCode === "native_session_cleanup_quarantined",
+        ),
+        "The uncertain run did not start fresh provider work.",
+      );
+      check(
+        "safety.recorded-source-preserved",
+        (await stat(path.join(input.workspacePath, "slugify.py"))).size > 0,
+        "The saved source remains available; this does not certify incomplete writes.",
+      );
+      await openParent();
+      await expect(
+        page.getByText(/Automatic recovery.*stopped/i).first(),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Retry", exact: true }).first(),
+      ).toBeVisible();
+      check(
+        "safety.visible-blocker",
+        true,
+        "The UI explains the stop and exposes Retry; successful manual recovery is not claimed.",
+      );
+      await input.capture(
+        "final-state",
+        "Safe stop after uncertain runner crash",
+        "final-state.png",
+      );
+      if (ev.checks.some((c) => !c.passed))
+        throw new Error("Uncertain crash safety assertions failed");
+      return { issue: parent!, runs: ev.runs, evidence: ev };
+    }
     if (review) {
       const interactions = await pollUntil({
         label: "connection approval",
@@ -566,7 +680,8 @@ export async function runEverydayFlow(input: Input) {
           ]);
           return { interactions, issue, calls: review!.invocationCount() };
         },
-        accept: (state) => state.interactions.some((i) => i.status === "pending"),
+        accept: (state) =>
+          state.interactions.some((i) => i.status === "pending"),
         reject: (state) =>
           state.calls > 0
             ? `The provider received ${state.calls} call(s) before approval.`
@@ -715,6 +830,28 @@ export async function runEverydayFlow(input: Input) {
         ),
         "The child history contains the late requirement.",
       );
+    } else if (safeCrash) {
+      const recovery = await api.get<unknown>(
+        `/api/issues/${parent!.id}/recovery-actions`,
+      );
+      await input.evidence("safe-recovery-authority.json", recovery);
+      note("safe-recovery-authority", recovery);
+      check(
+        "safety.verified-replacement",
+        JSON.stringify(recovery).includes("verified_safe_replacement"),
+        "Automatic replacement requires the server's durable safety proof.",
+      );
+      check(
+        "recovery.new-message-answered",
+        ev.issues.some((i) =>
+          i.comments.some(
+            (c: Row) =>
+              c.authorAgentId &&
+              String(c.body).includes(`Recovered conversation ${nonce}.`),
+          ),
+        ),
+        "The queued direction is answered after verified recovery.",
+      );
     } else if (caseId.startsWith("recover-"))
       await download(parent!.id, "max-length", "recovered-delivery");
     else if (caseId === "stop-redirect")
@@ -728,6 +865,20 @@ export async function runEverydayFlow(input: Input) {
           ) ?? false,
         "The new request is answered after Stop and reload.",
       );
+    if (stoppedWorkspace) {
+      check(
+        "stop.workspace-unchanged",
+        isDeepStrictEqual(stoppedWorkspace, await workspaceFiles()),
+        "Project files remain unchanged from verified runner stop through the new response.",
+      );
+      check(
+        "stop.no-old-run-active",
+        ev.runs
+          .filter((r) => ev.allowedInterruptedRuns.includes(r.id))
+          .every((r) => !isActiveStoryRun(r)),
+        "The stopped run is terminal after the new response.",
+      );
+    }
     if (review) {
       check(
         "service-call-count",
@@ -902,7 +1053,9 @@ export async function runEverydayFlow(input: Input) {
       note("service-final-observation", {
         invocationCount: review.invocationCount(),
         requests: review.captures,
-        decisionTaken: ev.timeline.some((entry) => entry.action === "connection-decision"),
+        decisionTaken: ev.timeline.some(
+          (entry) => entry.action === "connection-decision",
+        ),
       });
     }
     await input.evidence("everyday-workflow.json", ev);
