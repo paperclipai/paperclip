@@ -15,7 +15,7 @@ import type { WorkspaceOperationRecorder } from "../services/workspace-operation
 const tempRoots = new Set<string>();
 
 async function makeTempRoot(prefix: string): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
   tempRoots.add(root);
   return root;
 }
@@ -349,9 +349,87 @@ describe("worktree instance cleanup", () => {
 
     await expect(stopEmbeddedPostgresIfRunning(dataDir, {
       processIsAlive: () => true,
+      readProcessIdentity: async () => "original-process",
       readVerifiedPostgresCommand: async () => `postgres -D ${dataDir}`,
       signalProcess: () => { throw signalError; },
       wait: async () => {},
     })).resolves.toBe(false);
+  });
+  it("refuses a reused PID before signalling PostgreSQL", async () => {
+    const dataDir = await makeTempRoot("paperclip-postgres-pid-reuse-");
+    await fs.writeFile(path.join(dataDir, "postmaster.pid"), `4242\n${dataDir}\n`);
+    const signalProcess = vi.fn(); let checks = 0;
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive: () => true,
+      readProcessIdentity: async () => ++checks === 1 ? "original" : "replacement",
+      readVerifiedPostgresCommand: async () => "postgres", signalProcess, wait: async () => {} })).rejects.toThrow("changed during verification");
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+  it("refuses a process receipt replaced during verification", async () => {
+    const dataDir = await makeTempRoot("paperclip-postgres-receipt-replacement-");
+    const record = path.join(dataDir, "postmaster.pid"); await fs.writeFile(record, `4242\n${dataDir}\n`);
+    const signalProcess = vi.fn();
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive: () => true, readProcessIdentity: async () => "original",
+      readVerifiedPostgresCommand: async () => { await fs.writeFile(record, `4243\n${dataDir}\n`); return "postgres"; },
+      signalProcess, wait: async () => {} })).rejects.toThrow("changed during verification");
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+  it("does not treat a replacement process after shutdown as confirmed cleanup", async () => {
+    const dataDir = await makeTempRoot("paperclip-postgres-shutdown-replacement-"); await fs.writeFile(path.join(dataDir, "postmaster.pid"), `4242\n${dataDir}\n`);
+    let signalled = false;
+    const signalProcess = vi.fn(() => { signalled = true; });
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive: () => true,
+      readProcessIdentity: async () => signalled ? "replacement" : "original", readVerifiedPostgresCommand: async () => "postgres",
+      signalProcess, wait: async () => {} })).rejects.toThrow("process identity changed");
+    expect(signalProcess).toHaveBeenCalledExactlyOnceWith(4242, "SIGINT");
+  });
+  it.each(["process", "command"])("refuses cleanup when a live %s identity is unavailable", async (kind) => {
+    const dataDir = await makeTempRoot("paperclip-postgres-unverified-");
+    await fs.writeFile(path.join(dataDir, "postmaster.pid"), `4242\n${dataDir}\n`);
+    const signalProcess = vi.fn();
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive: () => true,
+      readProcessIdentity: async () => kind === "process" ? null : "original", readVerifiedPostgresCommand: async () => null,
+      signalProcess, wait: async () => {} })).rejects.toThrow("live process identity could not be verified");
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+  it.each(["receipt", "directory"])("refuses a replaced %s even when its path and contents are identical", async (kind) => {
+    const dataDir = await makeTempRoot("paperclip-postgres-file-identity-");
+    const record = path.join(dataDir, "postmaster.pid"), contents = `4242\n${dataDir}\n`;
+    await fs.writeFile(record, contents);
+    const signalProcess = vi.fn();
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive: () => true, readProcessIdentity: async () => "original",
+      readVerifiedPostgresCommand: async () => {
+        if (kind === "receipt") await fs.rename(record, `${record}-original`);
+        else { await fs.rename(dataDir, `${dataDir}-original`); tempRoots.add(`${dataDir}-original`); await fs.mkdir(dataDir); }
+        await fs.writeFile(record, contents); return "postgres";
+      }, signalProcess, wait: async () => {} })).rejects.toThrow("changed during verification");
+    expect(signalProcess).not.toHaveBeenCalled();
+    expect(await fs.readFile(record, "utf8")).toBe(contents);
+  });
+  it("refuses a symbolic process receipt before examining or signalling a process", async () => {
+    const dataDir = await makeTempRoot("paperclip-postgres-symlink-receipt-");
+    await fs.writeFile(path.join(dataDir, "external-record"), `4242\n${dataDir}\n`);
+    await fs.symlink(path.join(dataDir, "external-record"), path.join(dataDir, "postmaster.pid"));
+    const signalProcess = vi.fn(), processIsAlive = vi.fn(() => true);
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive, readProcessIdentity: async () => "original",
+      readVerifiedPostgresCommand: async () => "postgres", signalProcess, wait: async () => {} })).rejects.toThrow();
+    expect(signalProcess).not.toHaveBeenCalled(); expect(processIsAlive).not.toHaveBeenCalled();
+  });
+  it("allows cleanup when a process exits before identity verification", async () => {
+    const dataDir = await makeTempRoot("paperclip-postgres-exit-before-identity-");
+    await fs.writeFile(path.join(dataDir, "postmaster.pid"), `4242\n${dataDir}\n`);
+    let checks = 0; const signalProcess = vi.fn();
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive: () => ++checks === 1, readProcessIdentity: async () => null,
+      readVerifiedPostgresCommand: async () => null, signalProcess, wait: async () => {} })).resolves.toBe(false);
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+  it("confirms shutdown when PostgreSQL exits while its identity is being checked", async () => {
+    const dataDir = await makeTempRoot("paperclip-postgres-shutdown-exit-race-");
+    await fs.writeFile(path.join(dataDir, "postmaster.pid"), `4242\n${dataDir}\n`);
+    let signalled = false, exited = false;
+    const signalProcess = vi.fn(() => { signalled = true; });
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, { processIsAlive: () => !exited,
+      readProcessIdentity: async () => { if (signalled) { exited = true; return null; } return "original"; },
+      readVerifiedPostgresCommand: async () => "postgres", signalProcess, wait: async () => {} })).resolves.toBe(true);
+    expect(signalProcess).toHaveBeenCalledExactlyOnceWith(4242, "SIGINT");
   });
 });

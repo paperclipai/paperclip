@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { constants, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
 import { expandHomePrefix } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
+import { readProcessStartedAt } from "./hot-restart.js";
+import { readLocalServiceProcessCwd } from "./local-service-supervisor.js";
 
 const execFileAsync = promisify(execFile);
 const INSTANCE_ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -67,6 +69,7 @@ export type WorktreeInstanceCleanupDependencies = {
 
 export type EmbeddedPostgresStopDependencies = {
   processIsAlive: (pid: number) => boolean;
+  readProcessIdentity: (pid: number) => Promise<string | null>;
   readVerifiedPostgresCommand: (pid: number, dataDir: string) => Promise<string | null>;
   signalProcess: (pid: number, signal: NodeJS.Signals) => void;
   wait: (milliseconds: number) => Promise<unknown>;
@@ -81,6 +84,14 @@ const defaultCleanupDependencies: WorktreeInstanceCleanupDependencies = {
 
 const defaultPostgresStopDependencies: EmbeddedPostgresStopDependencies = {
   processIsAlive,
+  readProcessIdentity: async (pid) => {
+    if (!processIsAlive(pid)) return null;
+    if (process.platform === "linux") {
+      const value = await fs.readFile(`/proc/${pid}/stat`, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+      return value?.slice(value.lastIndexOf(")") + 2).split(" ")[19] ?? null;
+    }
+    return readProcessStartedAt(pid).catch((error) => { if (!processIsAlive(pid)) return null; throw error; });
+  },
   readVerifiedPostgresCommand,
   signalProcess: (pid, signal) => process.kill(pid, signal),
   wait: delay,
@@ -118,7 +129,7 @@ async function readVerifiedPostgresCommand(pid: number, dataDir: string): Promis
     const executable = path.basename(args[0] ?? "");
     const dataDirFlagIndex = args.indexOf("-D");
     const configuredDataDir = dataDirFlagIndex >= 0 ? args[dataDirFlagIndex + 1] : null;
-    if (!executable.includes("postgres") || !configuredDataDir) {
+    if (executable !== "postgres" || !configuredDataDir) {
       throw new Error(`Refusing to signal process ${pid}: it is not the expected embedded PostgreSQL process.`);
     }
     const canonicalConfiguredDataDir = await fs.realpath(configuredDataDir).catch(() => path.resolve(configuredDataDir));
@@ -133,10 +144,11 @@ async function readVerifiedPostgresCommand(pid: number, dataDir: string): Promis
   }
 
   try {
-    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8", timeout: 3000 });
     const command = stdout.trim();
     if (!command) return null;
-    if (!/(?:^|\/)postgres(?:\s|$)/.test(command) || !command.includes(dataDir)) {
+    const cwd = await readLocalServiceProcessCwd(pid);
+    if (path.basename(command) !== "postgres" || !cwd || await fs.realpath(cwd) !== dataDir) {
       throw new Error(`Refusing to signal process ${pid}: it is not the expected embedded PostgreSQL process.`);
     }
     return command;
@@ -151,14 +163,25 @@ export async function stopEmbeddedPostgresIfRunning(
   dependencies: EmbeddedPostgresStopDependencies = defaultPostgresStopDependencies,
 ): Promise<boolean> {
   const postmasterPidPath = path.join(dataDir, "postmaster.pid");
-  if (!await pathExists(postmasterPidPath)) return false;
-
+  const readReceipt = async () => {
+    const handle = await fs.open(postmasterPidPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (!handle) return null;
+    try {
+      const stat = await handle.stat({ bigint: true });
+      if (!stat.isFile() || stat.size > 16_384n) throw new Error("Refusing PostgreSQL cleanup: its process receipt is not a regular bounded file.");
+      return { dev: stat.dev, ino: stat.ino, contents: await handle.readFile("utf8") };
+    } finally { await handle.close(); }
+  };
+  const receipt = await readReceipt();
+  if (!receipt) return false;
   const canonicalDataDir = await fs.realpath(dataDir);
-  const pidContents = await fs.readFile(postmasterPidPath, "utf8");
+  const dataIdentity = await fs.stat(canonicalDataDir, { bigint: true });
+  const pidContents = receipt.contents;
   const pidLines = pidContents.split(/\r?\n/);
   const pid = Number(pidLines[0]?.trim());
   const recordedDataDir = pidLines[1]?.trim();
-  if (!Number.isInteger(pid) || pid <= 0 || !recordedDataDir) {
+  if (!Number.isInteger(pid) || pid <= 1 || !recordedDataDir) {
     throw new Error(`Refusing to remove ${dataDir}: its postmaster.pid is malformed.`);
   }
 
@@ -167,7 +190,17 @@ export async function stopEmbeddedPostgresIfRunning(
     throw new Error(`Refusing to remove ${dataDir}: postmaster.pid points at a different PostgreSQL data directory.`);
   }
   if (!dependencies.processIsAlive(pid)) return false;
-  if (await dependencies.readVerifiedPostgresCommand(pid, canonicalDataDir) === null) return false;
+  const identity = await dependencies.readProcessIdentity(pid);
+  if (identity === null || await dependencies.readVerifiedPostgresCommand(pid, canonicalDataDir) === null) {
+    if (!dependencies.processIsAlive(pid)) return false;
+    throw new Error("Refusing PostgreSQL cleanup: its live process identity could not be verified.");
+  }
+  const currentReceipt = await readReceipt(), currentData = await fs.stat(canonicalDataDir, { bigint: true });
+  if (await dependencies.readProcessIdentity(pid) !== identity || await fs.realpath(dataDir) !== canonicalDataDir ||
+      currentData.dev !== dataIdentity.dev || currentData.ino !== dataIdentity.ino ||
+      currentReceipt?.dev !== receipt.dev || currentReceipt?.ino !== receipt.ino || currentReceipt?.contents !== pidContents) {
+    throw new Error("Refusing PostgreSQL cleanup: its process or data directory changed during verification.");
+  }
 
   try {
     dependencies.signalProcess(pid, "SIGINT");
@@ -178,6 +211,10 @@ export async function stopEmbeddedPostgresIfRunning(
   const deadline = Date.now() + POSTGRES_STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (!dependencies.processIsAlive(pid)) return true;
+    if (await dependencies.readProcessIdentity(pid) !== identity) {
+      if (!dependencies.processIsAlive(pid)) return true;
+      throw new Error("PostgreSQL cleanup could not be confirmed because its process identity changed.");
+    }
     await dependencies.wait(100);
   }
   throw new Error(`Embedded PostgreSQL process ${pid} did not stop within ${POSTGRES_STOP_TIMEOUT_MS}ms.`);

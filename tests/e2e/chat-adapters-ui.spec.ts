@@ -2483,15 +2483,6 @@ test.describe("Board send delivery refresh", () => {
       "read selected file",
     );
     attachmentId = file!.id;
-    // A concurrent ordinary Board comment consumes the file. The browser
-    // fixture emulates the precise durable rejection; real TX/idempotency
-    // and delete/retry behavior are covered in the PostgreSQL integration test.
-    const privateComment = await json<{ id: string }>(
-      await request.post(`/api/issues/${issue.id}/comments`, {
-        data: { body: "Private Board file", attachmentIds: [attachmentId] },
-      }),
-      "bind selected file to private comment",
-    );
     const draft =
       "Share the verified result, without the private Board comment.";
     await banner.getByRole("textbox", { name: "Board update" }).fill(draft);
@@ -2505,6 +2496,51 @@ test.describe("Board send delivery refresh", () => {
     await expect(
       banner.getByRole("textbox", { name: "Board update" }),
     ).toBeDisabled();
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.attachmentIds).toEqual([attachmentId]);
+    // Retain the original request before a concurrent Board comment binds its
+    // file. Earlier binding can correctly remove the file from an unsent draft.
+    // Real transaction/idempotency behavior is covered by the PostgreSQL test.
+    const privateComment = await json<{ id: string }>(
+      await request.post(`/api/issues/${issue.id}/comments`, {
+        data: { body: "Private Board file", attachmentIds: [attachmentId] },
+      }),
+      "bind retained file to private comment",
+    );
+    // Force fresh bound-file metadata through the UI before retry. The retained
+    // send must keep its original selection even when that file is now ineligible.
+    const refreshedAttachments = page.waitForResponse(async (response) => {
+      if (
+        new URL(response.url()).pathname !==
+          `/api/issues/${issue.id}/attachments` ||
+        response.request().method() !== "GET"
+      ) {
+        return false;
+      }
+      const files = await response.json().catch(() => null);
+      return (
+        Array.isArray(files) &&
+        files.some(
+          (file) =>
+            file.id === attachmentId &&
+            file.issueCommentId === privateComment.id,
+        )
+      );
+    });
+    await page.reload();
+    expect(await (await refreshedAttachments).json()).toEqual([
+      expect.objectContaining({
+        id: attachmentId,
+        issueCommentId: privateComment.id,
+      }),
+    ]);
+    await expect(
+      banner.getByRole("checkbox", { name: "rejected-send.txt" }),
+    ).toBeChecked();
+    await expect(
+      banner.getByRole("checkbox", { name: "rejected-send.txt" }),
+    ).toBeDisabled();
+    expect(sends).toHaveLength(1);
     await banner
       .getByRole("button", { name: "Retry safely", exact: true })
       .click();

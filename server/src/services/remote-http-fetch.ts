@@ -115,6 +115,16 @@ export async function guardedRemoteHttpFetch(
   return pinnedRequest(endpoint, approved, init, options);
 }
 
+/** Verified socket for streaming proxies and HTTP upgrades; callers own teardown. */
+export async function connectGuardedRemoteHttpSocket(endpoint: URL, options: GuardedRemoteHttpFetchOptions, signal: AbortSignal | null = null): Promise<Socket> {
+  const approved = await resolveApprovedRemoteHttpAddresses(endpoint, options, options.error);
+  return dialApprovedAddress({
+    approved, approvedSet: new Set(approved.map(normalizeIpAddress)),
+    port: Number(endpoint.port || (endpoint.protocol === "https:" ? 443 : 80)),
+    hostname: endpoint.hostname.replace(/^\[|\]$/g, ""), useTls: endpoint.protocol === "https:", signal, options,
+  });
+}
+
 /** Node's platform fetch wraps DNS failures in TypeError.cause. */
 function isDnsResolutionError(error: unknown): boolean {
   const seen = new Set<unknown>();

@@ -6,7 +6,7 @@ export interface RuntimeToolsTokenClaims {
   company_id: string;
   run_id: string;
   responsible_user_id: string;
-  scope: "connection_intents" | "github_credentials";
+  scope: "connection_intents" | "github_credentials" | "runtime_services";
   iat: number;
   exp: number;
   instance_id: string;
@@ -57,7 +57,7 @@ export function createRuntimeToolsToken(input: {
     scope: input.scope ?? "connection_intents",
     iat: now,
     // Broker tokens remain scoped to a live run, which is rechecked on every use.
-    exp: now + (input.scope === "github_credentials" ? 30 * 24 * 60 * 60 : TOKEN_TTL_SECONDS),
+    exp: now + ((input.scope === "github_credentials" || input.scope === "runtime_services") ? 30 * 24 * 60 * 60 : TOKEN_TTL_SECONDS),
     instance_id: instanceId,
   };
   const signingInput = `${encode({ alg: "HS256", typ: "JWT" })}.${encode(claims)}`;

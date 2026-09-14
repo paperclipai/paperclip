@@ -14,6 +14,7 @@ import {
   issues,
   projects,
   routines,
+  runtimeServices,
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
@@ -2770,6 +2771,13 @@ export function secretService(db: Db | DbTransaction) {
           status: row.status,
         });
       }
+    }
+
+    const serviceIds = collectTargetIds(bindings, "runtime_service", { uuidOnly: true });
+    if (serviceIds.length > 0) {
+      const rows = await db.select({ id: runtimeServices.id, name: runtimeServices.name, state: runtimeServices.state })
+        .from(runtimeServices).where(and(eq(runtimeServices.companyId, companyId), inArray(runtimeServices.id, serviceIds)));
+      for (const row of rows) setTarget({ type: "runtime_service", id: row.id, label: row.name, href: `/runtime-services/${row.id}`, status: row.state });
     }
 
     const routineIds = collectTargetIds(bindings, "routine", { uuidOnly: true });
