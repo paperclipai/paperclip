@@ -162,7 +162,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       Icon = isImage ? Image : isVideo ? Film : File;
       const size = numberMeta(metadata, "byteSize", "size");
       meta = [isImage ? "Image" : isVideo ? "Video" : stringMeta(metadata, "kind", "fileType") ?? "File", size === null ? null : formatBytes(size)];
-      action = isImage || isVideo ? "Open gallery" : "Open preview";
+      action = isImage || isVideo ? "Open gallery" : "Download";
       break;
     }
     case "document":

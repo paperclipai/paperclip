@@ -201,6 +201,19 @@ describe("TaskChatProtocolCard", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it.each(["text/html", "application/zip"])("labels %s artifact links as downloads", (contentType) => {
+    const contentPath = "/api/attachments/file/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.textContent).toContain("Download");
+    expect(container.textContent).not.toContain("Open preview");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(contentPath);
+  });
+
   it("opens standalone artifact media in a modal with a download", async () => {
     const contentPath = "/api/attachments/media/content";
     flushSync(() => root.render(
