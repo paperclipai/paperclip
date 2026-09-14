@@ -3573,18 +3573,27 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     !deferredPanelPlanDoc &&
     !panelBeforePlanOverride;
   const openTaskSidePanel = useCallback(() => {
+    if (isMobile) {
+      setMobilePropsOpen(true);
+      return;
+    }
     if (suppressPanelUntilPlan && issue?.id) {
       setPanelBeforePlanOverrideIssueId(issue.id);
     }
     setPanelVisible(true);
-  }, [issue?.id, setPanelVisible, suppressPanelUntilPlan]);
+  }, [isMobile, issue?.id, setPanelVisible, suppressPanelUntilPlan]);
   const toggleTaskSidePanel = useCallback(() => {
+    if (isMobile) {
+      setMobilePropsOpen((open) => !open);
+      return;
+    }
     if (!panelVisible || suppressPanelUntilPlan) {
       openTaskSidePanel();
       return;
     }
     setPanelVisible(false);
   }, [
+    isMobile,
     openTaskSidePanel,
     panelVisible,
     setPanelVisible,
@@ -5334,13 +5343,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }
 
     setBreadcrumbPanelControl({
-      open: panelVisible && !suppressPanelUntilPlan,
+      open: isMobile ? mobilePropsOpen : panelVisible && !suppressPanelUntilPlan,
       onToggle: toggleTaskSidePanel,
     });
 
     return () => setBreadcrumbPanelControl(null);
   }, [
+    isMobile,
     issue?.id,
+    mobilePropsOpen,
     panelVisible,
     setBreadcrumbPanelControl,
     streamlinedTaskDetailEnabled,

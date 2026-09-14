@@ -37,8 +37,11 @@ export interface SearchableSelectProps<
   TOption extends SearchableSelectOption<TValue> = SearchableSelectOption<TValue>,
 > {
   value: TValue | "";
+  id?: string;
   groups: readonly SearchableSelectGroup<TValue, TOption>[];
   onValueChange: (value: TValue, option: TOption) => void | boolean | { close?: boolean };
+  /** Notify consumers that load matching options from a server. */
+  onSearchChange?: (query: string) => void;
   placeholder: string;
   searchPlaceholder?: string;
   emptyMessage?: string;
@@ -88,8 +91,10 @@ export function SearchableSelect<
   TOption extends SearchableSelectOption<TValue> = SearchableSelectOption<TValue>,
 >({
   value,
+  id,
   groups,
   onValueChange,
+  onSearchChange,
   placeholder,
   searchPlaceholder = "Search...",
   emptyMessage = "No options found.",
@@ -111,6 +116,7 @@ export function SearchableSelect<
 }: SearchableSelectProps<TValue, TOption>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const changeQuery = (value: string) => { setQuery(value); onSearchChange?.(value); };
   const pointerFocusRef = useRef(false);
   const suppressNextTriggerFocusRef = useRef(false);
 
@@ -170,7 +176,7 @@ export function SearchableSelect<
       suppressNextTriggerFocusRef.current = true;
     }
     setOpen(false);
-    setQuery("");
+    changeQuery("");
   }
 
   function selectOption(option: TOption) {
@@ -188,11 +194,12 @@ export function SearchableSelect<
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) setQuery("");
+        if (!next) changeQuery("");
       }}
     >
       <PopoverTrigger asChild>
         <Button
+          id={id}
           type="button"
           variant="outline"
           disabled={disabled}
@@ -247,7 +254,7 @@ export function SearchableSelect<
         <Command shouldFilter={false}>
           <CommandInput
             value={query}
-            onValueChange={setQuery}
+            onValueChange={changeQuery}
             placeholder={searchPlaceholder}
           />
           <CommandList

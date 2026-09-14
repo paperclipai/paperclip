@@ -771,6 +771,7 @@ const preview: Preview = {
     },
   },
   parameters: {
+    options: { storySort: { order: ["Runtime Services", ["01 Company services", "02 Task and properties", "03 Service details and controls", "04 Related app pages", "05 Preview gateway pages"], "*"] } },
     actions: { argTypesRegex: "^on[A-Z].*" },
     a11y: {
       test: "error",

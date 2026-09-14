@@ -107,6 +107,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { TaskRuntimeServices } from "../TaskRuntimeServices";
 import {
   buildWorkspaceSelectionUpdate,
   currentWorkspaceSelection,
@@ -2419,6 +2420,8 @@ export function IssueProperties({
           {labelsContent}
         </PropertyPicker>
       </PropertySection>
+
+      <TaskRuntimeServices companyId={issue.companyId} issueId={issue.id} streamlined={streamlinedPropertiesEnabled} />
 
       <PropertySection title="Relationships" streamlined={streamlinedPropertiesEnabled}>
         <PropertyPicker

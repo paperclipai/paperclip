@@ -21,6 +21,7 @@ import {
   GanttChartSquare,
   LayoutGrid,
   Users,
+  Server,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -220,6 +221,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
+          <SidebarNavItem to="/runtime-services" label="Services" icon={Server} />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}

@@ -9,19 +9,17 @@ import type { PaperclipConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
-async function availablePort(): Promise<number> {
-  const server = net.createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as net.AddressInfo;
-  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  return address.port;
-}
-
-function createTempConfig(serverPort: number): string {
+const temporaryRoots: string[] = [];
+async function createTempConfig(): Promise<string> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-doctor-"));
+  temporaryRoots.push(root);
+  const reservation = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    reservation.once("error", reject);
+    reservation.listen(0, resolve);
+  });
+  const port = (reservation.address() as net.AddressInfo).port;
+  await new Promise<void>((resolve, reject) => reservation.close((error) => error ? reject(error) : resolve()));
   const configPath = path.join(root, ".paperclip", "config.json");
   const runtimeRoot = path.join(root, "runtime");
 
@@ -50,7 +48,7 @@ function createTempConfig(serverPort: number): string {
       deploymentMode: "local_trusted",
       exposure: "private",
       host: "127.0.0.1",
-      port: serverPort,
+      port,
       allowedHostnames: [],
       serveUi: true,
     },
@@ -96,10 +94,11 @@ describe("doctor", () => {
 
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
+    for (const root of temporaryRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
   it("re-runs repairable checks so repaired failures do not remain blocking", async () => {
-    const configPath = createTempConfig(await availablePort());
+    const configPath = await createTempConfig();
 
     const summary = await doctor({
       config: configPath,

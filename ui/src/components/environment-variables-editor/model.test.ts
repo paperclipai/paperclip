@@ -10,9 +10,19 @@ import {
   rowsFromValue,
   secretNameFromKey,
   validateName,
+  validateCompleteRows,
   valueFromRows,
   type EnvRow,
 } from "./model";
+
+it("validates a complete draft before lossy serialization can drop or overwrite bindings", () => {
+  expect(validateCompleteRows([emptyRow()])).toBeNull();
+  expect(validateCompleteRows([{ ...emptyRow(), textValue: "orphan" }])).toMatch(/name/);
+  expect(validateCompleteRows([{ ...emptyRow("secret"), name: "API_KEY" }])).toMatch(/choose an organization secret/);
+  expect(validateCompleteRows([{ ...emptyRow(), name: "MODE" }, { ...emptyRow(), name: " MODE " }])).toMatch(/Duplicate/);
+  expect(validateCompleteRows([{ ...emptyRow(), name: "BAD-NAME" }])).toMatch(/Invalid/);
+  expect(validateCompleteRows([{ ...emptyRow(), name: "EMPTY" }, { ...emptyRow("secret"), name: "API_KEY", secretId: "secret-1" }])).toBeNull();
+});
 
 function makeUserSecretDefinition(overrides: { key: string; status?: "active" | "disabled" | "archived" }): UserSecretDefinition {
   return {

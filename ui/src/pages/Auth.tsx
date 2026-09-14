@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
+import { previewAuthReturnPath } from "../lib/preview-auth-return";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
@@ -32,12 +33,23 @@ export function AuthPage() {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const previewRedirectStarted = useRef(false);
+  const continueAfterSignIn = useCallback(() => {
+    const previewPath = previewAuthReturnPath(nextPath);
+    if (previewPath) {
+      if (previewRedirectStarted.current) return;
+      previewRedirectStarted.current = true;
+      window.location.replace(previewPath);
+      return;
+    }
+    navigate(nextPath, { replace: true });
+  }, [navigate, nextPath]);
 
   useEffect(() => {
     if (session) {
-      navigate(nextPath, { replace: true });
+      continueAfterSignIn();
     }
-  }, [session, navigate, nextPath]);
+  }, [session, continueAfterSignIn]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -60,7 +72,7 @@ export function AuthPage() {
       // readable (and any fetch for that session in flight) until the refetch lands.
       // Sign-in can change accounts, so drop the list outright.
       await queryClient.resetQueries({ queryKey: queryKeys.companies.all });
-      navigate(nextPath, { replace: true });
+      continueAfterSignIn();
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Authentication failed");

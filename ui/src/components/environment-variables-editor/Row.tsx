@@ -48,6 +48,7 @@ export interface EnvironmentVariableRowProps {
   isLast: boolean;
   secrets: readonly CompanySecret[];
   userSecretDefinitions?: readonly UserSecretDefinition[];
+  allowUserSecrets?: boolean;
   recentlyUsedSecrets?: readonly CompanySecret[];
   disabled?: boolean;
   nameIssue: NameIssue | null;
@@ -72,6 +73,7 @@ export function EnvironmentVariableRow({
   isLast,
   secrets,
   userSecretDefinitions,
+  allowUserSecrets = true,
   recentlyUsedSecrets,
   disabled,
   nameIssue,
@@ -287,12 +289,12 @@ export function EnvironmentVariableRow({
                     <span className="text-sm">Organization secret</span>
                     <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored organization secret at run start.</span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("user_secret")}>
+                  {allowUserSecrets && <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("user_secret")}>
                     <span className="text-sm">User secret</span>
                     <span className="text-(length:--text-micro) text-muted-foreground">
                       Resolve the responsible user&apos;s own value at run start.
                     </span>
-                  </DropdownMenuItem>
+                  </DropdownMenuItem>}
                 </DropdownMenuContent>
               </DropdownMenu>
 

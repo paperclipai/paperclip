@@ -64,6 +64,19 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
   const { selectedCompanyId, selectedCompany } = useCompany();
   const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
   const toggleTaskPanel = breadcrumbPanelControl?.onToggle ?? togglePanelVisible;
+  const taskPanelButton = (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className={cn("size-9 shrink-0 text-muted-foreground", isMobile ? "ml-2" : "ml-5")}
+      onClick={toggleTaskPanel}
+      aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
+      title={taskPanelOpen ? "Hide properties" : "Show properties"}
+      aria-expanded={taskPanelOpen}
+    >
+      {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+    </Button>
+  );
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -121,6 +134,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           <CrumbIdentifier identifier={currentCrumb.identifier} />
         </h1>
         {globalToolbarSlots}
+        {breadcrumbPanelControl ? taskPanelButton : null}
       </div>
     );
   }
@@ -225,18 +239,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
       {menuButton}
       {breadcrumbTrail}
       {globalToolbarSlots}
-      {taskDetailLayout ? (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-5 size-9 shrink-0 text-muted-foreground"
-          onClick={toggleTaskPanel}
-          aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
-          title={taskPanelOpen ? "Hide properties" : "Show properties"}
-        >
-          {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-        </Button>
-      ) : null}
+      {taskDetailLayout ? taskPanelButton : null}
     </div>
   );
 }

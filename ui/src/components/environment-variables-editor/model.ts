@@ -209,6 +209,21 @@ export function computeDuplicateNames(rows: EnvRow[]): Set<string> {
   return dupes;
 }
 
+/** Call before serializing when an outer form requires lossless draft saves. */
+export function validateCompleteRows(rows: EnvRow[]): string | null {
+  const duplicates = computeDuplicateNames(rows);
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!name && row.source === "text" && !row.textValue) continue;
+    if (!name) return "Give every configured variable a name.";
+    const issue = validateName(name, duplicates, []);
+    if (issue) return `${name}: ${issue.message}.`;
+    if (row.source === "secret" && !row.secretId) return `${name}: choose an organization secret.`;
+    if (row.source === "user_secret" && !row.userSecretKey.trim()) return `${name}: choose a user secret.`;
+  }
+  return null;
+}
+
 /**
  * Pure decision for a source switch (§6.3), extracted so the value-preserving
  * behaviour is unit-testable without driving the Radix menu.

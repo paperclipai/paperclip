@@ -177,6 +177,26 @@ describe("BreadcrumbBar", () => {
     expect(onOpen).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("keeps the mobile task properties control reachable with open=%s", async (open) => {
+    viewport.isMobile = true;
+    const onToggle = vi.fn();
+    await act(async () => {
+      root.render(
+        <BreadcrumbProvider>
+          <TaskBreadcrumbs panelControl={{ open, onToggle }} />
+        </BreadcrumbProvider>,
+      );
+    });
+    const launcher = container.querySelector<HTMLButtonElement>(
+      `button[aria-label="${open ? "Hide" : "Show"} properties"]`,
+    );
+    expect(launcher).not.toBeNull();
+    expect(launcher?.getAttribute("aria-expanded")).toBe(String(open));
+    expect(launcher?.closest(".h-\\(--sz-60px\\)")?.textContent).toContain("PAP-16679");
+    act(() => launcher?.click());
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
   it("appends the task identifier to the task title in the task-detail header", async () => {
     await act(async () => {
       root.render(

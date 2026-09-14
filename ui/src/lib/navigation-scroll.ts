@@ -14,6 +14,7 @@ export function shouldResetScrollOnNavigation(params: {
   if (previousPathname === null) return false;
   if (previousPathname === pathname) return false;
   if (navigationType === "POP") return false;
+  if (isRuntimeServicePage(pathname)) return true;
   if (isIssueIndexPath(pathname)) return true;
   if (isIssueDetailPathChange(previousPathname, pathname)) return true;
   return hasSidebarScrollResetState(state);
@@ -82,6 +83,12 @@ function isIssueIndexPath(pathname: string): boolean {
     (segments.length === 1 && segments[0] === "issues")
     || (segments.length === 2 && segments[1] === "issues")
   );
+}
+
+function isRuntimeServicePage(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  const index = segments[0] === "runtime-services" ? 0 : 1;
+  return segments[index] === "runtime-services" && segments.length <= index + 2;
 }
 
 function readIssueDetailPathRef(pathname: string): string | null {

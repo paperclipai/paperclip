@@ -10,6 +10,13 @@ import {
 } from "./navigation-scroll";
 
 describe("navigation-scroll", () => {
+  it.each(["/runtime-services", "/runtime-services/service-1", "/PAP/runtime-services", "/PAP/runtime-services/service-1"])("shows the beginning of %s on forward navigation while preserving history restoration", (pathname) => {
+    const navigation = { previousPathname: "/PAP/runtime-services/service-2", pathname, state: null };
+    expect(shouldResetScrollOnNavigation({ ...navigation, navigationType: "PUSH" })).toBe(true);
+    expect(shouldResetScrollOnNavigation({ ...navigation, navigationType: "POP" })).toBe(false);
+    expect(shouldResetScrollOnNavigation({ ...navigation, previousPathname: pathname, navigationType: "REPLACE" })).toBe(false);
+  });
+
   it("resets scroll only for flagged sidebar navigation", () => {
     expect(
       shouldResetScrollOnNavigation({

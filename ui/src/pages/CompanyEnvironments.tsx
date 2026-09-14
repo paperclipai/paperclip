@@ -97,6 +97,9 @@ function environmentEditPath(environmentId: string) {
 // the server enforces these gates with a 409; this copy lets the modal explain
 // the block before the user hits it.
 function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius): string | null {
+  if (impact.deleteBlockedReasons.includes("runtime_service_retention")) {
+    return "This environment contains retained service files. Release their data retention before deleting it.";
+  }
   if (impact.staticReferences.isManagedLocal) {
     return "Cannot delete the managed local environment.";
   }

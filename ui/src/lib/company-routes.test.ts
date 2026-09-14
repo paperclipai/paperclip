@@ -7,6 +7,11 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it("preserves company context for service inventory and detail links", () => {
+    expect(extractCompanyPrefixFromPath("/runtime-services/service-1")).toBeNull();
+    expect(applyCompanyPrefix("/runtime-services", "PAP")).toBe("/PAP/runtime-services");
+    expect(applyCompanyPrefix("/runtime-services/service-1", "PAP")).toBe("/PAP/runtime-services/service-1");
+  });
   it("treats the task-list alias as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/tasks")).toBe(true);
     expect(extractCompanyPrefixFromPath("/tasks")).toBeNull();

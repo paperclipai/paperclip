@@ -24,6 +24,7 @@ import {
   envKeyFromSecretName,
   rowsFromValue,
   validateName,
+  validateCompleteRows,
   valueFromRows,
   type EnvRow,
 } from "./model";
@@ -124,6 +125,8 @@ export interface EnvironmentVariablesEditorProps {
    * source becomes a picker; otherwise operators can type the definition key.
    */
   userSecretDefinitions?: readonly UserSecretDefinition[];
+  /** Service consumers without a responsible run user support company secrets only. */
+  allowUserSecrets?: boolean;
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   /** Optional "Recently used" picker group + quick-bind chips. */
   recentlyUsedSecrets?: readonly CompanySecret[];
@@ -145,6 +148,8 @@ export interface EnvironmentVariablesEditorHandle {
    * action reads parent state. Returns the promoted value when a draft existed.
    */
   flushPendingDraft: () => Record<string, EnvBinding> | null;
+  /** Read without dropping incomplete/duplicate rows silently. Does not save. */
+  readDraft: () => { value: Record<string, EnvBinding>; error: string | null };
 }
 
 export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorHandle, EnvironmentVariablesEditorProps>(function EnvironmentVariablesEditor({
@@ -152,6 +157,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   onChange,
   secrets,
   userSecretDefinitions,
+  allowUserSecrets = true,
   onCreateSecret,
   recentlyUsedSecrets,
   disabled,
@@ -291,7 +297,10 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     return draftValue ?? {};
   }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
 
-  useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
+  useImperativeHandle(ref, () => ({
+    flushPendingDraft,
+    readDraft: () => ({ value: valueFromRows(rowsRef.current) ?? {}, error: validateCompleteRows(rowsRef.current) }),
+  }), [flushPendingDraft]);
 
   useEffect(() => {
     const form = editorRootRef.current?.closest("form");
@@ -465,6 +474,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 isLast={index === rows.length - 1}
                 secrets={secrets}
                 userSecretDefinitions={userSecretDefinitions}
+                allowUserSecrets={allowUserSecrets}
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
                 nameIssue={issue}

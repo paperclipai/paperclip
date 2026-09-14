@@ -1820,8 +1820,10 @@ describe("IssueProperties", () => {
     expect(serviceLink).not.toBeNull();
     expect(serviceLink?.className).toContain("sm:self-start");
     expect(serviceLink?.className).not.toContain("sm:self-end");
-    expect((container.textContent ?? "").indexOf("Workspace")).toBeLessThan(
-      (container.textContent ?? "").indexOf("Service"),
+    const workspaceSection = serviceLink!.closest('[data-property-section="true"]');
+    expect(workspaceSection?.firstElementChild?.textContent).toBe("Workspace");
+    expect((workspaceSection?.textContent ?? "").indexOf("Workspace")).toBeLessThan(
+      (workspaceSection?.textContent ?? "").indexOf("Service"),
     );
     const stopButton = container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
     expect(stopButton).not.toBeUndefined();
