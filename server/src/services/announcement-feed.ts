@@ -92,7 +92,13 @@ export function announcementFeedService(options: AnnouncementFeedOptions) {
       const result = await request(endpoint(), {
         Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}),
       }, async (response) => {
-        if (response.status === 304 && manifest) return { manifest, etag };
+        if (response.status === 304 && manifest) return { manifest, etag, ttl: ANNOUNCEMENT_CACHE_MS };
+        if (response.status === 404) {
+          await response.body?.cancel();
+          // An unpublished/removed feed is an expected empty state. Forget the
+          // previous ETag so recovery cannot resurrect a stale cached card.
+          return { manifest: { schemaVersion: 1, announcement: null } as AnnouncementManifest, etag: null, ttl: ANNOUNCEMENT_FAILURE_MS };
+        }
         if (!response.ok || response.status >= 300) {
           await response.body?.cancel();
           throw new Error("Announcement feed unavailable");
@@ -102,12 +108,12 @@ export function announcementFeedService(options: AnnouncementFeedOptions) {
           throw new Error("Announcement feed is not JSON");
         }
         const bytes = await readAnnouncementBytes(response, ANNOUNCEMENT_MANIFEST_MAX_BYTES);
-        return { manifest: announcementManifestSchema.parse(JSON.parse(bytes.toString("utf8"))), etag: response.headers.get("etag") };
+        return { manifest: announcementManifestSchema.parse(JSON.parse(bytes.toString("utf8"))), etag: response.headers.get("etag"), ttl: ANNOUNCEMENT_CACHE_MS };
       });
       manifest = result.manifest;
       etag = result.etag;
       available = true;
-      nextCheck = now() + ANNOUNCEMENT_CACHE_MS;
+      nextCheck = now() + result.ttl;
     } catch {
       available = false;
       nextCheck = now() + ANNOUNCEMENT_FAILURE_MS;

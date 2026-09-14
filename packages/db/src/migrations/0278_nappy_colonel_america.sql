@@ -1,4 +1,4 @@
-CREATE TABLE "announcement_dismissals" (
+CREATE TABLE IF NOT EXISTS "announcement_dismissals" (
 	"user_id" text NOT NULL,
 	"announcement_id" text NOT NULL,
 	"dismissed_at" timestamp with time zone DEFAULT now() NOT NULL,

@@ -4,10 +4,40 @@ import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ANNOUNCEMENT_IMAGE_MAX_BYTES, ANNOUNCEMENT_MANIFEST_MAX_BYTES, announcementManifestSchema } from "../packages/shared/src/announcements.js";
+import { ANNOUNCEMENT_IMAGE_MAX_BYTES, ANNOUNCEMENT_MANIFEST_MAX_BYTES, announcementIdSchema, announcementManifestSchema } from "../packages/shared/src/announcements.js";
 
-const PREFIX = "announcements/v1";
-export async function prepareAnnouncementPublish(sourceDirectory: string) {
+export function announcementPublishPrefix(staging?: string, hostPrefix?: string) {
+  if (hostPrefix !== undefined && !/^[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(hostPrefix)) {
+    throw new Error("Invalid PAPERCLIP_PAGE_DEFAULT_PREFIX: use lowercase path segments without leading or trailing slashes");
+  }
+  const prefix = staging === undefined ? "announcements/v1" : `announcements/staging/${announcementIdSchema.parse(staging)}/v1`;
+  return hostPrefix ? `${hostPrefix}/${prefix}` : prefix;
+}
+
+export function parseAnnouncementPublishArgs(args: string[]) {
+  let sourceDirectory: string | undefined;
+  let staging: string | undefined;
+  let mode: "publish" | "dry-run" | undefined;
+  const usage = "Usage: publish-announcements.ts [directory] [--staging name] [--dry-run | --publish]";
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--publish" || arg === "--dry-run") {
+      if (mode) throw new Error(usage);
+      mode = arg === "--publish" ? "publish" : "dry-run";
+    } else if (arg === "--staging") {
+      if (staging !== undefined || !args[index + 1]) throw new Error(usage);
+      staging = announcementIdSchema.parse(args[++index]);
+    } else if (arg.startsWith("--") || sourceDirectory !== undefined) {
+      throw new Error(usage);
+    } else {
+      sourceDirectory = arg;
+    }
+  }
+  return { sourceDirectory: sourceDirectory ?? (staging ? "announcements/examples/staging" : "announcements"), staging, publish: mode === "publish" };
+}
+
+export async function prepareAnnouncementPublish(sourceDirectory: string, staging?: string, hostPrefix?: string) {
+  const prefix = announcementPublishPrefix(staging, hostPrefix);
   const source = path.resolve(sourceDirectory);
   if (!(await lstat(source)).isDirectory()) throw new Error("Source must be a real directory");
   const manifestPath = path.join(source, "current.json");
@@ -23,9 +53,9 @@ export async function prepareAnnouncementPublish(sourceDirectory: string) {
     if (!assetStat.isFile() || assetStat.size > ANNOUNCEMENT_IMAGE_MAX_BYTES) throw new Error("Invalid or oversized image");
     const digest = createHash("sha256").update(await readFile(file)).digest("hex");
     if (!assetPath.startsWith(`assets/${digest}.`)) throw new Error("Image filename must match its SHA-256 digest");
-    files.push({ file, key: `${PREFIX}/${assetPath}`, contentType: assetPath.endsWith(".png") ? "image/png" : assetPath.endsWith(".jpg") ? "image/jpeg" : "image/webp", cacheControl: "public,max-age=31536000,immutable" });
+    files.push({ file, key: `${prefix}/${assetPath}`, contentType: assetPath.endsWith(".png") ? "image/png" : assetPath.endsWith(".jpg") ? "image/jpeg" : "image/webp", cacheControl: "public,max-age=31536000,immutable" });
   }
-  files.push({ file: manifestPath, key: `${PREFIX}/current.json`, contentType: "application/json", cacheControl: "public,max-age=300" });
+  files.push({ file: manifestPath, key: `${prefix}/current.json`, contentType: "application/json", cacheControl: "public,max-age=300" });
   return { manifest, files };
 }
 
@@ -35,19 +65,15 @@ export function announcementUploadArgs(bucket: string, file: Awaited<ReturnType<
 }
 
 async function main() {
-  const args = process.argv.slice(2);
-  const publish = args.includes("--publish");
-  const source = args.find((arg) => !arg.startsWith("--")) ?? "announcements";
-  if (args.some((arg) => arg.startsWith("--") && !["--publish", "--dry-run"].includes(arg)) || (publish && args.includes("--dry-run"))) {
-    throw new Error("Usage: publish-announcements.ts [directory] [--dry-run | --publish]");
-  }
-  const prepared = await prepareAnnouncementPublish(source);
+  const { sourceDirectory, staging, publish } = parseAnnouncementPublishArgs(process.argv.slice(2));
+  const hostPrefix = process.env.PAPERCLIP_PAGE_DEFAULT_PREFIX;
+  const prepared = await prepareAnnouncementPublish(sourceDirectory, staging, hostPrefix);
   const bucket = process.env.PAPERCLIP_PAGE_BUCKET;
   const baseUrl = process.env.PAPERCLIP_PAGE_BASE_URL?.replace(/\/+$/, "") ?? "https://pages.paperclip.ing";
-  const url = `${baseUrl}/${PREFIX}/current.json`;
+  const url = `${baseUrl}/${announcementPublishPrefix(staging, hostPrefix)}/current.json`;
   const parsed = new URL(url);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error("Invalid public base URL");
-  console.log(JSON.stringify({ mode: publish ? "publish" : "dry-run", bucket: bucket ?? "(unset)", url, announcementId: prepared.manifest.announcement?.id ?? null, files: prepared.files }, null, 2));
+  console.log(JSON.stringify({ mode: publish ? "publish" : "dry-run", target: staging ? `staging/${staging}` : "production", bucket: bucket ?? "(unset)", url, announcementId: prepared.manifest.announcement?.id ?? null, files: prepared.files }, null, 2));
   if (!publish) return;
   if (!bucket) throw new Error("Set PAPERCLIP_PAGE_BUCKET before publishing");
   const env = { ...process.env };

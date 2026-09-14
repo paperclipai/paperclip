@@ -3,12 +3,35 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareAnnouncementPublish, announcementUploadArgs } from "../../../scripts/publish-announcements.js";
+import { prepareAnnouncementPublish, announcementUploadArgs, parseAnnouncementPublishArgs, announcementPublishPrefix } from "../../../scripts/publish-announcements.js";
 
 const dirs: string[] = [];
 async function fixture() { const dir = await mkdtemp(path.join(os.tmpdir(), "announcement-publish-")); dirs.push(dir); return dir; }
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 describe("announcement publishing", () => {
+  it("keeps named staging feeds separate from production and defaults to dry-run", async () => {
+    const dir = await fixture();
+    await writeFile(path.join(dir, "current.json"), JSON.stringify({ schemaVersion: 1, announcement: null }));
+    const result = await prepareAnnouncementPublish(dir, "preview-projects");
+    expect(result.files.map((file) => file.key)).toEqual(["announcements/staging/preview-projects/v1/current.json"]);
+    expect(parseAnnouncementPublishArgs(["--staging", "preview-projects"])).toEqual({
+      sourceDirectory: "announcements/examples/staging", staging: "preview-projects", publish: false,
+    });
+    expect(parseAnnouncementPublishArgs([dir, "--staging", "preview-projects", "--publish"]).publish).toBe(true);
+    expect(announcementPublishPrefix()).toBe("announcements/v1");
+    expect((await prepareAnnouncementPublish(dir, "preview-projects", "storybook/branches/codex-announcements")).files[0].key)
+      .toBe("storybook/branches/codex-announcements/announcements/staging/preview-projects/v1/current.json");
+    for (const prefix of ["../outside", "/leading", "trailing/", "bad//path", "", "https://example.com"]) {
+      expect(() => announcementPublishPrefix("preview-projects", prefix)).toThrow();
+    }
+    for (const name of ["../v1", "", "/production", "preview/nested"]) {
+      expect(() => announcementPublishPrefix(name)).toThrow();
+    }
+    for (const args of [["--staging"], ["--publish", "--dry-run"], ["one", "two"], ["--unknown"]]) {
+      expect(() => parseAnnouncementPublishArgs(args)).toThrow();
+    }
+  });
+
   it("uploads content-addressed assets before the five-minute manifest", async () => {
     const dir = await fixture();
     const bytes = Buffer.from("test-image");

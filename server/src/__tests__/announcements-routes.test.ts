@@ -13,14 +13,14 @@ const item = { id: "new-projects", eyebrow: "New", title: "Projects", descriptio
 describe("announcement routes and durable dismissals", () => {
   let database: EmbeddedPostgresTestDatabase;
   let db: ReturnType<typeof createDb>;
-  function app(userId = "alice", actorOverride?: Record<string, unknown>, announcement: unknown = item) {
+  function app(userId = "alice", actorOverride?: Record<string, unknown>, announcement: unknown = item, feedStatus = 200) {
     const server = express();
     server.use(express.json());
     server.use((req, _res, next) => {
       req.actor = (actorOverride ?? { type: "board", userId, source: "session", companyIds: [companyId, otherCompanyId], memberships: [{ companyId, membershipRole: "viewer", status: "active" }] }) as never;
       next();
     });
-    server.use("/api", announcementRoutes(db, { version: "2026.913.0", fetch: async () => new Response(JSON.stringify({ schemaVersion: 1, announcement }), { headers: { "Content-Type": "application/json" } }) }));
+    server.use("/api", announcementRoutes(db, { version: "2026.913.0", fetch: async () => new Response(JSON.stringify({ schemaVersion: 1, announcement }), { status: feedStatus, headers: { "Content-Type": "application/json" } }) }));
     server.use(errorHandler);
     return server;
   }
@@ -31,6 +31,12 @@ describe("announcement routes and durable dismissals", () => {
   }, 90_000);
   beforeEach(async () => { await db.delete(announcementDismissals); await db.delete(activityLog); });
   afterAll(async () => { await database?.cleanup(); }, 30_000);
+  it.each([200, 404])("returns a successful empty response for no remote announcement (HTTP %s)", async (status) => {
+    const response = await request(app("alice", undefined, null, status)).get("/api/announcements/current");
+    expect(response.status).toBe(200);
+    expect(response.body).toBeNull();
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+  });
   it("persists across app/service restarts, browsers and companies, isolated by user", async () => {
     const first = app();
     const response = await request(first).get("/api/announcements/current");

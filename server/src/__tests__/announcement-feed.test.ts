@@ -1,11 +1,32 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { announcementFeedService, ANNOUNCEMENT_CACHE_MS, ANNOUNCEMENT_FAILURE_MS } from "../services/announcement-feed.js";
+import { logger } from "../middleware/logger.js";
 
 const item = { id: "new-projects", eyebrow: "New", title: "Projects", description: "Organize your work.", primaryAction: { kind: "route", label: "Open", path: "/projects" } };
 const json = (announcement: unknown = item, etag = '"v1"') => new Response(JSON.stringify({ schemaVersion: 1, announcement }), { headers: { "Content-Type": "application/json", ETag: etag } });
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 describe("announcement feed", () => {
+  it("treats a 404 as quiet empty content, drops stale ETags, and recovers after cooldown", async () => {
+    let now = 0;
+    const warn = vi.spyOn(logger, "warn");
+    const fetch = vi.fn().mockImplementationOnce(async () => json())
+      .mockImplementationOnce(async () => new Response("Not found", { status: 404 }))
+      .mockImplementationOnce(async () => json({ ...item, id: "restored" }));
+    const service = announcementFeedService({ version: "1.0.0", now: () => now, fetch });
+    expect(await service.current()).toEqual(item);
+    now += ANNOUNCEMENT_CACHE_MS;
+    expect(await service.current()).toBeNull();
+    expect(await service.image(item.id)).toBeNull();
+    now += ANNOUNCEMENT_FAILURE_MS - 1;
+    expect(await service.current()).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(warn).not.toHaveBeenCalled();
+    now++;
+    expect((await service.current())?.id).toBe("restored");
+    expect(fetch.mock.calls[2][1].headers).not.toHaveProperty("If-None-Match");
+  });
+
   it("deduplicates requests, caches for an hour, then revalidates with ETag", async () => {
     let now = 0;
     const fetch = vi.fn().mockImplementationOnce(async () => json()).mockResolvedValueOnce(new Response(null, { status: 304 }));
