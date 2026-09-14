@@ -10,6 +10,10 @@ vi.mock("../services/alert-translation.js", () => ({
   SUPPORTED_LOCALES: ["es", "zh-Hans", "tl"],
 }));
 
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent: vi.fn(),
+}));
+
 function boardActor(companyId = "company-1") {
   return {
     type: "board" as const,
@@ -278,5 +282,157 @@ describe("PATCH /solaris/orgs/:orgId", () => {
     const res = await request(app).patch("/solaris/orgs/org-1").send({ preferredLanguage: "tl" });
     expect(res.status).toBe(200);
     expect(res.body.preferredLanguage).toBe("tl");
+  });
+});
+
+// ── Alert assign / notes / team members (IUN-2885) ───────────────────────────
+
+const baseAlert = {
+  id: "alert-1",
+  companyId: "company-1",
+  orgId: null,
+  title: "Wildfire Warning",
+  body: "Evacuation order",
+  severity: "critical",
+  translatedBodies: null,
+  dispatchStatus: "ready",
+  assigneeId: null,
+  assigneeName: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+describe("POST /solaris/alerts/:alertId/assign", () => {
+  it("returns 404 when alert not found", async () => {
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([]) })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).post("/solaris/alerts/nonexistent/assign").send({ assigneeId: "u1", assigneeName: "Alice" });
+    expect(res.status).toBe(404);
+  });
+
+  it("persists assignee and returns updated alert", async () => {
+    const updated = { ...baseAlert, assigneeId: "u1", assigneeName: "Alice" };
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updated]) }) }),
+      }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).post("/solaris/alerts/alert-1/assign").send({ assigneeId: "u1", assigneeName: "Alice" });
+    expect(res.status).toBe(200);
+    expect(res.body.assigneeId).toBe("u1");
+    expect(res.body.assigneeName).toBe("Alice");
+  });
+
+  it("allows clearing assignee with null values", async () => {
+    const updated = { ...baseAlert, assigneeId: null, assigneeName: null };
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updated]) }) }),
+      }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).post("/solaris/alerts/alert-1/assign").send({});
+    expect(res.status).toBe(200);
+    expect(res.body.assigneeId).toBeNull();
+  });
+});
+
+describe("POST /solaris/alerts/:alertId/notes", () => {
+  it("returns 400 when body is missing", async () => {
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).post("/solaris/alerts/alert-1/notes").send({});
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when alert not found", async () => {
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([]) })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).post("/solaris/alerts/nonexistent/notes").send({ body: "Noted." });
+    expect(res.status).toBe(404);
+  });
+
+  it("creates note and returns 201", async () => {
+    const note = {
+      id: "note-1",
+      alertId: "alert-1",
+      companyId: "company-1",
+      body: "Units en route",
+      authorId: "user-1",
+      authorName: "Dispatch",
+      createdAt: new Date().toISOString(),
+    };
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([note]) }) }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).post("/solaris/alerts/alert-1/notes").send({ body: "Units en route", authorName: "Dispatch" });
+    expect(res.status).toBe(201);
+    expect(res.body.body).toBe("Units en route");
+    expect(res.body.alertId).toBe("alert-1");
+  });
+});
+
+describe("GET /solaris/alerts/:alertId/notes", () => {
+  it("returns notes list for an alert", async () => {
+    const note = { id: "note-1", alertId: "alert-1", companyId: "company-1", body: "All clear", authorId: null, authorName: null, createdAt: new Date().toISOString() };
+    let selectCallCount = 0;
+    const db = {
+      select: vi.fn(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          // First call: fetch the alert
+          return { from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) };
+        }
+        // Second call: fetch notes
+        const resolved = Promise.resolve([note]);
+        return {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue(resolved),
+        };
+      }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).get("/solaris/alerts/alert-1/notes");
+    expect(res.status).toBe(200);
+    expect(res.body.notes).toHaveLength(1);
+    expect(res.body.notes[0].body).toBe("All clear");
+  });
+});
+
+describe("GET /solaris/team/members", () => {
+  it("returns 400 when companyId is missing", async () => {
+    const db = {} as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).get("/solaris/team/members");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns active company users", async () => {
+    const members = [{ id: "u1", name: "Alice Nguyen", email: "alice@agency.gov" }];
+    const resolved = Promise.resolve(members);
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        innerJoin: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnValue(resolved),
+      })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).get("/solaris/team/members?companyId=company-1");
+    expect(res.status).toBe(200);
+    expect(res.body.members).toHaveLength(1);
+    expect(res.body.members[0].name).toBe("Alice Nguyen");
   });
 });

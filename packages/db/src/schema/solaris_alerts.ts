@@ -1,6 +1,7 @@
 import { boolean, index, jsonb, pgEnum, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
+
 export const alertSeverityEnum = pgEnum("alert_severity", ["critical", "warning", "info"]);
 export const alertDispatchStatusEnum = pgEnum("alert_dispatch_status", ["pending", "translating", "ready", "failed"]);
 
@@ -45,11 +46,34 @@ export const solarisAlerts = pgTable(
     incidentType: text("incident_type"),
     reportedAt: timestamp("reported_at", { withTimezone: true }),
     source: text("source").notNull().default("solaris"),
+    // Alert triage fields (IUN-2885)
+    assigneeId: text("assignee_id"),
+    assigneeName: text("assignee_name"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     companyCreatedIdx: index("solaris_alerts_company_created_idx").on(t.companyId, t.createdAt),
     orgIdx: index("solaris_alerts_org_idx").on(t.orgId),
+  }),
+);
+
+export const alertNotes = pgTable(
+  "alert_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    alertId: uuid("alert_id")
+      .notNull()
+      .references(() => solarisAlerts.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    authorId: text("author_id"),
+    authorName: text("author_name"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    alertCreatedIdx: index("alert_notes_alert_idx").on(t.alertId, t.createdAt),
   }),
 );

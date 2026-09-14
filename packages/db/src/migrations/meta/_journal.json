@@ -575,6 +575,13 @@
       "when": 1789200000000,
       "tag": "0081_cad_webhook_dlq",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1789300000000,
+      "tag": "0082_alert_assign_notes",
+      "breakpoints": true
     }
   ]
 }

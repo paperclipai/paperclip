@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { solarisAlerts, solarisOrgs } from "@paperclipai/db";
+import { alertNotes, solarisAlerts, solarisOrgs, companyMemberships, authUsers } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
 import { translateAlertForAllLocales, SUPPORTED_LOCALES } from "../services/alert-translation.js";
+import { publishLiveEvent } from "../services/live-events.js";
 
 const ALERT_SEVERITIES = ["critical", "warning", "info"] as const;
 const SUPPORTED_LANGUAGES = ["en", ...SUPPORTED_LOCALES] as const;
@@ -230,6 +231,104 @@ export function solarisAlertRoutes(db: Db) {
       .returning();
 
     res.json(updated);
+  });
+
+  /** POST /solaris/alerts/:alertId/assign — assign alert to a responder */
+  router.post("/solaris/alerts/:alertId/assign", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const assigneeId = typeof body["assigneeId"] === "string" ? body["assigneeId"].trim() : null;
+    const assigneeName = typeof body["assigneeName"] === "string" ? body["assigneeName"].trim() : null;
+
+    const [updated] = await db
+      .update(solarisAlerts)
+      .set({ assigneeId, assigneeName, updatedAt: new Date() })
+      .where(eq(solarisAlerts.id, alertId))
+      .returning();
+
+    publishLiveEvent({
+      companyId: existing.companyId,
+      type: "solaris.alert.updated",
+      payload: { alertId, assigneeId, assigneeName },
+    });
+
+    res.json(updated);
+  });
+
+  /** POST /solaris/alerts/:alertId/notes — add a note to an alert */
+  router.post("/solaris/alerts/:alertId/notes", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const noteBody = typeof body["body"] === "string" ? body["body"].trim() : null;
+    if (!noteBody) throw badRequest("body is required");
+
+    const actorId = req.actor?.userId ?? null;
+    const authorName = typeof body["authorName"] === "string" ? body["authorName"].trim() : null;
+
+    const [note] = await db
+      .insert(alertNotes)
+      .values({
+        alertId,
+        companyId: existing.companyId,
+        body: noteBody,
+        authorId: actorId,
+        authorName,
+      })
+      .returning();
+
+    res.status(201).json(note);
+  });
+
+  /** GET /solaris/alerts/:alertId/notes — list notes for an alert */
+  router.get("/solaris/alerts/:alertId/notes", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const notes = await db
+      .select()
+      .from(alertNotes)
+      .where(eq(alertNotes.alertId, alertId))
+      .orderBy(asc(alertNotes.createdAt));
+
+    res.json({ notes });
+  });
+
+  /** GET /solaris/team/members?companyId= — return active users for Assign dropdown */
+  router.get("/solaris/team/members", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query["companyId"] === "string" ? req.query["companyId"].trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const rows = await db
+      .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+      .from(companyMemberships)
+      .innerJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+
+    res.json({ members: rows });
   });
 
   return router;
