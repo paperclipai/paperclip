@@ -1,3 +1,4 @@
+import { runtimeServiceControllerRequirements } from "../services/runtime-services/drain.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -6,7 +7,7 @@ import {
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
@@ -292,7 +293,15 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
-    res.json(heartbeat.getTaskDrainStatus());
+    const status = heartbeat.getTaskDrainStatus();
+    if (!status.ownerId) { res.json({ ...status, runtimeServicesIdleProtocol: 1 }); return; }
+    const runtime = await runtimeServiceControllerRequirements(db);
+    // Require quiescence on both sides of the query. Work already in flight
+    // could commit just after a database snapshot, then finish before re-read;
+    // accepting only the later count would miss the newly created service.
+    const current = heartbeat.getTaskDrainStatus();
+    res.json({ ...current, ...runtime, runtimeServicesIdleProtocol: 1,
+      quiescent: status.quiescent && current.quiescent && !runtime.runtimeServiceControllerRequired && status.ownerId === current.ownerId });
   });
 
   router.post(
@@ -310,7 +319,9 @@ export function instanceSettingsRoutes(db: Db) {
       // startedAt reflects the moment this request actually took effect,
       // not the moment it arrived and was queued behind another transition.
       const drain = await withTaskDrainTransition(async () => {
-        const computed = heartbeat.computeTaskDrain({ ttlMs });
+        const prior = heartbeat.getTaskDrainStatus();
+        if (prior?.ownerId || (req.body.purpose === "idle" && prior?.draining)) throw conflict("Another task drain is already active");
+        const computed = heartbeat.computeTaskDrain({ ttlMs, ...(req.body.purpose === "idle" ? { purpose: "idle" as const } : {}) });
         // One transaction for every company's audit row, so a write that
         // succeeds for one company and fails for another never leaves a
         // partial activity history behind — either every company gets the
@@ -364,6 +375,7 @@ export function instanceSettingsRoutes(db: Db) {
     // queued transition.
     const wasActive = await withTaskDrainTransition(async () => {
       const priorStatus = heartbeat.getTaskDrainStatus();
+      if ((priorStatus.ownerId || req.query.ownerId !== undefined) && (typeof req.query.ownerId !== "string" || req.query.ownerId !== priorStatus.ownerId)) throw conflict("Task drain ownership changed");
       // Read wasActive once, here, and use this same value for the audit
       // detail and the response body below. A TTL that expires between two
       // separate reads would otherwise make the two values disagree.

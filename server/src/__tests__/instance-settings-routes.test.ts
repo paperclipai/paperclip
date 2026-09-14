@@ -25,8 +25,10 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockRuntimeRequirements = vi.hoisted(() => vi.fn(async () => ({ runtimeServiceControllerRequired: false })));
 
 function registerModuleMocks() {
+  vi.doMock("../services/runtime-services/drain.js", () => ({ runtimeServiceControllerRequirements: mockRuntimeRequirements }));
   vi.doMock("../services/index.js", () => ({
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
@@ -920,6 +922,35 @@ describe("instance settings routes", () => {
       mockHeartbeatService.stopTaskDrain.mockReset();
     });
 
+    it("does not miss an admitted service mutation that commits during the controller query", async () => {
+      const held = { ...idleStatus, draining: true, ownerId: "owned-hold" };
+      mockHeartbeatService.getTaskDrainStatus
+        .mockReturnValueOnce({ ...held, quiescent: false, activeRuntimeServiceMutations: 1 })
+        .mockReturnValueOnce({ ...held, quiescent: true, activeRuntimeServiceMutations: 0 });
+      const res = await request(await createApp(adminActor)).get("/api/instance/task-drain");
+      expect(res.status).toBe(200);
+      expect(mockRuntimeRequirements).toHaveBeenCalledOnce();
+      expect(res.body.quiescent).toBe(false);
+    });
+
+    it("refuses a stale owned release without changing or auditing the newer hold", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId: "new-owner" });
+      const app = await createApp(adminActor);
+      const res = await request(app).delete("/api/instance/task-drain?ownerId=old-owner");
+      expect(res.status).toBe(409);
+      expect((await request(app).delete("/api/instance/task-drain")).status).toBe(409);
+      expect((await request(app).post("/api/instance/task-drain").send({})).status).toBe(409);
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("refuses an unbounded idle hold and preserves an already active drain", async () => {
+      const app = await createApp(adminActor);
+      expect((await request(app).post("/api/instance/task-drain").send({ purpose: "idle" })).status).toBe(400);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true });
+      expect((await request(app).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 900_000 })).status).toBe(409);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+
     it("returns the idle status", async () => {
       mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
       const app = await createApp(nonAdminActor);
@@ -927,7 +958,7 @@ describe("instance settings routes", () => {
       const res = await request(app).get("/api/instance/task-drain");
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual(idleStatus);
+      expect(res.body).toEqual({ ...idleStatus, runtimeServicesIdleProtocol: 1 });
     });
 
     it("writes an activity record for every company, then applies the same drain values, in one transaction", async () => {

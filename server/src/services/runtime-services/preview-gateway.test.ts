@@ -1,4 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { startTaskDrain, stopTaskDrain } from "../task-admission.js";
+import { runtimeServiceControllerRequirements } from "./drain.js";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { previewIngressPayload } from "./preview-ingress.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +11,7 @@ import express, { type Request } from "express";
 import { eq } from "drizzle-orm";
 import { WebSocket } from "ws";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { authUsers, companies, companyMemberships, createDb, runtimeServicePreviewSessions, runtimeServiceShares, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
+import { authUsers, companies, companyMemberships, createDb, runtimeServiceAllocations, runtimeServiceCompanyPolicies, runtimeServices, runtimeServicePreviewSessions, runtimeServiceShares, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
 import { createRuntimeServiceSchema } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/error-handler.js";
 import { createRuntimeServiceManager } from "./manager.js";
@@ -90,6 +93,56 @@ describe("private preview gateway with real HTTP, WebSockets and durable authori
     const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
     return { cookie, url };
   }
+  it("authenticates signed Cloud ingress before preview access and rejects partial proofs before board routes", async () => {
+    const pair = generateKeyPairSync("ed25519");
+    const app = express();
+    let claimedGateway: RuntimeServicePreviewGateway;
+    const previous = { keys: process.env.PAPERCLIP_SERVICE_PREVIEW_INGRESS_PUBLIC_KEYS, stack: process.env.PAPERCLIP_CLOUD_STACK_ID, token: process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN };
+    try {
+      process.env.PAPERCLIP_SERVICE_PREVIEW_INGRESS_PUBLIC_KEYS = JSON.stringify([pair.publicKey.export({ type: "spki", format: "pem" }).toString()]);
+      process.env.PAPERCLIP_CLOUD_STACK_ID = "fixture-stack"; process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "fixture-token";
+      claimedGateway = createRuntimeServicePreviewGateway(db, manager, { config, allowLocalBoard: true, boardBaseURL: () => origin });
+    } finally {
+      for (const [name, value] of [["PAPERCLIP_SERVICE_PREVIEW_INGRESS_PUBLIC_KEYS", previous.keys], ["PAPERCLIP_CLOUD_STACK_ID", previous.stack], ["PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", previous.token]]) {
+        if (value === undefined) delete process.env[name!]; else process.env[name!] = value;
+      }
+    }
+    app.use(claimedGateway!.middleware); app.get("/api/companies", (_req, res) => res.json({ controlPlane: true }));
+    const edge = http.createServer(app); claimedGateway!.attach(edge);
+    await new Promise<void>((resolve) => edge.listen(0, "127.0.0.1", resolve));
+    const port = (edge.address() as import("node:net").AddressInfo).port;
+    const targetHost = new URL(previewOrigin).host; const rawPath = "/api/companies?app=%2F";
+    const time = String(Date.now()); const proof = {
+      "x-paperclip-preview-host": targetHost, "x-paperclip-preview-ingress-time": time,
+      "x-paperclip-preview-ingress-signature": sign(null, Buffer.from(previewIngressPayload("fixture-stack", "GET", rawPath, targetHost, time)), pair.privateKey).toString("base64url"),
+    };
+    try {
+      const unauthenticated = await fetch(`http://127.0.0.1:${port}${rawPath}`, { headers: proof });
+      expect(unauthenticated.status).toBe(401); expect(await unauthenticated.text()).not.toContain("controlPlane");
+      const { cookie } = await handoff();
+      const valid = await fetch(`http://127.0.0.1:${port}${rawPath}`, { headers: { ...proof, cookie: `${cookie}; app=ok` } });
+      expect(valid.status).toBe(200); const echoed = await valid.json();
+      expect(echoed.headers.cookie).toBe("app=ok"); expect(echoed.headers["x-paperclip-preview-host"]).toBeUndefined();
+      for (const headers of [{ "x-paperclip-preview-host": targetHost }, { ...proof, "x-paperclip-preview-ingress-signature": "forged" }]) {
+        const rejected = await fetch(`http://127.0.0.1:${port}${rawPath}`, { headers });
+        expect(rejected.status).toBe(403); expect(await rejected.text()).not.toContain("controlPlane");
+      }
+    } finally { edge.closeAllConnections(); await new Promise<void>((resolve) => edge.close(() => resolve())); }
+  });
+
+  it("keeps the instance controller alive for a running service and fences service changes during idle drain", async () => {
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+    const { cookie } = await handoff();
+    startTaskDrain({ ttlMs: 60_000, purpose: "idle" });
+    try {
+      expect((await manager.wake(companyId, serviceId)).desiredState).toBe("running");
+      expect((await request("/html", { headers: { cookie, accept: "text/html", "sec-fetch-dest": "document" } })).status).toBe(200);
+      expect((await request("/.paperclip/activity", { method: "POST", headers: { cookie, origin: previewOrigin, "content-type": "application/json" }, body: '{"visible":true}' })).status).toBe(204);
+      expect(await manager.reconciliationCandidates("observe", 10)).toEqual([]);
+      expect((await manager.get(companyId, serviceId)).desiredState).toBe("running");
+    } finally { stopTaskDrain(); }
+  });
+
   it("protects every app path, preserves raw request bodies and verifies the public route", async () => {
     expect((await manager.get(companyId, serviceId)).endpoints[0]).toMatchObject({ url: previewOrigin, status: "ready" });
     expect((await request("/api/companies")).status).toBe(401);
@@ -202,4 +255,33 @@ describe("private preview gateway with real HTTP, WebSockets and durable authori
     const invalid = await create({ ...input, requestId: randomUUID(), expiresAt: new Date(Date.now() + 31 * 24 * 3600_000).toISOString() });
     expect(invalid.status).toBe(422);
   });
+  it("allows stopped retained service data to sleep, but protects uncertain processes and recoverable states", async () => {
+    const current = await manager.get(companyId, serviceId);
+    await manager.control(companyId, serviceId, { type: "board", id: "test-board" }, { requestId: randomUUID(), expectedRevision: current.revision, action: "stop" });
+    await manager.reconcile(companyId, serviceId);
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: false });
+    await db.update(runtimeServices).set({ desiredState: "sleeping", state: "sleeping" }).where(eq(runtimeServices.id, serviceId));
+    startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    try { await expect(manager.wake(companyId, serviceId)).rejects.toMatchObject({ status: 409 }); }
+    finally { stopTaskDrain(); await db.update(runtimeServices).set({ desiredState: "stopped", state: "stopped" }).where(eq(runtimeServices.id, serviceId)); }
+    const [{ processRef: saved }] = await db.select({ processRef: runtimeServices.processRef }).from(runtimeServices).where(eq(runtimeServices.id, serviceId));
+    try {
+      await db.update(runtimeServices).set({ state: "failed", processRef: { ...saved!, retired: false } }).where(eq(runtimeServices.id, serviceId));
+      expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+      await db.update(runtimeServices).set({ state: "pending", processRef: saved }).where(eq(runtimeServices.id, serviceId));
+      expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+    } finally {
+      await db.update(runtimeServices).set({ state: "stopped", processRef: saved }).where(eq(runtimeServices.id, serviceId));
+    }
+    const policy = await manager.companyPolicy(companyId);
+    await db.insert(runtimeServiceCompanyPolicies).values({ companyId, config: { ...policy.config, retainedDataSeconds: 86400 } });
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: true });
+    const { allocation } = await manager.getRecord(companyId, serviceId);
+    await db.update(runtimeServiceAllocations).set({ metadata: { ...allocation.metadata, retentionReleased: true } }).where(eq(runtimeServiceAllocations.id, allocation.id));
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: false });
+    await db.update(runtimeServiceAllocations).set({ metadata: allocation.metadata }).where(eq(runtimeServiceAllocations.id, allocation.id));
+    await db.update(runtimeServiceCompanyPolicies).set({ config: { ...policy.config, retainedDataSeconds: null } }).where(eq(runtimeServiceCompanyPolicies.companyId, companyId));
+    expect(await runtimeServiceControllerRequirements(db)).toEqual({ runtimeServiceControllerRequired: false });
+  });
+
 });

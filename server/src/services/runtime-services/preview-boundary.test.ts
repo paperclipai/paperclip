@@ -1,3 +1,4 @@
+import { deriveAuthCookiePrefix } from "../../auth/better-auth.js";
 import { describe, expect, it, vi } from "vitest";
 import { runtimeServiceEndpointSchema } from "@paperclipai/shared";
 import { previewPath, runtimeServicePreviewConfig } from "./preview-config.js";
@@ -38,18 +39,18 @@ describe("preview browser and upstream boundaries", () => {
     for (const healthPath of ["/\\other.example", "/\t/other.example", "/#hash", "//other.example"]) expect(runtimeServiceEndpointSchema.safeParse({ name: "web", healthPath }).success).toBe(false);
   });
   it("strips control-plane credentials and untrusted forwarding headers while preserving app authorization", () => {
-    const headers = previewProxyRequestHeaders({ host: "forged", cookie: `${PREVIEW_COOKIE}=private; app_session=app`, authorization: "Bearer app-owned", "x-paperclip-cloud-token": "secret", "x-daytona-preview-token": "forged", "x-forwarded-host": "forged", connection: "X-Remove-Me", "x-remove-me": "private" },
+    const headers = previewProxyRequestHeaders({ host: "forged", cookie: `${PREVIEW_COOKIE} =private; __Host-Http-${deriveAuthCookiePrefix()}.session_token=board; __Secure-${deriveAuthCookiePrefix()}.session_data.0=board; app_session=app; better-auth.session_token=app; paperclip-theme=dark`, authorization: "Bearer app-owned", "x-paperclip-cloud-token": "secret", "x-daytona-preview-token": "forged", "x-forwarded-host": "forged", connection: "X-Remove-Me", "x-remove-me": "private" },
       { url: "https://upstream.example", headers: { "x-daytona-preview-token": "provider-only" } }, "https://preview.example");
-    expect(headers).toMatchObject({ host: "upstream.example", cookie: "app_session=app", authorization: "Bearer app-owned", "x-forwarded-host": "preview.example", "x-daytona-preview-token": "provider-only" });
+    expect(headers).toMatchObject({ host: "upstream.example", cookie: "app_session=app; better-auth.session_token=app; paperclip-theme=dark", authorization: "Bearer app-owned", "x-forwarded-host": "preview.example", "x-daytona-preview-token": "provider-only" });
     expect(headers).not.toHaveProperty("x-paperclip-cloud-token");
     expect(headers).not.toHaveProperty("x-remove-me");
   });
   it("protects preview cookies and app CSP, and rewrites only same-upstream redirects", () => {
     const headers = previewProxyResponseHeaders({
-      "set-cookie": [`${PREVIEW_COOKIE} =attack; Secure; HttpOnly; Path=/`, "app=value; Domain=example.com; Path=/; HttpOnly"],
+      "set-cookie": [`${PREVIEW_COOKIE} =attack; Secure; HttpOnly; Path=/`, "app=value; Domain = example.com; Path=/; HttpOnly", `__Secure-${deriveAuthCookiePrefix()}.session_token=forged; Secure`, "better-auth.session_token=app; Path=/"],
       "content-security-policy": "script-src 'self' 'unsafe-inline'; connect-src 'none'", "x-daytona-preview-token": "secret", location: "/login?next=%2F", "clear-site-data": '"*"',
     }, "https://upstream.example", "https://preview.example");
-    expect(headers["set-cookie"]).toEqual(["app=value; Path=/; HttpOnly"]);
+    expect(headers["set-cookie"]).toEqual(["app=value; Path=/; HttpOnly", "better-auth.session_token=app; Path=/"]);
     expect(headers["content-security-policy"]).toBe("script-src 'self' 'unsafe-inline'; connect-src 'none'");
     expect(headers.location).toBe("https://preview.example/login?next=%2F");
     expect(headers).not.toHaveProperty("x-daytona-preview-token");

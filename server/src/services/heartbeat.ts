@@ -1,3 +1,5 @@
+import { readTaskDrain, computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, runtimeServiceMutationCount } from "./task-admission.js";
+export { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain } from "./task-admission.js";
 import { runtimeServiceTaskWorkspace, materializeRuntimeServiceTaskMirror } from "./runtime-services/task-workspace.js";
 import { createRuntimeServiceToolAccess } from "./runtime-services/tool-access.js";
 import { bindRuntimeServiceInvocationDirectory } from "./runtime-services/placement.js";
@@ -1274,56 +1276,6 @@ const nativeSessionResumeDispatchTimers = new Map<
 // module scope like activeRunExecutions above, so both the pure
 // resolveHeartbeatSchedulingSuppression() check and every heartbeatService()
 // instance see the same drain.
-let taskDrainState: { startedAt: Date; expiresAt: Date | null } | null = null;
-
-function readTaskDrain(
-  now: Date,
-): { startedAt: Date; expiresAt: Date | null } | null {
-  if (
-    taskDrainState &&
-    taskDrainState.expiresAt !== null &&
-    taskDrainState.expiresAt.getTime() <= now.getTime()
-  ) {
-    taskDrainState = null;
-  }
-  return taskDrainState;
-}
-
-/** Compute the drain a start call would apply, without changing state. */
-export function computeTaskDrain(opts: { ttlMs?: number | null } = {}): {
-  startedAt: Date;
-  expiresAt: Date | null;
-} {
-  const startedAt = new Date();
-  const ttlMs = opts.ttlMs ?? null;
-  const expiresAt =
-    ttlMs === null ? null : new Date(startedAt.getTime() + ttlMs);
-  return { startedAt, expiresAt };
-}
-
-/** Assign the given drain as the current task-drain state. */
-export function applyTaskDrain(drain: {
-  startedAt: Date;
-  expiresAt: Date | null;
-}): void {
-  taskDrainState = drain;
-}
-
-export function startTaskDrain(opts: { ttlMs?: number | null } = {}): {
-  startedAt: Date;
-  expiresAt: Date | null;
-} {
-  const drain = computeTaskDrain(opts);
-  applyTaskDrain(drain);
-  return drain;
-}
-
-export function stopTaskDrain(): { wasActive: boolean } {
-  const wasActive = readTaskDrain(new Date()) !== null;
-  taskDrainState = null;
-  return { wasActive };
-}
-
 /**
  * Report the task-drain state for this process only. `activeRuns` and
  * `pendingWakes` count in-process work. A process restart clears both
@@ -1336,6 +1288,8 @@ export function getTaskDrainStatus(): {
   expiresAt: Date | null;
   activeRuns: number;
   pendingWakes: number;
+  activeRuntimeServiceMutations: number;
+  ownerId?: string;
   quiescent: boolean;
 } {
   const state = readTaskDrain(new Date());
@@ -1347,7 +1301,9 @@ export function getTaskDrainStatus(): {
     expiresAt: state?.expiresAt ?? null,
     activeRuns,
     pendingWakes,
-    quiescent: activeRuns === 0 && pendingWakes === 0,
+    activeRuntimeServiceMutations: runtimeServiceMutationCount(),
+    ...(state?.ownerId ? { ownerId: state.ownerId } : {}),
+    quiescent: activeRuns === 0 && pendingWakes === 0 && runtimeServiceMutationCount() === 0,
   };
 }
 

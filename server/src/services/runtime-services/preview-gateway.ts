@@ -1,3 +1,4 @@
+import { createPreviewIngressVerifier, PREVIEW_AUTHORIZED_HEADER } from "./preview-ingress.js";
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import { and, eq } from "drizzle-orm";
@@ -36,6 +37,7 @@ export function createRuntimeServicePreviewGateway(db: Db, manager: RuntimeServi
   config: RuntimeServicePreviewConfig; allowLocalBoard: boolean; boardBaseURL: () => string;
 }): RuntimeServicePreviewGateway {
   const { config } = options;
+  const ingress = createPreviewIngressVerifier(config);
   const access = createPreviewAccess(db, manager, { allowLocalBoard: options.allowLocalBoard });
   const shares = createPreviewShares(db, manager, options.boardBaseURL);
   function ownsHost(host: string | undefined) {
@@ -80,12 +82,12 @@ export function createRuntimeServicePreviewGateway(db: Db, manager: RuntimeServi
     return body.visible;
   }
   const middleware: RequestHandler = (req, res, next) => {
-    if (!ownsHost(req.headers.host)) { next(); return; }
+    if (!ownsHost(req.headers.host) && !ingress.claims(req)) { next(); return; }
     void (async () => {
       // A service worker could intercept a future one-time ticket on its own
       // origin. Block registration before routing either app or reserved URLs.
       if (req.headers["service-worker"] || req.headers["sec-fetch-dest"] === "serviceworker") throw forbidden("Service workers are unavailable on managed preview origins");
-      const scope = await scopeForHost(req.headers.host);
+      const scope = await scopeForHost(ingress.host(req));
       if (!req.url.startsWith("/") || req.url.startsWith("//") || /[\\\r\n\0]/.test(req.url)) throw new HttpError(400, "Invalid preview path");
       const url = new URL(req.url, scope.origin);
       res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" });
@@ -117,11 +119,18 @@ export function createRuntimeServicePreviewGateway(db: Db, manager: RuntimeServi
         if (navigation(req) && !url.pathname.startsWith(PREVIEW_INTERNAL_PATH)) { res.redirect(303, boardURL(scope, req.url)); return; }
         throw error;
       }
+      // The edge's opaque proof is never sent to the app. Echo it only after
+      // authorization as an activity acknowledgement, not on arbitrary success.
+      const ingressProof = typeof req.headers["x-paperclip-preview-ingress-signature"] === "string" ? req.headers["x-paperclip-preview-ingress-signature"] : undefined;
+      if (navigation(req) && ingressProof) res.set(PREVIEW_AUTHORIZED_HEADER, ingressProof);
       if (url.pathname.startsWith(PREVIEW_INTERNAL_PATH)) {
         if (url.pathname === `${PREVIEW_INTERNAL_PATH}visibility.js` && req.method === "GET") { res.type("application/javascript").send(previewVisibilityScript); return; }
         if (url.pathname === `${PREVIEW_INTERNAL_PATH}activity` && req.method === "POST") {
           const visible = await readVisible(req, scope.origin);
-          if (visible) await manager.wake(scope.companyId, scope.serviceId);
+          if (visible) {
+            await manager.wake(scope.companyId, scope.serviceId);
+            if (ingressProof) res.set(PREVIEW_AUTHORIZED_HEADER, ingressProof);
+          }
           await manager.previewActivity(scope.companyId, scope.serviceId, visible);
           res.status(204).end(); return;
         }
@@ -219,11 +228,11 @@ export function createRuntimeServicePreviewGateway(db: Db, manager: RuntimeServi
     },
     attach(server: Server) {
       server.prependListener("upgrade", (req: IncomingMessage & { paperclipWebSocketHandled?: boolean }, client, head) => {
-        if (!ownsHost(req.headers.host)) return;
+        if (!ownsHost(req.headers.host) && !ingress.claims(req)) return;
         req.paperclipWebSocketHandled = true;
         client.on("error", () => {});
         void (async () => {
-          const scope = await scopeForHost(req.headers.host);
+          const scope = await scopeForHost(ingress.host(req));
           if (req.headers.origin !== scope.origin || req.headers.upgrade?.toLowerCase() !== "websocket" || !req.url?.startsWith("/") || req.url.startsWith("//") || new URL(req.url, scope.origin).pathname.startsWith(PREVIEW_INTERNAL_PATH)) throw forbidden();
           const generation = scope.row.processRef?.generation;
           const authorize = async () => {
@@ -233,7 +242,7 @@ export function createRuntimeServicePreviewGateway(db: Db, manager: RuntimeServi
           };
           await authorize();
           const upstream = await manager.upstream(scope.companyId, scope.serviceId, scope.endpointName);
-          await proxyPreviewWebSocket({ req, client, head, upstream, provider: scope.provider, origin: scope.origin, authorize });
+          await proxyPreviewWebSocket({ req, client, head, upstream, provider: scope.provider, origin: scope.origin, authorize, ingressProof: typeof req.headers["x-paperclip-preview-ingress-signature"] === "string" ? req.headers["x-paperclip-preview-ingress-signature"] : undefined });
         })().catch(() => { if (!client.destroyed) { client.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); } });
       });
     },
