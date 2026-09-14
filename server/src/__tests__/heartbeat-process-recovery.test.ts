@@ -797,6 +797,238 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await reaperHeartbeat.getRun(runId))?.status).toBe("cancelled");
   });
 
+  it("cancels a queued run that never launched its adapter process past the queue/lease ceiling (CAN-3606)", async () => {
+    // Reproduces the a18b198d-style failure: a retry was sitting in the harness
+    // queue with no adapter launch. The queue/lease ceiling must catch it
+    // independently of the active adapter ceiling so it never wastes an
+    // active budget slot.
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "opencode_local",
+      agentStatus: "running",
+      runStatus: "running",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+
+    const oldCreatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000); // 2h ago
+    await db
+      .update(heartbeatRuns)
+      .set({
+        createdAt: oldCreatedAt,
+        startedAt: null,
+        processStartedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const reaperHeartbeat = heartbeatService(db);
+    const result = await reaperHeartbeat.reapOrphanedRuns({
+      maxQueuedRunAgeMs: 60 * 60 * 1000,
+    });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const queuedRun = await reaperHeartbeat.getRun(runId);
+    expect(queuedRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "control_plane_run_timeout",
+    });
+    expect(queuedRun?.resultJson).toMatchObject({
+      controlPlaneTimeout: true,
+      timeoutKind: "queue",
+      maxRunAgeMs: 60 * 60 * 1000,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("preserves a long-running opencode run with recent useful output past 60 minutes when the active ceiling is raised (CAN-3606)", async () => {
+    // Reproduces the 3d712320-style failure: an opencode adapter PID launched
+    // ~55min after the wake, then produced 25 tool_use events spread over an
+    // additional ~55min of execution. The previous single-budget watchdog
+    // reaped this at 60 minutes. With the queue/active split the active
+    // ceiling is measured from processStartedAt, so an active adapter that
+    // has produced output recently survives the 60-minute mark as long as
+    // the operator-configured active ceiling permits.
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Late opencode completion.",
+          provider: "opencode",
+          model: "opencode-test",
+        };
+      });
+    });
+
+    const { runId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const executorHeartbeat = heartbeatService(db);
+    const reaperHeartbeat = heartbeatService(db);
+
+    await executorHeartbeat.resumeQueuedRuns();
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () =>
+            reject(
+              new Error("Timed out waiting for adapter execution to start"),
+            ),
+          3_000,
+        );
+      }),
+    ]);
+
+    const processLaunchAt = new Date(Date.now() - 90 * 60 * 1000); // 90min ago
+    const recentOutputAt = new Date(Date.now() - 30 * 1000); // 30s ago
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(processLaunchAt.getTime() - 5 * 60 * 1000), // 5min pre-launch claim
+        processStartedAt: processLaunchAt,
+        lastOutputAt: recentOutputAt,
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const surviveResult = await reaperHeartbeat.reapOrphanedRuns({
+      maxActiveRunAgeMs: 4 * 60 * 60 * 1000, // 4h ceiling (operator-raised)
+      staleThresholdMs: 1,
+    });
+    expect(surviveResult).toEqual({ reaped: 0, runIds: [] });
+
+    const liveRun = await reaperHeartbeat.getRun(runId);
+    expect(liveRun?.status).toBe("running");
+    expect(liveRun?.resultJson ?? {}).not.toMatchObject({
+      controlPlaneTimeout: true,
+    });
+
+    // Tightening the active ceiling below the elapsed time must reap the run
+    // as an active-timeout, not a queue-timeout, since processStartedAt was set.
+    const tightHeartbeat = heartbeatService(db);
+    const reapResult = await tightHeartbeat.reapOrphanedRuns({
+      maxActiveRunAgeMs: 60 * 60 * 1000, // 60min ceiling (legacy default)
+      staleThresholdMs: 1,
+    });
+    expect(reapResult).toEqual({ reaped: 1, runIds: [runId] });
+
+    const reapedRun = await tightHeartbeat.getRun(runId);
+    expect(reapedRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "control_plane_run_timeout",
+    });
+    expect(reapedRun?.resultJson).toMatchObject({
+      controlPlaneTimeout: true,
+      timeoutKind: "active",
+      maxRunAgeMs: 60 * 60 * 1000,
+    });
+
+    if (!releaseAdapter)
+      throw new Error("Adapter release handle was not captured");
+    releaseAdapter();
+    await executorHeartbeat.drainActiveRunExecutions();
+  });
+
+  it("treats a missing-processStartedAt run as active-budget eligible (CAN-3606)", async () => {
+    // Legacy in-memory adapter runs do not log processStartedAt. The active
+    // ceiling must still apply — measured from startedAt — so the watchdog
+    // does not regress to "never reap". This guards the fallback path used
+    // by the legacy executeRun() promise bridge.
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Late legacy adapter completion.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+
+    const { runId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const executorHeartbeat = heartbeatService(db);
+    const reaperHeartbeat = heartbeatService(db);
+
+    await executorHeartbeat.resumeQueuedRuns();
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () =>
+            reject(
+              new Error("Timed out waiting for adapter execution to start"),
+            ),
+          3_000,
+        );
+      }),
+    ]);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(Date.now() - 90 * 60 * 1000), // 90min ago, exceeds 60min active ceiling
+        processStartedAt: null,
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await reaperHeartbeat.reapOrphanedRuns({
+      maxActiveRunAgeMs: 60 * 60 * 1000,
+      staleThresholdMs: 1,
+    });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const reapedRun = await reaperHeartbeat.getRun(runId);
+    expect(reapedRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "control_plane_run_timeout",
+    });
+    expect(reapedRun?.resultJson).toMatchObject({
+      controlPlaneTimeout: true,
+      timeoutKind: "active",
+    });
+
+    if (!releaseAdapter)
+      throw new Error("Adapter release handle was not captured");
+    releaseAdapter();
+    await executorHeartbeat.drainActiveRunExecutions();
+  });
+
   async function seedStrandedIssueFixture(input: {
     status: "todo" | "in_progress";
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";

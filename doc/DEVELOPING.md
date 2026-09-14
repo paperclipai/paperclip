@@ -459,6 +459,22 @@ Environment overrides:
 
 Structured `workspace_git_scan` logs expose the operation name, a non-reversible workspace-path hash, queue and execution durations, active/queued counts, cache and single-flight use, and terminal outcome. Saturation and timeout warnings are rate-limited so an overload does not create a second logging storm.
 
+## Heartbeat Run-Age Watchdog
+
+The control-plane reaper (`reapOrphanedRuns` in `server/src/services/heartbeat.ts`) bounds every running heartbeat run with two independent age ceilings (CAN-3606). A run that crosses either ceiling is cancelled with `errorCode: control_plane_run_timeout`; the run log and `resultJson` carry a `timeoutKind` discriminator (`"queue"` or `"active"`) so the existing cancellation/recovery pipeline can tell the two cases apart.
+
+- **Queue / lease ceiling** — measures `now - createdAt` only while no adapter process has launched (`processStartedAt IS NULL`). Catches genuinely queued-forever runs (e.g. the `a18b198d` retry from CAN-3604) without burning any active budget.
+- **Active adapter ceiling** — measures `now - processStartedAt` when the adapter launched, falling back to `now - startedAt` for legacy in-memory runs that never log a process launch. The legacy single-budget fallback `startedAt ?? processStartedAt ?? createdAt` was the bug CAN-3604 documented; pre-launch queue delay no longer counts against the active window.
+
+Both ceilings default to 60 minutes and are independently overridable:
+
+- `PAPERCLIP_HEARTBEAT_QUEUED_RUN_MAX_AGE_MS` (default `3600000` = 60 minutes)
+- `PAPERCLIP_HEARTBEAT_ACTIVE_RUN_MAX_AGE_MS` (default `3600000` = 60 minutes)
+
+Raise `PAPERCLIP_HEARTBEAT_ACTIVE_RUN_MAX_AGE_MS` to permit legitimate long-running coding or test work to cross the 60-minute mark. The queue ceiling stays bounded so genuinely stuck queue leases cannot occupy a slot indefinitely. Setting either value to `0` disables that ceiling (use only when an external controller already enforces a tighter bound).
+
+The historical `DEFAULT_HEARTBEAT_RUN_MAX_AGE_MS` constant remains an alias of the active default so direct callers and tests that pass a single budget keep working. The `maxRunAgeMs` opt on `reapOrphanedRuns` is now interpreted as the active ceiling.
+
 ## Worktree-local Instances
 
 When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.
