@@ -69,6 +69,7 @@
     "test:e2e:runner:dashboard": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/dashboard-regenerate.ts",
     "test:e2e:runner:models:update": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/openrouter-models-update.ts",
     "test:e2e:runner:history:publish": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/history-publish.ts",
+    "test:runner-recovery": "vitest run server/src/services/native-runtime/native-replacement-evidence.test.ts server/src/services/native-runtime/stopped-codex-turn.test.ts server/src/services/native-runtime/native-safe-replacement.test.ts",
     "test:e2e:runner:unit": "vitest run --config tests/runner-e2e/vitest.config.ts",
     "test:e2e:runner:typecheck": "tsc -p tests/runner-e2e/tsconfig.json",
     "test:e2e:runner:report": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/report.ts",

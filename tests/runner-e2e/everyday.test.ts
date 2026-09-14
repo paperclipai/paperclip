@@ -17,7 +17,7 @@ describe("manual everyday workflow catalog", () => {
     const selected = selectRunnerExecutions(
       parseRunnerSelectors(["--suite", "everyday-workflows"]),
     );
-    expect(selected).toHaveLength(35);
+    expect(selected).toHaveLength(30);
     expect(selected.every((e) => e.profile.generation === "native")).toBe(true);
     expect(
       selectRunnerExecutions(
@@ -26,6 +26,18 @@ describe("manual everyday workflow catalog", () => {
     ).toBe(false);
     const listed = selectRunnerExecutions(parseRunnerSelectors(["--list"]));
     expect(listed.some((e) => e.suite.id === "everyday-workflows")).toBe(true);
+  });
+  it("does not schedule arbitrary runner-crash probes as model evals", () => {
+    const selected = selectRunnerExecutions(
+      parseRunnerSelectors(["--suite", "everyday-workflows"]),
+    );
+    expect(selected.some((e) => e.task.id.startsWith("recover-runner"))).toBe(false);
+    for (const id of ["recover-runner", "recover-runner-safe", "recover-runner-uncertain"])
+      expect(() => selectRunnerExecutions(parseRunnerSelectors([
+        "--id", `everyday-workflows.runner-codex.local.${id}`,
+      ]))).toThrow();
+    expect(selected.some((e) => e.task.id === "recover-controller")).toBe(true);
+    expect(selected.some((e) => e.task.id === "stop-redirect")).toBe(true);
   });
   it("keeps ordinary prompts free of completion/API instructions", () => {
     for (const task of everydayTasks)

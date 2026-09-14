@@ -69,18 +69,6 @@ const definitions = [
     2,
   ],
   [
-    "recover-runner-uncertain",
-    "Preserve work when crash recovery cannot be verified",
-    SLUGIFY_REQUIREMENTS,
-    3,
-  ],
-  [
-    "recover-runner-safe",
-    "Recover an interrupted text-only conversation",
-    `Without using tools or changing files, explain how a small team can review a software change. Write 1500 words with concrete examples.`,
-    3,
-  ],
-  [
     "recover-controller",
     "Recover work after the server restarts",
     SLUGIFY_REQUIREMENTS,
@@ -103,10 +91,7 @@ export const everydayTasks: readonly RunnerTaskFixture[] = definitions.map(
     flow: "everyday_workflow",
     expectedRunCount,
     attemptTimeoutMs: { local: 12 * 60_000, daytona: 30 * 60_000 },
-    expectedTerminalState:
-      id === "recover-runner-uncertain"
-        ? { issue: "blocked", run: "failed" }
-        : { issue: "done", run: "succeeded" },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `${label} ${nonce}`,
     buildPrompt: () => prompt,
     buildVisibleMarker: (nonce) => `STUDIO_${nonce}`,

@@ -15,7 +15,7 @@ exact execution ID explicitly.
 | Hire a teammate and use them again | `hire-reuse` | One Morgan QA reporting to the lead, native runner and the same encrypted connection bindings, real child execution, then a second usable delivery from that same agent. |
 | Decide on an installed service action | `service-approve`, `service-decline` | Assign an authenticated local MCP fixture with Ask first; match its tool action and connection ID; no provider call before approval; exactly one after approval and a verified document; none after decline. |
 | Decline a new connection | `connection-decline` | Start without service connections; match a Notion connection intent; click Not now; verify the saved rejection, no new connection or repeated request, and an explanation followed by Done. |
-| Preserve work and queued input across interruption | `recover-runner-uncertain`, `recover-runner-safe`, `recover-controller` | Observe source before interruption, persist the user message, kill only a daemon whose command line proves ownership or restart the isolated controller; inspect continuation and the delivered result. |
+| Continue work after a controller restart | `recover-controller` | Observe saved source, persist a user message, restart the isolated controller, and independently test the delivered result. |
 | Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
 
 For normal completion, all story tasks must reach Done, with no active run,
@@ -26,18 +26,17 @@ says `providerWorkStarted: false` and no process/session/runner identity exists.
 Other unexplained cancellations remain failures. Twelve total run records bound
 each story, including contention and recovery.
 
-Crash results need two separate interpretations: failure to finish automatically
-is a **continuity failure**, while stopping at Blocked because an outcome cannot
-be verified can satisfy the **safety rule**. A failed continuity cell alone is
-not proof that the product should replay uncertain work. Inspect its retained
-error, screenshot, queued message, and ownership evidence before proposing a fix.
-The fault injector never clicks Retry or rewrites task state to obtain a pass.
+Arbitrary runner-process termination is not part of the model scorecard. The
+historical `recover-runner`, `recover-runner-safe`, and `recover-runner-uncertain`
+attempts remain available as diagnostics, with their original grades and costs.
+The first two did not establish a safe restart boundary, and the uncertainty
+case measures a deterministic safety rule. None supports ranking models.
+See [controlled recovery tests](../runner-recovery/README.md).
 
 ## Matrix and running
 
-The local matrix has ten cases on native Codex `gpt-5.6-sol`, native ACPX Claude
-`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 29 cells, excluding Claude
-from the Codex-specific safe-replacement probe. The two core profiles
+The local matrix has eight cases on native Codex `gpt-5.6-sol`, native ACPX Claude
+`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 24 cells. The two core profiles
 also declare build/revise, delegation, and controller-restart cases on Daytona:
 six cells. Remote runner-process killing is not supported. For remote controller
 restart, a verified first download supplies the persistence checkpoint; the
@@ -95,7 +94,7 @@ quality, lifecycle correctness, infrastructure availability, and latency separat
 
 ## Revised evaluation contract (14 September, second campaign)
 
-The catalog now has 32 cells: the original local stories plus two local Codex
+That campaign used 32 cells: the original local stories plus two local Codex
 text-only safe-replacement probes, and the unchanged six remote cells. The old
 `recover-runner` results remain historical; `recover-runner-uncertain` is a new
 case that expects a visible Blocked safety stop, preserved source and queued
@@ -129,7 +128,7 @@ by user decision; their old results must not be presented as new campaign runs.
 
 ## Decline correction (14 September, third campaign)
 
-The catalog now has 35 cells (29 local, six remote). `service-decline` tests
+That campaign used 35 cells (29 local, six remote). `service-decline` tests
 rejection of a protected action on an already installed service; its former
 "connection request" title was misleading. `connection-decline` separately tests
 Not now on new Notion setup. Both permit a brief explanation as the complete
@@ -151,3 +150,22 @@ Decision screenshots are included in the evidence package. Before capturing the
 final screen, the harness waits for the thread and latest persisted agent comment
 to render, then scrolls that comment into view. A Done header alone is not proof
 that the final response was visible.
+
+
+## Recovery scope correction (14 September)
+
+The current catalog has **30 cells: 24 local and six remote**. Forced runner
+crash probes are retired from paid selection. Their original attempt IDs remain
+in Evalbook's Diagnostics history and Latest pages; they are excluded from the
+main matrix without changing grades or deleting evidence. Reported spend still
+includes all attempts.
+
+`recover-controller` and `stop-redirect` retain concrete supported journeys:
+restart the controller while preserving the runner, or use Stop and submit a new
+direction. Their assertions verify pending input, saved work, and the next
+usable result. Neither claims recovery from an arbitrary provider-process crash.
+
+A future user-facing crash-recovery case needs a reproducible recoverable fault,
+an identified supported recovery action, and evidence through the final usable
+result. A missing test premise must be reported as unexercised, not a model
+failure. Do not introduce a new paid case just to replace a retired row.
