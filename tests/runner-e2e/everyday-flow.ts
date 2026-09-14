@@ -723,7 +723,24 @@ export async function runEverydayFlow(input: Input) {
           exact: true,
         })
         .click();
-      note("connection-decision", { decision: caseId });
+      const decisionStatus =
+        caseId === "service-decline" ? "rejected" : "accepted";
+      await pollUntil({
+        label: "connection decision persisted",
+        deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000),
+        load: () => api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
+        accept: (rows) =>
+          rows.some(
+            (interaction) =>
+              interaction.id === pendingInteraction.id &&
+              interaction.status === decisionStatus,
+          ),
+      });
+      note("connection-decision", {
+        decision: caseId,
+        interactionId: pendingInteraction.id,
+        status: decisionStatus,
+      });
     }
     await settled();
     if (caseId === "build-revise") {
