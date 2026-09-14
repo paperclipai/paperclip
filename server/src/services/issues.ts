@@ -4256,8 +4256,23 @@ async function readIssueBlockerAttentionBatch(
             inArray(issueThreadInteractions.issueId, chunk),
           ),
         );
-      for (const row of interactionRows)
-        explicitWaitingIssueIds.add(row.issueId);
+      // A pending interaction only represents a live waiting path if accepting
+      // it could actually reach someone: `queueResolvedInteractionContinuationWakeup`
+      // (server/src/routes/issues.ts) silently no-ops when the host issue has no
+      // assignee agent or is already closed, so the acceptance itself would wake
+      // nobody. Counting it as `covered` here reports a card as self-resolving
+      // when it is really parked forever (e.g. an assignee-less anchor issue
+      // with a pending interaction sitting on it).
+      for (const row of interactionRows) {
+        const interactionHost = nodesById.get(row.issueId);
+        if (
+          interactionHost?.assigneeAgentId &&
+          interactionHost.status !== "done" &&
+          interactionHost.status !== "cancelled"
+        ) {
+          explicitWaitingIssueIds.add(row.issueId);
+        }
+      }
 
       const approvalRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueApprovals.issueId })
