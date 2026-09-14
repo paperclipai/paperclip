@@ -1,5 +1,5 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
+import { AI_AUTH_ENV_KEYS, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -2422,6 +2422,10 @@ export function agentRoutes(
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
     if (req.actor.type !== "agent" || normalized.aiConnection) return normalized;
+    // Explicit credentials, blank overrides, provider homes and routing choices
+    // take precedence over an inherited managed connection.
+    const env = asRecord(adapterConfig.env);
+    if (AI_AUTH_ENV_KEYS.some((key) => env?.[key] !== undefined)) return normalized;
     const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
     const binding = defaultAiConnectionForHire(adapterType, adapterConfig, manager.runtimeConfig?.aiConnection);
@@ -2545,14 +2549,18 @@ export function agentRoutes(
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    runtimeConfig: unknown,
   ): Promise<{ adapterConfig: Record<string, unknown>; inheritedFixedClaudeOAuthBinding: boolean }> {
     const noInheritance = { adapterConfig, inheritedFixedClaudeOAuthBinding: false };
+    if (asRecord(runtimeConfig)?.aiConnection) return noInheritance;
     if (req.actor.type !== "agent" || !req.actor.agentId) return noInheritance;
     const credentialKeys = adapterType ? INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[adapterType] : undefined;
     if (!credentialKeys) return noInheritance;
 
     const parent = await svc.getById(req.actor.agentId);
     if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
+    // Managed parents must not pass stale legacy credential references to hires.
+    if (aiConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
     if (!parentEnv) return noInheritance;
 
@@ -4426,6 +4434,7 @@ export function agentRoutes(
         hireInput.adapterType,
         rawHireAdapterConfig,
       ),
+      hireInput.runtimeConfig,
     );
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,

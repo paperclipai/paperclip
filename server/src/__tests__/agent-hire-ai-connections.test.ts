@@ -15,6 +15,7 @@ import { aiConnectionService } from "../services/ai-connections.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
+import { secretService } from "../services/secrets.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
@@ -81,6 +82,50 @@ describe("agent-created hires use managed AI connections", () => {
       } finally { await runtime.cleanup(); }
     });
   }
+
+  for (const endpoint of ["agent-hires", "agents"]) {
+    it.each([
+      ["ANTHROPIC_API_KEY", "child-key"],
+      ["ANTHROPIC_API_KEY", ""],
+      ["CLAUDE_CONFIG_DIR", "/tmp/child-claude-home"],
+      ["ANTHROPIC_BASE_URL", "https://example.invalid"],
+    ])(`${endpoint}: preserves an explicit child auth setting %s=%s`, async (key, value) => {
+      const f = await fixture("anthropic");
+      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+        name: "Explicit auth", role: "engineer", adapterType: f.adapterType,
+        adapterConfig: { env: { [key]: value } },
+      }));
+      expect(agent.runtimeConfig.aiConnection).toBeUndefined();
+      const [saved] = await db.select().from(agents).where(eq(agents.id, agent.id));
+      expect((saved.adapterConfig.env as Record<string, unknown>)[key]).toEqual({ type: "plain", value });
+    });
+  }
+
+  it.each([true, false])("managed bindings do not inherit legacy credentials (managed parent: %s)", async (managedParent) => {
+    const f = await fixture("openai");
+    const secret = await secretService(db).create(f.companyId, {
+      name: "Legacy parent key", provider: "local_encrypted", value: "fixture-legacy-key",
+    });
+    await db.update(agents).set({
+      runtimeConfig: managedParent ? { aiConnection: f.binding } : {},
+      adapterConfig: { env: { OPENAI_API_KEY: { type: "secret_ref", secretId: secret.id } } },
+    }).where(eq(agents.id, f.agentId));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Managed child", role: "engineer", adapterType: f.adapterType,
+      ...(managedParent ? {} : { runtimeConfig: { aiConnection: f.binding } }),
+    }));
+    expect(agent.runtimeConfig.aiConnection).toEqual(f.binding);
+    expect(agent.adapterConfig.env?.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("keeps unmanaged parent hires on their existing authentication path", async () => {
+    const f = await fixture("openai");
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, f.agentId));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Legacy authentication", role: "engineer", adapterType: f.adapterType,
+    }));
+    expect(agent.runtimeConfig.aiConnection).toBeUndefined();
+  });
 
   it.each(["anthropic", "openai"] as const)("%s can hire the other provider before that user connects it", async (provider) => {
     const f = await fixture(provider);

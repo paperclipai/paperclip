@@ -254,8 +254,10 @@ Authenticated public deployments must configure a trusted runtime host (`PAPERCL
 
 ### Hiring and delegated work
 
-When an agent creates or hires another agent without an explicit AI binding, the
-server inherits its compatible managed connection choice. The new agent resolves
+When a managed agent creates or hires another agent without an explicit AI binding
+or adapter auth setting, the server inherits its compatible managed connection choice.
+Explicit credentials, blank overrides, credential directories, and provider routing
+settings take precedence. Unmanaged parents keep their existing authentication path. The new agent resolves
 the responsible user's account at execution time; it never copies the parent's
 credentials or identity. Same-provider hires preserve subscription/API-key choice.
 A different provider selects the responsible user's default for that provider.

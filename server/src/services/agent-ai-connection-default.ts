@@ -14,7 +14,9 @@ export function defaultAiConnectionForHire(
   const compatible = (binding: AiConnectionBinding) =>
     isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent);
   const inherited = aiConnectionBindingSchema.safeParse(managerBinding);
-  if (inherited.success && inherited.data.mode !== "delegated" && compatible(inherited.data)) {
+  // Unmanaged parents keep their existing login and credential-reference paths.
+  if (!inherited.success) return undefined;
+  if (inherited.data.mode !== "delegated" && compatible(inherited.data)) {
     return inherited.data;
   }
   // The selected provider's personal default supplies the actual sign-in method
