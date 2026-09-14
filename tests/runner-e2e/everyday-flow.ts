@@ -158,6 +158,11 @@ export async function runEverydayFlow(input: Input) {
     await page.goto(taskUrl(parent!), { waitUntil: "domcontentloaded" });
   }
   async function reply(message: string) {
+    const priorFailures = ev.checks.filter((c) => !c.passed);
+    if (priorFailures.length)
+      throw new Error(
+        `Story prerequisite failed before the next user request: ${priorFailures.map((c) => c.id).join(", ")}`,
+      );
     const before = await api.get<Row[]>(`/api/issues/${parent!.id}/comments`);
     lastSubmissionAt = Date.now();
     await submitTaskReply(page, message);
@@ -551,12 +556,19 @@ export async function runEverydayFlow(input: Input) {
       }
     }
     if (review) {
-      await pollUntil({
+      const interactions = await pollUntil({
         label: "connection approval",
         deadlineAt: input.deadlineAt,
         load: () => api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
         accept: (rows) => rows.some((i) => i.status === "pending"),
       });
+      const pendingInteraction = interactions.find(
+        (i) => i.status === "pending",
+      );
+      if (pendingInteraction?.kind !== "request_confirmation")
+        throw new Error(
+          `Expected a tool review for the installed page service; observed ${pendingInteraction?.kind}: ${pendingInteraction?.title}`,
+        );
       check(
         "no-call-before-approval",
         review.invocationCount() === 0,
@@ -643,6 +655,7 @@ export async function runEverydayFlow(input: Input) {
         "The new hire must perform real work.",
       );
       if (children[0]) await download(children[0].id, "base", "hired-delivery");
+      const reuseRequestedAt = Date.now();
       await reply(
         `Have the existing Morgan QA add --separator support to the delivered project. Use the same agent; do not hire another. ${SLUGIFY_REVISION}`,
       );
@@ -657,7 +670,19 @@ export async function runEverydayFlow(input: Input) {
           agents.some((a) => a.id === hires[0]?.id),
         "The original hired identity remains unique.",
       );
-      const latestChildren = ev.issues.filter((i) => i.parentId === parent!.id);
+      check(
+        "hired-agent-executed-revision",
+        ev.runs.some(
+          (r) =>
+            r.agentId === hires[0]?.id &&
+            r.status === "succeeded" &&
+            Date.parse(r.finishedAt ?? "") >= reuseRequestedAt,
+        ),
+        "The same hired agent performs the follow-up work.",
+      );
+      const latestChildren = ev.issues
+        .filter((i) => i.parentId === parent!.id)
+        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
       for (const child of latestChildren.slice(-1))
         await download(child.id, "separator", "reused-delivery");
     } else if (caseId === "delegate-feedback") {
