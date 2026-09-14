@@ -123,7 +123,10 @@ describe("heartbeat AI subscription contention", () => {
   it("keeps waiting beyond the failure-attempt limit and survives a new service instance", async () => {
     const f = await fixture();
     try {
-      let retry = await defer(f, { failureRetriesBeforeAiConnectionWait: 99 });
+      let retry = await defer(f, {
+        failureRetriesBeforeAiConnectionWait: 99, aiConnectionBusyDeferredWhileAssignee: false,
+      });
+      expect(retry.contextSnapshot?.aiConnectionBusyDeferredWhileAssignee).toBe(true);
       for (let count = 0; count < 3; count++) {
         await dispatch(retry);
         const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, retry.id));

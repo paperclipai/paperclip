@@ -486,3 +486,23 @@ describe("native replacement execution authority", () => {
     expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW)).toEqual({ stale: false });
   });
 });
+
+
+describe("AI subscription wait ownership", () => {
+  it.each([null, "another-run"])("preserves assignee lock guards and admits only recorded non-assignee waits: %s", (issueExecutionRunId) => {
+    const gate = {
+      ...baseGateFacts(), retryReasonKind: "ai_connection_wait" as const,
+      enforceIssueExecutionLock: true, issueExecutionRunId,
+    };
+    const queued = { ...baseStalenessFacts(), retryReasonKind: "ai_connection_wait" as const, issueExecutionRunId };
+    expect(decideScheduledRetryGate(gate, NOW)).toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    expect(decideQueuedRunStaleness(queued, NOW)).toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
+    const nonAssignee = { issueAssigneeAgentId: "another-agent", isNonAssigneeWorkspaceBusyRetry: true };
+    expect(decideScheduledRetryGate({ ...gate, ...nonAssignee }, NOW)).toEqual({ allowed: true });
+    expect(decideQueuedRunStaleness({ ...queued, ...nonAssignee }, NOW)).toEqual({ stale: false });
+    expect(decideScheduledRetryGate({ ...gate, ...nonAssignee, retryReasonKind: "max_turn_continuation" }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    expect(decideQueuedRunStaleness({ ...queued, ...nonAssignee, retryReasonKind: "max_turn_continuation" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
+  });
+});

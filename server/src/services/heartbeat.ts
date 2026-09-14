@@ -15540,7 +15540,10 @@ export function heartbeatService(
           }
         }
 
-        if (retryReason === AI_CONNECTION_BUSY_RETRY_REASON && issueId) {
+        if (
+          retryReason === AI_CONNECTION_BUSY_RETRY_REASON && issueId &&
+          !isNonAssigneeWorkspaceBusyRetry(retryReason, contextSnapshot)
+        ) {
           // The issue row is locked above. Recheck after the preflight gate so
           // cancellation or recovery cannot leave a successor without its lock.
           const [lockedIssue] = await tx.select({ executionRunId: issues.executionRunId })
@@ -15940,11 +15943,19 @@ export function heartbeatService(
   // by another run. Contention is a resource wait, not broken authentication.
   // The database lease is released on completion/disconnect; retrying remains
   // safe across processes and each attempt revalidates the selected account.
-  async function finalizeAiConnectionBusyDeferral(run: typeof heartbeatRuns.$inferSelect, error: HttpError) {
+  async function finalizeAiConnectionBusyDeferral(
+    run: typeof heartbeatRuns.$inferSelect,
+    error: HttpError,
+    wasIssueAssignee: boolean,
+  ) {
     const now = new Date();
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
       error: error.message, errorCode: AI_CONNECTION_BUSY_RETRY_REASON, finishedAt: now,
       resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+      contextSnapshot: {
+        ...parseObject(run.contextSnapshot),
+        aiConnectionBusyDeferredWhileAssignee: wasIssueAssignee,
+      },
     });
     if (!cancelled.updated) return;
     await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: error.message }).catch(() => undefined);
@@ -15966,8 +15977,11 @@ export function heartbeatService(
         });
       }
     } finally {
-      if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
-      await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+      try {
+        if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
+      } finally {
+        await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+      }
     }
   }
 
@@ -20766,7 +20780,12 @@ export function heartbeatService(
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
         } catch (error) {
-          if (isAiConnectionBusy(error)) throw error;
+          // Only fresh executions can receive a pre-provider wait receipt. A
+          // persisted native input may already have provider effects to recover.
+          if (isAiConnectionBusy(error) && !persistedNativeExecutionInput) {
+            await finalizeAiConnectionBusyDeferral(run, error, issueContext?.assigneeAgentId === agent.id);
+            return;
+          }
           if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
             await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
               logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
@@ -25074,10 +25093,6 @@ export function heartbeatService(
                 ? outerErr.reason
                 : "adopted_runner_authentication_timeout",
           }).catch(() => undefined);
-      } else if (isAiConnectionBusy(outerErr)) {
-        await finalizeAiConnectionBusyDeferral(run, outerErr).catch((error) => {
-          logger.error({ err: error, runId }, "failed to schedule a retry for the busy AI subscription");
-        });
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the

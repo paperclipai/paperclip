@@ -404,7 +404,10 @@ export function decideScheduledRetryGate(
   }
 
   const lockOutcome = decideExecutionLock({
-    requiresExecutionLock: (requiresInProgress || facts.retryReasonKind === "ai_connection_wait") && facts.enforceIssueExecutionLock,
+    requiresExecutionLock:
+      (requiresInProgress ||
+        (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry)) &&
+      facts.enforceIssueExecutionLock,
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });
@@ -630,7 +633,9 @@ export function decideQueuedRunStaleness(
   }
 
   const lockOutcome = decideExecutionLock({
-    requiresExecutionLock: requiresInProgress || facts.retryReasonKind === "ai_connection_wait",
+    // A server-recorded non-assignee wake never held the task execution lock.
+    requiresExecutionLock: requiresInProgress ||
+      (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry),
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });
