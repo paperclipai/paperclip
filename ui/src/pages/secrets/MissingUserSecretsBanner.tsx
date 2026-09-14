@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { secretsApi, type MyUserSecretEntry } from "../../api/secrets";
 import { queryKeys } from "../../lib/queryKeys";
 import { SetMyUserSecretDialog } from "./SetMyUserSecretDialog";
+import { t } from "@/i18n";
 
 /**
  * Warning surface for user secrets the current user has not yet set. Renders
@@ -61,9 +62,9 @@ export function MissingUserSecretsBanner({
         <div className="min-w-0 flex-1">
           <p className="font-medium">{title}</p>
           <p className="mt-0.5 text-amber-700/90 dark:text-amber-300/90">
-            {missing.length} user secret{missing.length === 1 ? "" : "s"} you are responsible for
-            {missing.length === 1 ? " has" : " have"} no value yet. Runs that require
-            {missing.length === 1 ? " it" : " them"} will fail until you set your value.
+            {missing.length} {t("missing-user-secrets-banner.user-secret-18w")}{missing.length === 1 ? "" : "s"} {t("missing-user-secrets-banner.you-are-responsible-for-o16")}
+            {missing.length === 1 ? " has" : " have"} {t("missing-user-secrets-banner.no-value-yet-runs-that-require-116")}
+            {missing.length === 1 ? " it" : " them"} {t("missing-user-secrets-banner.will-fail-until-you-set-your-value-tie")}
           </p>
           <ul className="mt-2 space-y-1.5">
             {missing.map((entry) => (
@@ -76,7 +77,7 @@ export function MissingUserSecretsBanner({
                   <code className="text-(length:--text-micro) text-muted-foreground">{entry.definition.key}</code>
                 </span>
                 <Button size="sm" onClick={() => setDialogFor(entry)}>
-                  Set value
+                  {t("missing-user-secrets-banner.set-value-rzf")}
                 </Button>
               </li>
             ))}
@@ -86,7 +87,7 @@ export function MissingUserSecretsBanner({
               to={secretsPath}
               className="mt-2 inline-block text-(length:--text-micro) font-medium underline underline-offset-2"
             >
-              Manage all my secrets
+              {t("missing-user-secrets-banner.manage-all-my-secrets-13e")}
             </Link>
           ) : null}
         </div>

@@ -44,6 +44,7 @@ import {
   personalGrantFor,
   type GrantStatusTone,
 } from "../connection-identity";
+import { t } from "@/i18n";
 
 const STATUS_CHIP: Record<GrantStatusTone, string> = {
   connected: brandChipBadge.green,
@@ -166,7 +167,7 @@ export function IdentitiesSection({
       <section className="space-y-5">
         <IdentitiesHeading />
         <InlineBanner tone="warning" compact>
-          We couldn't load who this connection acts as. Reload the page to try again.
+          {t("identities-section.we-couldn-t-load-who-this-connection-1kf")}
         </InlineBanner>
       </section>
     );
@@ -176,8 +177,8 @@ export function IdentitiesSection({
     const github = agentGrant?.providerTenant?.github;
     return (
       <section className="space-y-5">
-        <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
-        <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
+        <h2 className="text-sm font-semibold text-foreground">{t("identities-section.git-hub-identity-bs2")}</h2>
+        <p className="text-sm text-muted-foreground">{t("identities-section.this-agent-uses-this-git-hub-account-tkl")}</p>
         <IdentityRow
           title={github ? `@${github.login}` : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
@@ -186,13 +187,13 @@ export function IdentitiesSection({
               to={agentUrl(dedicatedAgent)}
               className="transition-colors hover:text-foreground hover:underline"
             >
-              Used only by {dedicatedAgent.name}
+              {t("identities-section.used-only-by-116")} {dedicatedAgent.name}
             </Link>
           ) : "Dedicated to one agent"}
           actions={!agentGrant && dedicatedAgent && capabilities?.canConfigure ? (
             <Button size="sm" disabled={connectPending} onClick={() => onConnectAgent(dedicatedAgent.id)}>
               {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-              Connect dedicated account
+              {t("identities-section.connect-dedicated-account-15v")}
             </Button>
           ) : null}
         />
@@ -233,13 +234,13 @@ export function IdentitiesSection({
           personalGrant ? null : (
             <IdentityRow
               id="personal-identity"
-              title="Personal account"
+              title={t("identities-section.personal-account-24z")}
               status={null}
               detail="Personal identity"
               actions={capabilities?.canConnectAsCurrentUser ? (
                   <Button size="sm" disabled={connectPending} onClick={onConnectAsMe}>
                     {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-                    Connect as me
+                    {t("identities-section.connect-as-me-gr1")}
                   </Button>
                 ) : null}
             />
@@ -249,18 +250,18 @@ export function IdentitiesSection({
             orgGrant.capabilities?.canEditAudience ? (
               <div className="flex justify-end">
                   <Button size="sm" variant="outline" onClick={() => onOpenAudience(orgGrant.id)}>
-                    Manage access
+                    {t("identities-section.manage-access-1tc")}
                   </Button>
               </div>
             ) : null
           ) : (
             <IdentityRow
-              title="Organization account"
+              title={t("identities-section.organization-account-1ax")}
               status={null}
               detail="Organization identity"
               actions={capabilities?.canCreateOrganizationGrant ? (
                   <Button size="sm" disabled={connectPending} onClick={onConnectOrganization}>
-                    Connect organization identity
+                    {t("identities-section.connect-organization-identity-jm7")}
                   </Button>
                 ) : null}
             />
@@ -311,7 +312,7 @@ function GitHubConnectionSummary({
   return (
     <div className="divide-y divide-border border-y border-border">
       <div className="py-3">
-        <div className="text-sm font-medium text-foreground">GitHub account</div>
+        <div className="text-sm font-medium text-foreground">{t("identities-section.git-hub-account-ypw")}</div>
         <a className="text-sm text-muted-foreground hover:underline" href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
           @{github.login}
         </a>
@@ -319,7 +320,7 @@ function GitHubConnectionSummary({
       <div className="space-y-3 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm font-medium text-foreground">Repositories</div>
+            <div className="text-sm font-medium text-foreground">{t("identities-section.repositories-1bu")}</div>
             {repositoryWarning ? (
               <div
                 role="note"
@@ -337,41 +338,41 @@ function GitHubConnectionSummary({
           </div>
           <div className="flex items-center gap-2">
             {onRefreshAccess && configurationUrl ? (
-              <Button size="icon-sm" variant="outline" aria-label="Refresh access" title="Refresh access" disabled={refreshPending} onClick={onRefreshAccess}>
+              <Button size="icon-sm" variant="outline" aria-label={t("identities-section.refresh-access-qiw")} title={t("identities-section.refresh-access-qiw")} disabled={refreshPending} onClick={onRefreshAccess}>
                 {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
               </Button>
             ) : null}
             {configurationUrl ? (
               <Button asChild size="sm" variant="outline">
-                <a href={configurationUrl} target="_blank" rel="noreferrer">Add More Repos on GitHub</a>
+                <a href={configurationUrl} target="_blank" rel="noreferrer">{t("identities-section.add-more-repos-on-git-hub-uhu")}</a>
               </Button>
             ) : onRefreshAccess ? (
               <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
                 {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-                Load GitHub configuration
+                {t("identities-section.load-git-hub-configuration-1hs")}
               </Button>
             ) : null}
           </div>
         </div>
         {github.repositories ? (
-          github.repositories.length ? <ul aria-label="Accessible GitHub repositories" tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
+          github.repositories.length ? <ul aria-label={t("identities-section.accessible-git-hub-repositories-jbm")} tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
             {github.repositories.map((repository) => (
               <li key={repository.id}>
                 <a className="flex items-center gap-2 text-muted-foreground hover:underline" href={`https://github.com/${repository.fullName.split("/").map(encodeURIComponent).join("/")}`} target="_blank" rel="noreferrer">
                   <GithubIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <span className="break-all">{repository.fullName}</span>
-                  {repository.private === true ? <Lock className="h-3 w-3 shrink-0" role="img" aria-label="Private repository" /> : null}
+                  {repository.private === true ? <Lock className="h-3 w-3 shrink-0" role="img" aria-label={t("identities-section.private-repository-1iv")} /> : null}
                 </a>
               </li>
             ))}
           </ul> : <p role="status" className="text-sm text-muted-foreground">
-            No accessible repositories.
+            {t("identities-section.no-accessible-repositories-1w9")}
           </p>
         ) : (
-          <p className="text-sm text-muted-foreground">Refresh access to load the current repository list.</p>
+          <p className="text-sm text-muted-foreground">{t("identities-section.refresh-access-to-load-the-current-r-1a3")}</p>
         )}
         {configurationUrl ? <p className="text-xs text-muted-foreground">
-          Missing an organization or repository? <a href={configurationUrl} target="_blank" rel="noreferrer" className="text-foreground hover:underline">Configure access on GitHub</a>, then refresh this list.
+          {t("identities-section.missing-an-organization-or-repositor-1kj")} <a href={configurationUrl} target="_blank" rel="noreferrer" className="text-foreground hover:underline">{t("identities-section.configure-access-on-git-hub-snr")}</a>{t("identities-section.then-refresh-this-list-vz2")}
         </p> : null}
       </div>
     </div>
@@ -379,7 +380,7 @@ function GitHubConnectionSummary({
 }
 
 function IdentitiesHeading() {
-  return <h2 className="text-sm font-semibold text-foreground">Which humans can use this credential?</h2>;
+  return <h2 className="text-sm font-semibold text-foreground">{t("identities-section.which-humans-can-use-this-credential-1ch")}</h2>;
 }
 
 function HumanAccessCards({
@@ -510,7 +511,7 @@ export function AudienceDialog({
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Who can use this identity</DialogTitle>
+          <DialogTitle>{t("identities-section.who-can-use-this-identity-1ev")}</DialogTitle>
           <DialogDescription>
             {grantAccountLabel(grant)} · {appName}
           </DialogDescription>
@@ -551,8 +552,7 @@ export function AudienceDialog({
           ) : null}
 
           <p className="text-xs text-muted-foreground">
-            This controls whose work can use the identity. It does not change which agents have the
-            connection.
+            {t("identities-section.this-controls-whose-work-can-use-the-1cr")}
           </p>
 
           {error ? (
@@ -564,14 +564,14 @@ export function AudienceDialog({
 
         <DialogFooter>
           <Button variant="ghost" onClick={onCancel} disabled={pending}>
-            Cancel
+            {t("identities-section.cancel-ew9")}
           </Button>
           <Button
             disabled={pending || !canSave}
             onClick={() => onSave(scope === "all" ? [] : [...selected])}
           >
             {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Save audience
+            {t("identities-section.save-audience-1q9")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -630,7 +630,7 @@ export function RevokeGrantDialog({
         {children}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending} autoFocus>
-            Cancel
+            {t("identities-section.cancel-ew9")}
           </AlertDialogCancel>
           <AlertDialogAction
             disabled={pending}
@@ -639,7 +639,7 @@ export function RevokeGrantDialog({
               onConfirm();
             }}
           >
-            Revoke identity
+            {t("identities-section.revoke-identity-cfg")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

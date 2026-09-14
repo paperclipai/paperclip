@@ -2,6 +2,7 @@ import type { ToolProfileWithDetails } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { allowedToolsLabel, type GatewayAppRow, gatewayAppDisplayName } from "../gateway-helpers";
+import { t } from "@/i18n";
 
 /**
  * Apps & tools tab — which apps this gateway exposes and how many tools each
@@ -18,23 +19,23 @@ export function AppsToolsPanel({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        These apps go through this gateway. The bound profile
-        {profile ? ` (${profile.name})` : ""} decides which tools are allowed
-        {profile ? ` — ${allowedToolsLabel(profile)}.` : "."} Change the profile under Advanced.
+        {t("apps-tools-panel.these-apps-go-through-this-gateway-t-6cr")}
+        {profile ? ` (${profile.name})` : ""} {t("apps-tools-panel.decides-which-tools-are-allowed-32p")}
+        {profile ? ` — ${allowedToolsLabel(profile)}.` : "."} {t("apps-tools-panel.change-the-profile-under-advanced-e95")}
       </p>
 
       {apps.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No apps are assigned to this gateway’s profile yet.
+          {t("apps-tools-panel.no-apps-are-assigned-to-this-gateway-1dl")}
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full min-w-(--sz-32rem) text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2.5">App</th>
-                <th className="px-4 py-2.5">Tools</th>
-                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">{t("apps-tools-panel.app-102")}</th>
+                <th className="px-4 py-2.5">{t("apps-tools-panel.tools-15c")}</th>
+                <th className="px-4 py-2.5">{t("apps-tools-panel.status-3pd")}</th>
                 <th className="px-4 py-2.5 text-right" />
               </tr>
             </thead>
@@ -70,7 +71,7 @@ export function AppsToolsPanel({
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Link to={href} className="text-xs font-medium text-primary hover:underline">
-                        Open →
+                        {t("apps-tools-panel.open-4a1")}
                       </Link>
                     </td>
                   </tr>

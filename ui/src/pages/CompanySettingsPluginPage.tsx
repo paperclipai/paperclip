@@ -4,6 +4,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { NotFoundPage } from "./NotFound";
+import { t } from "@/i18n";
 
 export function CompanySettingsPluginPage() {
   const params = useParams<{
@@ -50,17 +51,17 @@ export function CompanySettingsPluginPage() {
     if (hasInvalidCompanyPrefix) {
       return <NotFoundPage scope="invalid_company_prefix" requestedPrefix={routeCompanyPrefix} />;
     }
-    return <div className="text-sm text-muted-foreground">Select an organization to view this page.</div>;
+    return <div className="text-sm text-muted-foreground">{t("company-settings-plugin-page.select-an-organization-to-view-this-1yd")}</div>;
   }
 
   if (!settingsRoutePath || isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading...</div>;
+    return <div className="text-sm text-muted-foreground">{t("company-settings-plugin-page.loading-6kn")}</div>;
   }
 
   if (errorMessage) {
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-        Plugin extensions unavailable: {errorMessage}
+        {t("company-settings-plugin-page.plugin-extensions-unavailable-eef")} {errorMessage}
       </div>
     );
   }
@@ -68,7 +69,7 @@ export function CompanySettingsPluginPage() {
   if (pageSlots.length > 1) {
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-        Multiple plugins declare the company settings route <code>{settingsRoutePath}</code>. Disable one plugin or change its route.
+        {t("company-settings-plugin-page.multiple-plugins-declare-the-company-fsz")} <code>{settingsRoutePath}</code>{t("company-settings-plugin-page.disable-one-plugin-or-change-its-rou-gn2")}
       </div>
     );
   }

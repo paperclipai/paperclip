@@ -7,6 +7,7 @@ import {
   prepareOAuthNavigation,
   readPendingCloudHandoff,
 } from "@/lib/oauthHandoff";
+import { t } from "@/i18n";
 
 export type ManagedOAuthHandoffPhase = "loading" | "reauthenticating" | "error";
 
@@ -45,8 +46,8 @@ export function ManagedOAuthHandoffState({
           </p>
           {failed ? (
             <div className="mt-6 flex items-center gap-2">
-              <Button type="button" onClick={onRetry}>Try again</Button>
-              <Button type="button" variant="ghost" onClick={onCancel}>Return to Paperclip</Button>
+              <Button type="button" onClick={onRetry}>{t("paperclip-cloud-oauth-handoff.try-again-982")}</Button>
+              <Button type="button" variant="ghost" onClick={onCancel}>{t("paperclip-cloud-oauth-handoff.return-to-paperclip-whb")}</Button>
             </div>
           ) : null}
         </div>

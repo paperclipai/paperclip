@@ -13,6 +13,7 @@ import { useCompany } from "../context/CompanyContext";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
+import { t } from "@/i18n";
 
 type ProjectWorkspaceGroup = {
   projectId: string;
@@ -118,18 +119,18 @@ export function Workspaces() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Workspaces</h2>
+        <h2 className="text-xl font-bold">{t("workspaces.workspaces-1uy")}</h2>
       </div>
 
       <SummarySlotCard
         companyId={selectedCompanyId}
         scopeKind="workspaces_overview"
-        title="Workspace summary"
-        description="Summarizer tracks workspace activity, live services, and follow-up needs across projects."
+        title={t("workspaces.workspace-summary-ifh")}
+        description={t("workspaces.summarizer-tracks-workspace-activity-xlb")}
       />
 
       {groups.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No workspace activity yet.</p>
+        <p className="text-sm text-muted-foreground">{t("workspaces.no-workspace-activity-yet-1e1")}</p>
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (
@@ -158,7 +159,7 @@ export function Workspaces() {
           {overviewQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
               <p className="text-sm text-muted-foreground">
-                Showing {overviewItems.length} of {totalWorkspaceCount} workspaces.
+                {t("workspaces.showing-1j6")} {overviewItems.length} of {totalWorkspaceCount} {t("workspaces.workspaces-hkd")}
               </p>
               <Button
                 type="button"

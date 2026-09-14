@@ -3,6 +3,7 @@ import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { appTabHref } from "./app-tabs";
 import { composioChildParentConnectionId, composioChildToolkitSlug } from "./composio-services";
+import { t } from "@/i18n";
 
 /**
  * "via Composio" on a connection that Composio brokers (PAP-17865).
@@ -36,7 +37,7 @@ export function ConnectionProvenanceChip({
         title={connectorUid ? `Credentials managed by Vercel Connect (${connectorUid})` : "Credentials managed by Vercel Connect"}
       >
         <Blocks className="h-3 w-3" />
-        via Vercel Connect
+        {t("composio-provenance-chip.via-vercel-connect-1cb")}
       </span>
     );
   }
@@ -47,7 +48,7 @@ export function ConnectionProvenanceChip({
   const label = (
     <>
       <Blocks className="h-3 w-3" />
-      via Composio
+      {t("composio-provenance-chip.via-composio-15v")}
     </>
   );
 

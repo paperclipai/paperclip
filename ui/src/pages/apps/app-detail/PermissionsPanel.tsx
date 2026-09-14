@@ -14,6 +14,7 @@ import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
 import { ActionTestDialog } from "./TestPanel";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+import { t } from "@/i18n";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
@@ -122,8 +123,8 @@ function AgentAccessSection({
   return (
     <section className="space-y-4 border-t border-border pt-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-foreground">Which agents can use this connection?</h2>
-        {disabled ? <span className="text-xs text-muted-foreground">Saving…</span> : null}
+        <h2 className="text-sm font-semibold text-foreground">{t("permissions-panel.which-agents-can-use-this-connection-jyn")}</h2>
+        {disabled ? <span className="text-xs text-muted-foreground">{t("permissions-panel.saving-w7d")}</span> : null}
       </div>
 
       {canManage ? (
@@ -176,9 +177,9 @@ function AgentAccessSection({
           ) : null}
         </div>
       ) : access.mode === "all" ? (
-        <p className="text-sm text-muted-foreground">Any agent can use this connection.</p>
+        <p className="text-sm text-muted-foreground">{t("permissions-panel.any-agent-can-use-this-connection-wmh")}</p>
       ) : selectedAgents.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No agents can use this connection.</p>
+        <p className="text-sm text-muted-foreground">{t("permissions-panel.no-agents-can-use-this-connection-1rc")}</p>
       ) : (
         <div className="space-y-0.5">
           {selectedAgents.map((agent) => (
@@ -246,10 +247,10 @@ function ActionsSection({
   return (
     <section className="space-y-6 border-t border-border pt-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-foreground">Actions</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("permissions-panel.actions-1rx")}</h2>
         {canConfigure ? (
           <div className="flex items-center gap-2">
-            {disabled ? <span className="text-xs text-muted-foreground">Saving…</span> : null}
+            {disabled ? <span className="text-xs text-muted-foreground">{t("permissions-panel.saving-w7d")}</span> : null}
             <Button
               variant="outline"
               size="sm"
@@ -261,7 +262,7 @@ function ActionsSection({
               ) : (
                 <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
               )}
-              Refresh actions
+              {t("permissions-panel.refresh-actions-1yi")}
             </Button>
           </div>
         ) : null}
@@ -286,8 +287,8 @@ function ActionsSection({
           <div className="relative min-w-(--sz-12rem) flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Find an action"
-              placeholder="Find an action…"
+              aria-label={t("permissions-panel.find-an-action-a10")}
+              placeholder={t("permissions-panel.find-an-action-159")}
               className="pl-9"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -297,12 +298,12 @@ function ActionsSection({
           <FilterChip label={`Read ${readOnly.length}`} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
           <FilterChip label={`Write ${canChange.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
         </div>
-        <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
+        <p className="text-xs text-muted-foreground">{visibleCount} {t("permissions-panel.matches-sorted-a-z-9zu")}</p>
       </div>
 
       {visibleCount === 0 ? (
         <div className="py-6 text-center text-sm text-muted-foreground">
-          No actions match “{query}”. Clear the search to see them all.
+          {t("permissions-panel.no-actions-match-15a")}{query}{t("permissions-panel.clear-the-search-to-see-them-all-slp")}
         </div>
       ) : (
         <div className="space-y-6">
@@ -506,7 +507,7 @@ function ActionRow({
           )}
           <Button type="button" size="sm" variant="outline" onClick={() => setTestOpen(true)}>
             <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
-            Test
+            {t("permissions-panel.test-dbb")}
           </Button>
         </div>
       </div>

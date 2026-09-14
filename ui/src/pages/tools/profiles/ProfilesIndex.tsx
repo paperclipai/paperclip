@@ -29,6 +29,7 @@ import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActi
 import { TEMPLATES, type TemplateKey } from "./profile-model";
 import { useProfilesData } from "./useProfilesData";
 import { allowsLabel, assignedLabel, isDraft, STATUS_LABEL } from "./profile-summary";
+import { t } from "@/i18n";
 
 /** The wizard route for a fresh profile, optionally seeded with a template. */
 function newProfileHref(template?: TemplateKey): string {
@@ -121,17 +122,17 @@ export function ProfilesIndex({
 
   const header = (
     <ToolsPageHeader
-      title="Access profiles"
-      description="Decide which tools your agents can use. Build a profile once, then assign it to the agents that need it."
+      title={t("profiles-index.access-profiles-lzo")}
+      description={t("profiles-index.decide-which-tools-your-agents-can-u-1yl")}
       actions={
         <>
           <Button variant="outline" onClick={() => setResolverOpen(true)}>
             <ShieldCheck className="mr-1.5 h-4 w-4" />
-            Check an agent's access
+            {t("profiles-index.check-an-agent-s-access-1tu")}
           </Button>
           <Button onClick={() => navigate(newProfileHref())}>
             <Plus className="mr-1.5 h-4 w-4" />
-            New profile
+            {t("profiles-index.new-profile-1kt")}
           </Button>
         </>
       }
@@ -142,9 +143,9 @@ export function ProfilesIndex({
     <Sheet open={resolverOpen} onOpenChange={setResolverOpen}>
       <SheetContent className="w-full gap-0 p-0 sm:max-w-xl">
         <SheetHeader className="border-b border-border">
-          <SheetTitle>Check an agent's access</SheetTitle>
+          <SheetTitle>{t("profiles-index.check-an-agent-s-access-1tu")}</SheetTitle>
           <SheetDescription>
-            See exactly which tools an agent can use right now, and which profile allows each one.
+            {t("profiles-index.see-exactly-which-tools-an-agent-can-b0d")}
           </SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col p-4">
@@ -158,7 +159,7 @@ export function ProfilesIndex({
     return (
       <div className="space-y-5">
         {header}
-        <LoadingState label="Loading profiles…" />
+        <LoadingState label={t("profiles-index.loading-profiles-eb8")} />
       </div>
     );
   }
@@ -197,7 +198,7 @@ export function ProfilesIndex({
       {rows.length === 0 ? (
         statusFilter === "archived" ? (
           <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
-            No archived profiles.
+            {t("profiles-index.no-archived-profiles-wpc")}
           </div>
         ) : (
           <EmptyTemplatePicker onPick={(key) => navigate(newProfileHref(key))} />
@@ -215,11 +216,11 @@ export function ProfilesIndex({
             </colgroup>
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Profile</th>
-                <th className="px-3 py-2 font-medium">Allows</th>
-                <th className="px-3 py-2 font-medium">Assigned to</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Updated</th>
+                <th className="px-3 py-2 font-medium">{t("profiles-index.profile-1kw")}</th>
+                <th className="px-3 py-2 font-medium">{t("profiles-index.allows-11x")}</th>
+                <th className="px-3 py-2 font-medium">{t("profiles-index.assigned-to-dc2")}</th>
+                <th className="px-3 py-2 font-medium">{t("profiles-index.status-3pd")}</th>
+                <th className="px-3 py-2 font-medium">{t("profiles-index.updated-miz")}</th>
                 <th className="w-10 px-3 py-2" />
               </tr>
             </thead>
@@ -257,7 +258,7 @@ export function ProfilesIndex({
                       {assigned.unassigned ? (
                         <span className="text-muted-foreground">
                           {assigned.text}
-                          <span className="ml-1 text-xs text-muted-foreground/70">— does not change access</span>
+                          <span className="ml-1 text-xs text-muted-foreground/70">{t("profiles-index.does-not-change-access-fgw")}</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-foreground">
@@ -277,7 +278,7 @@ export function ProfilesIndex({
                             onClick={open}
                             className="text-xs font-medium text-primary hover:underline"
                           >
-                            Resume
+                            {t("profiles-index.resume-j88")}
                           </button>
                         ) : null}
                       </span>
@@ -343,26 +344,26 @@ function RowMenu({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label="Profile actions"
+          aria-label={t("profiles-index.profile-actions-ua3")}
           className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100 data-[state=open]:opacity-100"
         >
           <MoreHorizontal className="h-4 w-4" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={onEdit}>Edit</DropdownMenuItem>
-        <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onEdit}>{t("profiles-index.edit-1i1")}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onDuplicate}>{t("profiles-index.duplicate-1xz")}</DropdownMenuItem>
         {onRestore ? (
           <DropdownMenuItem onSelect={onRestore}>
             <ArchiveRestore className="mr-1.5 h-4 w-4" />
-            Restore
+            {t("profiles-index.restore-4fi")}
           </DropdownMenuItem>
         ) : (
-          <DropdownMenuItem onSelect={onArchive}>Archive</DropdownMenuItem>
+          <DropdownMenuItem onSelect={onArchive}>{t("profiles-index.archive-w0s")}</DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onDelete} className="text-destructive focus:text-destructive">
-          Delete
+          {t("profiles-index.delete-oay")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -374,9 +375,9 @@ function EmptyTemplatePicker({ onPick }: { onPick: (key: TemplateKey) => void })
   return (
     <div className="rounded-lg border border-dashed border-border p-6">
       <div className="mb-4 max-w-2xl">
-        <h3 className="text-base font-semibold text-foreground">Create your first access profile</h3>
+        <h3 className="text-base font-semibold text-foreground">{t("profiles-index.create-your-first-access-profile-gfu")}</h3>
         <p className="text-sm text-muted-foreground">
-          Pick a starting point. You can fine-tune exactly which tools it allows in the next step.
+          {t("profiles-index.pick-a-starting-point-you-can-fine-t-npv")}
         </p>
       </div>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

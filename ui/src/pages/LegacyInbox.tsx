@@ -182,6 +182,7 @@ import {
   reconcileInboxOrderPin,
   type InboxOrderPin,
 } from "../lib/inboxOrderPin";
+import { t } from "@/i18n";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -333,7 +334,7 @@ export function FailedRunInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-(--status-task-in_progress)/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("legacy-inbox.mark-as-read-1gu")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -368,7 +369,7 @@ export function FailedRunInboxRow({
                   {issue.title}
                 </>
               ) : (
-                <>Failed run{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
+                <>{t("legacy-inbox.failed-run-1tn")}{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
               )}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -399,7 +400,7 @@ export function FailedRunInboxRow({
               type="button"
               onClick={onDismiss}
               className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
-              aria-label="Dismiss"
+              aria-label={t("legacy-inbox.dismiss-an1")}
             >
               <X className="h-4 w-4" />
             </button>
@@ -423,7 +424,7 @@ export function FailedRunInboxRow({
             type="button"
             onClick={onDismiss}
             className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Dismiss"
+            aria-label={t("legacy-inbox.dismiss-an1")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -482,7 +483,7 @@ function ApprovalInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-(--status-task-in_progress)/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("legacy-inbox.mark-as-read-1gu")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -513,7 +514,7 @@ function ApprovalInboxRow({
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
-              {requesterName ? <span>requested by {requesterName}</span> : null}
+              {requesterName ? <span>{t("legacy-inbox.requested-by-1sb")} {requesterName}</span> : null}
               <span>updated {timeAgo(approval.updatedAt)}</span>
             </span>
           </span>
@@ -531,7 +532,7 @@ function ApprovalInboxRow({
                   onClick={onApprove}
                   disabled={isPending}
                 >
-                  Approve
+                  {t("legacy-inbox.approve-1s2")}
                 </Button>
                 <Button
                   variant="destructive"
@@ -540,7 +541,7 @@ function ApprovalInboxRow({
                   onClick={onReject}
                   disabled={isPending}
                 >
-                  Reject
+                  {t("legacy-inbox.reject-1ke")}
                 </Button>
               </>
             ) : null}
@@ -555,7 +556,7 @@ function ApprovalInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {t("legacy-inbox.approve-1s2")}
           </Button>
           <Button
             variant="destructive"
@@ -564,7 +565,7 @@ function ApprovalInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {t("legacy-inbox.reject-1ke")}
           </Button>
         </div>
       ) : null}
@@ -615,7 +616,7 @@ function JoinRequestInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-(--status-task-in_progress)/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("legacy-inbox.mark-as-read-1gu")}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -639,8 +640,8 @@ function JoinRequestInboxRow({
               {label}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span>requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}</span>
-              {joinRequest.adapterType && <span>adapter: {joinRequest.adapterType}</span>}
+              <span>requested {timeAgo(joinRequest.createdAt)} {t("legacy-inbox.from-ip-m32")} {joinRequest.requestIp}</span>
+              {joinRequest.adapterType && <span>{t("legacy-inbox.adapter-14m")} {joinRequest.adapterType}</span>}
             </span>
           </span>
         </div>
@@ -654,7 +655,7 @@ function JoinRequestInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {t("legacy-inbox.approve-1s2")}
           </Button>
           <Button
             variant="destructive"
@@ -663,7 +664,7 @@ function JoinRequestInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {t("legacy-inbox.reject-1ke")}
           </Button>
         </div>
       </div>
@@ -674,7 +675,7 @@ function JoinRequestInboxRow({
           onClick={onApprove}
           disabled={isPending}
         >
-          Approve
+          {t("legacy-inbox.approve-1s2")}
         </Button>
         <Button
           variant="destructive"
@@ -683,7 +684,7 @@ function JoinRequestInboxRow({
           onClick={onReject}
           disabled={isPending}
         >
-          Reject
+          {t("legacy-inbox.reject-1ke")}
         </Button>
       </div>
     </div>
@@ -2268,7 +2269,7 @@ export function Inbox() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
-            placeholder="Search inbox…"
+            placeholder={t("legacy-inbox.search-inbox-8e2")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -2316,7 +2317,7 @@ export function Inbox() {
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search inbox…"
+              placeholder={t("legacy-inbox.search-inbox-8e2")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2365,7 +2366,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", blockedGroupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("legacy-inbox.group-1ih")}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2394,7 +2395,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={t("legacy-inbox.choose-which-inbox-columns-stay-visi-ddf")}
                 iconOnly
               />
               <Popover>
@@ -2404,7 +2405,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className="h-8 w-8 shrink-0"
-                    title="Sort"
+                    title={t("legacy-inbox.sort-10q")}
                   >
                     <ArrowUpDown className="h-3.5 w-3.5" />
                   </Button>
@@ -2464,7 +2465,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("legacy-inbox.group-1ih")}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2499,7 +2500,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={t("legacy-inbox.choose-which-inbox-columns-stay-visi-ddf")}
                 iconOnly
               />
               {canMarkAllRead && (
@@ -2517,14 +2518,14 @@ export function Inbox() {
                   <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                     <DialogContent className="sm:max-w-md">
                       <DialogHeader>
-                        <DialogTitle>Mark all as read?</DialogTitle>
+                        <DialogTitle>{t("legacy-inbox.mark-all-as-read-yah")}</DialogTitle>
                         <DialogDescription>
-                          This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
+                          {t("legacy-inbox.this-will-mark-1li")} {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} {t("legacy-inbox.as-read-1lk")}
                         </DialogDescription>
                       </DialogHeader>
                       <DialogFooter>
                         <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>
-                          Cancel
+                          {t("legacy-inbox.cancel-ew9")}
                         </Button>
                         <Button
                           onClick={() => {
@@ -2532,7 +2533,7 @@ export function Inbox() {
                             markAllReadMutation.mutate(unreadIssueIds);
                           }}
                         >
-                          Mark all as read
+                          {t("legacy-inbox.mark-all-as-read-ua9")}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
@@ -2552,15 +2553,15 @@ export function Inbox() {
             onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
             <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
-              <SelectValue placeholder="Category" />
+              <SelectValue placeholder={t("legacy-inbox.category-1cr")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
-              <SelectItem value="join_requests">Join requests</SelectItem>
-              <SelectItem value="approvals">Approvals</SelectItem>
-              <SelectItem value="failed_runs">Failed runs</SelectItem>
-              <SelectItem value="alerts">Alerts</SelectItem>
+              <SelectItem value="everything">{t("legacy-inbox.all-categories-1yt")}</SelectItem>
+              <SelectItem value="issues_i_touched">{t("legacy-inbox.my-recent-tasks-765")}</SelectItem>
+              <SelectItem value="join_requests">{t("legacy-inbox.join-requests-uuw")}</SelectItem>
+              <SelectItem value="approvals">{t("legacy-inbox.approvals-1m4")}</SelectItem>
+              <SelectItem value="failed_runs">{t("legacy-inbox.failed-runs-1es")}</SelectItem>
+              <SelectItem value="alerts">{t("legacy-inbox.alerts-6tp")}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -2570,12 +2571,12 @@ export function Inbox() {
               onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
               <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
-                <SelectValue placeholder="Approval status" />
+                <SelectValue placeholder={t("legacy-inbox.approval-status-13o")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All approval statuses</SelectItem>
-                <SelectItem value="actionable">Needs action</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
+                <SelectItem value="all">{t("legacy-inbox.all-approval-statuses-1qt")}</SelectItem>
+                <SelectItem value="actionable">{t("legacy-inbox.needs-action-9zy")}</SelectItem>
+                <SelectItem value="resolved">{t("legacy-inbox.resolved-m9e")}</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -2734,7 +2735,7 @@ export function Inbox() {
                       }
                       titleSuffix={hasChildren && !isExpanded && depth === 0 ? (
                         <span className="ml-1.5 text-xs text-muted-foreground">
-                          ({childCount} sub-task{childCount !== 1 ? "s" : ""})
+                          ({childCount} {t("legacy-inbox.sub-task-1sf")}{childCount !== 1 ? "s" : ""})
                         </span>
                       ) : undefined}
                       mobileMeta={issueActivityText(issue).toLowerCase()}
@@ -2887,7 +2888,7 @@ export function Inbox() {
                         <div key={`today-divider-${group.key}-${index}`} className="my-2 flex items-center gap-3 px-4">
                           <div className="flex-1 border-t border-zinc-600" />
                           <span className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-zinc-500">
-                            Earlier
+                            {t("legacy-inbox.earlier-1io")}
                           </span>
                         </div>,
                       );
@@ -3102,7 +3103,7 @@ export function Inbox() {
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Alerts
+              {t("legacy-inbox.alerts-6tp")}
             </h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
@@ -3121,7 +3122,7 @@ export function Inbox() {
                     type="button"
                     onClick={() => dismissAlert("alert:agent-errors")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
+                    aria-label={t("legacy-inbox.dismiss-an1")}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -3135,16 +3136,16 @@ export function Inbox() {
                   >
                     <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
                     <span className="text-sm">
-                      Budget at{" "}
+                      {t("legacy-inbox.budget-at-1cy")}{" "}
                       <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
-                      utilization this month
+                      {t("legacy-inbox.utilization-this-month-2ye")}
                     </span>
                   </Link>
                   <button
                     type="button"
                     onClick={() => dismissAlert("alert:budget")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
+                    aria-label={t("legacy-inbox.dismiss-an1")}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

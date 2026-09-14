@@ -6,6 +6,7 @@ import { advancedTabHref } from "../tool-tabs";
 import { ToolsAdminGate } from "./ToolsAdminGate";
 import { ProfileWizard } from "./ProfileWizard";
 import { TEMPLATES, type TemplateKey } from "./profile-model";
+import { t } from "@/i18n";
 
 /**
  * Full-page host for the access-profile create/resume wizard (PAP-10997 §B).
@@ -37,7 +38,7 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
   }, [setBreadcrumbs, selectedCompany?.name, mode]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to create a profile.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("profile-wizard-route.select-an-organization-to-create-a-p-2eo")}</div>;
   }
 
   return (
@@ -48,7 +49,7 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
             {mode === "edit" ? "Finish your profile" : "New access profile"}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Choose which tools this profile allows, then assign it to the agents that need them.
+            {t("profile-wizard-route.choose-which-tools-this-profile-allo-92t")}
           </p>
         </header>
         <ProfileWizard

@@ -16,6 +16,7 @@ import {
   myValueState,
   myValueTone,
 } from "./my-value-state";
+import { t } from "@/i18n";
 
 /**
  * Secrets → My secrets tab. Lists every company user-secret definition paired
@@ -57,13 +58,11 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
       <div className="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/5 px-4 py-3 text-xs text-violet-800 dark:text-violet-200">
         <UserRound className="h-4 w-4 mt-0.5 shrink-0" />
         <p>
-          These are credentials only you provide. Each value is yours alone — used when you are the
-          user responsible for a run — and is never shown back to anyone, including admins.
+          {t("my-user-secrets-tab.these-are-credentials-only-you-provi-1v2")}
           {missingCount > 0 ? (
             <span className="font-medium">
               {" "}
-              {missingCount} required secret{missingCount === 1 ? " still needs" : "s still need"} your
-              value.
+              {missingCount} {t("my-user-secrets-tab.required-secret-4cz")}{missingCount === 1 ? " still needs" : "s still need"} {t("my-user-secrets-tab.your-value-f2u")}
             </span>
           ) : null}
         </p>
@@ -72,10 +71,10 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
       <div>
         {mySecretsQuery.isError ? (
           <div className="flex items-center gap-2 py-4 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4" /> Failed to load your secrets:{" "}
+            <AlertCircle className="h-4 w-4" /> {t("my-user-secrets-tab.failed-to-load-your-secrets-7i8")}{" "}
             {(mySecretsQuery.error as Error).message}
             <Button variant="ghost" size="sm" onClick={() => mySecretsQuery.refetch()}>
-              Retry
+              {t("my-user-secrets-tab.retry-zko")}
             </Button>
           </div>
         ) : entries.length === 0 && !mySecretsQuery.isPending ? (
@@ -171,7 +170,7 @@ function MyUserSecretRow({
             className="text-muted-foreground hover:text-destructive"
             onClick={onClear}
             disabled={clearing}
-            title="Clear my value"
+            title={t("my-user-secrets-tab.clear-my-value-111")}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>

@@ -67,6 +67,7 @@ import type {
   RoutineEnvConfig,
   RoutineVariable,
 } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
 
@@ -798,7 +799,7 @@ export function RoutineDetail() {
         href="#routine-section"
         className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded focus:bg-background focus:px-3 focus:py-1.5 focus:text-sm"
       >
-        Skip to section
+        {t("routine-detail-production.skip-to-section-1aa")}
       </a>
 
       {/* Bounded to the main scroll area's height so the header + sub-nav stay
@@ -812,7 +813,7 @@ export function RoutineDetail() {
               ref={titleInputRef}
               data-autosize-title
               className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
-              placeholder="Routine title"
+              placeholder={t("routine-detail-production.routine-title-blt")}
               rows={1}
               value={editDraft.title}
               onChange={(event) => {

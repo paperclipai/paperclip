@@ -186,6 +186,7 @@ import {
   warnTeam,
 } from "@/pages/TeamCatalog.fixtures";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 /* ------------------------------------------------------------------ */
 /*  Sample data for the Issue Output surface showcase                  */
@@ -484,9 +485,9 @@ function TaskExecutionControlsExample() {
 function AgentChatPickerExample() {
   const [state, setState] = useState<"closed" | "empty" | "loading" | "error">("closed");
   return <div className="flex flex-wrap gap-2">
-    <Button variant="outline" onClick={() => setState("empty")}>Empty picker</Button>
-    <Button variant="outline" onClick={() => setState("loading")}>Loading picker</Button>
-    <Button variant="outline" onClick={() => setState("error")}>Failed picker</Button>
+    <Button variant="outline" onClick={() => setState("empty")}>{t("design-guide.empty-picker-5ar")}</Button>
+    <Button variant="outline" onClick={() => setState("loading")}>{t("design-guide.loading-picker-x1v")}</Button>
+    <Button variant="outline" onClick={() => setState("error")}>{t("design-guide.failed-picker-nv9")}</Button>
     <AgentChatPicker agents={[]} open={state !== "closed"} onOpenChange={(open) => { if (!open) setState("closed"); }} onSelect={() => {}}
       loading={state === "loading"} error={state === "error" ? new Error("Unavailable") : null} onRetry={() => setState("empty")} />
   </div>;
@@ -518,21 +519,21 @@ export function DesignGuide() {
     <div className="space-y-10 max-w-4xl">
       {/* Page header */}
       <div>
-        <h2 className="text-xl font-bold">Design Guide</h2>
+        <h2 className="text-xl font-bold">{t("design-guide.design-guide-1x9")}</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
+          {t("design-guide.every-component-style-and-pattern-us-h0a")}
         </p>
       </div>
 
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}
       {/* ============================================================ */}
-      <Section title="Component Coverage">
+      <Section title={t("design-guide.component-coverage-13z")}>
         <p className="text-sm text-muted-foreground">
-          This page should be updated when new UI primitives or app-level patterns ship.
+          {t("design-guide.this-page-should-be-updated-when-new-8xr")}
         </p>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="UI primitives">
+          <SubSection title={t("design-guide.ui-primitives-1lv")}>
             <div className="flex flex-wrap gap-2">
               {[
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
@@ -545,7 +546,7 @@ export function DesignGuide() {
               ))}
             </div>
           </SubSection>
-          <SubSection title="App components">
+          <SubSection title={t("design-guide.app-components-qzk")}>
             <div className="flex flex-wrap gap-2">
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
@@ -563,7 +564,7 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Announcements">
+      <Section title={t("design-guide.announcements-him")}>
         <div className="grid gap-4 md:grid-cols-2">
           <AnnouncementCard announcement={announcementAnimationPreview} imageSrc="/announcement-preview.svg" animationSrc={announcementAnimationPreviewSrc} onDismiss={() => {}} />
           <AnnouncementCard announcement={announcementPreview} imageSrc="/announcement-preview.svg" onDismiss={() => {}} />
@@ -571,36 +572,34 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Task Execution Controls">
+      <Section title={t("design-guide.task-execution-controls-1c0")}>
         <TaskExecutionControlsExample />
       </Section>
 
-      <Section title="Task Collection">
+      <Section title={t("design-guide.task-collection-1kf")}>
         <p className="max-w-prose text-sm text-muted-foreground">
-          CollectionToolbar owns shared geometry while each page owns its state and behavior.
-          The canonical task row is opt-in during migration: status leads, unread work uses
-          title emphasis, metadata remains stable, and the task identifier trails.
+          {t("design-guide.collection-toolbar-owns-shared-geome-1rm")}
         </p>
         <CollectionToolbar
-          context={<span className="text-sm font-medium">Recent tasks</span>}
-          search={<Input aria-label="Search task collection example" placeholder="Search tasks..." />}
-          controls={<Button variant="outline" size="sm">Filter</Button>}
-          actions={<Button size="sm">New task</Button>}
-          feedback={<span className="text-xs text-muted-foreground">1 task · Updated newest first</span>}
+          context={<span className="text-sm font-medium">{t("design-guide.recent-tasks-c2c")}</span>}
+          search={<Input aria-label={t("design-guide.search-task-collection-example-rvi")} placeholder={t("design-guide.search-tasks-eir")} />}
+          controls={<Button variant="outline" size="sm">{t("design-guide.filter-1vv")}</Button>}
+          actions={<Button size="sm">{t("design-guide.new-task-sc4")}</Button>}
+          feedback={<span className="text-xs text-muted-foreground">{t("design-guide.1-task-updated-newest-first-1ow")}</span>}
         />
         <div className="overflow-hidden rounded-lg border border-border">
           <IssueRow
             issue={DESIGN_GUIDE_TASK}
             presentation="task"
             unreadState="visible"
-            metadata={<span className="text-xs text-muted-foreground">Updated 12m ago</span>}
-            actions={<Button variant="ghost" size="xs">More</Button>}
+            metadata={<span className="text-xs text-muted-foreground">{t("design-guide.updated-12m-ago-171")}</span>}
+            actions={<Button variant="ghost" size="xs">{t("design-guide.more-lz6")}</Button>}
           />
         </div>
       </Section>
 
-      <Section title="Theme Toggle">
-        <SubSection title="Variants">
+      <Section title={t("design-guide.theme-toggle-8jw")}>
+        <SubSection title={t("design-guide.variants-vqe")}>
           <div className="flex max-w-sm flex-col items-start gap-3">
             <ThemeToggle />
             <ThemeToggle variant="menu-action" />
@@ -612,8 +611,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLORS                                                       */}
       {/* ============================================================ */}
-      <Section title="Colors">
-        <SubSection title="Core">
+      <Section title={t("design-guide.colors-agw")}>
+        <SubSection title={t("design-guide.core-pyd")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Background" cssVar="--background" />
             <Swatch name="Foreground" cssVar="--foreground" />
@@ -630,14 +629,14 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Sidebar">
+        <SubSection title={t("design-guide.sidebar-197")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Sidebar" cssVar="--sidebar" />
             <Swatch name="Sidebar border" cssVar="--sidebar-border" />
           </div>
         </SubSection>
 
-        <SubSection title="Chart">
+        <SubSection title={t("design-guide.chart-8pj")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Chart 1" cssVar="--chart-1" />
             <Swatch name="Chart 2" cssVar="--chart-2" />
@@ -651,7 +650,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
-      <Section title="Runner activity">
+      <Section title={t("design-guide.runner-activity-ocv")}>
         <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
           { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
           { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
@@ -662,16 +661,16 @@ export function DesignGuide() {
         ] }} />
       </Section>
 
-      <Section title="Typography">
+      <Section title={t("design-guide.typography-hpg")}>
         <div className="space-y-3">
-          <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
-          <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
+          <h2 className="text-xl font-bold">{t("design-guide.page-title-text-xl-font-bold-1fk")}</h2>
+          <h2 className="text-lg font-semibold">{t("design-guide.section-title-text-lg-font-semibold-12d")}</h2>
           <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Section Heading — text-sm font-semibold uppercase tracking-wide
+            {t("design-guide.section-heading-text-sm-font-semibol-1di")}
           </h3>
-          <p className="text-sm font-medium">Card Title — text-sm font-medium</p>
-          <p className="text-sm font-semibold">Card Title Alt — text-sm font-semibold</p>
-          <p className="text-sm">Body text — text-sm</p>
+          <p className="text-sm font-medium">{t("design-guide.card-title-text-sm-font-medium-1n6")}</p>
+          <p className="text-sm font-semibold">{t("design-guide.card-title-alt-text-sm-font-semibold-1uk")}</p>
+          <p className="text-sm">{t("design-guide.body-text-text-sm-36t")}</p>
           <p className="text-sm text-muted-foreground">
             Muted description — text-sm text-muted-foreground
           </p>
@@ -681,15 +680,15 @@ export function DesignGuide() {
           <p className="text-sm font-mono text-muted-foreground">
             Mono identifier — text-sm font-mono text-muted-foreground
           </p>
-          <p className="text-2xl font-bold">Large stat — text-2xl font-bold</p>
-          <p className="font-mono text-xs">Log/code text — font-mono text-xs</p>
+          <p className="text-2xl font-bold">{t("design-guide.large-stat-text-2xl-font-bold-1k9")}</p>
+          <p className="font-mono text-xs">{t("design-guide.log-code-text-font-mono-text-xs-19u")}</p>
         </div>
       </Section>
 
       {/* ============================================================ */}
       {/*  SPACING & RADIUS                                             */}
       {/* ============================================================ */}
-      <Section title="Radius">
+      <Section title={t("design-guide.radius-g8d")}>
         <div className="flex items-end gap-4 flex-wrap">
           {[
             ["sm", "var(--radius-sm)"],
@@ -712,28 +711,28 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BUTTONS                                                      */}
       {/* ============================================================ */}
-      <Section title="Buttons">
-        <SubSection title="Variants">
+      <Section title={t("design-guide.buttons-ckr")}>
+        <SubSection title={t("design-guide.variants-vqe")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="default">Default</Button>
-            <Button variant="secondary">Secondary</Button>
-            <Button variant="outline">Outline</Button>
-            <Button variant="ghost">Ghost</Button>
-            <Button variant="destructive">Destructive</Button>
-            <Button variant="link">Link</Button>
+            <Button variant="default">{t("design-guide.default-76b")}</Button>
+            <Button variant="secondary">{t("design-guide.secondary-75q")}</Button>
+            <Button variant="outline">{t("design-guide.outline-4l1")}</Button>
+            <Button variant="ghost">{t("design-guide.ghost-8bh")}</Button>
+            <Button variant="destructive">{t("design-guide.destructive-c80")}</Button>
+            <Button variant="link">{t("design-guide.link-13e")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="Sizes">
+        <SubSection title={t("design-guide.sizes-1m6")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="xs">Extra Small</Button>
-            <Button size="sm">Small</Button>
-            <Button size="default">Default</Button>
-            <Button size="lg">Large</Button>
+            <Button size="xs">{t("design-guide.extra-small-1g5")}</Button>
+            <Button size="sm">{t("design-guide.small-k47")}</Button>
+            <Button size="default">{t("design-guide.default-76b")}</Button>
+            <Button size="lg">{t("design-guide.large-1v0")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="Icon buttons">
+        <SubSection title={t("design-guide.icon-buttons-1b3")}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="ghost" size="icon-xs"><Search /></Button>
             <Button variant="ghost" size="icon-sm"><Search /></Button>
@@ -742,19 +741,19 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="With icons">
+        <SubSection title={t("design-guide.with-icons-1ux")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Issue</Button>
-            <Button variant="outline"><Upload /> Upload</Button>
-            <Button variant="destructive"><Trash2 /> Delete</Button>
-            <Button size="sm"><Plus /> Add</Button>
+            <Button><Plus /> {t("design-guide.new-issue-67v")}</Button>
+            <Button variant="outline"><Upload /> {t("design-guide.upload-106")}</Button>
+            <Button variant="destructive"><Trash2 /> {t("design-guide.delete-oay")}</Button>
+            <Button size="sm"><Plus /> {t("design-guide.add-17r")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="States">
+        <SubSection title={t("design-guide.states-5af")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button disabled>Disabled</Button>
-            <Button variant="outline" disabled>Disabled Outline</Button>
+            <Button disabled>{t("design-guide.disabled-1h7")}</Button>
+            <Button variant="outline" disabled>{t("design-guide.disabled-outline-wq3")}</Button>
           </div>
         </SubSection>
       </Section>
@@ -762,14 +761,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BADGES                                                       */}
       {/* ============================================================ */}
-      <Section title="Badges">
-        <SubSection title="Variants">
+      <Section title={t("design-guide.badges-1tk")}>
+        <SubSection title={t("design-guide.variants-vqe")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="default">Default</Badge>
-            <Badge variant="secondary">Secondary</Badge>
-            <Badge variant="outline">Outline</Badge>
-            <Badge variant="destructive">Destructive</Badge>
-            <Badge variant="ghost">Ghost</Badge>
+            <Badge variant="default">{t("design-guide.default-76b")}</Badge>
+            <Badge variant="secondary">{t("design-guide.secondary-75q")}</Badge>
+            <Badge variant="outline">{t("design-guide.outline-4l1")}</Badge>
+            <Badge variant="destructive">{t("design-guide.destructive-c80")}</Badge>
+            <Badge variant="ghost">{t("design-guide.ghost-8bh")}</Badge>
           </div>
         </SubSection>
       </Section>
@@ -777,8 +776,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  STATUS BADGES & ICONS                                        */}
       {/* ============================================================ */}
-      <Section title="Status System">
-        <SubSection title="StatusBadge (all statuses)">
+      <Section title={t("design-guide.status-system-sl9")}>
+        <SubSection title={t("design-guide.status-badge-all-statuses-x12")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               "active", "running", "paused", "idle", "archived", "planned",
@@ -792,7 +791,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="IssueStatusBadge (brand chip + glyph — PAP-75)">
+        <SubSection title={t("design-guide.issue-status-badge-brand-chip-glyph-e84")}>
           <div className="flex items-center gap-2 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"].map(
               (s) => (
@@ -802,7 +801,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="StatusIcon (interactive)">
+        <SubSection title={t("design-guide.status-icon-interactive-1dz")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
               (s) => (
@@ -815,13 +814,13 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <StatusIcon status={status} onChange={setStatus} />
-            <span className="text-sm">Click the icon to change status (current: {status})</span>
+            <span className="text-sm">{t("design-guide.click-the-icon-to-change-status-curr-1x9")} {status})</span>
           </div>
         </SubSection>
 
         {/* PAP-411: PriorityIcon showcase gated behind SHOW_TASK_PRIORITY_UI per board decision. */}
         {SHOW_TASK_PRIORITY_UI && (
-        <SubSection title="PriorityIcon (interactive)">
+        <SubSection title={t("design-guide.priority-icon-interactive-1dv")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["critical", "high", "medium", "low"].map((p) => (
               <div key={p} className="flex items-center gap-1.5">
@@ -832,12 +831,12 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <PriorityIcon priority={priority} onChange={setPriority} />
-            <span className="text-sm">Click the icon to change (current: {priority})</span>
+            <span className="text-sm">{t("design-guide.click-the-icon-to-change-current-215")} {priority})</span>
           </div>
         </SubSection>
         )}
 
-        <SubSection title="Agent status dots">
+        <SubSection title={t("design-guide.agent-status-dots-1nw")}>
           <div className="flex items-center gap-4 flex-wrap">
             {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
@@ -850,7 +849,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Run invocation badges">
+        <SubSection title={t("design-guide.run-invocation-badges-1g7")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               ["timer", "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"],
@@ -865,13 +864,9 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="IssueReferencePill">
+        <SubSection title={t("design-guide.issue-reference-pill-1wb")}>
           <p className="text-xs text-muted-foreground">
-            Used wherever a task is referenced — in markdown, the Related Work tab, and activity summaries.
-            Pass <code className="font-mono">status</code> to show the target issue&apos;s state at a glance.
-            Use <code className="font-mono">variant="property"</code> for compact badges with direct navigation.
-            Pass <code className="font-mono">onRemove</code> for a separate blocker removal control with reserved space.
-            Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
+            {t("design-guide.used-wherever-a-task-is-referenced-i-vxv")} <code className="font-mono">status</code> {t("design-guide.to-show-the-target-issue-s-state-at-1h9")} <code className="font-mono">variant="property"</code> {t("design-guide.for-compact-badges-with-direct-navig-la2")} <code className="font-mono">onRemove</code> {t("design-guide.for-a-separate-blocker-removal-contr-1qm")} <code className="font-mono">strikethrough</code> {t("design-guide.for-removed-contexts-13l")}
           </p>
           <div className="flex items-center gap-2 flex-wrap">
             <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: "Identifier only — no status yet" }} />
@@ -887,15 +882,13 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  AGENT CAPSULE                                                */}
       {/* ============================================================ */}
-      <Section title="Agent Capsule">
+      <Section title={t("design-guide.agent-capsule-1bq")}>
         <p className="text-sm text-muted-foreground max-w-prose">
-          The brand &quot;capsule is the agent&quot; motif. A single agent reads as a tall
-          pill that moves through three states as it comes to life. The online fill uses
-          the live brand agent-gradient tokens (<code className="font-mono">--agent-Na</code> →{" "}
+          {t("design-guide.the-brand-capsule-is-the-agent-motif-qgm")}<code className="font-mono">--agent-Na</code> →{" "}
           <code className="font-mono">--agent-Nb</code>); <code className="font-mono">prefers-reduced-motion</code>{" "}
-          skips the liquid rise and pulses and renders the final state.
+          {t("design-guide.skips-the-liquid-rise-and-pulses-and-1t0")}
         </p>
-        <SubSection title="States">
+        <SubSection title={t("design-guide.states-5af")}>
           <div className="flex items-end gap-10">
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="slot" />
@@ -911,11 +904,11 @@ export function DesignGuide() {
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" gradient={5} glow="blue" />
-              <span className="text-xs text-muted-foreground">online · blue glow</span>
+              <span className="text-xs text-muted-foreground">{t("design-guide.online-blue-glow-ypu")}</span>
             </div>
           </div>
         </SubSection>
-        <SubSection title="Sizes">
+        <SubSection title={t("design-guide.sizes-1m6")}>
           <div className="flex items-end gap-8">
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" size="sm" gradient={1} />
@@ -931,11 +924,11 @@ export function DesignGuide() {
             </div>
             <div className="flex flex-col items-center gap-2">
               <AgentCapsule state="online" size={{ width: 28, height: 96 }} gradient={6} />
-              <span className="text-xs text-muted-foreground">custom px</span>
+              <span className="text-xs text-muted-foreground">{t("design-guide.custom-px-ido")}</span>
             </div>
           </div>
         </SubSection>
-        <SubSection title="Gradients">
+        <SubSection title={t("design-guide.gradients-1um")}>
           <div className="flex items-end gap-3 flex-wrap">
             {Array.from({ length: AGENT_GRADIENT_COUNT }, (_, i) => (
               <div key={i} className="flex flex-col items-center gap-1.5">
@@ -950,38 +943,38 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FORM ELEMENTS                                                */}
       {/* ============================================================ */}
-      <Section title="Form Elements">
+      <Section title={t("design-guide.form-elements-117")}>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Input">
-            <Input placeholder="Default input" />
-            <Input placeholder="Disabled input" disabled className="mt-2" />
+          <SubSection title={t("design-guide.input-189")}>
+            <Input placeholder={t("design-guide.default-input-al3")} />
+            <Input placeholder={t("design-guide.disabled-input-t9c")} disabled className="mt-2" />
           </SubSection>
 
-          <SubSection title="Textarea">
-            <Textarea placeholder="Write something..." />
+          <SubSection title={t("design-guide.textarea-xx1")}>
+            <Textarea placeholder={t("design-guide.write-something-14y")} />
           </SubSection>
 
-          <SubSection title="Checkbox & Label">
+          <SubSection title={t("design-guide.checkbox-label-bse")}>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Checkbox id="check1" defaultChecked />
-                <Label htmlFor="check1">Checked item</Label>
+                <Label htmlFor="check1">{t("design-guide.checked-item-157")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check2" />
-                <Label htmlFor="check2">Unchecked item</Label>
+                <Label htmlFor="check2">{t("design-guide.unchecked-item-qtp")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check3" disabled />
-                <Label htmlFor="check3">Disabled item</Label>
+                <Label htmlFor="check3">{t("design-guide.disabled-item-1qi")}</Label>
               </div>
             </div>
           </SubSection>
 
-          <SubSection title="Inline Editor">
+          <SubSection title={t("design-guide.inline-editor-138")}>
             <div className="space-y-4">
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Title (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{t("design-guide.title-single-line-sgp")}</p>
                 <InlineEditor
                   value={inlineTitle}
                   onSave={setInlineTitle}
@@ -990,7 +983,7 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Body text (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{t("design-guide.body-text-single-line-14y")}</p>
                 <InlineEditor
                   value={inlineText}
                   onSave={setInlineText}
@@ -999,13 +992,13 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Description (multiline, auto-sizing)</p>
+                <p className="text-xs text-muted-foreground mb-1">{t("design-guide.description-multiline-auto-sizing-y9p")}</p>
                 <InlineEditor
                   value={inlineDesc}
                   onSave={setInlineDesc}
                   as="p"
                   className="text-sm text-muted-foreground"
-                  placeholder="Add a description..."
+                  placeholder={t("design-guide.add-a-description-eaz")}
                   multiline
                 />
               </div>
@@ -1017,33 +1010,33 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SELECT                                                       */}
       {/* ============================================================ */}
-      <Section title="Select">
+      <Section title={t("design-guide.select-hcn")}>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Default size">
+          <SubSection title={t("design-guide.default-size-1av")}>
             <Select value={selectValue} onValueChange={setSelectValue}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select status" />
+                <SelectValue placeholder={t("design-guide.select-status-g3n")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="backlog">Backlog</SelectItem>
-                <SelectItem value="todo">Todo</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
-                <SelectItem value="done">Done</SelectItem>
+                <SelectItem value="backlog">{t("design-guide.backlog-r6y")}</SelectItem>
+                <SelectItem value="todo">{t("design-guide.todo-1dj")}</SelectItem>
+                <SelectItem value="in_progress">{t("design-guide.in-progress-w3n")}</SelectItem>
+                <SelectItem value="in_review">{t("design-guide.in-review-z7u")}</SelectItem>
+                <SelectItem value="done">{t("design-guide.done-13c")}</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">Current value: {selectValue}</p>
+            <p className="text-xs text-muted-foreground">{t("design-guide.current-value-8tm")} {selectValue}</p>
           </SubSection>
-          <SubSection title="Small trigger">
+          <SubSection title={t("design-guide.small-trigger-v28")}>
             <Select defaultValue="high">
               <SelectTrigger size="sm" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="critical">Critical</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="critical">{t("design-guide.critical-11o")}</SelectItem>
+                <SelectItem value="high">{t("design-guide.high-1gq")}</SelectItem>
+                <SelectItem value="medium">{t("design-guide.medium-2pb")}</SelectItem>
+                <SelectItem value="low">{t("design-guide.low-1dc")}</SelectItem>
               </SelectContent>
             </Select>
           </SubSection>
@@ -1053,34 +1046,34 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DROPDOWN MENU                                                */}
       {/* ============================================================ */}
-      <Section title="Dropdown Menu">
+      <Section title={t("design-guide.dropdown-menu-1lm")}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm">
-              Quick Actions
+              {t("design-guide.quick-actions-134")}
               <ChevronDown className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             <DropdownMenuItem>
               <Check className="h-4 w-4" />
-              Mark as done
+              {t("design-guide.mark-as-done-1v9")}
               <DropdownMenuShortcut>⌘D</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem>
               <BookOpen className="h-4 w-4" />
-              Open docs
+              {t("design-guide.open-docs-f42")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
               checked={menuChecked}
               onCheckedChange={(value) => setMenuChecked(value === true)}
             >
-              Watch issue
+              {t("design-guide.watch-issue-19g")}
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem variant="destructive">
               <Trash2 className="h-4 w-4" />
-              Delete issue
+              {t("design-guide.delete-issue-ege")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -1089,17 +1082,17 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  POPOVER                                                      */}
       {/* ============================================================ */}
-      <Section title="Popover">
+      <Section title={t("design-guide.popover-1rp")}>
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="outline" size="sm">Open Popover</Button>
+            <Button variant="outline" size="sm">{t("design-guide.open-popover-sbk")}</Button>
           </PopoverTrigger>
           <PopoverContent className="space-y-2">
-            <p className="text-sm font-medium">Agent heartbeat</p>
+            <p className="text-sm font-medium">{t("design-guide.agent-heartbeat-161")}</p>
             <p className="text-xs text-muted-foreground">
-              Last run succeeded 24s ago. Next timer run in 9m.
+              {t("design-guide.last-run-succeeded-24s-ago-next-time-qyd")}
             </p>
-            <Button size="xs">Wake now</Button>
+            <Button size="xs">{t("design-guide.wake-now-17l")}</Button>
           </PopoverContent>
         </Popover>
       </Section>
@@ -1107,17 +1100,17 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLLAPSIBLE                                                  */}
       {/* ============================================================ */}
-      <Section title="Collapsible">
+      <Section title={t("design-guide.collapsible-160")}>
         <Collapsible open={collapsibleOpen} onOpenChange={setCollapsibleOpen} className="space-y-2">
           <CollapsibleTrigger asChild>
             <Button variant="outline" size="sm">
-              {collapsibleOpen ? "Hide" : "Show"} advanced filters
+              {collapsibleOpen ? "Hide" : "Show"} {t("design-guide.advanced-filters-ipp")}
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="rounded-md border border-border p-3">
             <div className="space-y-2">
-              <Label htmlFor="owner-filter">Owner</Label>
-              <Input id="owner-filter" placeholder="Filter by agent name" />
+              <Label htmlFor="owner-filter">{t("design-guide.owner-171")}</Label>
+              <Input id="owner-filter" placeholder={t("design-guide.filter-by-agent-name-14u")} />
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -1126,29 +1119,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SHEET                                                        */}
       {/* ============================================================ */}
-      <Section title="Sheet">
+      <Section title={t("design-guide.sheet-1bq")}>
         <Sheet>
           <SheetTrigger asChild>
-            <Button variant="outline" size="sm">Open Side Panel</Button>
+            <Button variant="outline" size="sm">{t("design-guide.open-side-panel-b10")}</Button>
           </SheetTrigger>
           <SheetContent side="right">
             <SheetHeader>
-              <SheetTitle>Issue Properties</SheetTitle>
-              <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
+              <SheetTitle>{t("design-guide.issue-properties-1np")}</SheetTitle>
+              <SheetDescription>{t("design-guide.edit-metadata-without-leaving-the-cu-r3d")}</SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4">
               <div className="space-y-1">
-                <Label htmlFor="sheet-title">Title</Label>
+                <Label htmlFor="sheet-title">{t("design-guide.title-a7v")}</Label>
                 <Input id="sheet-title" defaultValue="Improve onboarding docs" />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="sheet-description">Description</Label>
+                <Label htmlFor="sheet-description">{t("design-guide.description-sjj")}</Label>
                 <Textarea id="sheet-description" defaultValue="Capture setup pitfalls and screenshots." />
               </div>
             </div>
             <SheetFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{t("design-guide.cancel-ew9")}</Button>
+              <Button>{t("design-guide.save-lew")}</Button>
             </SheetFooter>
           </SheetContent>
         </Sheet>
@@ -1157,12 +1150,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SCROLL AREA                                                  */}
       {/* ============================================================ */}
-      <Section title="Scroll Area">
+      <Section title={t("design-guide.scroll-area-9xn")}>
         <ScrollArea className="h-36 rounded-md border border-border">
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
               <div key={i} className="rounded-md border border-border p-2 text-sm">
-                Heartbeat run #{i + 1}: completed successfully
+                {t("design-guide.heartbeat-run-1b0")}{i + 1}{t("design-guide.completed-successfully-1vw")}
               </div>
             ))}
           </div>
@@ -1172,31 +1165,31 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMAND                                                      */}
       {/* ============================================================ */}
-      <Section title="Command (CMDK)">
+      <Section title={t("design-guide.command-cmdk-1bv")}>
         <div className="rounded-md border border-border">
           <Command>
-            <CommandInput placeholder="Type a command or search..." />
+            <CommandInput placeholder={t("design-guide.type-a-command-or-search-1bt")} />
             <CommandList>
-              <CommandEmpty>No results found.</CommandEmpty>
+              <CommandEmpty>{t("design-guide.no-results-found-4mo")}</CommandEmpty>
               <CommandGroup heading="Pages">
                 <CommandItem>
                   <LayoutDashboard className="h-4 w-4" />
-                  Dashboard
+                  {t("design-guide.dashboard-4zf")}
                 </CommandItem>
                 <CommandItem>
                   <CircleDot className="h-4 w-4" />
-                  Issues
+                  {t("design-guide.issues-1he")}
                 </CommandItem>
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup heading="Actions">
                 <CommandItem>
                   <CommandIcon className="h-4 w-4" />
-                  Open command palette
+                  {t("design-guide.open-command-palette-12e")}
                 </CommandItem>
                 <CommandItem>
                   <Plus className="h-4 w-4" />
-                  Create new issue
+                  {t("design-guide.create-new-issue-10m")}
                 </CommandItem>
               </CommandGroup>
             </CommandList>
@@ -1207,19 +1200,19 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BREADCRUMB                                                   */}
       {/* ============================================================ */}
-      <Section title="Breadcrumb">
+      <Section title={t("design-guide.breadcrumb-dfc")}>
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Projects</BreadcrumbLink>
+              <BreadcrumbLink href="#">{t("design-guide.projects-s0r")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Paperclip App</BreadcrumbLink>
+              <BreadcrumbLink href="#">{t("design-guide.paperclip-app-pdd")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbPage>Issue List</BreadcrumbPage>
+              <BreadcrumbPage>{t("design-guide.issue-list-1sb")}</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -1228,8 +1221,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
-      <Section title="Cards">
-        <SubSection title="Dashboard agent runs">
+      <Section title={t("design-guide.cards-bp2")}>
+        <SubSection title={t("design-guide.dashboard-agent-runs-j9o")}>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"].map((status) => (
               <AgentRunCard
@@ -1244,30 +1237,30 @@ export function DesignGuide() {
               />
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
+          <p className="text-xs text-muted-foreground">{t("design-guide.the-dashboard-and-live-runs-page-use-wot")}</p>
         </SubSection>
-        <SubSection title="Standard Card">
+        <SubSection title={t("design-guide.standard-card-1ko")}>
           <Card>
             <CardHeader>
-              <CardTitle>Card Title</CardTitle>
-              <CardDescription>Card description with supporting text.</CardDescription>
+              <CardTitle>{t("design-guide.card-title-h0m")}</CardTitle>
+              <CardDescription>{t("design-guide.card-description-with-supporting-tex-18w")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm">Card content goes here. This is the main body area.</p>
+              <p className="text-sm">{t("design-guide.card-content-goes-here-this-is-the-m-194")}</p>
             </CardContent>
             <CardFooter className="gap-2">
-              <Button size="sm">Action</Button>
-              <Button variant="outline" size="sm">Cancel</Button>
+              <Button size="sm">{t("design-guide.action-2wk")}</Button>
+              <Button variant="outline" size="sm">{t("design-guide.cancel-ew9")}</Button>
             </CardFooter>
           </Card>
         </SubSection>
 
-        <SubSection title="Metric Cards">
+        <SubSection title={t("design-guide.metric-cards-1ub")}>
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
-            <MetricCard icon={CircleDot} value={48} label="Open Issues" />
-            <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
-            <MetricCard icon={Zap} value="99.9%" label="Uptime" />
+            <MetricCard icon={Bot} value={12} label={t("design-guide.active-agents-1wr")} description={t("design-guide.3-this-week-ddq")} />
+            <MetricCard icon={CircleDot} value={48} label={t("design-guide.open-issues-1sd")} />
+            <MetricCard icon={DollarSign} value="$1,234" label={t("design-guide.monthly-cost-1wa")} description={t("design-guide.under-budget-1e4")} />
+            <MetricCard icon={Zap} value="99.9%" label={t("design-guide.uptime-ijq")} />
           </div>
         </SubSection>
       </Section>
@@ -1275,45 +1268,45 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TABS                                                         */}
       {/* ============================================================ */}
-      <Section title="Tabs">
-        <SubSection title="Default (pill) variant">
+      <Section title={t("design-guide.tabs-13m")}>
+        <SubSection title={t("design-guide.default-pill-variant-1n0")}>
           <Tabs defaultValue="overview">
             <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="runs">Runs</TabsTrigger>
-              <TabsTrigger value="config">Config</TabsTrigger>
-              <TabsTrigger value="costs">Costs</TabsTrigger>
+              <TabsTrigger value="overview">{t("design-guide.overview-thn")}</TabsTrigger>
+              <TabsTrigger value="runs">{t("design-guide.runs-16t")}</TabsTrigger>
+              <TabsTrigger value="config">{t("design-guide.config-tfj")}</TabsTrigger>
+              <TabsTrigger value="costs">{t("design-guide.costs-1fk")}</TabsTrigger>
             </TabsList>
             <TabsContent value="overview">
-              <p className="text-sm text-muted-foreground py-4">Overview tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("design-guide.overview-tab-content-n21")}</p>
             </TabsContent>
             <TabsContent value="runs">
-              <p className="text-sm text-muted-foreground py-4">Runs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("design-guide.runs-tab-content-1mh")}</p>
             </TabsContent>
             <TabsContent value="config">
-              <p className="text-sm text-muted-foreground py-4">Config tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("design-guide.config-tab-content-162")}</p>
             </TabsContent>
             <TabsContent value="costs">
-              <p className="text-sm text-muted-foreground py-4">Costs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("design-guide.costs-tab-content-12x")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
 
-        <SubSection title="Line variant">
+        <SubSection title={t("design-guide.line-variant-bpa")}>
           <Tabs defaultValue="summary">
             <TabsList variant="line">
-              <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="details">Details</TabsTrigger>
-              <TabsTrigger value="comments">Comments</TabsTrigger>
+              <TabsTrigger value="summary">{t("design-guide.summary-i4c")}</TabsTrigger>
+              <TabsTrigger value="details">{t("design-guide.details-43f")}</TabsTrigger>
+              <TabsTrigger value="comments">{t("design-guide.comments-mui")}</TabsTrigger>
             </TabsList>
             <TabsContent value="summary">
-              <p className="text-sm text-muted-foreground py-4">Summary content with underline tabs.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("design-guide.summary-content-with-underline-tabs-la1")}</p>
             </TabsContent>
             <TabsContent value="details">
-              <p className="text-sm text-muted-foreground py-4">Details content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("design-guide.details-content-18h")}</p>
             </TabsContent>
             <TabsContent value="comments">
-              <p className="text-sm text-muted-foreground py-4">Comments content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("design-guide.comments-content-59o")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
@@ -1322,7 +1315,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ENTITY ROWS                                                  */}
       {/* ============================================================ */}
-      <Section title="Entity Rows">
+      <Section title={t("design-guide.entity-rows-opj")}>
         <div className="border border-border rounded-md">
           <EntityRow
             leading={
@@ -1333,7 +1326,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-001"
-            title="Implement authentication flow"
+            title={t("design-guide.implement-authentication-flow-18l")}
             subtitle="Responsible: Agent Alpha"
             trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
@@ -1346,7 +1339,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-002"
-            title="Set up CI/CD pipeline"
+            title={t("design-guide.set-up-ci-cd-pipeline-1ta")}
             subtitle="Completed 2 days ago"
             trailing={<IssueStatusBadge status="done" />}
             onClick={() => {}}
@@ -1359,7 +1352,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-003"
-            title="Write API documentation"
+            title={t("design-guide.write-api-documentation-lba")}
             trailing={<IssueStatusBadge status="todo" />}
             onClick={() => {}}
           />
@@ -1371,16 +1364,16 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-004"
-            title="Deploy to production"
+            title={t("design-guide.deploy-to-production-5u8")}
             subtitle="Blocked by PAP-001"
             trailing={<IssueStatusBadge status="blocked" />}
             selected
           />
         </div>
-        <SubSection title="Membership action">
+        <SubSection title={t("design-guide.membership-action-h9m")}>
           <div className="border border-border rounded-md">
             <EntityRow
-              title="Joined resource"
+              title={t("design-guide.joined-resource-h9d")}
               subtitle="Hover or focus the row to reveal the reserved action slot."
               className="group"
               trailing={
@@ -1393,7 +1386,7 @@ export function DesignGuide() {
               }
             />
             <EntityRow
-              title="Left resource"
+              title={t("design-guide.left-resource-t2d")}
               subtitle="Persistent action with dimmed row content."
               className="group text-foreground/55"
               trailing={
@@ -1406,7 +1399,7 @@ export function DesignGuide() {
               }
             />
             <EntityRow
-              title="Leaving resource"
+              title={t("design-guide.leaving-resource-d76")}
               subtitle="Disabled while the optimistic mutation is pending."
               className="group text-foreground/55"
               trailing={
@@ -1421,7 +1414,7 @@ export function DesignGuide() {
               }
             />
             <EntityRow
-              title="Joining resource"
+              title={t("design-guide.joining-resource-wwc")}
               subtitle="The target state is visible immediately while the server confirms."
               className="group"
               trailing={
@@ -1442,7 +1435,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FILTER BAR                                                   */}
       {/* ============================================================ */}
-      <Section title="Filter Bar">
+      <Section title={t("design-guide.filter-bar-1ey")}>
         <FilterBar
           filters={filters}
           onRemove={(key) => setFilters((f) => f.filter((x) => x.key !== key))}
@@ -1462,7 +1455,7 @@ export function DesignGuide() {
               ])
             }
           >
-            Reset filters
+            {t("design-guide.reset-filters-1kd")}
           </Button>
         )}
       </Section>
@@ -1470,8 +1463,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  AVATARS                                                      */}
       {/* ============================================================ */}
-      <Section title="Avatars">
-        <SubSection title="Sizes">
+      <Section title={t("design-guide.avatars-1h9")}>
+        <SubSection title={t("design-guide.sizes-1m6")}>
           <div className="flex items-center gap-3">
             <Avatar size="sm"><AvatarFallback>SM</AvatarFallback></Avatar>
             <Avatar><AvatarFallback>DF</AvatarFallback></Avatar>
@@ -1479,7 +1472,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Group">
+        <SubSection title={t("design-guide.group-1ih")}>
           <AvatarGroup>
             <Avatar><AvatarFallback>A1</AvatarFallback></Avatar>
             <Avatar><AvatarFallback>A2</AvatarFallback></Avatar>
@@ -1489,8 +1482,8 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
-      <Section title="App logos">
-        <SubSection title="Official marks and runtime fallback">
+      <Section title={t("design-guide.app-logos-1pu")}>
+        <SubSection title={t("design-guide.official-marks-and-runtime-fallback-13j")}>
           <div className="flex items-center gap-3">
             <AppLogo
               name="Notion"
@@ -1507,8 +1500,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
-      <Section title="Identity">
-        <SubSection title="Sizes">
+      <Section title={t("design-guide.identity-1q3")}>
+        <SubSection title={t("design-guide.sizes-1m6")}>
           <div className="flex items-center gap-6">
             <Identity name="Agent Alpha" size="sm" />
             <Identity name="Agent Alpha" />
@@ -1516,7 +1509,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Initials derivation">
+        <SubSection title={t("design-guide.initials-derivation-1uy")}>
           <div className="flex flex-col gap-2">
             <Identity name="CEO Agent" size="sm" />
             <Identity name="Alpha" size="sm" />
@@ -1524,7 +1517,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Custom initials">
+        <SubSection title={t("design-guide.custom-initials-3bj")}>
           <Identity name="Backend Service" initials="BS" size="sm" />
         </SubSection>
       </Section>
@@ -1532,19 +1525,19 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TOOLTIPS                                                     */}
       {/* ============================================================ */}
-      <Section title="Tooltips">
+      <Section title={t("design-guide.tooltips-1jz")}>
         <div className="flex items-center gap-4">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="sm">Hover me</Button>
+              <Button variant="outline" size="sm">{t("design-guide.hover-me-jns")}</Button>
             </TooltipTrigger>
-            <TooltipContent>This is a tooltip</TooltipContent>
+            <TooltipContent>{t("design-guide.this-is-a-tooltip-1d3")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon-sm"><Settings /></Button>
             </TooltipTrigger>
-            <TooltipContent>Settings</TooltipContent>
+            <TooltipContent>{t("design-guide.settings-ktd")}</TooltipContent>
           </Tooltip>
         </div>
       </Section>
@@ -1552,31 +1545,31 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DIALOG                                                       */}
       {/* ============================================================ */}
-      <Section title="Dialog">
+      <Section title={t("design-guide.dialog-aqz")}>
         <Dialog>
           <DialogTrigger asChild>
-            <Button variant="outline">Open Dialog</Button>
+            <Button variant="outline">{t("design-guide.open-dialog-npe")}</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Dialog Title</DialogTitle>
+              <DialogTitle>{t("design-guide.dialog-title-153")}</DialogTitle>
               <DialogDescription>
-                This is a sample dialog showing the standard layout with header, content, and footer.
+                {t("design-guide.this-is-a-sample-dialog-showing-the-1ig")}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
-                <Label>Name</Label>
-                <Input placeholder="Enter a name" className="mt-1.5" />
+                <Label>{t("design-guide.name-4el")}</Label>
+                <Input placeholder={t("design-guide.enter-a-name-1g4")} className="mt-1.5" />
               </div>
               <div>
-                <Label>Description</Label>
-                <Textarea placeholder="Describe..." className="mt-1.5" />
+                <Label>{t("design-guide.description-sjj")}</Label>
+                <Textarea placeholder={t("design-guide.describe-11g")} className="mt-1.5" />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{t("design-guide.cancel-ew9")}</Button>
+              <Button>{t("design-guide.save-lew")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1585,7 +1578,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  EMPTY STATE                                                  */}
       {/* ============================================================ */}
-      <Section title="Empty State">
+      <Section title={t("design-guide.empty-state-jvs")}>
         <div className="border border-border rounded-md">
           <EmptyState
             icon={Inbox}
@@ -1599,7 +1592,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROGRESS BARS                                                */}
       {/* ============================================================ */}
-      <Section title="Progress Bars (Budget)">
+      <Section title={t("design-guide.progress-bars-budget-1sw")}>
         <div className="space-y-3">
           {[
             { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
@@ -1625,21 +1618,21 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  LOG VIEWER                                                   */}
       {/* ============================================================ */}
-      <Section title="Log Viewer">
+      <Section title={t("design-guide.log-viewer-1wb")}>
         <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs max-h-80 overflow-y-auto">
-          <div className="text-foreground">[12:00:01] INFO  Agent started successfully</div>
-          <div className="text-foreground">[12:00:02] INFO  Processing task PAP-001</div>
-          <div className="text-yellow-400">[12:00:05] WARN  Rate limit approaching (80%)</div>
-          <div className="text-foreground">[12:00:08] INFO  Task PAP-001 completed</div>
-          <div className="text-red-400">[12:00:12] ERROR Connection timeout to upstream service</div>
-          <div className="text-blue-300">[12:00:12] SYS   Retrying connection in 5s...</div>
-          <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
+          <div className="text-foreground">{t("design-guide.12-00-01-info-agent-started-successf-x6v")}</div>
+          <div className="text-foreground">{t("design-guide.12-00-02-info-processing-task-pap-00-1s3")}</div>
+          <div className="text-yellow-400">{t("design-guide.12-00-05-warn-rate-limit-approaching-vuu")}</div>
+          <div className="text-foreground">{t("design-guide.12-00-08-info-task-pap-001-completed-nno")}</div>
+          <div className="text-red-400">{t("design-guide.12-00-12-error-connection-timeout-to-yr8")}</div>
+          <div className="text-blue-300">{t("design-guide.12-00-12-sys-retrying-connection-in-1d8")}</div>
+          <div className="text-foreground">{t("design-guide.12-00-17-info-reconnected-successful-1tn")}</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 animate-pulse" />
               <span className="inline-flex h-full w-full rounded-full bg-blue-500" />
             </span>
-            <span className="text-blue-600 dark:text-blue-400">Live</span>
+            <span className="text-blue-600 dark:text-blue-400">{t("design-guide.live-11r")}</span>
           </div>
         </div>
       </Section>
@@ -1647,29 +1640,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROPERTY ROW PATTERN                                         */}
       {/* ============================================================ */}
-      <Section title="Property Row Pattern">
+      <Section title={t("design-guide.property-row-pattern-cyb")}>
         <div className="border border-border rounded-md p-4 space-y-1 max-w-sm">
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Status</span>
+            <span className="text-xs text-muted-foreground">{t("design-guide.status-3pd")}</span>
             <StatusBadge status="active" />
           </div>
           {/* PAP-411: priority metadata row hidden behind SHOW_TASK_PRIORITY_UI. */}
           {SHOW_TASK_PRIORITY_UI && (
             <div className="flex items-center justify-between py-1.5">
-              <span className="text-xs text-muted-foreground">Priority</span>
+              <span className="text-xs text-muted-foreground">{t("design-guide.priority-1ry")}</span>
               <PriorityIcon priority="high" />
             </div>
           )}
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Responsible</span>
+            <span className="text-xs text-muted-foreground">{t("design-guide.responsible-1nd")}</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
-              <span className="text-xs">Agent Alpha</span>
+              <span className="text-xs">{t("design-guide.agent-alpha-7om")}</span>
             </div>
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Created</span>
-            <span className="text-xs">Jan 15, 2025</span>
+            <span className="text-xs text-muted-foreground">{t("design-guide.created-2qk")}</span>
+            <span className="text-xs">{t("design-guide.jan-15-2025-1co")}</span>
           </div>
         </div>
       </Section>
@@ -1677,11 +1670,11 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
-      <Section title="Navigation Patterns">
-        <SubSection title="Agent chat picker">
+      <Section title={t("design-guide.navigation-patterns-16d")}>
+        <SubSection title={t("design-guide.agent-chat-picker-2di")}>
           <AgentChatPickerExample />
         </SubSection>
-        <SubSection title="Sidebar nav items">
+        <SubSection title={t("design-guide.sidebar-nav-items-156")}>
           <p className="text-sm text-muted-foreground">
             Layout accepts sidebarSections to compose additional SidebarSection groups inside the shared sidebar.
             Use SidebarNavItem for each row, with sibling action buttons for starring or menus.
@@ -1690,35 +1683,35 @@ export function DesignGuide() {
           <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
-              Dashboard
+              {t("design-guide.dashboard-4zf")}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
-              Issues
+              {t("design-guide.issues-1he")}
               <Badge variant="ghost" className="ml-auto bg-primary text-primary-foreground px-1.5">
                 12
               </Badge>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
-              Agents
+              {t("design-guide.agents-1sa")}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Hexagon className="h-4 w-4" />
-              Projects
+              {t("design-guide.projects-s0r")}
             </div>
           </Card>
         </SubSection>
 
-        <SubSection title="View toggle">
+        <SubSection title={t("design-guide.view-toggle-1s6")}>
           <div className="flex items-center border border-border rounded-md w-fit">
             <button className="px-3 py-1.5 text-xs font-medium bg-accent text-foreground rounded-l-md">
               <ListTodo className="h-3.5 w-3.5 inline mr-1" />
-              List
+              {t("design-guide.list-136")}
             </button>
             <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/50 rounded-r-md">
               <Target className="h-3.5 w-3.5 inline mr-1" />
-              Org
+              {t("design-guide.org-1yn")}
             </button>
           </div>
         </SubSection>
@@ -1727,11 +1720,11 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Issues pattern)">
+      <Section title={t("design-guide.grouped-list-issues-pattern-17m")}>
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
-            <span className="text-sm font-medium">In Progress</span>
+            <span className="text-sm font-medium">{t("design-guide.in-progress-w3n")}</span>
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
           <div className="border border-border rounded-b-md">
@@ -1739,13 +1732,13 @@ export function DesignGuide() {
             <EntityRow
               leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="high" /> : undefined}
               identifier="PAP-101"
-              title="Build agent heartbeat system"
+              title={t("design-guide.build-agent-heartbeat-system-163")}
               onClick={() => {}}
             />
             <EntityRow
               leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="medium" /> : undefined}
               identifier="PAP-102"
-              title="Add cost tracking dashboard"
+              title={t("design-guide.add-cost-tracking-dashboard-wkn")}
               onClick={() => {}}
             />
           </div>
@@ -1755,28 +1748,28 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMENT THREAD PATTERN                                       */}
       {/* ============================================================ */}
-      <Section title="Comment Thread Pattern">
+      <Section title={t("design-guide.comment-thread-pattern-11q")}>
         <div className="space-y-3 max-w-2xl">
-          <h3 className="text-sm font-semibold">Comments (2)</h3>
+          <h3 className="text-sm font-semibold">{t("design-guide.comments-2-gss")}</h3>
           <div className="space-y-3">
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Agent</span>
-                <span className="text-xs text-muted-foreground">Jan 15, 2025</span>
+                <span className="text-xs font-medium text-muted-foreground">{t("design-guide.agent-1w5")}</span>
+                <span className="text-xs text-muted-foreground">{t("design-guide.jan-15-2025-1co")}</span>
               </div>
-              <p className="text-sm">Started working on the authentication module. Will need API keys configured.</p>
+              <p className="text-sm">{t("design-guide.started-working-on-the-authenticatio-5u0")}</p>
             </div>
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Human</span>
-                <span className="text-xs text-muted-foreground">Jan 16, 2025</span>
+                <span className="text-xs font-medium text-muted-foreground">{t("design-guide.human-72u")}</span>
+                <span className="text-xs text-muted-foreground">{t("design-guide.jan-16-2025-1pz")}</span>
               </div>
-              <p className="text-sm">API keys have been added to the vault. Please proceed.</p>
+              <p className="text-sm">{t("design-guide.api-keys-have-been-added-to-the-vaul-16q")}</p>
             </div>
           </div>
           <div className="space-y-2">
-            <Textarea placeholder="Leave a comment..." rows={3} />
-            <Button size="sm">Comment</Button>
+            <Textarea placeholder={t("design-guide.leave-a-comment-1qx")} rows={3} />
+            <Button size="sm">{t("design-guide.comment-169")}</Button>
           </div>
         </div>
       </Section>
@@ -1784,14 +1777,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
-      <Section title="Cost Table Pattern">
+      <Section title={t("design-guide.cost-table-pattern-we8")}>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-xs">
             <thead className="border-b border-border bg-accent/20">
               <tr>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Model</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Tokens</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("design-guide.model-107")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("design-guide.tokens-il7")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("design-guide.cost-t05")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1806,7 +1799,7 @@ export function DesignGuide() {
                 <td className="px-3 py-2 font-mono">$1.25</td>
               </tr>
               <tr>
-                <td className="px-3 py-2 font-medium">Total</td>
+                <td className="px-3 py-2 font-medium">{t("design-guide.total-1c0")}</td>
                 <td className="px-3 py-2 font-mono">1.7M</td>
                 <td className="px-3 py-2 font-mono font-medium">$19.25</td>
               </tr>
@@ -1818,8 +1811,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SKELETONS                                                    */}
       {/* ============================================================ */}
-      <Section title="Skeletons">
-        <SubSection title="Individual">
+      <Section title={t("design-guide.skeletons-pri")}>
+        <SubSection title={t("design-guide.individual-lmc")}>
           <div className="space-y-2">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-8 w-full max-w-sm" />
@@ -1827,13 +1820,13 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (list)">
+        <SubSection title={t("design-guide.page-skeleton-list-1b6")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="list" />
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (detail)">
+        <SubSection title={t("design-guide.page-skeleton-detail-2de")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="detail" />
           </div>
@@ -1843,14 +1836,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SEPARATOR                                                    */}
       {/* ============================================================ */}
-      <Section title="Separator">
+      <Section title={t("design-guide.separator-frt")}>
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">Horizontal</p>
+          <p className="text-sm text-muted-foreground">{t("design-guide.horizontal-tya")}</p>
           <Separator />
           <div className="flex items-center gap-4 h-8">
-            <span className="text-sm">Left</span>
+            <span className="text-sm">{t("design-guide.left-14n")}</span>
             <Separator orientation="vertical" />
-            <span className="text-sm">Right</span>
+            <span className="text-sm">{t("design-guide.right-8hu")}</span>
           </div>
         </div>
       </Section>
@@ -1860,69 +1853,67 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TEAM CATALOG                                                 */}
       {/* ============================================================ */}
-      <Section title="Team Catalog">
+      <Section title={t("design-guide.team-catalog-15x")}>
         <p className="text-sm text-muted-foreground">
-          Components from the Team Catalog browse/install surface (<code className="font-mono text-xs">/teams-catalog</code>).
-          Fixtures are shared with the Storybook stories.
+          {t("design-guide.components-from-the-team-catalog-bro-1jh")}<code className="font-mono text-xs">/teams-catalog</code>{t("design-guide.fixtures-are-shared-with-the-storybo-siy")}
         </p>
 
-        <SubSection title="TeamRow (browse list)">
+        <SubSection title={t("design-guide.team-row-browse-list-uvr")}>
           <div className="w-(--sz-28rem) rounded-md border border-border">
             <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              Bundled · 1
+              {t("design-guide.bundled-1-j5n")}
             </div>
             <TeamRow team={sampleTeam} selected onSelect={() => {}} />
             <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              Optional · 2
+              {t("design-guide.optional-2-t92")}
             </div>
             <TeamRow team={optionalTeam} selected={false} onSelect={() => {}} />
             <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              Installed · 2
+              {t("design-guide.installed-2-m34")}
             </div>
             <TeamRow team={sampleTeam} selected={false} onSelect={() => {}} installed={outOfDateInstalledState} />
             <TeamRow team={warnTeam} selected={false} onSelect={() => {}} installed={currentInstalledState} />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Installed teams collapse under <code className="font-mono">INSTALLED · N</code>; an out-of-date
-            install (server <code className="font-mono">originHash</code> ≠ catalog <code className="font-mono">contentHash</code>)
-            shows the amber <code className="font-mono">↑</code> badge (PAP-10256).
+            {t("design-guide.installed-teams-collapse-under-rq2")} <code className="font-mono">INSTALLED · N</code>; an out-of-date
+            install (server <code className="font-mono">originHash</code> {t("design-guide.catalog-80w")} <code className="font-mono">contentHash</code>{t("design-guide.shows-the-amber-1el")} <code className="font-mono">↑</code> {t("design-guide.badge-pap-10256-b5g")}
           </p>
         </SubSection>
 
-        <SubSection title="TeamCard (onboarding grid)">
+        <SubSection title={t("design-guide.team-card-onboarding-grid-xud")}>
           <p className="text-xs text-muted-foreground">
-            Square tile for the onboarding &ldquo;Pick a starter team&rdquo; grid. Selected tile gets{" "}
-            <code className="font-mono">ring-2 ring-ring</code>. Drives the{" "}
-            <code className="font-mono">useInstallTeamCatalogEntry</code> simplified flow.
+            {t("design-guide.square-tile-for-the-onboarding-pick-1pe")}{" "}
+            <code className="font-mono">ring-2 ring-ring</code>{t("design-guide.drives-the-439")}{" "}
+            <code className="font-mono">useInstallTeamCatalogEntry</code> {t("design-guide.simplified-flow-13a")}
           </p>
           <TeamCardShowcase />
         </SubSection>
 
-        <SubSection title="TeamHierarchyPreview">
+        <SubSection title={t("design-guide.team-hierarchy-preview-1b7")}>
           <div className="max-w-md">
             <TeamHierarchyPreview team={sampleTeam} />
           </div>
         </SubSection>
 
-        <SubSection title="RequiredSkillsList">
+        <SubSection title={t("design-guide.required-skills-list-645")}>
           <div className="max-w-xl">
             <RequiredSkillsList skills={sampleTeam.requiredSkills} />
           </div>
         </SubSection>
 
-        <SubSection title="EnvInputsList">
+        <SubSection title={t("design-guide.env-inputs-list-1nl")}>
           <div className="max-w-xl">
             <EnvInputsList inputs={sampleTeam.envInputs} />
           </div>
         </SubSection>
 
-        <SubSection title="ExternalSourcesList">
+        <SubSection title={t("design-guide.external-sources-list-196")}>
           <div className="max-w-xl">
             <ExternalSourcesList sources={sampleTeam.sourceRefs} />
           </div>
         </SubSection>
 
-        <SubSection title="Source policy step (StepSourcePolicy)">
+        <SubSection title={t("design-guide.source-policy-step-step-source-polic-mxg")}>
           <div className="max-w-xl rounded-md border border-border p-4">
             <StepSourcePolicy
               team={warnTeam}
@@ -1938,7 +1929,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Skill plan step (StepSkillPlan)">
+        <SubSection title={t("design-guide.skill-plan-step-step-skill-plan-188")}>
           <div className="max-w-xl rounded-md border border-border p-4">
             <StepSkillPlan team={sampleTeam} preparations={sampleSkillPreparations} />
           </div>
@@ -1946,7 +1937,7 @@ export function DesignGuide() {
       </Section>
 
       {/* ============================================================ */}
-      <Section title="Common Icons (Lucide)">
+      <Section title={t("design-guide.common-icons-lucide-1sx")}>
         <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
           {[
             ["Inbox", Inbox],
@@ -1981,7 +1972,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
-      <Section title="Keyboard Shortcuts">
+      <Section title={t("design-guide.keyboard-shortcuts-1fp")}>
         <div className="border border-border rounded-md divide-y divide-border text-sm">
           {[
             ["Cmd+K / Ctrl+K", "Open Command Palette"],
@@ -2001,17 +1992,16 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Issue Output Surface">
-        <SubSection title="Multiple outputs (primary video + 'Also produced')">
+      <Section title={t("design-guide.issue-output-surface-1jo")}>
+        <SubSection title={t("design-guide.multiple-outputs-primary-video-also-1et")}>
           <IssueOutputSection workProducts={DESIGN_GUIDE_OUTPUTS} />
         </SubSection>
-        <SubSection title="Degraded output (invalid / failed attachment metadata)">
+        <SubSection title={t("design-guide.degraded-output-invalid-failed-attac-1y9")}>
           <IssueOutputSection workProducts={DESIGN_GUIDE_DEGRADED_OUTPUTS} />
         </SubSection>
-        <SubSection title="Empty state">
+        <SubSection title={t("design-guide.empty-state-1uj")}>
           <p className="text-xs text-muted-foreground">
-            When an issue has produced no artifact work products, the Output section renders nothing
-            at all (no placeholder card).
+            {t("design-guide.when-an-issue-has-produced-no-artifa-1w5")}
           </p>
         </SubSection>
       </Section>
@@ -2019,45 +2009,42 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TOOLS & ACCESS (PAP-10389)                                   */}
       {/* ============================================================ */}
-      <Section title="Tools & Access">
-        <SubSection title="EnforcementBanner — default / denied-detected">
+      <Section title={t("design-guide.tools-access-18m")}>
+        <SubSection title={t("design-guide.enforcement-banner-default-denied-de-19d")}>
           <div className="space-y-3">
             <EnforcementBanner companyId="" forceVariant="default" recentDenialCount={0} />
             <EnforcementBanner companyId="" forceVariant="denied-detected" recentDenialCount={3} />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Persistent at the top of the Tools &amp; Access surface. Tints to <code>denied-detected</code> when
-            governed tool calls were denied or failed in the last hour. Observability only — enforcement lives
-            in the tool gateway.
+            {t("design-guide.persistent-at-the-top-of-the-tools-a-1qq")} <code>denied-detected</code> {t("design-guide.when-governed-tool-calls-were-denied-1r9")}
           </p>
         </SubSection>
 
-        <SubSection title="EnforcementBanner — presentational tones (info / warning / error)">
+        <SubSection title={t("design-guide.enforcement-banner-presentational-to-1oz")}>
           <div className="space-y-3">
             <EnforcementBanner
               tone="info"
-              title="Effective access — server resolved."
+              title={t("design-guide.effective-access-server-resolved-s6x")}
               body="This is exactly what the tool gateway will accept. Profile and policy edits reflect within ~5s; the prompt cannot expand it."
             />
             <EnforcementBanner
               tone="warning"
-              title="Local stdio is local code execution, not a security sandbox."
+              title={t("design-guide.local-stdio-is-local-code-execution-155")}
               body="A local-stdio slot runs with the orchestrator's privileges. Only bind trusted commands; quarantine anything you would not run yourself."
             />
             <EnforcementBanner
               tone="error"
-              title="Runtime failed closed."
+              title={t("design-guide.runtime-failed-closed-6z3")}
               body="The supervisor is restarting (attempt 2/3). The gateway returns runtime-error and the agent does not see partial output."
             />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Static governance copy with a tone. Used for the PAP-10400 trust-tier banner on Runtime and the
-            effective-access banner on Agent → Tools. Pass <code>title</code>/<code>body</code> and an optional{" "}
+            {t("design-guide.static-governance-copy-with-a-tone-u-15l")} <code>title</code>/<code>body</code> {t("design-guide.and-an-optional-15l")}{" "}
             <code>icon</code>.
           </p>
         </SubSection>
 
-        <SubSection title="Action approval card — pending / stale (surfaces 11/12)">
+        <SubSection title={t("design-guide.action-approval-card-pending-stale-s-5rk")}>
           <div className="grid gap-4 lg:grid-cols-2">
             <ActionCard
               toolName="slack.post_message"
@@ -2095,14 +2082,12 @@ export function DesignGuide() {
             />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Signed payload sha256 + expiry surface on every variant (PAP-10400). The{" "}
-            <code>stale</code> variant tints the border amber, banners the catalog-hash mismatch, strikes through
-            the previous hash next to the current one, and renders <code>Approve</code> disabled until the request
-            is re-issued.
+            {t("design-guide.signed-payload-sha256-expiry-surface-awl")}{" "}
+            <code>stale</code> {t("design-guide.variant-tints-the-border-amber-banne-us4")} <code>Approve</code> {t("design-guide.disabled-until-the-request-is-re-iss-v5b")}
           </p>
         </SubSection>
 
-        <SubSection title="Action approval card — mobile (390×844, surface 99)">
+        <SubSection title={t("design-guide.action-approval-card-mobile-390-844-zbm")}>
           <div className="w-(--sz-390px) max-w-full rounded-xl border border-border bg-background p-3">
             <ActionCardMobile
               toolName="slack.post_message"
@@ -2122,12 +2107,11 @@ export function DesignGuide() {
             />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Identical content; the three buttons stack full-width in the order Approve / Deny / Edit &amp; re-sign,
-            and the bindings table uses a 70px label column.
+            {t("design-guide.identical-content-the-three-buttons-17x")}
           </p>
         </SubSection>
 
-        <SubSection title="BindingsTable (reused in the audit row drilldown)">
+        <SubSection title={t("design-guide.bindings-table-reused-in-the-audit-r-1i2")}>
           <BindingsTable
             rows={[
               { label: "Application", value: "Slack · manifest v2.4.1" },
@@ -2137,12 +2121,11 @@ export function DesignGuide() {
             ]}
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            Two-column key/value block with mono values. Lives inside <code>ActionCard</code> and is reused
-            standalone in the audit row drilldown.
+            {t("design-guide.two-column-key-value-block-with-mono-wud")} <code>ActionCard</code> {t("design-guide.and-is-reused-standalone-in-the-audi-1db")}
           </p>
         </SubSection>
 
-        <SubSection title="Tool-access status keys (StatusBadge)">
+        <SubSection title={t("design-guide.tool-access-status-keys-status-badge-1sx")}>
           <div className="flex flex-wrap items-center gap-2">
             {[
               "allowed", "denied", "block", "require-approval", "redacted", "rate-limit",
@@ -2152,30 +2135,27 @@ export function DesignGuide() {
             ))}
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Policy decisions, connection/runtime health, and catalog quarantine all route through the canonical{" "}
-            <code>StatusBadge</code> keys defined in <code>lib/status-colors</code>.
+            {t("design-guide.policy-decisions-connection-runtime-1cl")}{" "}
+            <code>StatusBadge</code> {t("design-guide.keys-defined-in-9h1")} <code>lib/status-colors</code>.
           </p>
         </SubSection>
 
-        <SubSection title="EmptyState (canonical, with description + action)">
+        <SubSection title={t("design-guide.empty-state-canonical-with-descripti-ih8")}>
           <EmptyState
             icon={Inbox}
             message="No connections yet"
-            description="Add a connection to an application to configure credentials and discover its tools."
+            description={t("design-guide.add-a-connection-to-an-application-t-1k8")}
             action="New connection"
             onAction={() => {}}
           />
         </SubSection>
       </Section>
 
-      <Section title="Composio Services">
+      <Section title={t("design-guide.composio-services-wpt")}>
         <p className="text-sm text-muted-foreground">
-          A broker connection (Composio) fronts many services, so its detail page lists toolkits
-          with per-service state instead of one credential. Row state comes from Composio's own
-          account status, which is why there is a fourth <code>attention</code> state alongside the
-          three the design asks for: an expired credential is neither connected nor still settling.
+          {t("design-guide.a-broker-connection-composio-fronts-h9x")} <code>attention</code> {t("design-guide.state-alongside-the-three-the-design-zor")}
         </p>
-        <SubSection title="Row states">
+        <SubSection title={t("design-guide.row-states-pc3")}>
           <ServicesList
             rows={DESIGN_GUIDE_COMPOSIO_ROWS}
             busySlug={null}
@@ -2184,7 +2164,7 @@ export function DesignGuide() {
             onDisconnect={() => {}}
           />
         </SubSection>
-        <SubSection title="Busy row">
+        <SubSection title={t("design-guide.busy-row-7db")}>
           <ServicesList
             rows={[DESIGN_GUIDE_COMPOSIO_ROWS[2]!]}
             busySlug={DESIGN_GUIDE_COMPOSIO_ROWS[2]!.toolkitSlug}
@@ -2193,10 +2173,9 @@ export function DesignGuide() {
             onDisconnect={() => {}}
           />
         </SubSection>
-        <SubSection title="Provenance chip">
+        <SubSection title={t("design-guide.provenance-chip-sgp")}>
           <p className="mb-2 text-xs text-muted-foreground">
-            Shown wherever a brokered child connection appears, so the parent/child coupling is
-            legible. Links to the broker's Services tab when the parent is known.
+            {t("design-guide.shown-wherever-a-brokered-child-conn-v6p")}
           </p>
           <div className="flex items-center gap-3">
             <ComposioProvenanceChip
@@ -2211,31 +2190,27 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
-      <Section title="Source Repositories">
-        <SubSection title="Empty and disconnected">
+      <Section title={t("design-guide.source-repositories-c6h")}>
+        <SubSection title={t("design-guide.empty-and-disconnected-1sm")}>
           <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
         </SubSection>
-        <SubSection title="Selected and searchable">
+        <SubSection title={t("design-guide.selected-and-searchable-1s9")}>
           <RepositoryEditor selected={[{ id: "1", fullName: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip", connections: ["Your GitHub"] }]}
             available={[{ id: "2", fullName: "paperclipai/docs", url: "https://github.com/paperclipai/docs", connections: ["Company GitHub"] }]}
             onChange={() => {}} onConnect={() => {}} onRetry={() => {}} />
         </SubSection>
-        <p className="text-sm text-muted-foreground">Loading, errors, empty search, mobile, and short viewports are covered in the Project repos Storybook stories.</p>
+        <p className="text-sm text-muted-foreground">{t("design-guide.loading-errors-empty-search-mobile-a-tfg")}</p>
       </Section>
 
-      <Section title="Environment Variables Editor">
+      <Section title={t("design-guide.environment-variables-editor-d41")}>
         <p className="text-sm text-muted-foreground">
-          Reusable env-var editor (agents, projects, environments, routines). One shared grid, an
-          in-field Text/Secret source switch, a fuzzy secret picker with a pinned “Create secret”
-          item, automatic sensitive-value detection, and inline secret-health warnings. See the
-          Storybook <span className="font-mono">Product/Environment Variables Editor</span> stories
-          for all 10 states.
+          {t("design-guide.reusable-env-var-editor-agents-proje-1yu")} <span className="font-mono">{t("design-guide.product-environment-variables-editor-2gw")}</span> {t("design-guide.stories-for-all-10-states-1ee")}
         </p>
         <EnvironmentVariablesEditorShowcase />
       </Section>
 
-      <Section title="Tasks created from a task">
-        <SubSection title="Subtasks and created work are independent">
+      <Section title={t("design-guide.tasks-created-from-a-task-3at")}>
+        <SubSection title={t("design-guide.subtasks-and-created-work-are-indepe-zky")}>
           <div className="max-w-xl">
             <TaskDetailTasksPanel
               subtasks={[DESIGN_GUIDE_TASK]}
@@ -2247,36 +2222,28 @@ export function DesignGuide() {
             />
           </div>
         </SubSection>
-        <SubSection title="Empty, loading and failed">
+        <SubSection title={t("design-guide.empty-loading-and-failed-1ga")}>
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} isLoading />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} hasError onRetry={() => {}} />
         </SubSection>
       </Section>
 
-      <Section title="Execution recovery">
+      <Section title={t("design-guide.execution-recovery-1et")}>
         <p className="text-sm text-muted-foreground">
-          Recovery runs in the background. Task lists keep their ordinary status without
-          execution badges. Active transcript headers keep saying Working during automatic
-          recovery. Recovery decisions and attempts belong in the run log;
-          there is no execution status card or reconciliation form.
+          {t("design-guide.recovery-runs-in-the-background-task-1fa")}
         </p>
       </Section>
 
-      <Section title="Saved provider API keys">
+      <Section title={t("design-guide.saved-provider-api-keys-2zd")}>
         <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
         <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
       </Section>
 
-      <Section title="Connection Intent">
+      <Section title={t("design-guide.connection-intent-16y")}>
         <p className="text-sm text-muted-foreground">
-          The task card is the dialog host for the shared connection setup flow. Provider forms,
-          validation, OAuth, access selection, and completion come from the same feature module as
-          the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
-          Pending connections stay in the timeline beside a usable composer. The independently
-          addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
-          layouts, completion, and historical outcomes.
+          {t("design-guide.the-task-card-is-the-dialog-host-for-50n")}
         </p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard
@@ -2294,30 +2261,28 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Resizable Panels">
+      <Section title={t("design-guide.resizable-panels-b3e")}>
         <p className="text-sm text-muted-foreground">
-          Design-system wrapper over <span className="font-mono">react-resizable-panels</span>{" "}
-          (Skill Studio D2). Drag a handle to resize; panels accept percentage or pixel
-          (<span className="font-mono">minSize="240px"</span>) constraints and the middle panel is
-          collapsible. Use anywhere a split view is needed.
+          {t("design-guide.design-system-wrapper-over-195")} <span className="font-mono">react-resizable-panels</span>{" "}
+          {t("design-guide.skill-studio-d2-drag-a-handle-to-res-1h5")}<span className="font-mono">minSize="240px"</span>{t("design-guide.constraints-and-the-middle-panel-is-jyp")}
         </p>
         <div className="h-48 max-w-2xl overflow-hidden rounded-md border border-border">
           <ResizablePanelGroup>
             <ResizablePanel id="a" minSize="120px" className="bg-muted/30">
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Panel A
+                {t("design-guide.panel-a-3pl")}
               </div>
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel id="b" minSize="120px" collapsible collapsedSize="40px" className="bg-muted/10">
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Panel B (collapsible)
+                {t("design-guide.panel-b-collapsible-rza")}
               </div>
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel id="c" minSize="120px" className="bg-muted/30">
               <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                Panel C
+                {t("design-guide.panel-c-35m")}
               </div>
             </ResizablePanel>
           </ResizablePanelGroup>
@@ -2327,56 +2292,54 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  INLINE BANNER + BUILT-IN AGENTS                              */}
       {/* ============================================================ */}
-      <Section title="Inline Banner">
+      <Section title={t("design-guide.inline-banner-bar")}>
         <p className="text-sm text-muted-foreground">
-          Token-backed full-width notice (<span className="font-mono">brandBanner</span> tones). Use{" "}
-          <span className="font-mono">info</span> for provenance/context and{" "}
-          <span className="font-mono">warning</span> for paused/attention. Supports an optional bold
-          title and a trailing actions slot. Replaces hand-rolled{" "}
-          <span className="font-mono">bg-yellow-*</span>/<span className="font-mono">bg-blue-*</span>{" "}
-          banners.
+          {t("design-guide.token-backed-full-width-notice-wz7")}<span className="font-mono">brandBanner</span> {t("design-guide.tones-use-361")}{" "}
+          <span className="font-mono">info</span> {t("design-guide.for-provenance-context-and-rq6")}{" "}
+          <span className="font-mono">warning</span> {t("design-guide.for-paused-attention-supports-an-opt-1x5")}{" "}
+          <span className="font-mono">{t("design-guide.bg-yellow-50s")}</span>/<span className="font-mono">{t("design-guide.bg-blue-tgy")}</span>{" "}
+          {t("design-guide.banners-g3f")}
         </p>
         <div className="space-y-3">
           <InlineBanner
             tone="info"
-            title="Built-in agent"
-            actions={<Button variant="outline" size="sm">Reset to defaults</Button>}
+            title={t("design-guide.built-in-agent-5t8")}
+            actions={<Button variant="outline" size="sm">{t("design-guide.reset-to-defaults-kqo")}</Button>}
           >
-            Ships with Paperclip and powers <strong>Briefs</strong>. It can be paused but not deleted.
+            {t("design-guide.ships-with-paperclip-and-powers-4ld")} <strong>{t("design-guide.briefs-km9")}</strong>{t("design-guide.it-can-be-paused-but-not-deleted-euk")}
           </InlineBanner>
           <InlineBanner
             tone="warning"
-            title="Briefs is paused."
+            title={t("design-guide.briefs-is-paused-1ia")}
             actions={
               <>
-                <Button variant="ghost" size="sm">View agent</Button>
-                <Button size="sm">Resume agent</Button>
+                <Button variant="ghost" size="sm">{t("design-guide.view-agent-3zm")}</Button>
+                <Button size="sm">{t("design-guide.resume-agent-1iq")}</Button>
               </>
             }
           >
-            Its built-in agent was paused 2 days ago, so new briefs aren't being generated.
+            {t("design-guide.its-built-in-agent-was-paused-2-days-1s6")}
           </InlineBanner>
           <InlineBanner
             tone="danger"
-            title="Summary generation failed."
-            actions={<Button size="sm">Retry</Button>}
+            title={t("design-guide.summary-generation-failed-157")}
+            actions={<Button size="sm">{t("design-guide.retry-zko")}</Button>}
           >
-            The linked issue reached a terminal state before a summary was written.
+            {t("design-guide.the-linked-issue-reached-a-terminal-9ij")}
           </InlineBanner>
           <InlineBanner tone="info" compact>
-            Compact variant for embedding inside dialogs and modals.
+            {t("design-guide.compact-variant-for-embedding-inside-1av")}
           </InlineBanner>
         </div>
       </Section>
 
-      <Section title="AI Connections">
+      <Section title={t("design-guide.ai-connections-jxr")}>
         <AiConnectionDesignExamples />
       </Section>
 
-      <Section title="Built-in Agent Lifecycle Chips">
+      <Section title={t("design-guide.built-in-agent-lifecycle-chips-1nk")}>
         <p className="text-sm text-muted-foreground">
-          A derived lifecycle chip (amber) for attention states. The lifecycle chip is separate from
-          the agent status vocabulary and only shows for{" "}
+          {t("design-guide.a-derived-lifecycle-chip-amber-for-a-qfi")}{" "}
           <span className="font-mono">needs_setup</span> / <span className="font-mono">pending_approval</span>.
         </p>
         <div className="flex flex-wrap items-center gap-4">
@@ -2386,9 +2349,8 @@ export function DesignGuide() {
         </div>
         <p className="mt-3 text-sm text-muted-foreground">
           <span className="font-mono">&lt;BuiltInAgentGate agentKey&gt;</span> composes{" "}
-          <span className="font-mono">PageSkeleton</span> + <span className="font-mono">EmptyState</span>{" "}
-          + <span className="font-mono">InlineBanner</span> to render the loading / setup /
-          pending-approval / paused / ready states of a feature that depends on a built-in agent.
+          <span className="font-mono">{t("design-guide.page-skeleton-gbu")}</span> + <span className="font-mono">{t("design-guide.empty-state-11s")}</span>{" "}
+          + <span className="font-mono">{t("design-guide.inline-banner-iyi")}</span> {t("design-guide.to-render-the-loading-setup-pending-1yt")}
         </p>
       </Section>
     </div>

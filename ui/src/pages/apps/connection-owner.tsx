@@ -2,6 +2,7 @@ import type { ToolConnection } from "@paperclipai/shared";
 import { humanizeConnectionDisplayName } from "@paperclipai/shared";
 import { Identity } from "@/components/Identity";
 import type { CompanyUserProfile } from "@/lib/company-members";
+import { t } from "@/i18n";
 
 export type ConnectionOwnerProfile = CompanyUserProfile;
 
@@ -53,7 +54,7 @@ export function connectionDisplayNameForOwner(
 }
 
 export function ConnectionOwnerIdentity({ owner }: { owner: ConnectionOwnerProfile | null }) {
-  if (!owner) return <span className="text-xs text-muted-foreground">Unknown</span>;
+  if (!owner) return <span className="text-xs text-muted-foreground">{t("connection-owner.unknown-1km")}</span>;
   return (
     <Identity
       name={owner.label}

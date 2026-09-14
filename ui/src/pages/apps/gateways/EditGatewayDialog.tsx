@@ -15,6 +15,7 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { allowedToolsLabel } from "./gateway-helpers";
 import { gatewaysQueryKey } from "./NewGatewayDialog";
+import { t } from "@/i18n";
 
 export function EditGatewayDialog({
   companyId,
@@ -74,18 +75,18 @@ export function EditGatewayDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Edit gateway</DialogTitle>
+          <DialogTitle>{t("edit-gateway-dialog.edit-gateway-1x6")}</DialogTitle>
           <DialogDescription>
-            Change the label or the access profile that controls which tools this endpoint exposes.
+            {t("edit-gateway-dialog.change-the-label-or-the-access-profi-au2")}
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={submit}>
           <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Name</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("edit-gateway-dialog.name-4el")}</span>
             <Input value={name} onChange={(event) => setName(event.target.value)} required autoFocus />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Access profile</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("edit-gateway-dialog.access-profile-q67")}</span>
             <select
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={profileId}
@@ -100,17 +101,17 @@ export function EditGatewayDialog({
             </select>
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Description (optional)</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("edit-gateway-dialog.description-optional-dug")}</span>
             <textarea
               className="min-h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={description}
               onChange={(event) => setDescription(event.target.value)}
-              placeholder="Who this endpoint is for."
+              placeholder={t("edit-gateway-dialog.who-this-endpoint-is-for-1mg")}
             />
           </label>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("edit-gateway-dialog.cancel-ew9")}
             </Button>
             <Button type="submit" disabled={updateMutation.isPending || !name.trim() || !profileId}>
               {updateMutation.isPending ? "Saving…" : "Save changes"}

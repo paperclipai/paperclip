@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { InlineBanner } from "@/components/InlineBanner";
 import { queryKeys } from "@/lib/queryKeys";
 import { SummarizerAgentSelect } from "./SummarizerAgentSelect";
+import { t } from "@/i18n";
 
 const EXAMPLES = [
   "issues about evals",
@@ -74,18 +75,17 @@ export function CreateStatusCardDialog({
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>New card</DialogTitle>
+          <DialogTitle>{t("create-status-card-dialog.new-card-1lo")}</DialogTitle>
           <DialogDescription>
-            One message sets up the whole card: say what you want to watch and what each update
-            should tell you. The agent builds the query from it and writes every update against it.
+            {t("create-status-card-dialog.one-message-sets-up-the-whole-card-s-eur")}
           </DialogDescription>
         </DialogHeader>
 
-        {error ? <InlineBanner tone="danger" title="Create failed">{error}</InlineBanner> : null}
+        {error ? <InlineBanner tone="danger" title={t("create-status-card-dialog.create-failed-1fj")}>{error}</InlineBanner> : null}
 
         <div className="space-y-3">
           <label htmlFor="status-card-prompt" className="block pb-1 text-sm font-semibold">
-            What do you want to keep an eye on?
+            {t("create-status-card-dialog.what-do-you-want-to-keep-an-eye-on-19i")}
           </label>
           <Textarea
             id="status-card-prompt"
@@ -93,11 +93,11 @@ export function CreateStatusCardDialog({
             onChange={(event) => setPrompt(event.target.value)}
             rows={5}
             autoFocus
-            placeholder="Keep an eye on the ID and Cloud projects. Tell me whether the service is live, and if not, the exact three actions needed to get it to production."
+            placeholder={t("create-status-card-dialog.keep-an-eye-on-the-id-and-cloud-proj-but")}
             className="text-sm"
           />
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Examples</span>
+            <span className="text-xs font-medium text-muted-foreground">{t("create-status-card-dialog.examples-uy0")}</span>
             {EXAMPLES.map((example) => (
               <button
                 key={example}
@@ -112,24 +112,24 @@ export function CreateStatusCardDialog({
         </div>
 
         <div className="space-y-2">
-          <label className="block text-sm font-semibold">Agent</label>
+          <label className="block text-sm font-semibold">{t("create-status-card-dialog.agent-1w5")}</label>
           <SummarizerAgentSelect companyId={companyId} value={agentId} onChange={setAgentId} enabled={open} />
           <p className="text-xs text-muted-foreground">
-            Runs this card's setup and updates. Leave on the default unless another agent should own it.
+            {t("create-status-card-dialog.runs-this-card-s-setup-and-updates-l-17v")}
           </p>
         </div>
 
         <DialogFooter>
           <div className="flex gap-2">
             <Button variant="outline" onClick={close} disabled={createMutation.isPending}>
-              Cancel
+              {t("create-status-card-dialog.cancel-ew9")}
             </Button>
             <Button
               onClick={() => createMutation.mutate()}
               disabled={prompt.trim().length === 0 || createMutation.isPending}
             >
               {createMutation.isPending ? <Loader2 className="animate-spin" /> : null}
-              Create card
+              {t("create-status-card-dialog.create-card-1s3")}
             </Button>
           </div>
         </DialogFooter>

@@ -21,6 +21,7 @@ import {
 import { connectionAddress } from "./AppDetail";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { appApplicationTabHref, appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
+import { t } from "@/i18n";
 
 export function AppNotConnected() {
   const { applicationId = "", tab } = useParams<{ applicationId: string; tab?: string }>();
@@ -93,7 +94,7 @@ export function AppNotConnected() {
     return <Navigate to={appApplicationTabHref(applicationId, "permissions")} replace />;
   }
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("app-not-connected.select-an-organization-to-manage-app-123")}</div>;
   }
   if (!applicationId || !activeTab) {
     return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "permissions") : "/apps"} replace />;
@@ -109,8 +110,8 @@ export function AppNotConnected() {
   if (!application) {
     return (
       <div className="max-w-3xl space-y-3 p-6 text-sm text-muted-foreground">
-        <p>This app doesn’t exist anymore.</p>
-        <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to connectors</Button>
+        <p>{t("app-not-connected.this-app-doesn-t-exist-anymore-xk1")}</p>
+        <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>{t("app-not-connected.back-to-connectors-1k8")}</Button>
       </div>
     );
   }
@@ -188,7 +189,7 @@ export function AppNotConnected() {
           <ReviewPanel connectionId={previousConnection.id} />
         ) : (
           <EmptyTab
-            title="Nothing is waiting for your OK right now."
+            title={t("app-not-connected.nothing-is-waiting-for-your-ok-right-1g6")}
             body="Review requests will appear here after this app is connected."
           />
         )
@@ -271,13 +272,13 @@ function ConnectionCallout({
 function PermissionsTab({ previousConnection }: { previousConnection: ToolConnection | null }) {
   return (
     <section>
-      <h2 className="text-sm font-bold text-foreground">Permissions paused</h2>
+      <h2 className="text-sm font-bold text-foreground">{t("app-not-connected.permissions-paused-15d")}</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Reconnect this app to edit who can use it and which actions need a human first.
+        {t("app-not-connected.reconnect-this-app-to-edit-who-can-u-7u4")}
       </p>
       {previousConnection && (
         <p className="mt-3 text-xs text-muted-foreground">
-          Previous setup is retained for reconnect, but access controls stay read-only until the app is online.
+          {t("app-not-connected.previous-setup-is-retained-for-recon-1jc")}
         </p>
       )}
     </section>

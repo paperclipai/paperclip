@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { queryKeys } from "@/lib/queryKeys";
 import { ErrorState, RelativeTime } from "@/pages/tools/shared";
+import { t } from "@/i18n";
 
 const PAGE_SIZE = 25;
 
@@ -107,18 +108,18 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
       {open ? (
         <div className="border-t border-border bg-muted/30 px-4 py-3 pl-10 text-xs">
           <dl>
-            {rawTool ? <Fact label="Tool" value={rawTool} mono /> : null}
-            {event.invocation?.status ? <Fact label="Call status" value={event.invocation.status} /> : null}
-            {event.invocation?.policyDecision ? <Fact label="Decision" value={event.invocation.policyDecision} /> : null}
-            {reason ? <Fact label="Reason" value={reason} mono /> : null}
-            {duration ? <Fact label="Duration" value={duration} /> : null}
-            {event.invocation?.id ? <Fact label="Invocation ID" value={event.invocation.id} mono /> : null}
-            {event.invocation?.errorCode ? <Fact label="Error code" value={event.invocation.errorCode} mono /> : null}
-            {event.invocation?.errorMessage ? <Fact label="Error" value={event.invocation.errorMessage} /> : null}
+            {rawTool ? <Fact label={t("gateway-activity-panel.tool-1m5")} value={rawTool} mono /> : null}
+            {event.invocation?.status ? <Fact label={t("gateway-activity-panel.call-status-cus")} value={event.invocation.status} /> : null}
+            {event.invocation?.policyDecision ? <Fact label={t("gateway-activity-panel.decision-1gv")} value={event.invocation.policyDecision} /> : null}
+            {reason ? <Fact label={t("gateway-activity-panel.reason-i36")} value={reason} mono /> : null}
+            {duration ? <Fact label={t("gateway-activity-panel.duration-1n1")} value={duration} /> : null}
+            {event.invocation?.id ? <Fact label={t("gateway-activity-panel.invocation-id-vl0")} value={event.invocation.id} mono /> : null}
+            {event.invocation?.errorCode ? <Fact label={t("gateway-activity-panel.error-code-1e5")} value={event.invocation.errorCode} mono /> : null}
+            {event.invocation?.errorMessage ? <Fact label={t("gateway-activity-panel.error-1vk")} value={event.invocation.errorMessage} /> : null}
           </dl>
           {argumentsText ? (
             <div className="mt-2 space-y-1">
-              <div className="text-muted-foreground">Arguments (redacted)</div>
+              <div className="text-muted-foreground">{t("gateway-activity-panel.arguments-redacted-1le")}</div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                 {argumentsText}
               </pre>
@@ -126,7 +127,7 @@ function ActivityRow({ event }: { event: ToolGatewayActivityEvent }) {
           ) : null}
           {resultText ? (
             <div className="mt-3 space-y-1">
-              <div className="text-muted-foreground">Result (redacted)</div>
+              <div className="text-muted-foreground">{t("gateway-activity-panel.result-redacted-i8t")}</div>
               <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
                 {resultText}
               </pre>
@@ -179,11 +180,11 @@ export function GatewayActivityPanel({
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        Calls through this gateway from the last 30 days. Open a row to inspect its tool, redacted arguments, result, and decision.
+        {t("gateway-activity-panel.calls-through-this-gateway-from-the-1lb")}
       </p>
       {events.length === 0 ? (
         <div className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          No calls have gone through this gateway yet.
+          {t("gateway-activity-panel.no-calls-have-gone-through-this-gate-146")}
         </div>
       ) : (
         <ul className="divide-y divide-border rounded-lg border border-border">

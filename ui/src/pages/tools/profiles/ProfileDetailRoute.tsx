@@ -5,6 +5,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { advancedTabHref } from "../tool-tabs";
 import { ToolsAdminGate } from "./ToolsAdminGate";
 import { ProfileDetail } from "./ProfileDetail";
+import { t } from "@/i18n";
 
 export function ProfileDetailRoute() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -22,7 +23,7 @@ export function ProfileDetailRoute() {
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   if (!selectedCompanyId || !params.profileId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization and profile.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("profile-detail-route.select-an-organization-and-profile-1l8")}</div>;
   }
 
   return (

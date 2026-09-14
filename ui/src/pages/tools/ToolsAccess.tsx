@@ -15,6 +15,7 @@ import {
   isAdvancedSetupTab,
   type ToolTabKey,
 } from "./tool-tabs";
+import { t } from "@/i18n";
 
 function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
@@ -53,7 +54,7 @@ export function ToolsAccess() {
   }, [setBreadcrumbs, selectedCompany?.name, advanced, tabLabel]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to open advanced setup.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("tools-access.select-an-organization-to-open-advan-1iu")}</div>;
   }
 
   if (params.tab === "run-your-own") {
@@ -86,16 +87,15 @@ export function ToolsAccess() {
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 p-4 sm:p-6">
         <header>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-bold text-foreground">Advanced setup</h1>
+            <h1 className="text-xl font-bold text-foreground">{t("tools-access.advanced-setup-1sz")}</h1>
             <span className="inline-flex items-center rounded-full bg-foreground px-2.5 py-0.5 text-(length:--text-micro) font-bold text-background">
-              Advanced
+              {t("tools-access.advanced-qwf")}
             </span>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            For tools that aren't in the gallery. You'll need details from the tool's documentation.
-            Most people never need this — if the app you want is in the gallery,{" "}
+            {t("tools-access.for-tools-that-aren-t-in-the-gallery-1ag")}{" "}
             <Link to="/apps" className="font-medium text-primary hover:underline">
-              connect it there instead
+              {t("tools-access.connect-it-there-instead-7vf")}
             </Link>
             .
           </p>
@@ -122,9 +122,9 @@ export function ToolsAccess() {
 
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Wrench className="h-3.5 w-3.5" />
-          Looking for the developer surface?{" "}
+          {t("tools-access.looking-for-the-developer-surface-zve")}{" "}
           <Link to={advancedTabHref("profiles")} className="font-medium text-primary hover:underline">
-            Open developer tools
+            {t("tools-access.open-developer-tools-1wd")}
           </Link>
         </p>
       </div>

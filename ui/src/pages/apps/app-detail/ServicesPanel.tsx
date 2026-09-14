@@ -26,6 +26,7 @@ import {
   type ComposioServiceRow,
   type ComposioServiceState,
 } from "../composio-services";
+import { t } from "@/i18n";
 
 /** How often a settling row is re-read while the user finishes authorizing in Composio. */
 const PENDING_POLL_MS = 3_000;
@@ -150,7 +151,7 @@ export function ServicesPanel({
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading services from Composio, this may take a moment.
+        {t("services-panel.loading-services-from-composio-this-1d6")}
       </div>
     );
   }
@@ -193,15 +194,14 @@ export function ServicesPanel({
 function ServicesIntro({ appName, connectedCount }: { appName: string; connectedCount: number }) {
   return (
     <div className="max-w-2xl space-y-1">
-      <h2 className="text-lg font-semibold">Services</h2>
+      <h2 className="text-lg font-semibold">{t("services-panel.services-rnv")}</h2>
       <p className="text-sm leading-6 text-muted-foreground">
-        {appName} brokers these services. Connect one and it becomes its own app in Paperclip, which
-        you then give to agents on its Permissions tab.
+        {appName} {t("services-panel.brokers-these-services-connect-one-a-1mu")}
         {connectedCount > 0 && (
           <>
             {" "}
             <span className="font-medium text-foreground">
-              {connectedCount} {connectedCount === 1 ? "service is" : "services are"} connected.
+              {connectedCount} {connectedCount === 1 ? "service is" : "services are"} {t("services-panel.connected-1dd")}
             </span>
           </>
         )}
@@ -213,10 +213,9 @@ function ServicesIntro({ appName, connectedCount }: { appName: string; connected
 function ServicesEmptyState() {
   return (
     <div className="rounded-xl border border-border bg-card p-6">
-      <p className="text-sm font-medium">No services available yet</p>
+      <p className="text-sm font-medium">{t("services-panel.no-services-available-yet-19h")}</p>
       <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-        This Composio project has no toolkits Paperclip can offer. Add a toolkit and an auth
-        configuration in Composio, then check back.
+        {t("services-panel.this-composio-project-has-no-toolkit-14w")}
       </p>
     </div>
   );
@@ -228,7 +227,7 @@ function ServicesLoadError({ message, onRetry }: { message: string | null; onRet
       <p className="text-sm text-destructive">
         {message ?? "Couldn’t load services from Composio."}
       </p>
-      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
+      <Button size="sm" variant="outline" onClick={onRetry}>{t("services-panel.try-again-982")}</Button>
     </div>
   );
 }
@@ -292,7 +291,7 @@ export function ServiceRow({
       <div className="flex shrink-0 items-center gap-2">
         {row.state === "connected" && row.childConnectionId && (
           <Button asChild size="sm" variant="ghost">
-            <Link to={appTabHref(row.childConnectionId, "permissions")}>Manage</Link>
+            <Link to={appTabHref(row.childConnectionId, "permissions")}>{t("services-panel.manage-1nu")}</Link>
           </Button>
         )}
         {row.state === "pending" && (
@@ -312,7 +311,7 @@ export function ServiceRow({
           <Button size="sm" disabled={busy} onClick={() => onConnect(row)}>
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : (
               <>
-                Connect
+                {t("services-panel.connect-1ow")}
                 <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
               </>
             )}
@@ -323,12 +322,12 @@ export function ServiceRow({
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Reconnect"}
             </Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>
-              Disconnect
+              {t("services-panel.disconnect-1om")}
             </Button>
           </>
         ) : row.state === "connected" ? (
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>
-            Disconnect
+            {t("services-panel.disconnect-1om")}
           </Button>
         ) : null}
       </div>
@@ -411,14 +410,13 @@ function DisconnectDialog({
     <AlertDialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Disconnect {row.name}?</AlertDialogTitle>
+          <AlertDialogTitle>{t("services-panel.disconnect-1om")} {row.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This removes {row.name} from Paperclip and deletes its credentials in Composio. Agents
-            using its actions lose them immediately. Connecting it again needs a new sign-in.
+            {t("services-panel.this-removes-1i5")} {row.name} {t("services-panel.from-paperclip-and-deletes-its-crede-1ro")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending} autoFocus>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending} autoFocus>{t("services-panel.cancel-ew9")}</AlertDialogCancel>
           <AlertDialogAction
             disabled={pending}
             onClick={(event) => {

@@ -59,6 +59,7 @@ import {
   connectionDisplayNameForOwner,
   connectionOwnerProfile,
 } from "./connection-owner";
+import { t } from "@/i18n";
 
 export { connectionAddress, connectionTransportLabel };
 
@@ -462,7 +463,7 @@ export function AppDetail({ renderActions, onReconnect }: {
   }
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("app-detail.select-an-organization-to-manage-app-123")}</div>;
   }
   if (connectionQuery.isLoading) {
     return (
@@ -476,9 +477,9 @@ export function AppDetail({ renderActions, onReconnect }: {
   if (!connection) {
     return (
       <div className="max-w-3xl p-6">
-        <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
+        <p className="text-sm text-muted-foreground">{t("app-detail.we-couldn-t-find-that-app-6y9")}</p>
         <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
-          Back to connectors
+          {t("app-detail.back-to-connectors-1k8")}
         </Button>
       </div>
     );
@@ -529,7 +530,7 @@ export function AppDetail({ renderActions, onReconnect }: {
         <div role="status">
           <p>{connection.healthMessage || "GitHub access could not be checked. Try again."}</p>
           <Button variant="outline" disabled={refreshGitHubAccess.isPending} onClick={() => refreshGitHubAccess.mutate()}>
-            Retry access
+            {t("app-detail.retry-access-yza")}
           </Button>
         </div>
       )}
@@ -697,7 +698,7 @@ function AppDetailHeader({
               }}
             >
               <Input
-                aria-label="App name"
+                aria-label={t("app-detail.app-name-7ho")}
                 value={nameDraft}
                 onChange={(event) => onNameDraftChange(event.target.value)}
                 className="h-9 w-64 text-lg font-bold"
@@ -707,7 +708,7 @@ function AppDetailHeader({
                 {renamePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={onRenameCancel} disabled={renamePending}>
-                Cancel
+                {t("app-detail.cancel-ew9")}
               </Button>
             </form>
           ) : (
@@ -717,7 +718,7 @@ function AppDetailHeader({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7 text-muted-foreground"
-                aria-label="Rename app"
+                aria-label={t("app-detail.rename-app-pn1")}
                 onClick={onRenameStart}
               >
                 <Pencil className="h-3.5 w-3.5" />
@@ -757,8 +758,8 @@ function ToolsLoading({ mcpActions = false }: { mcpActions?: boolean }) {
 function ToolsLoadError({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="space-y-3 py-8">
-      <p className="text-sm text-destructive">Couldn’t load tools for this app.</p>
-      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
+      <p className="text-sm text-destructive">{t("app-detail.couldn-t-load-tools-for-this-app-1gw")}</p>
+      <Button size="sm" variant="outline" onClick={onRetry}>{t("app-detail.try-again-982")}</Button>
     </div>
   );
 }

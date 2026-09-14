@@ -6,6 +6,7 @@ import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useSearchParams } from "@/lib/router";
+import { t } from "@/i18n";
 
 const providerNames: Record<ChatProvider, string> = {
   slack: "Slack",
@@ -40,10 +41,9 @@ export function ChatIdentityConfirm() {
   if (token.length < 32 || preview.isError) {
     return (
       <main className="mx-auto max-w-lg space-y-4 px-6 py-12">
-        <h1 className="text-xl font-bold">This identity link is unavailable</h1>
+        <h1 className="text-xl font-bold">{t("chat-identity-confirm.this-identity-link-is-unavailable-yvd")}</h1>
         <p className="text-sm text-muted-foreground">
-          The link is invalid, expired, already used, or belongs to another
-          Paperclip organization.
+          {t("chat-identity-confirm.the-link-is-invalid-expired-already-1f0")}
         </p>
       </main>
     );
@@ -52,7 +52,7 @@ export function ChatIdentityConfirm() {
     return (
       <main className="flex items-center justify-center gap-2 px-6 py-12 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Checking identity link…
+        {t("chat-identity-confirm.checking-identity-link-1hp")}
       </main>
     );
   }
@@ -67,17 +67,16 @@ export function ChatIdentityConfirm() {
       <main className="mx-auto max-w-lg space-y-5 px-6 py-12">
         <CheckCircle2 className="h-8 w-8" />
         <div>
-          <h1 className="text-xl font-bold">Identity linked</h1>
+          <h1 className="text-xl font-bold">{t("chat-identity-confirm.identity-linked-5js")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Future messages from {identity.externalLabel} use your current
-            Paperclip permissions in {identity.companyName}.
+            {t("chat-identity-confirm.future-messages-from-1ip")} {identity.externalLabel} {t("chat-identity-confirm.use-your-current-paperclip-permissio-12v")} {identity.companyName}.
           </p>
         </div>
         <Button asChild>
           <Link
             to={`/${identity.companyPrefix}/apps/chat/${identity.endpointId}/access`}
           >
-            Return to connection
+            {t("chat-identity-confirm.return-to-connection-1au")}
           </Link>
         </Button>
       </main>
@@ -87,46 +86,45 @@ export function ChatIdentityConfirm() {
     <main className="mx-auto max-w-lg space-y-6 px-6 py-12">
       <div>
         <p className="text-sm text-muted-foreground">{identity.companyName}</p>
-        <h1 className="mt-1 text-xl font-bold">Link your external identity</h1>
+        <h1 className="mt-1 text-xl font-bold">{t("chat-identity-confirm.link-your-external-identity-tg6")}</h1>
       </div>
       <dl className="divide-y divide-border border-y border-border">
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">Provider</dt>
+          <dt className="text-sm text-muted-foreground">{t("chat-identity-confirm.provider-evz")}</dt>
           <dd className="text-sm font-medium">
             {providerNames[identity.provider]}
           </dd>
         </div>
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">External identity</dt>
+          <dt className="text-sm text-muted-foreground">{t("chat-identity-confirm.external-identity-ivf")}</dt>
           <dd className="text-right text-sm font-medium">
             {identity.externalLabel}
             {identity.externalDetail ? ` · ${identity.externalDetail}` : ""}
           </dd>
         </div>
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">Paperclip account</dt>
+          <dt className="text-sm text-muted-foreground">{t("chat-identity-confirm.paperclip-account-1jp")}</dt>
           <dd className="text-right text-sm font-medium">{paperclipAccount}</dd>
         </div>
         <div className="flex items-center justify-between gap-4 py-3">
-          <dt className="text-sm text-muted-foreground">Agent</dt>
+          <dt className="text-sm text-muted-foreground">{t("chat-identity-confirm.agent-1w5")}</dt>
           <dd className="text-sm font-medium">
             {identity.botLabel ?? "Paperclip agent"}
           </dd>
         </div>
       </dl>
       <p className="text-sm text-muted-foreground">
-        Confirm only if this is your {providerNames[identity.provider]}{" "}
-        identity. Paperclip will check your current organization membership on
-        every action.
+        {t("chat-identity-confirm.confirm-only-if-this-is-your-h2c")} {providerNames[identity.provider]}{" "}
+        {t("chat-identity-confirm.identity-paperclip-will-check-your-c-lff")}
       </p>
       {confirm.isError && (
         <p className="text-sm text-destructive">
-          This link could not be confirmed. It may have expired or been revoked.
+          {t("chat-identity-confirm.this-link-could-not-be-confirmed-it-xqr")}
         </p>
       )}
       <Button disabled={confirm.isPending} onClick={() => confirm.mutate()}>
         {confirm.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-        Confirm identity
+        {t("chat-identity-confirm.confirm-identity-1aw")}
       </Button>
     </main>
   );

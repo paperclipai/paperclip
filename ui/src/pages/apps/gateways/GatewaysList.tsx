@@ -27,6 +27,7 @@ import {
   isGatewayOn,
   latestTokenActivity,
 } from "./gateway-helpers";
+import { t } from "@/i18n";
 
 export function GatewaysList() {
   const navigate = useNavigate();
@@ -114,7 +115,7 @@ export function GatewaysList() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("gateways-list.select-an-organization-to-manage-gat-6el")}</div>;
   }
 
   const gateways = gatewaysQuery.data?.gateways ?? [];
@@ -133,10 +134,9 @@ export function GatewaysList() {
   return (
     <div className="max-w-5xl space-y-5">
       <header className="space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight">Apps</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{t("gateways-list.apps-n9j")}</h1>
         <p className="text-sm text-muted-foreground">
-          A gateway is one safe MCP endpoint that exposes only the apps you assign. Hand it to a client
-          like Cursor or Claude Desktop.
+          {t("gateways-list.a-gateway-is-one-safe-mcp-endpoint-t-s4n")}
         </p>
       </header>
 
@@ -157,14 +157,14 @@ export function GatewaysList() {
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search by name, app, or owner"
+                placeholder={t("gateways-list.search-by-name-app-or-owner-m4b")}
                 className="pl-9"
-                aria-label="Search gateways"
+                aria-label={t("gateways-list.search-gateways-1nl")}
               />
             </div>
             <Button onClick={() => setCreating(true)}>
               <Plus className="mr-1.5 h-4 w-4" />
-              New gateway
+              {t("gateways-list.new-gateway-oxz")}
             </Button>
           </div>
 
@@ -200,7 +200,7 @@ export function GatewaysList() {
             );
             const empty = (
               <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                No gateways match “{search.trim()}”.
+                {t("gateways-list.no-gateways-match-1n8")}{search.trim()}”.
               </div>
             );
             return (
@@ -210,11 +210,11 @@ export function GatewaysList() {
                   <table className="w-full min-w-(--sz-40rem) text-sm">
                     <thead>
                       <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                        <th className="whitespace-nowrap px-4 py-2.5">Gateway</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Scope</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Apps</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Tokens</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Last used</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("gateways-list.gateway-7gz")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("gateways-list.scope-rpv")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("gateways-list.apps-n9j")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("gateways-list.tokens-il7")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("gateways-list.last-used-7s3")}</th>
                         <th className="whitespace-nowrap px-4 py-2.5 text-right">On</th>
                       </tr>
                     </thead>
@@ -267,14 +267,14 @@ export function GatewaysList() {
                         <div className="shrink-0">{toggle(gateway)}</div>
                       </div>
                       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                        <MobileField label="Scope" value={scope} />
-                        <MobileField label="Apps" value={appsLabel} />
+                        <MobileField label={t("gateways-list.scope-rpv")} value={scope} />
+                        <MobileField label={t("gateways-list.apps-n9j")} value={appsLabel} />
                         <MobileField
-                          label="Tokens"
+                          label={t("gateways-list.tokens-il7")}
                           value={`${active} active${expiring > 0 ? ` · ${expiring} expiring` : ""}`}
                         />
                         <MobileField
-                          label="Last used"
+                          label={t("gateways-list.last-used-7s3")}
                           value={lastUsed ? <RelativeTime value={lastUsed} /> : "—"}
                         />
                       </dl>
@@ -289,7 +289,7 @@ export function GatewaysList() {
           })()}
 
           <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
-            <div className="text-sm font-semibold text-foreground">Why a gateway?</div>
+            <div className="text-sm font-semibold text-foreground">{t("gateways-list.why-a-gateway-wyg")}</div>
             <p className="mt-1 text-sm text-muted-foreground">
               You pick which apps go through it, who can use it, and how. Revoke the token, the whole
               gateway goes silent — no app-by-app cleanup.
@@ -321,14 +321,13 @@ function MobileField({ label, value }: { label: string; value: ReactNode }) {
 function EmptyGateways({ onCreate }: { onCreate: () => void }) {
   return (
     <div className="rounded-2xl border border-dashed border-border p-12 text-center">
-      <h2 className="text-lg font-semibold text-foreground">No gateways yet</h2>
+      <h2 className="text-lg font-semibold text-foreground">{t("gateways-list.no-gateways-yet-1wz")}</h2>
       <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-        Group your connected apps into one safe endpoint you can hand to a client, then revoke it in one
-        move.
+        {t("gateways-list.group-your-connected-apps-into-one-s-tgy")}
       </p>
       <Button className="mt-5" onClick={onCreate}>
         <Plus className="mr-1.5 h-4 w-4" />
-        New gateway
+        {t("gateways-list.new-gateway-oxz")}
       </Button>
     </div>
   );

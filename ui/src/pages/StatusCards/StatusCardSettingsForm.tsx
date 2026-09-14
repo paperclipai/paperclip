@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { estimateStatusCardCost } from "./format";
+import { t } from "@/i18n";
 
 export interface StatusCardSettingsValue {
   refreshPolicy: StatusCardRefreshPolicy;
@@ -119,30 +120,30 @@ export function StatusCardSettingsForm({
   return (
     <div className="space-y-6">
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Auto-update policy</h3>
+        <h3 className="text-sm font-semibold">{t("status-card-settings-form.auto-update-policy-1dd")}</h3>
         <div className="space-y-2">
           <RadioRow
             selected={policy.mode === "manual"}
-            title="Manual only — updates when I press refresh"
+            title={t("status-card-settings-form.manual-only-updates-when-i-press-ref-wl5")}
             badge={
               <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
-                Default
+                {t("status-card-settings-form.default-76b")}
               </span>
             }
             onSelect={() => setMode("manual")}
           />
           <RadioRow
             selected={policy.mode === "interval"}
-            title="On a schedule, only if something changed"
+            title={t("status-card-settings-form.on-a-schedule-only-if-something-chan-i7h")}
             onSelect={() => setMode("interval")}
           >
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <span>Check every</span>
+              <span>{t("status-card-settings-form.check-every-1ag")}</span>
               <Select
                 value={String(policy.intervalMinutes ?? 15)}
                 onValueChange={(next) => setPolicy({ intervalMinutes: Number(next) })}
               >
-                <SelectTrigger size="sm" className="w-28" aria-label="Check interval">
+                <SelectTrigger size="sm" className="w-28" aria-label={t("status-card-settings-form.check-interval-1jx")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -157,16 +158,16 @@ export function StatusCardSettingsForm({
           </RadioRow>
           <RadioRow
             selected={policy.mode === "reactive"}
-            title="As soon as something changes (debounced)"
+            title={t("status-card-settings-form.as-soon-as-something-changes-debounc-zny")}
             onSelect={() => setMode("reactive")}
           >
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>Wait</span>
+              <span>{t("status-card-settings-form.wait-3a6")}</span>
               <Select
                 value={String(policy.debounceSeconds ?? 60)}
                 onValueChange={(next) => setPolicy({ debounceSeconds: Number(next) })}
               >
-                <SelectTrigger size="sm" className="w-24" aria-label="Debounce">
+                <SelectTrigger size="sm" className="w-24" aria-label={t("status-card-settings-form.debounce-1bd")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -177,7 +178,7 @@ export function StatusCardSettingsForm({
                   ))}
                 </SelectContent>
               </Select>
-              <span className="text-xs">after the last change · max</span>
+              <span className="text-xs">{t("status-card-settings-form.after-the-last-change-max-1cp")}</span>
               <Input
                 type="number"
                 min={1}
@@ -185,9 +186,9 @@ export function StatusCardSettingsForm({
                 value={policy.maxUpdatesPerHour ?? 6}
                 onChange={(event) => setPolicy({ maxUpdatesPerHour: Math.max(1, Number(event.target.value) || 1) })}
                 className="h-8 w-16 text-sm"
-                aria-label="Max updates per hour"
+                aria-label={t("status-card-settings-form.max-updates-per-hour-18h")}
               />
-              <span className="text-xs">updates/hour</span>
+              <span className="text-xs">{t("status-card-settings-form.updates-hour-erw")}</span>
             </div>
           </RadioRow>
         </div>
@@ -201,12 +202,12 @@ export function StatusCardSettingsForm({
       {autoUpdating ? (
         <Collapsible className="rounded-md border border-border">
           <CollapsibleTrigger className="group flex w-full items-center justify-between gap-2 px-3 py-2.5 text-sm font-semibold">
-            Advanced
+            {t("status-card-settings-form.advanced-qwf")}
             <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-6 border-t border-border px-3 py-3">
             <section className="space-y-2">
-              <h3 className="text-sm font-semibold">Count as a change</h3>
+              <h3 className="text-sm font-semibold">{t("status-card-settings-form.count-as-a-change-1s1")}</h3>
               <div className="space-y-2">
                 {TRIGGER_ROWS.map((row) => (
                   <label key={row.key} className="flex items-start gap-2.5 text-sm">
@@ -223,10 +224,10 @@ export function StatusCardSettingsForm({
             </section>
 
             <section className="space-y-3">
-              <h3 className="text-sm font-semibold">Guardrails</h3>
+              <h3 className="text-sm font-semibold">{t("status-card-settings-form.guardrails-xy3")}</h3>
               <label className="flex items-start gap-2.5 text-sm">
-                <Checkbox checked={Boolean(activeHours)} onCheckedChange={(checked) => setActiveHoursEnabled(Boolean(checked))} className="mt-0.5" aria-label="Limit to active hours" />
-                <span>Only auto-update during active hours</span>
+                <Checkbox checked={Boolean(activeHours)} onCheckedChange={(checked) => setActiveHoursEnabled(Boolean(checked))} className="mt-0.5" aria-label={t("status-card-settings-form.limit-to-active-hours-1du")} />
+                <span>{t("status-card-settings-form.only-auto-update-during-active-hours-1s5")}</span>
               </label>
               {activeHours ? (
                 <div className="flex flex-wrap items-center gap-2 pl-6 text-sm">
@@ -235,7 +236,7 @@ export function StatusCardSettingsForm({
                     value={activeHours.start}
                     onChange={(event) => setPolicy({ activeHours: { ...activeHours, start: event.target.value } })}
                     className="h-8 w-32"
-                    aria-label="Active hours start"
+                    aria-label={t("status-card-settings-form.active-hours-start-z9z")}
                   />
                   <span className="text-muted-foreground">–</span>
                   <Input
@@ -243,19 +244,19 @@ export function StatusCardSettingsForm({
                     value={activeHours.end}
                     onChange={(event) => setPolicy({ activeHours: { ...activeHours, end: event.target.value } })}
                     className="h-8 w-32"
-                    aria-label="Active hours end"
+                    aria-label={t("status-card-settings-form.active-hours-end-68f")}
                   />
                   <Input
                     value={activeHours.timezone}
                     onChange={(event) => setPolicy({ activeHours: { ...activeHours, timezone: event.target.value } })}
                     className="h-8 w-40"
-                    placeholder="Timezone"
-                    aria-label="Active hours timezone"
+                    placeholder={t("status-card-settings-form.timezone-1lc")}
+                    aria-label={t("status-card-settings-form.active-hours-timezone-hvd")}
                   />
                 </div>
               ) : null}
               <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="w-32 shrink-0">Daily token cap</span>
+                <span className="w-32 shrink-0">{t("status-card-settings-form.daily-token-cap-knq")}</span>
                 <Input
                   type="number"
                   min={0}
@@ -266,8 +267,8 @@ export function StatusCardSettingsForm({
                     setPolicy({ dailyTokenCap: event.target.value === "" || parsed <= 0 ? undefined : parsed });
                   }}
                   className="h-8 w-36"
-                  placeholder="no cap"
-                  aria-label="Daily token cap"
+                  placeholder={t("status-card-settings-form.no-cap-cfx")}
+                  aria-label={t("status-card-settings-form.daily-token-cap-knq")}
                 />
               </div>
             </section>
@@ -276,7 +277,7 @@ export function StatusCardSettingsForm({
       ) : null}
 
       <div className="flex items-center gap-2 text-sm">
-        <span className="font-semibold">Estimated cost</span>
+        <span className="font-semibold">{t("status-card-settings-form.estimated-cost-3k0")}</span>
         <span className="text-muted-foreground">=</span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -287,7 +288,7 @@ export function StatusCardSettingsForm({
           <TooltipContent className="max-w-(--sz-18rem) text-left">
             <p>{costEstimate.primary}</p>
             {costEstimate.note ? <p className="mt-1 opacity-80">{costEstimate.note}</p> : null}
-            <p className="mt-1 opacity-80">Rough estimate from typical update sizes; actual cost is tracked per update.</p>
+            <p className="mt-1 opacity-80">{t("status-card-settings-form.rough-estimate-from-typical-update-s-2t2")}</p>
           </TooltipContent>
         </Tooltip>
       </div>

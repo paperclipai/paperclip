@@ -5,6 +5,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { RoutineActivityRow } from "@/components/RoutineActivityRow";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
+import { t } from "@/i18n";
 
 export function RoutineAuditActivity({
   companyId,
@@ -30,7 +31,7 @@ export function RoutineAuditActivity({
   if (activity.isLoading) {
     return (
       <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
-        Loading routine activity…
+        {t("routine-audit-activity.loading-routine-activity-epd")}
       </div>
     );
   }
@@ -42,7 +43,7 @@ export function RoutineAuditActivity({
           {activity.error instanceof Error ? activity.error.message : "Failed to load routine activity."}
         </p>
         <Button variant="outline" size="sm" onClick={() => activity.refetch()}>
-          Try again
+          {t("routine-audit-activity.try-again-982")}
         </Button>
       </div>
     );
@@ -54,7 +55,7 @@ export function RoutineAuditActivity({
   }
 
   return (
-    <div className="border-y border-border" aria-label="Routine activity">
+    <div className="border-y border-border" aria-label={t("routine-audit-activity.routine-activity-1b3")}>
       {events.map((event) => (
         <RoutineActivityRow key={event.id} event={event} />
       ))}

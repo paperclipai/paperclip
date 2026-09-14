@@ -14,6 +14,7 @@ import type {
   TaskChatItem,
   TaskChatMessageItem,
 } from "@/components/task-chat/task-chat-model";
+import { t } from "@/i18n";
 
 /**
  * Demo binding for the agent-bubble copy · 👍 · 👎 cluster (PAP-413). The live
@@ -168,15 +169,15 @@ export function TaskChatLab() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="border-b border-border px-4 py-2">
-        <h1 className="text-sm font-semibold">Task Chat Lab</h1>
+        <h1 className="text-sm font-semibold">{t("task-chat-lab.task-chat-lab-1cv")}</h1>
         <p className="text-xs text-muted-foreground">
-          Synthetic harness for the task chat redesign · every state renders here with no live agent.
+          {t("task-chat-lab.synthetic-harness-for-the-task-chat-bw0")}
         </p>
       </header>
 
       <div className="flex min-h-0 flex-1">
         {/* State switcher */}
-        <nav className="w-56 shrink-0 overflow-y-auto border-r border-border p-2" aria-label="States">
+        <nav className="w-56 shrink-0 overflow-y-auto border-r border-border p-2" aria-label={t("task-chat-lab.states-5af")}>
           {(["live", "tier-b"] as const).map((tier) => (
             <div key={tier} className="mb-3">
               <p className="mb-1 px-1 text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
@@ -223,10 +224,10 @@ export function TaskChatLab() {
               className="flex items-center gap-1 rounded border border-border px-2 py-1 hover:bg-accent"
             >
               <RotateCcw className="h-3.5 w-3.5" />
-              Replay
+              {t("task-chat-lab.replay-1yw")}
             </button>
             <label className="flex items-center gap-2">
-              <span className="text-muted-foreground">Speed</span>
+              <span className="text-muted-foreground">{t("task-chat-lab.speed-2w2")}</span>
               <input
                 type="range"
                 min={0.1}
@@ -234,14 +235,14 @@ export function TaskChatLab() {
                 step={0.1}
                 value={speed}
                 onChange={(e) => setSpeed(parseFloat(e.target.value))}
-                aria-label="Streaming speed"
+                aria-label={t("task-chat-lab.streaming-speed-v2x")}
                 className="w-32"
               />
               <span className="w-10 tabular-nums">{speed.toFixed(1)}×</span>
             </label>
             <div className="ml-auto flex items-center gap-2">
-              <span className="text-muted-foreground">Agent bubble</span>
-              <div className="flex items-center gap-0.5 rounded border border-border p-0.5" role="group" aria-label="Agent bubble treatment">
+              <span className="text-muted-foreground">{t("task-chat-lab.agent-bubble-8cc")}</span>
+              <div className="flex items-center gap-0.5 rounded border border-border p-0.5" role="group" aria-label={t("task-chat-lab.agent-bubble-treatment-x4d")}>
                 {BUBBLE_VARIANTS.map((v) => (
                   <button
                     key={v.id || "current"}

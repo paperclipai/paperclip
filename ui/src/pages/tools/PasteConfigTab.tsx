@@ -24,6 +24,7 @@ import {
 import { endpointHost } from "@/pages/apps/generic-mcp-connect";
 import { McpConfigHelpDialog } from "./McpConfigHelpDialog";
 import { ErrorState } from "./shared";
+import { t } from "@/i18n";
 
 const SAMPLE_CONFIG = `{
   "mcpServers": {
@@ -255,16 +256,16 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     <div className="space-y-5">
       <div className="flex max-w-2xl items-start gap-1.5">
         <p className="text-sm text-muted-foreground">
-          Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup.
+          {t("paste-config-tab.paste-the-mcp-config-snippet-from-th-1yp")}
         </p>
         <McpConfigHelpDialog />
       </div>
       <p className="text-xs text-muted-foreground">
-        Just a URL?{" "}
+        {t("paste-config-tab.just-a-url-2ry")}{" "}
         <Link to="/apps" className="text-primary hover:underline">
-          Browse planned app connections
+          {t("paste-config-tab.browse-planned-app-connections-ehe")}
         </Link>{" "}
-        instead.
+        {t("paste-config-tab.instead-d32")}
       </p>
 
       <div className="space-y-2">
@@ -285,7 +286,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           <p className="text-xs text-amber-600">{localParseError}</p>
         ) : (
           <p className="text-xs text-muted-foreground">
-            Paste an MCP config — the snippet a README tells you to copy.
+            {t("paste-config-tab.paste-an-mcp-config-the-snippet-a-re-ek9")}
           </p>
         )}
       </div>
@@ -298,7 +299,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           {importMutation.isPending ? "Checking…" : "Check config"}
         </Button>
         <span className="text-xs text-muted-foreground">
-          We'll read it and show what we found before anything is saved.
+          {t("paste-config-tab.we-ll-read-it-and-show-what-we-found-isv")}
         </span>
       </div>
 
@@ -307,13 +308,13 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       {preview ? (
         drafts.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
-            We couldn't find an app in that config. Double-check you pasted the whole snippet.
+            {t("paste-config-tab.we-couldn-t-find-an-app-in-that-conf-wae")}
           </div>
         ) : (
           <div className="space-y-3">
             <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-              We found {drafts.length} {drafts.length === 1 ? "app" : "apps"} in that config
+              {t("paste-config-tab.we-found-17e")} {drafts.length} {drafts.length === 1 ? "app" : "apps"} {t("paste-config-tab.in-that-config-1v2")}
             </h3>
             {drafts.map((draft, index) => {
               const url = draftConnectUrl(draft);
@@ -338,8 +339,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
             })}
             {drafts.some((d) => draftConnectUrl(d)) ? (
               <p className="text-xs text-muted-foreground">
-                Checking a remote app creates a draft connection, stores any header replacements as Paperclip secrets,
-                and runs health/catalog discovery before activation.
+                {t("paste-config-tab.checking-a-remote-app-creates-a-draf-12w")}
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
@@ -403,14 +403,14 @@ function DraftCard({
         {onCheck ? (
           <Button size="sm" className="shrink-0" onClick={onCheck} disabled={checking || !canCheck}>
             {checking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-            Check actions
+            {t("paste-config-tab.check-actions-xxm")}
           </Button>
         ) : null}
       </div>
 
       {onCheck ? (
         <label className="mt-4 block max-w-sm space-y-1 text-xs font-medium text-foreground">
-          Connection name
+          {t("paste-config-tab.connection-name-cau")}
           <Input
             value={connectionName}
             onChange={(event) => onConnectionNameChange(event.target.value)}
@@ -436,7 +436,7 @@ function DraftCard({
                   type="password"
                   value={credentialValues[credentialValueKey(draft, field.configPath)] ?? ""}
                   onChange={(event) => onCredentialChange(field.configPath, event.target.value)}
-                  placeholder="Paste replacement value"
+                  placeholder={t("paste-config-tab.paste-replacement-value-13j")}
                   className="h-8 max-w-sm text-xs"
                 />
               </div>
@@ -445,10 +445,10 @@ function DraftCard({
         </div>
       ) : draft.credentialRefs.length > 0 ? (
         <p className="mt-3 text-xs text-muted-foreground">
-          Keys from this config stay draft-only until an admin maps them to an approved template.
+          {t("paste-config-tab.keys-from-this-config-stay-draft-onl-1nl")}
         </p>
       ) : (
-        <p className="mt-3 text-xs text-muted-foreground">No keys needed for this one.</p>
+        <p className="mt-3 text-xs text-muted-foreground">{t("paste-config-tab.no-keys-needed-for-this-one-hd8")}</p>
       )}
 
       {draft.warnings.length > 0 ? (
@@ -490,19 +490,19 @@ function CatalogReview({
         <div>
           <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <ShieldCheck className="h-4 w-4 text-emerald-600" />
-            Review actions for {result.application.name}
+            {t("paste-config-tab.review-actions-for-1oe")} {result.application.name}
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            Health and catalog checks passed. Every discovered action starts allowed; you can narrow access after activation.
+            {t("paste-config-tab.health-and-catalog-checks-passed-eve-ous")}
           </p>
         </div>
         <Button size="sm" onClick={onFinish} disabled={finishing || enabledCount === 0 || Boolean(activatedName)}>
           {finishing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-          Activate {enabledCount} of {total}
+          {t("paste-config-tab.activate-giw")} {enabledCount} of {total}
         </Button>
       </div>
       <ActionGroup
-        title="Read-only"
+        title={t("paste-config-tab.read-only-1xk")}
         actions={result.actions.readOnly}
         enabled={enabled}
         onToggle={onToggle}
@@ -510,7 +510,7 @@ function CatalogReview({
         askFirstLevels={askFirstLevels}
       />
       <ActionGroup
-        title="Can make changes"
+        title={t("paste-config-tab.can-make-changes-1yp")}
         actions={result.actions.canMakeChanges}
         enabled={enabled}
         onToggle={onToggle}
@@ -518,7 +518,7 @@ function CatalogReview({
         askFirstLevels={askFirstLevels}
       />
       {activatedName ? (
-        <p className="text-xs font-medium text-emerald-700">{activatedName} is active for all agents.</p>
+        <p className="text-xs font-medium text-emerald-700">{activatedName} {t("paste-config-tab.is-active-for-all-agents-jyk")}</p>
       ) : null}
     </div>
   );
@@ -546,10 +546,10 @@ function ActionGroup({
         <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</div>
         <div className="flex gap-2">
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onBulk(true)}>
-            Turn all on
+            {t("paste-config-tab.turn-all-on-nwd")}
           </Button>
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onBulk(false)}>
-            Turn all off
+            {t("paste-config-tab.turn-all-off-1tk")}
           </Button>
         </div>
       </div>

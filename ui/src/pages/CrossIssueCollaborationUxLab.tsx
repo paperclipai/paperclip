@@ -7,6 +7,7 @@ import { IssueFieldChangeReceipt } from "@/components/IssueFieldChangeReceipt";
 import { IssueWriteDenialNotice } from "@/components/IssueWriteDenialNotice";
 import { Identity } from "@/components/Identity";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 /**
  * UX lab for the three surfaces that make open
@@ -102,7 +103,7 @@ function ActivityRow({
       <div className="flex items-center gap-1.5">
         <Identity name={actorName} size="sm" />
         <span>{verb}</span>
-        <span className="ml-auto shrink-0">2m ago</span>
+        <span className="ml-auto shrink-0">{t("cross-issue-collaboration-ux-lab.2m-ago-1r2")}</span>
       </div>
       {children}
     </div>
@@ -123,44 +124,42 @@ export function CrossIssueCollaborationUxLab() {
       <div className="mx-auto max-w-5xl space-y-6">
         <header>
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Open cross-task collaboration
+            {t("cross-issue-collaboration-ux-lab.open-cross-task-collaboration-woe")}
           </div>
           <h1 className="mt-1 text-xl font-semibold text-foreground">
-            Open cross-task collaboration — attribution, audit, and denial copy
+            {t("cross-issue-collaboration-ux-lab.open-cross-task-collaboration-attrib-1dd")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Agents may now write to any task they can read. These are the three surfaces that keep
-            that legible: whose authority a comment rode, what an edit changed, and — when a write
-            is refused — which boundary fired and what to do instead.
+            {t("cross-issue-collaboration-ux-lab.agents-may-now-write-to-any-task-the-1ix")}
           </p>
         </header>
 
         <LabSection
           index="1 · Attribution chip (plan §3a)"
-          title="“Fable · for Dotta” on a cross-task agent comment"
-          description="An agent commenting on a task it is not assigned to names the responsible user whose authority it rode. The assignee's own comments stay unchipped — that is the ordinary case, and chipping every bubble would be noise."
+          title={t("cross-issue-collaboration-ux-lab.fable-for-dotta-on-a-cross-task-agen-2ik")}
+          description={t("cross-issue-collaboration-ux-lab.an-agent-commenting-on-a-task-it-is-qqa")}
         >
-          <Frame label="Assignee's own comment — no chip">
+          <Frame label={t("cross-issue-collaboration-ux-lab.assignee-s-own-comment-no-chip-10x")}>
             <AgentCommentBubble
               authorName="CodexCoder"
               body="Rebased onto master and re-ran the containment suite; all green."
             />
           </Frame>
-          <Frame label="Cross-task comment — chipped">
+          <Frame label={t("cross-issue-collaboration-ux-lab.cross-task-comment-chipped-ne5")}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="Dotta"
               body="Dotta asked me to flag that the retry window here overlaps TASK-482. Worth a look before you close this."
             />
           </Frame>
-          <Frame label="Responsible user not in the loaded directory">
+          <Frame label={t("cross-issue-collaboration-ux-lab.responsible-user-not-in-the-loaded-d-ijb")}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="the responsible user"
               body="Falls back to a generic label rather than printing a raw user id."
             />
           </Frame>
-          <Frame label="Long user name truncates in the chip">
+          <Frame label={t("cross-issue-collaboration-ux-lab.long-user-name-truncates-in-the-chip-17c")}>
             <AgentCommentBubble
               authorName="Fable"
               onBehalfOf="Alexandra Konstantinopoulos-Whitfield"
@@ -171,10 +170,10 @@ export function CrossIssueCollaborationUxLab() {
 
         <LabSection
           index="2 · Field-edit audit receipt (plan §3b)"
-          title="Every PATCH says who changed what, and under which authorization"
-          description="Required for agent and board edits alike. Before/after per field, the responsible user behind the write, and the authorization reason that let it through."
+          title={t("cross-issue-collaboration-ux-lab.every-patch-says-who-changed-what-an-2lk")}
+          description={t("cross-issue-collaboration-ux-lab.required-for-agent-and-board-edits-a-1ry")}
         >
-          <Frame label="Cross-task agent edit">
+          <Frame label={t("cross-issue-collaboration-ux-lab.cross-task-agent-edit-1ee")}>
             <ActivityRow actorName="Fable" verb="changed the status from todo to in progress">
               <IssueFieldChangeReceipt
                 event={{
@@ -193,7 +192,7 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Board (human) edit — audited the same way">
+          <Frame label={t("cross-issue-collaboration-ux-lab.board-human-edit-audited-the-same-wa-h6g")}>
             <ActivityRow actorName="Dotta" verb="updated the issue">
               <IssueFieldChangeReceipt
                 event={{
@@ -215,7 +214,7 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Reassignment, blockers, and work mode in one write">
+          <Frame label={t("cross-issue-collaboration-ux-lab.reassignment-blockers-and-work-mode-1tw")}>
             <ActivityRow actorName="CTO" verb="updated the issue">
               <IssueFieldChangeReceipt
                 event={{
@@ -238,25 +237,24 @@ export function CrossIssueCollaborationUxLab() {
               />
             </ActivityRow>
           </Frame>
-          <Frame label="Older activity row — no receipt, renders unchanged">
+          <Frame label={t("cross-issue-collaboration-ux-lab.older-activity-row-no-receipt-render-dpy")}>
             <ActivityRow actorName="CodexCoder" verb="checked out the issue" />
           </Frame>
         </LabSection>
 
         <LabSection
           index="3 · Actionable denial copy (plan §6)"
-          title="Every wall names the boundary, who can act, and the sanctioned path"
-          description="A real incident burned a full detour discovering a workaround behind an opaque 403. These are all the ways an issue write can now be refused — the same copy the API error body carries."
+          title={t("cross-issue-collaboration-ux-lab.every-wall-names-the-boundary-who-ca-17t")}
+          description={t("cross-issue-collaboration-ux-lab.a-real-incident-burned-a-full-detour-ihu")}
           columns={1}
         >
-          <Frame label="Before — what the incident actually saw">
+          <Frame label={t("cross-issue-collaboration-ux-lab.before-what-the-incident-actually-sa-lwf")}>
             <div className="text-xs">
               <span className="text-red-600 dark:text-red-400">
-                403 Forbidden: Issue is outside this actor&apos;s authorization boundary
+                {t("cross-issue-collaboration-ux-lab.403-forbidden-issue-is-outside-this-xnf")}
               </span>
               <p className="mt-1 text-muted-foreground">
-                No boundary named, nobody named, no path forward. The workaround (create a child
-                issue) had to be discovered by trial and error.
+                {t("cross-issue-collaboration-ux-lab.no-boundary-named-nobody-named-no-pa-3d9")}
               </p>
             </div>
           </Frame>

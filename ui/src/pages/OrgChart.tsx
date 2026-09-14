@@ -183,6 +183,7 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { t } from "@/i18n";
 
 const statusDotColor: Record<string, string> = {
   running: "var(--hex-22d3ee)",
@@ -488,7 +489,7 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
           <Link to="/company/import">
             <Button variant="outline" size="sm">
               <Upload className="mr-1.5 h-3.5 w-3.5" />
-              Import organization
+              {t("org-chart.import-organization-11x")}
             </Button>
           </Link>
         ) : null}
@@ -496,7 +497,7 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
           <Link to="/company/export">
             <Button variant="outline" size="sm">
               <Download className="mr-1.5 h-3.5 w-3.5" />
-              Export organization
+              {t("org-chart.export-organization-1x7")}
             </Button>
           </Link>
         ) : null}
@@ -534,8 +535,8 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                 });
               }
             }}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("org-chart.zoom-in-19b")}
+            aria-label={t("org-chart.zoom-in-19b")}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -550,16 +551,16 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                 });
               }
             }}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("org-chart.zoom-out-110")}
+            aria-label={t("org-chart.zoom-out-110")}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-(length:--text-nano) transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
+            title={t("org-chart.fit-to-screen-qkq")}
+            aria-label={t("org-chart.fit-chart-to-screen-mul")}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>

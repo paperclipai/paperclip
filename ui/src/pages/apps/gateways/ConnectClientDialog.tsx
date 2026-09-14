@@ -39,6 +39,7 @@ import {
   tokenStatus,
 } from "./gateway-helpers";
 import { gatewaysQueryKey } from "./NewGatewayDialog";
+import { t } from "@/i18n";
 
 type PanelKey = string;
 type ClientIcon = ComponentType<{ className?: string }>;
@@ -180,32 +181,31 @@ export function ConnectClientDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            Client snippets
+            {t("connect-client-dialog.client-snippets-1ex")}
             <Tooltip>
               <TooltipTrigger asChild>
-                <button type="button" aria-label="About client snippets" className="text-muted-foreground hover:text-foreground">
+                <button type="button" aria-label={t("connect-client-dialog.about-client-snippets-mp9")} className="text-muted-foreground hover:text-foreground">
                   <HelpCircle className="h-4 w-4" />
                 </button>
               </TooltipTrigger>
               <TooltipContent className="max-w-xs text-xs">
-                Give this MCP gateway configuration to your tool. It does not give it access to Paperclip or
-                skills; it only gateways calls between the client and the tools exposed here.
+                {t("connect-client-dialog.give-this-mcp-gateway-configuration-eio")}
               </TooltipContent>
             </Tooltip>
           </DialogTitle>
           <DialogDescription>
-            Choose a client and copy a complete, authenticated configuration.
+            {t("connect-client-dialog.choose-a-client-and-copy-a-complete-1qd")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3">
-          <span className="text-xs font-medium text-muted-foreground">Authorization</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("connect-client-dialog.authorization-dde")}</span>
           {availableTokens.length > 0 ? (
             <SearchableSelect<string, TokenOption>
               value={selectedTokenId}
               groups={tokenGroups}
               onValueChange={setSelectedTokenId}
-              placeholder="Issue a token"
+              placeholder={t("connect-client-dialog.issue-a-token-gm1")}
               searchPlaceholder="Search tokens…"
               emptyMessage="No copyable tokens."
               contentWidth="auto"
@@ -220,7 +220,7 @@ export function ConnectClientDialog({
                 </span>
               )}
               createItem={{
-                render: () => <span>+ Issue a new token</span>,
+                render: () => <span>{t("connect-client-dialog.issue-a-new-token-1qb")}</span>,
                 onSelect: issueToken,
               }}
             />
@@ -244,21 +244,19 @@ export function ConnectClientDialog({
               onClick={() => void copyText(`Authorization: Bearer ${selectedToken.token}`, "Authorization header")}
             >
               <Copy className="mr-1 h-3.5 w-3.5" />
-              Copy header
+              {t("connect-client-dialog.copy-header-130")}
             </Button>
           ) : null}
         </div>
 
         {!selectedToken ? (
           <p className="text-xs text-muted-foreground">
-            Issue a token before copying a snippet; the full <code>Authorization: Bearer …</code> header is
-            required. Existing token secrets cannot be retrieved again, so only tokens issued in this page
-            session can fill a snippet.
+            {t("connect-client-dialog.issue-a-token-before-copying-a-snipp-kuz")} <code>Authorization: Bearer …</code> {t("connect-client-dialog.header-is-required-existing-token-se-1hj")}
           </p>
         ) : null}
 
         <div className="grid gap-4 sm:grid-cols-(--gtc-10)">
-          <nav className="flex gap-1 overflow-x-auto sm:flex-col" aria-label="Clients">
+          <nav className="flex gap-1 overflow-x-auto sm:flex-col" aria-label={t("connect-client-dialog.clients-18s")}>
             {snippets.map((snippet) => {
               const Icon = CLIENT_ICONS[snippet.client];
               return (
@@ -289,7 +287,7 @@ export function ConnectClientDialog({
               )}
             >
               <LinkIcon className="h-4 w-4 shrink-0" />
-              Raw URL
+              {t("connect-client-dialog.raw-url-1oq")}
             </button>
           </nav>
 
@@ -297,19 +295,19 @@ export function ConnectClientDialog({
             {active === "raw_url" ? (
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <div className="text-sm font-medium text-foreground">Endpoint URL</div>
+                  <div className="text-sm font-medium text-foreground">{t("connect-client-dialog.endpoint-url-15v")}</div>
                   <div className="flex items-center gap-2">
                     <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">
                       {endpoint}
                     </code>
                     <Button variant="outline" size="sm" onClick={() => void copyText(endpoint, "Endpoint URL")}>
                       <Copy className="mr-1 h-3.5 w-3.5" />
-                      Copy
+                      {t("connect-client-dialog.copy-s6g")}
                     </Button>
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <div className="text-sm font-medium text-foreground">Authorization header</div>
+                  <div className="text-sm font-medium text-foreground">{t("connect-client-dialog.authorization-header-1ux")}</div>
                   <code className="block truncate rounded-md bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">
                     {selectedToken ? `Authorization: Bearer ${maskedTokenLabel(selectedToken)}` : "Authorization: Bearer pcgw_•••"}
                   </code>
@@ -326,7 +324,7 @@ export function ConnectClientDialog({
                     onClick={() => copyConfigText && void copyText(copyConfigText, `${activeSnippet.label} config`)}
                   >
                     <Copy className="mr-1 h-3.5 w-3.5" />
-                    Copy
+                    {t("connect-client-dialog.copy-s6g")}
                   </Button>
                 </div>
                 <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-muted-foreground">
@@ -339,12 +337,11 @@ export function ConnectClientDialog({
                 ) : null}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">No client snippets available for this gateway.</p>
+              <p className="text-sm text-muted-foreground">{t("connect-client-dialog.no-client-snippets-available-for-thi-uki")}</p>
             )}
 
             <p className="text-xs text-muted-foreground">
-              Treat the token like a password. Anyone holding it can call the tools this gateway allows. Revoke
-              it if it leaks.
+              {t("connect-client-dialog.treat-the-token-like-a-password-anyo-11d")}
             </p>
           </div>
         </div>
@@ -352,7 +349,7 @@ export function ConnectClientDialog({
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)}>
             <Check className="mr-1.5 h-4 w-4" />
-            Done
+            {t("connect-client-dialog.done-13c")}
           </Button>
         </DialogFooter>
       </DialogContent>

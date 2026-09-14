@@ -42,6 +42,7 @@ import type {
   AgentPermissions,
   EmailEndpointSummary,
 } from "@paperclipai/shared";
+import { t } from "@/i18n";
 const selectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
 
@@ -201,7 +202,7 @@ export function EmailEndpointSetup() {
           ? "Email tasks stay inside the configured project or root task boundary. Output is quarantined for trusted review."
           : "Email can contain malicious instructions. We recommend Low-trust review to limit the agent’s access to Paperclip work."}
       </p>
-      <p className="text-xs text-muted-foreground">Low-trust execution also requires isolated workspaces and an active sandbox environment in the agent’s runtime settings.</p>
+      <p className="text-xs text-muted-foreground">{t("email-endpoint-setup.low-trust-execution-also-requires-is-vel")}</p>
       <Button
         size="sm"
         variant="outline"
@@ -236,7 +237,7 @@ export function EmailEndpointSetup() {
         </Button>
       </header>
       {step !== 6 && (
-        <nav aria-label="Setup progress">
+        <nav aria-label={t("email-endpoint-setup.setup-progress-w85")}>
           <ol className="flex gap-4">
             {labels.map((label, i) => (
               <li
@@ -286,16 +287,16 @@ export function EmailEndpointSetup() {
         >
           <section className="space-y-4 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Add your AgentMail API key
+              {t("email-endpoint-setup.add-your-agent-mail-api-key-19z")}
             </h2>
-            <Label htmlFor="email-api-key">API key</Label>
+            <Label htmlFor="email-api-key">{t("email-endpoint-setup.api-key-1sw")}</Label>
             <Input
               id="email-api-key"
               type="password"
               autoComplete="off"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Paste your AgentMail API key"
+              placeholder={t("email-endpoint-setup.paste-your-agent-mail-api-key-13x")}
             />
             <a
               href="https://console.agentmail.to"
@@ -303,12 +304,12 @@ export function EmailEndpointSetup() {
               rel="noreferrer"
               className="text-sm underline"
             >
-              Get a key in AgentMail ↗
+              {t("email-endpoint-setup.get-a-key-in-agent-mail-dbl")}
             </a>
           </section>
           <div className="flex justify-between">
             <Button type="button" variant="ghost" onClick={() => setStep(0)}>
-              Back
+              {t("email-endpoint-setup.back-1hz")}
             </Button>
             <Button disabled={!apiKey.trim() || connect.isPending}>
               {connect.isPending ? "Connecting…" : "Connect AgentMail"}
@@ -318,15 +319,15 @@ export function EmailEndpointSetup() {
       )}
       {step === 2 && (
         <section className="space-y-5 rounded-xl border border-border p-6">
-          <h2 className="text-lg font-semibold">AgentMail is connected</h2>
+          <h2 className="text-lg font-semibold">{t("email-endpoint-setup.agent-mail-is-connected-3c4")}</h2>
           <p className="text-sm text-muted-foreground">
-            Next, give an agent an email address from Permissions.
+            {t("email-endpoint-setup.next-give-an-agent-an-email-address-bp6")}
           </p>
           <div className="flex justify-end">
             <Button
               onClick={() => navigate(`/apps/${connectionId}/permissions`)}
             >
-              Open permissions <ArrowRight className="size-4" />
+              {t("email-endpoint-setup.open-permissions-cg8")} <ArrowRight className="size-4" />
             </Button>
           </div>
         </section>
@@ -335,15 +336,15 @@ export function EmailEndpointSetup() {
         <>
           <section className="space-y-4 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Who should handle this inbox?
+              {t("email-endpoint-setup.who-should-handle-this-inbox-t94")}
             </h2>
             <p className="text-sm text-muted-foreground">
-              Incoming email will create tasks assigned to this agent.
+              {t("email-endpoint-setup.incoming-email-will-create-tasks-ass-11u")}
             </p>
-            <Label>Agent</Label>
+            <Label>{t("email-endpoint-setup.agent-1w5")}</Label>
             <SearchableSelect
               value={agentId}
-              placeholder="Choose an agent"
+              placeholder={t("email-endpoint-setup.choose-an-agent-quw")}
               searchPlaceholder="Search all agents…"
               emptyMessage="No agents found."
               groups={[
@@ -385,8 +386,7 @@ export function EmailEndpointSetup() {
               }
             />
             <p className="text-xs text-muted-foreground">
-              Activating this inbox also adds the agent to this connection’s
-              allowed agents.
+              {t("email-endpoint-setup.activating-this-inbox-also-adds-the-a54")}
             </p>
           </section>
           {trustNotice}
@@ -396,7 +396,7 @@ export function EmailEndpointSetup() {
         <>
           <section className="space-y-5 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Choose {chosen?.name}’s email address
+              {t("email-endpoint-setup.choose-w4f")} {chosen?.name}{t("email-endpoint-setup.s-email-address-1xt")}
             </h2>
             <RadioCardGroup
               ariaLabel="Email address source"
@@ -413,7 +413,7 @@ export function EmailEndpointSetup() {
             />
             {addressMode === "new" ? (
               <div className="space-y-2">
-                <Label htmlFor="email-name">Email address</Label>
+                <Label htmlFor="email-name">{t("email-endpoint-setup.email-address-1cd")}</Label>
                 <div className="flex items-center gap-2">
                   <Input
                     id="email-name"
@@ -427,14 +427,14 @@ export function EmailEndpointSetup() {
               </div>
             ) : (
               <div className="space-y-2">
-                <Label htmlFor="email-existing">Available inbox</Label>
+                <Label htmlFor="email-existing">{t("email-endpoint-setup.available-inbox-1nj")}</Label>
                 <select
                   id="email-existing"
                   className={selectClass}
                   value={inboxId}
                   onChange={(e) => setInboxId(e.target.value)}
                 >
-                  <option value="">Choose an inbox</option>
+                  <option value="">{t("email-endpoint-setup.choose-an-inbox-8qa")}</option>
                   {inspected.data?.inboxes.map((i) => (
                     <option
                       key={i.inbox_id}
@@ -455,12 +455,12 @@ export function EmailEndpointSetup() {
             )}
             <details className="border-t border-border pt-4">
               <summary className="cursor-pointer text-sm text-muted-foreground">
-                Advanced options
+                {t("email-endpoint-setup.advanced-options-v3v")}
               </summary>
               <div className="space-y-4 pt-4">
                 {addressMode === "new" && (
                   <>
-                    <Label htmlFor="email-domain">Domain</Label>
+                    <Label htmlFor="email-domain">{t("email-endpoint-setup.domain-1gq")}</Label>
                     <select
                       id="email-domain"
                       value={domain}
@@ -480,11 +480,11 @@ export function EmailEndpointSetup() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Set up a custom domain in AgentMail ↗
+                      {t("email-endpoint-setup.set-up-a-custom-domain-in-agent-mail-1xi")}
                     </a>
                   </>
                 )}
-                <Label htmlFor="email-mode">Receiving</Label>
+                <Label htmlFor="email-mode">{t("email-endpoint-setup.receiving-19k")}</Label>
                 <select
                   id="email-mode"
                   value={mode}
@@ -492,10 +492,10 @@ export function EmailEndpointSetup() {
                   className={selectClass}
                 >
                   <option value="websocket">
-                    Live connection — works locally
+                    {t("email-endpoint-setup.live-connection-works-locally-13k")}
                   </option>
                   <option value="webhook">
-                    Webhook — requires public HTTPS
+                    {t("email-endpoint-setup.webhook-requires-public-https-138")}
                   </option>
                 </select>
               </div>
@@ -510,16 +510,15 @@ export function EmailEndpointSetup() {
           {trustNotice}
           <section className="space-y-4 rounded-xl border border-border p-6">
             <h2 className="text-lg font-semibold">
-              Ready to start receiving email?
+              {t("email-endpoint-setup.ready-to-start-receiving-email-14x")}
             </h2>
             <p className="text-lg font-semibold">{address}</p>
             <p className="text-sm">
-              Assigned to {chosen?.name} ·{" "}
+              {t("email-endpoint-setup.assigned-to-dc2")} {chosen?.name} ·{" "}
               {mode === "websocket" ? "Live connection" : "Signed webhook"}
             </p>
             <p className="text-sm text-muted-foreground">
-              New conversations create tasks. Replies stay in the same task.
-              Task comments stay internal.
+              {t("email-endpoint-setup.new-conversations-create-tasks-repli-mjm")}
             </p>
           </section>
         </>
@@ -528,12 +527,12 @@ export function EmailEndpointSetup() {
         <section className="space-y-5 rounded-xl border border-border p-6">
           <p className="flex items-center gap-2 text-sm">
             <Check className="size-4" />
-            Receiving email for {chosen?.name}
+            {t("email-endpoint-setup.receiving-email-for-1cx")} {chosen?.name}
           </p>
           <p className="text-lg font-semibold">{setup.data?.address}</p>
           <EmailSafetyNotice />
           <Button onClick={() => navigate(`/apps/${connectionId}/permissions`)}>
-            Back to permissions
+            {t("email-endpoint-setup.back-to-permissions-1el")}
           </Button>
         </section>
       )}
@@ -548,7 +547,7 @@ export function EmailEndpointSetup() {
             }
           >
             <ArrowLeft className="size-4" />
-            Back
+            {t("email-endpoint-setup.back-1hz")}
           </Button>
           <Button
             disabled={
@@ -584,10 +583,9 @@ export function EmailEndpointSetup() {
       <Dialog open={trustOpen} onOpenChange={setTrustOpen}>
         <DialogContent className="max-h-screen overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Trust settings · {chosen?.name}</DialogTitle>
+            <DialogTitle>{t("email-endpoint-setup.trust-settings-rwt")} {chosen?.name}</DialogTitle>
             <DialogDescription>
-              Changes apply to all of this agent’s work. Use a dedicated email
-              agent if its other tasks need broader access.
+              {t("email-endpoint-setup.changes-apply-to-all-of-this-agent-s-njp")}
             </DialogDescription>
           </DialogHeader>
           <TrustPresetSection
@@ -606,8 +604,7 @@ export function EmailEndpointSetup() {
             candidatesLoading={projects.isPending || boundaryIssues.isPending}
           />
           <p className="text-xs text-muted-foreground">
-            Low trust limits Paperclip access; it does not sandbox the runtime.
-            Review filesystem, tool, and secret access separately.
+            {t("email-endpoint-setup.low-trust-limits-paperclip-access-it-bau")}
           </p>
           {(trust.error || projects.error || boundaryIssues.error) && (
             <p role="alert" className="text-sm text-destructive">
@@ -616,7 +613,7 @@ export function EmailEndpointSetup() {
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setTrustOpen(false)}>
-              Cancel
+              {t("email-endpoint-setup.cancel-ew9")}
             </Button>
             <Button
               disabled={
@@ -628,7 +625,7 @@ export function EmailEndpointSetup() {
               }
               onClick={() => trust.mutate()}
             >
-              Save trust settings
+              {t("email-endpoint-setup.save-trust-settings-1m5")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -669,10 +666,10 @@ export function EmailConnectionInboxes({
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border p-6">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">
-            Give an agent an email address
+            {t("email-endpoint-setup.give-an-agent-an-email-address-pdd")}
           </h2>
           <p className="text-sm text-muted-foreground">
-            Each email conversation becomes a task.
+            {t("email-endpoint-setup.each-email-conversation-becomes-a-ta-1id")}
           </p>
         </div>
         {canConfigure && (
@@ -680,7 +677,7 @@ export function EmailConnectionInboxes({
             <Link
               to={`/apps/chat/connect?provider=agentmail&connectionId=${connectionId}`}
             >
-              Give an agent an email address
+              {t("email-endpoint-setup.give-an-agent-an-email-address-pdd")}
             </Link>
           </Button>
         )}
@@ -755,7 +752,7 @@ export function EmailEndpointSettings({
     },
   });
   if (removed)
-    return <p>Inbox disconnected. Email history remains in its tasks.</p>;
+    return <p>{t("email-endpoint-setup.inbox-disconnected-email-history-rem-4l6")}</p>;
   if (!inbox)
     return (
       <p role={query.error ? "alert" : undefined}>
@@ -770,11 +767,10 @@ export function EmailEndpointSettings({
         {inbox.receiveMode === "websocket" ? "Live connection" : "Webhook"}
       </p>
       <p className="text-sm text-muted-foreground">
-        Last mail check: {inbox.lastSyncAt ? new Date(inbox.lastSyncAt).toLocaleString() : "Not checked yet"}
+        {t("email-endpoint-setup.last-mail-check-1pp")} {inbox.lastSyncAt ? new Date(inbox.lastSyncAt).toLocaleString() : "Not checked yet"}
       </p>
       <p className="text-sm">
-        Each email conversation is a task. Task comments stay internal; use
-        Email reply to send.
+        {t("email-endpoint-setup.each-email-conversation-is-a-task-ta-rb8")}
       </p>
       {inbox.lastError && (
         <p role="alert" className="text-sm text-destructive">
@@ -796,12 +792,12 @@ export function EmailEndpointSettings({
           disabled={control.isPending}
           onClick={() => control.mutate("remove")}
         >
-          Disconnect inbox
+          {t("email-endpoint-setup.disconnect-inbox-1oa")}
         </Button>
       </div>
       <div className="space-y-2">
         <Label htmlFor="email-reconnect-key">
-          Reconnect this inbox with a new API key
+          {t("email-endpoint-setup.reconnect-this-inbox-with-a-new-api-1de")}
         </Label>
         <Input
           id="email-reconnect-key"
@@ -810,7 +806,7 @@ export function EmailEndpointSettings({
           value={replacementKey}
           onChange={(e) => setReplacementKey(e.target.value)}
         />
-        <Label htmlFor="email-reconnect-mode">Receiving mode</Label>
+        <Label htmlFor="email-reconnect-mode">{t("email-endpoint-setup.receiving-mode-5zs")}</Label>
         <select
           id="email-reconnect-mode"
           className={selectClass}
@@ -819,15 +815,15 @@ export function EmailEndpointSettings({
             setReceiveMode(e.target.value as "websocket" | "webhook")
           }
         >
-          <option value="websocket">Live connection</option>
-          <option value="webhook">Webhook</option>
+          <option value="websocket">{t("email-endpoint-setup.live-connection-123")}</option>
+          <option value="webhook">{t("email-endpoint-setup.webhook-1ft")}</option>
         </select>
         <Button
           variant="outline"
           disabled={!replacementKey || reconnect.isPending}
           onClick={() => reconnect.mutate()}
         >
-          Reconnect inbox
+          {t("email-endpoint-setup.reconnect-inbox-1xc")}
         </Button>
       </div>
       {reconnect.error && (

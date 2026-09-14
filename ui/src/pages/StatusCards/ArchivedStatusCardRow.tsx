@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { formatDateTime } from "@/lib/utils";
 import { formatCents, formatTokens, rollupUpdates } from "./format";
 import type { StatusCardView } from "./types";
+import { t } from "@/i18n";
 
 function shortDate(iso: string | null): string {
   if (!iso) return "—";
@@ -36,7 +37,7 @@ export function ArchivedStatusCardRow({
       <div className="min-w-0">
         <p className="truncate text-sm font-semibold">{card.title ?? "Untitled card"}</p>
         <p className="mt-0.5 text-xs text-muted-foreground" title={card.archivedAt ? formatDateTime(card.archivedAt) : undefined}>
-          archived {shortDate(card.archivedAt)} · last summary {shortDate(card.lastGeneratedAt)}
+          archived {shortDate(card.archivedAt)} {t("archived-status-card-row.last-summary-1rd")} {shortDate(card.lastGeneratedAt)}
           {rollup ? ` · lifetime ${formatTokens(rollup.totalTokens)} / ${formatCents(rollup.totalCostCents)}` : ""}
         </p>
       </div>
@@ -45,11 +46,11 @@ export function ArchivedStatusCardRow({
           stale and never auto-runs. */}
       <div className="flex shrink-0 gap-2">
         <Button size="sm" onClick={onView}>
-          View
+          {t("archived-status-card-row.view-q5w")}
         </Button>
         <Button variant="outline" size="sm" onClick={onRestore} disabled={restorePending}>
           {restorePending ? <Loader2 className="animate-spin" /> : null}
-          Restore
+          {t("archived-status-card-row.restore-4fi")}
         </Button>
       </div>
     </div>

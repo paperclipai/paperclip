@@ -38,6 +38,7 @@ import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
 import { CaseCopyableToken, CaseIdentifierKey } from "@/components/CaseIdentifierKey";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
+import { t } from "@/i18n";
 
 const STATUS_LABEL: Record<CaseStatus, string> = {
   draft: "Draft",
@@ -126,16 +127,16 @@ function CaseRelationshipsSection({
   if (!parent && children.length === 0) return null;
 
   return (
-    <section className="space-y-3" aria-label="Case relationships">
+    <section className="space-y-3" aria-label={t("case-detail.case-relationships-98s")}>
       {parent ? (
         <div className="space-y-1">
-          <h2 className="text-xs font-medium text-muted-foreground">Parent</h2>
+          <h2 className="text-xs font-medium text-muted-foreground">{t("case-detail.parent-1hn")}</h2>
           <CaseChildrenTree children={[parent]} />
         </div>
       ) : null}
       {children.length > 0 ? (
         <div className="space-y-1">
-          <h2 className="text-xs font-medium text-muted-foreground">Children {children.length}</h2>
+          <h2 className="text-xs font-medium text-muted-foreground">{t("case-detail.children-349")} {children.length}</h2>
           <CaseChildrenTree children={children} maxVisible={5} />
         </div>
       ) : null}
@@ -202,7 +203,7 @@ function CaseStatusPicker({
           type="button"
           disabled={disabled}
           className="inline-flex items-center gap-1 rounded-md hover:bg-accent/50 disabled:opacity-50"
-          aria-label="Change case status"
+          aria-label={t("case-detail.change-case-status-1dg")}
         >
           <StatusBadge status={status} />
           <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -275,14 +276,14 @@ function CaseLabelsPicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-xs text-muted-foreground">
-          <Plus className="h-3.5 w-3.5" /> Labels
+          <Plus className="h-3.5 w-3.5" /> {t("case-detail.labels-1t3")}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 p-2">
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search labels…"
+          placeholder={t("case-detail.search-labels-176")}
           className="mb-2 h-7 text-xs"
         />
         <div className="max-h-52 space-y-0.5 overflow-y-auto">
@@ -299,7 +300,7 @@ function CaseLabelsPicker({
             </button>
           ))}
           {filtered.length === 0 && !search.trim() && (
-            <p className="px-2 py-1 text-xs text-muted-foreground">No labels yet.</p>
+            <p className="px-2 py-1 text-xs text-muted-foreground">{t("case-detail.no-labels-yet-1hp")}</p>
           )}
         </div>
         {search.trim() && !all.some((l) => l.name.toLowerCase() === search.trim().toLowerCase()) && (
@@ -309,7 +310,7 @@ function CaseLabelsPicker({
               value={newColor}
               onChange={(e) => setNewColor(e.target.value)}
               className="h-6 w-6 shrink-0 cursor-pointer rounded border border-border bg-transparent"
-              aria-label="New label color"
+              aria-label={t("case-detail.new-label-color-1kq")}
             />
             <Button
               size="sm"
@@ -318,7 +319,7 @@ function CaseLabelsPicker({
               disabled={createLabel.isPending}
               onClick={() => createLabel.mutate({ name: search.trim(), color: newColor })}
             >
-              Create “{search.trim()}”
+              {t("case-detail.create-4ge")}{search.trim()}”
             </Button>
           </div>
         )}
@@ -348,21 +349,21 @@ function CasePropertiesContent({
 
   return (
     <div className={cn("space-y-4", isFull && "space-y-6")}>
-      <PropertySection title="Case" first>
-        <CasePropertyRow label="Type" mode={mode}>
+      <PropertySection title={t("case-detail.case-7kv")} first>
+        <CasePropertyRow label={t("case-detail.type-1m2")} mode={mode}>
           <PropertyChip>{caseData.caseType}</PropertyChip>
         </CasePropertyRow>
         {caseData.key ? (
-          <CasePropertyRow label="Key" mode={mode}>
+          <CasePropertyRow label={t("case-detail.key-1kw")} mode={mode}>
             <CaseCopyableToken
               value={caseData.key}
-              label="case key"
+              label={t("case-detail.case-key-149")}
               className="font-mono text-xs text-muted-foreground"
               truncate={!isFull}
             />
           </CasePropertyRow>
         ) : null}
-        <CasePropertyRow label="Labels" wrap mode={mode}>
+        <CasePropertyRow label={t("case-detail.labels-1t3")} wrap mode={mode}>
           {caseData.labels.length > 0 ? (
             caseData.labels.map((label) => (
               <PropertyChip
@@ -374,7 +375,7 @@ function CasePropertiesContent({
               </PropertyChip>
             ))
           ) : (
-            <span className="text-xs text-muted-foreground">None</span>
+            <span className="text-xs text-muted-foreground">{t("case-detail.none-dek")}</span>
           )}
           {companyId ? (
             <CaseLabelsPicker
@@ -383,12 +384,12 @@ function CasePropertiesContent({
               onChange={onLabelIdsChange}
             />
           ) : null}
-          {labelsPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+          {labelsPending ? <span className="text-xs text-muted-foreground">{t("case-detail.saving-8kf")}</span> : null}
         </CasePropertyRow>
       </PropertySection>
 
       {propertyRows.length > 0 ? (
-        <PropertySection title="Fields">
+        <PropertySection title={t("case-detail.fields-e5r")}>
           {propertyRows.map(({ key, label, value }) => (
             <CasePropertyRow
               key={key}
@@ -404,13 +405,13 @@ function CasePropertiesContent({
         </PropertySection>
       ) : null}
 
-      <PropertySection title="Linked tasks">
+      <PropertySection title={t("case-detail.linked-tasks-joa")}>
         {caseData.issueLinks.length === 0 ? (
-          <CasePropertyRow label="Tasks" mode={mode}>
-            <span className="text-xs text-muted-foreground">None yet</span>
+          <CasePropertyRow label={t("case-detail.tasks-fzj")} mode={mode}>
+            <span className="text-xs text-muted-foreground">{t("case-detail.none-yet-i37")}</span>
           </CasePropertyRow>
         ) : (
-          <CasePropertyRow label="Tasks" wrap mode={mode}>
+          <CasePropertyRow label={t("case-detail.tasks-fzj")} wrap mode={mode}>
             <div className="flex flex-wrap items-center gap-1.5">
               {caseData.issueLinks.map((link) => (
                 <IssueReferencePill
@@ -433,8 +434,8 @@ function CasePropertiesContent({
       </PropertySection>
 
       {caseData.attachments.length > 0 ? (
-        <PropertySection title="Attachments">
-          <CasePropertyRow label="Files" mode={mode}>
+        <PropertySection title={t("case-detail.attachments-892")}>
+          <CasePropertyRow label={t("case-detail.files-1s4")} mode={mode}>
             <span className="text-xs text-muted-foreground">
               {caseData.attachments.length} {caseData.attachments.length === 1 ? "file" : "files"}
             </span>
@@ -588,9 +589,9 @@ export function CaseDetail() {
   if (caseQuery.isError || !caseData) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
-        <p className="text-sm text-muted-foreground">Case not found.</p>
+        <p className="text-sm text-muted-foreground">{t("case-detail.case-not-found-l6v")}</p>
         <Link to={caseHref()} className="mt-2 inline-block text-sm text-primary hover:underline">
-          ← Back to cases
+          {t("case-detail.back-to-cases-1i1")}
         </Link>
       </div>
     );
@@ -629,7 +630,7 @@ export function CaseDetail() {
             />
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="icon-xs" aria-label="More case actions" title="More case actions">
+                <Button variant="ghost" size="icon-xs" aria-label={t("case-detail.more-case-actions-1a3")} title={t("case-detail.more-case-actions-1a3")}>
                   <MoreVertical className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
@@ -640,7 +641,7 @@ export function CaseDetail() {
                   onClick={() => copyCaseToClipboard(caseData)}
                 >
                   {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                  Copy as markdown
+                  {t("case-detail.copy-as-markdown-13f")}
                 </button>
                 <button
                   type="button"
@@ -650,7 +651,7 @@ export function CaseDetail() {
                   }}
                 >
                   <SlidersHorizontal className="h-3 w-3" />
-                  Properties
+                  {t("case-detail.properties-100")}
                 </button>
               </PopoverContent>
             </Popover>
@@ -666,10 +667,10 @@ export function CaseDetail() {
 
       <Tabs defaultValue="overview" className="space-y-4">
         <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="properties">Properties</TabsTrigger>
+          <TabsTrigger value="overview">{t("case-detail.overview-thn")}</TabsTrigger>
+          <TabsTrigger value="properties">{t("case-detail.properties-100")}</TabsTrigger>
           <TabsTrigger value="activity">
-            Activity{events.length > 0 && <span className="ml-1 text-muted-foreground">{events.length}</span>}
+            {t("case-detail.activity-17y")}{events.length > 0 && <span className="ml-1 text-muted-foreground">{events.length}</span>}
           </TabsTrigger>
         </TabsList>
 
@@ -684,7 +685,7 @@ export function CaseDetail() {
 
           {description ? (
             <section className="space-y-2">
-              <h2 className="text-sm font-semibold">Description</h2>
+              <h2 className="text-sm font-semibold">{t("case-detail.description-sjj")}</h2>
               <Card className="px-4 py-3">
                 <CaseFieldValue value={description} />
               </Card>
@@ -693,7 +694,7 @@ export function CaseDetail() {
 
           {caseData.attachments.length > 0 && (
             <section className="space-y-2">
-              <h2 className="text-sm font-semibold">Attachments ({caseData.attachments.length})</h2>
+              <h2 className="text-sm font-semibold">{t("case-detail.attachments-pbl")}{caseData.attachments.length})</h2>
               <CaseAttachmentsGallery attachments={caseData.attachments} />
             </section>
           )}

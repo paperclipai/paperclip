@@ -25,6 +25,7 @@ import {
 import { cn } from "../lib/utils";
 import { brandChipBadge } from "../lib/status-colors";
 import { installPayload, installStateFrom, isAgentInstalled, INSTALLED_HINT } from "../lib/tool-installs";
+import { t } from "@/i18n";
 
 function isGitHubConnection(connection: ToolConnection): boolean {
   return (connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey) === "github";
@@ -63,14 +64,14 @@ function GitHubIdentitySection({
             <GithubIcon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-foreground">GitHub identity</h3>
+            <h3 className="text-sm font-semibold text-foreground">{t("agent-tools-tab.git-hub-identity-bs2")}</h3>
             {loading ? (
-              <p className="mt-0.5 text-xs text-muted-foreground">Checking GitHub identity…</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{t("agent-tools-tab.checking-git-hub-identity-1yl")}</p>
             ) : loadError ? (
               <>
-                <p className="mt-0.5 text-sm font-medium text-foreground">Could not load GitHub identity</p>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{t("agent-tools-tab.could-not-load-git-hub-identity-18y")}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Paperclip could not verify this agent&apos;s current connection. Your existing setup was not changed.
+                  {t("agent-tools-tab.paperclip-could-not-verify-this-agen-8bw")}
                 </p>
               </>
             ) : dedicatedIdentity ? (
@@ -79,18 +80,18 @@ function GitHubIdentitySection({
                   {dedicatedLogin ? `@${dedicatedLogin}` : "Dedicated GitHub account"}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Used only by {agentName}. This dedicated connection takes precedence over the responsible person&apos;s GitHub.
+                  {t("agent-tools-tab.used-only-by-116")} {agentName}{t("agent-tools-tab.this-dedicated-connection-takes-prec-1i3")}
                 </p>
               </>
             ) : (
               <>
-                <p className="mt-0.5 text-sm font-medium text-foreground">Use responsible person&apos;s GitHub</p>
+                <p className="mt-0.5 text-sm font-medium text-foreground">{t("agent-tools-tab.use-responsible-person-s-git-hub-qiw")}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  At run start, Paperclip uses the personal GitHub connection of the person responsible for the task.
+                  {t("agent-tools-tab.at-run-start-paperclip-uses-the-pers-bvg")}
                 </p>
                 {personalIdentity ? (
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Your account is connected{personalLogin ? ` as @${personalLogin}` : ""}.
+                    {t("agent-tools-tab.your-account-is-connected-lti")}{personalLogin ? ` as @${personalLogin}` : ""}.
                   </p>
                 ) : null}
               </>
@@ -101,24 +102,24 @@ function GitHubIdentitySection({
         {!loading ? (
           <div className="flex flex-wrap items-center gap-2">
             {loadError ? (
-              <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+              <Button variant="outline" size="sm" onClick={onRetry}>{t("agent-tools-tab.retry-zko")}</Button>
             ) : dedicatedIdentity ? (
               <Button variant="outline" size="sm" asChild>
-                <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>Manage GitHub identity</Link>
+                <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>{t("agent-tools-tab.manage-git-hub-identity-1vl")}</Link>
               </Button>
             ) : (
               <>
                 {personalIdentity ? (
                   <Button variant="outline" size="sm" asChild>
-                    <Link to={`/apps/${personalIdentity.connection.id}/permissions`}>Manage my GitHub</Link>
+                    <Link to={`/apps/${personalIdentity.connection.id}/permissions`}>{t("agent-tools-tab.manage-my-git-hub-721")}</Link>
                   </Button>
                 ) : (
                   <Button size="sm" asChild>
-                    <Link to="/apps/connect?source=github">Connect my GitHub</Link>
+                    <Link to="/apps/connect?source=github">{t("agent-tools-tab.connect-my-git-hub-15k")}</Link>
                   </Button>
                 )}
                 <Button variant="outline" size="sm" asChild>
-                  <Link to="/apps/connect?source=github">Use a dedicated account</Link>
+                  <Link to="/apps/connect?source=github">{t("agent-tools-tab.use-a-dedicated-account-oro")}</Link>
                 </Button>
               </>
             )}
@@ -200,9 +201,9 @@ function InstalledAppsSection({
     <section className="rounded-lg border border-border bg-card">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-3 py-2.5">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Installed apps</h3>
+          <h3 className="text-sm font-semibold text-foreground">{t("agent-tools-tab.installed-apps-16t")}</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Installed apps load tools into {agentName}'s context on every run. Permitted-only apps do not add context cost.
+            {t("agent-tools-tab.installed-apps-load-tools-into-1xy")} {agentName}{t("agent-tools-tab.s-context-on-every-run-permitted-onl-u5s")}
           </p>
         </div>
         <InstallSaveStatusChip pending={saving} unsaved={unsaved} error={error} />
@@ -210,12 +211,12 @@ function InstalledAppsSection({
 
       <div className="space-y-3 p-3">
         <InlineBanner tone="info" compact>
-          Has access means the app is permitted. Installed means its tools are added to this agent's runtime context.
+          {t("agent-tools-tab.has-access-means-the-app-is-permitte-y3n")}
         </InlineBanner>
 
         {connections.length === 0 ? (
           <p className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
-            No permitted apps yet. Bind an access profile to make apps available here.
+            {t("agent-tools-tab.no-permitted-apps-yet-bind-an-access-rtt")}
           </p>
         ) : (
           <div className="divide-y divide-border rounded-md border border-border">
@@ -238,7 +239,7 @@ function InstalledAppsSection({
                       <span className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
                         <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
-                        {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
+                        {rowPending ? <span className="text-xs text-muted-foreground">{t("agent-tools-tab.saving-8kf")}</span> : null}
                       </span>
                       <span className="mt-0.5 block text-xs text-muted-foreground">
                         {installedForAll
@@ -259,11 +260,11 @@ function InstalledAppsSection({
                           to={`/apps/${connection.id}/permissions`}
                           className="text-xs font-medium text-primary hover:underline"
                         >
-                          Open permissions
+                          {t("agent-tools-tab.open-permissions-cg8")}
                         </Link>
                       )}
                     >
-                      Permitted but not installed — tools will not appear in runs.
+                      {t("agent-tools-tab.permitted-but-not-installed-tools-wi-gno")}
                     </InlineBanner>
                   ) : null}
                 </div>
@@ -308,10 +309,10 @@ function InstallSaveStatusChip({
   unsaved: boolean;
   error: boolean;
 }) {
-  if (pending) return <span className="text-xs text-muted-foreground">Saving...</span>;
-  if (error) return <span className="text-xs text-destructive">Could not save</span>;
-  if (unsaved) return <span className="text-xs text-muted-foreground">Unsaved changes</span>;
-  return <span className="text-xs text-muted-foreground">Saved</span>;
+  if (pending) return <span className="text-xs text-muted-foreground">{t("agent-tools-tab.saving-8kf")}</span>;
+  if (error) return <span className="text-xs text-destructive">{t("agent-tools-tab.could-not-save-1ht")}</span>;
+  if (unsaved) return <span className="text-xs text-muted-foreground">{t("agent-tools-tab.unsaved-changes-1tg")}</span>;
+  return <span className="text-xs text-muted-foreground">{t("agent-tools-tab.saved-12e")}</span>;
 }
 
 const POLICY_EFFECT_LABEL: Record<string, string> = {
@@ -552,7 +553,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   const profiles = effective.data?.profiles ?? [];
   const catalogLoading = catalogQueries.some((q) => q.isLoading);
 
-  if (effective.isLoading) return <ToolsLoadingState label="Resolving effective access…" />;
+  if (effective.isLoading) return <ToolsLoadingState label={t("agent-tools-tab.resolving-effective-access-1nw")} />;
   if (effective.error) {
     return <ToolsErrorState error={effective.error} onRetry={() => effective.refetch()} />;
   }
@@ -563,14 +564,12 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
     <div className="space-y-4">
       <EnforcementBanner
         tone="info"
-        title="Effective access"
+        title={t("agent-tools-tab.effective-access-9dy")}
         body={
           <>
-            This is exactly the tool set Paperclip will accept for{" "}
-            <span className="font-medium">{agent.name}</span>. Profile and policy edits are
-            reflected within ~5 seconds. The agent's prompt can narrow this list but{" "}
-            <span className="font-medium">cannot expand it</span> — everything else is blocked by
-            default.
+            {t("agent-tools-tab.this-is-exactly-the-tool-set-papercl-jam")}{" "}
+            <span className="font-medium">{agent.name}</span>{t("agent-tools-tab.profile-and-policy-edits-are-reflect-1mx")}{" "}
+            <span className="font-medium">{t("agent-tools-tab.cannot-expand-it-ilu")}</span> {t("agent-tools-tab.everything-else-is-blocked-by-defaul-1on")}
           </>
         }
       />
@@ -610,23 +609,23 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         <div className="lg:col-span-2">
           <div className="rounded-lg border border-border">
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
-              <h3 className="text-sm font-semibold text-foreground">Allowed tools</h3>
+              <h3 className="text-sm font-semibold text-foreground">{t("agent-tools-tab.allowed-tools-1ea")}</h3>
               <span className="text-xs text-muted-foreground tabular-nums">
                 {allowedTools.length} {allowedTools.length === 1 ? "tool" : "tools"}
               </span>
             </div>
             {allowedTools.length === 0 ? (
               <p className="px-3 py-6 text-sm text-muted-foreground">
-                No tools are allowed for this agent. Bind a tool profile to grant access.
+                {t("agent-tools-tab.no-tools-are-allowed-for-this-agent-d05")}
               </p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                    <th className="px-3 py-2 font-medium">Tool</th>
-                    <th className="px-3 py-2 font-medium">Capability</th>
-                    <th className="px-3 py-2 font-medium">Risk</th>
-                    <th className="px-3 py-2 font-medium">Source</th>
+                    <th className="px-3 py-2 font-medium">{t("agent-tools-tab.tool-1m5")}</th>
+                    <th className="px-3 py-2 font-medium">{t("agent-tools-tab.capability-18w")}</th>
+                    <th className="px-3 py-2 font-medium">{t("agent-tools-tab.risk-w04")}</th>
+                    <th className="px-3 py-2 font-medium">{t("agent-tools-tab.source-r5q")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -664,25 +663,25 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
           <div className="rounded-lg border border-border bg-background/60 p-3">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
               <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" />
-              Why these tools?
+              {t("agent-tools-tab.why-these-tools-o8o")}
             </h3>
 
             {/* Access profiles */}
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                  Access profiles
+                  {t("agent-tools-tab.access-profiles-lzo")}
                 </div>
                 <Link
                   to={`${profilesHref}?check=1`}
                   className="text-(length:--text-micro) font-medium text-primary hover:underline"
                 >
-                  Check access
+                  {t("agent-tools-tab.check-access-106")}
                 </Link>
               </div>
               {profiles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No active profile applies to this agent, so it has no allowed tools.
+                  {t("agent-tools-tab.no-active-profile-applies-to-this-ag-3gu")}
                 </p>
               ) : (
                 profiles.map((profile) => {
@@ -697,7 +696,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       {profile.summary.isCompanyDefault ? (
                         <div className="mt-1">
                           <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">
-                            Organization default
+                            {t("agent-tools-tab.organization-default-1y8")}
                           </span>
                         </div>
                       ) : null}
@@ -710,13 +709,13 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
             {/* Policies mutating the allow list */}
             <div className="mt-3 space-y-1.5">
               <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Active policies
+                {t("agent-tools-tab.active-policies-1eb")}
               </div>
               {policiesQuery.isLoading ? (
-                <p className="text-xs text-muted-foreground">Loading policies…</p>
+                <p className="text-xs text-muted-foreground">{t("agent-tools-tab.loading-policies-1ca")}</p>
               ) : governingPolicies.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No enabled policy currently mutates this agent's allow list.
+                  {t("agent-tools-tab.no-enabled-policy-currently-mutates-cab")}
                 </p>
               ) : (
                 governingPolicies.map(({ policy, order }) => (
@@ -745,18 +744,18 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
             {/* Unavailable tools */}
             <div className="mt-3 space-y-1.5">
               <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-                Unavailable tools
+                {t("agent-tools-tab.unavailable-tools-10d")}
               </div>
               {catalogLoading ? (
-                <p className="text-xs text-muted-foreground">Checking tools…</p>
+                <p className="text-xs text-muted-foreground">{t("agent-tools-tab.checking-tools-16t")}</p>
               ) : deniedTools.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  Every known tool this agent could name is allowed.
+                  {t("agent-tools-tab.every-known-tool-this-agent-could-na-1hz")}
                 </p>
               ) : (
                 <>
                   <p className="text-(length:--text-micro) text-muted-foreground">
-                    Tools the agent could name but Paperclip would block:
+                    {t("agent-tools-tab.tools-the-agent-could-name-but-paper-1pk")}
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {deniedTools.slice(0, DENIED_TOOLS_DISPLAY_LIMIT).map((tool) => (
