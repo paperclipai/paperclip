@@ -1257,5 +1257,7 @@ Native ACPX sessions register the assigned Paperclip MCP gateway alongside the
 task tool bridge. Gateway calls retain the existing connection grants and action
 approvals. Missing assigned bindings and names that collide with the task bridge
 stop admission. Upstream credentials remain with the gateway; providers receive
-its scoped access binding. This does not restrict arbitrary network access to a
+its scoped access binding. The qualified ACPX sidecar receives the gateway name,
+URL, and token together through the launch allowlist; unrelated environment
+secrets remain excluded. This does not restrict arbitrary network access to a
 public service outside the gateway.
