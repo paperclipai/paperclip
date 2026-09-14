@@ -1199,10 +1199,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   }, 120_000);
 
   it.each([
-    { caseName: "allows a non-assignee mention on completed work", targetAssignee: false, terminalStatus: "done" },
-    { caseName: "cancels an assignee continuation on completed work", targetAssignee: true, terminalStatus: "done" },
-    { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled" },
-  ] as const)("$caseName without reopening an agent-commented task", async ({ targetAssignee, terminalStatus }) => {
+    { caseName: "allows a non-assignee mention on completed work", targetAssignee: false, terminalStatus: "done", explicitResume: false },
+    { caseName: "delivers explicit agent feedback after completion", targetAssignee: true, terminalStatus: "done", explicitResume: true },
+    { caseName: "cancels an assignee continuation without resume intent on completed work", targetAssignee: true, terminalStatus: "done", explicitResume: false },
+    { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled", explicitResume: true },
+  ] as const)("$caseName", async ({ targetAssignee, terminalStatus, explicitResume }) => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -1211,6 +1212,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const heartbeat = heartbeatService(db);
     const targetAgentId = targetAssignee ? assigneeAgentId : mentionedAgentId;
+    const shouldReopen = targetAssignee && terminalStatus === "done" && explicitResume;
     const commentingAgentId = targetAssignee ? mentionedAgentId : assigneeAgentId;
     const wakeReason = targetAssignee ? "issue_commented" : "issue_comment_mentioned";
 
@@ -1269,7 +1271,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values({
         id: issueId,
         companyId,
-        title: "Do not reopen from agent mention",
+        title: "Agent feedback at completion boundary",
         status: "todo",
         priority: "medium",
         responsibleUserId: "responsible-user",
@@ -1326,7 +1328,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           commentId: comment.id,
           wakeCommentId: comment.id,
           wakeReason,
-          ...(targetAssignee ? { resumeIntent: true, followUpRequested: true } : {}),
+          ...(explicitResume ? { resumeIntent: true, followUpRequested: true } : {}),
           source: "comment.mention",
         },
         requestedByActorType: "agent",
@@ -1368,7 +1370,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      if (targetAssignee) {
+      if (targetAssignee && !shouldReopen) {
         await waitFor(async () => {
           const cancelled = await db.select().from(agentWakeupRequests).where(and(
             eq(agentWakeupRequests.companyId, companyId),
@@ -1399,19 +1401,29 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         );
       }, 90_000);
 
+      const continuation = (await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, targetAgentId),
+      ))).find((run) => run.id !== firstRun!.id);
+      expect(continuation).toMatchObject({
+        agentId: targetAgentId,
+        contextSnapshot: expect.objectContaining({ issueId }),
+      });
       const issueAfterPromotion = await db
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
+          assigneeAgentId: issues.assigneeAgentId,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
       expect(issueAfterPromotion).toMatchObject({
-        status: "done",
+        status: shouldReopen ? "in_progress" : "done",
+        assigneeAgentId,
       });
-      expect(issueAfterPromotion?.completedAt).not.toBeNull();
+      if (shouldReopen) expect(issueAfterPromotion?.completedAt).toBeNull();
+      else expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toBeUndefined();
@@ -1423,8 +1435,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issue: {
           id: issueId,
           identifier: `${issuePrefix}-1`,
-          title: "Do not reopen from agent mention",
-          status: "done",
+          title: "Agent feedback at completion boundary",
+          status: shouldReopen ? "in_progress" : "done",
           priority: "medium",
         },
       });
