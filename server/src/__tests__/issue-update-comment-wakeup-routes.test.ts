@@ -681,6 +681,7 @@ describe("issue update comment wakeups", () => {
   it.each((["post", "patch"] as const).flatMap((method) => [
     "active_delegation", "completed_delegation", "human_comment", "completed_human_comment", "unrelated_comment", "completed_child",
     "active_feedback", "ambiguous_delegation", "child_access_denied", "forwarding_failure",
+    "source_run_other_issue", "completed_source_run_other_issue",
     "completed_delegation_without_blocker", "completed_foreign_company", "completed_unrelated_child", "completed_other_assignee", "completed_lookup_failure",
     "unrelated_child", "foreign_company", "stopped_run", "foreign_run", "unrelated_run", "lookup_failure",
   ].map((scenario) => ({ method, scenario }))))("routes $method mentions correctly for $scenario", async ({ method, scenario }) => {
@@ -735,7 +736,7 @@ describe("issue update comment wakeups", () => {
       id, companyId: id === child.executionRunId && scenario === "foreign_run" ? "other-company" : existing.companyId,
       status: id === child.executionRunId && scenario === "stopped_run" ? "succeeded" : "running",
       agentId: id === child.executionRunId || id === secondChild.executionRunId ? MENTIONED_AGENT_ID : ASSIGNEE_AGENT_ID,
-      contextSnapshot: { issueId: id === secondChild.executionRunId ? secondChild.id : id === child.executionRunId && scenario !== "unrelated_run" ? child.id : existing.id },
+      contextSnapshot: { issueId: id === secondChild.executionRunId ? secondChild.id : id === child.executionRunId && scenario !== "unrelated_run" ? child.id : scenario.endsWith("source_run_other_issue") ? "other-source-issue" : existing.id },
     }));
     const app = await createApp();
     const req = method === "post"

@@ -3689,6 +3689,12 @@ export function issueRoutes(
     let child: Awaited<ReturnType<typeof svc.getById>> = null;
     let authorizationReason: string | undefined;
     try {
+      const sourceRun = comment.createdByRunId
+        ? await heartbeat.getRun(comment.createdByRunId)
+        : null;
+      // The same lead can be working on another task. Its cross-task
+      // request is not a progress or closing note from this parent run.
+      if (sourceRun?.contextSnapshot?.issueId !== parent.id) return null;
       // A fast child can finish before the lead records a blocking relation.
       // Completion notes use the direct parent-child relationship instead.
       const blockers = parent.status === "blocked"
