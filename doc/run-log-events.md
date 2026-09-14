@@ -168,3 +168,13 @@ and records cumulative usage counters. It does not include provider credentials
 or message content. The event establishes the accounting baseline; it is not a
 new billable usage receipt or a user-facing provider warning. Other provider
 identity checks remain in force.
+
+## AI subscription contention
+
+A run that waits for a managed subscription lease writes an informational
+`lifecycle` event to the local run log. Its payload contains only
+`retryScheduled`, a boolean that reports whether the scheduler created a retry.
+The message distinguishes an automatic retry from work that is no longer eligible.
+This pre-provider wait records `ai_connection_busy` on the cancelled run and does
+not consume the provider-failure retry allowance. The event contains no credentials
+and creates no Telemetry or OpenTelemetry export.

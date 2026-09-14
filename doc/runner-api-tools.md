@@ -53,6 +53,10 @@ can be supplied. Routes still validate payloads and enforce permissions.
 Requests have a 30-second HTTP timeout, 16 KiB URL limit and 10 MiB payload/response
 transfer limit. Responses above 24 KiB and binary responses become company-owned
 assets with retrievable references; text previews are limited to 2,000 bytes.
+Tool responses identify the HTTP route with `apiOperationId`. The native protocol
+reserves `operationId` and `callId` for semantic tool-call identity; API metadata
+must not masquerade as that envelope. Saved mutation receipts are normalized at
+the tool boundary as well, without repeating their HTTP request.
 All redirects are refused. Oversized or interrupted mutation responses have an
 unknown outcome, requiring inspection before another mutation.
 Mutation responses with HTTP 5xx, HTTP 408, redirects, or malformed JSON also

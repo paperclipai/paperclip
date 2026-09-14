@@ -3,6 +3,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
@@ -2412,6 +2413,22 @@ export function agentRoutes(
     return normalizedRuntimeConfig;
   }
 
+  async function normalizeCreatedAgentRuntimeConfig(
+    req: Request,
+    companyId: string,
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+    runtimeConfig: unknown,
+  ) {
+    const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
+    if (req.actor.type !== "agent" || normalized.aiConnection) return normalized;
+    const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+    if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
+    const binding = defaultAiConnectionForHire(adapterType, adapterConfig, manager.runtimeConfig?.aiConnection);
+    if (binding) normalized.aiConnection = binding;
+    return normalized;
+  }
+
   async function normalizeMediatedAdapterConfigForPersistence(input: {
     companyId: string;
     adapterType: string | null | undefined;
@@ -2528,14 +2545,18 @@ export function agentRoutes(
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    runtimeConfig: unknown,
   ): Promise<{ adapterConfig: Record<string, unknown>; inheritedFixedClaudeOAuthBinding: boolean }> {
     const noInheritance = { adapterConfig, inheritedFixedClaudeOAuthBinding: false };
+    if (asRecord(runtimeConfig)?.aiConnection) return noInheritance;
     if (req.actor.type !== "agent" || !req.actor.agentId) return noInheritance;
     const credentialKeys = adapterType ? INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[adapterType] : undefined;
     if (!credentialKeys) return noInheritance;
 
     const parent = await svc.getById(req.actor.agentId);
     if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
+    // Managed parents must not pass stale legacy credential references to hires.
+    if (aiConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
     if (!parentEnv) return noInheritance;
 
@@ -3297,7 +3318,17 @@ export function agentRoutes(
   async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false) {
     const userId = responsibleUserForAiRequest(req);
     const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
-    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test });
+    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test }).catch((error: unknown) => {
+      // Hiring is allowed before the responsible user has connected this
+      // provider. Execution still resolves credentials and creates the normal
+      // task connection request; compatibility and access denials stay errors.
+      if (newAgent && !test && binding.mode === "responsible_user" && error instanceof HttpError
+        && ["ai_connection_default_missing", "ai_connection_missing", "ai_connection_unavailable", "ai_connection_responsible_user_missing"].includes(String(asRecord(error.details)?.code))) {
+        return null;
+      }
+      throw error;
+    });
+    if (!selection) return undefined;
     if (test) {
       if (environmentId) await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
       const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: environmentId ?? null });
@@ -4399,6 +4430,7 @@ export function agentRoutes(
         hireInput.adapterType,
         rawHireAdapterConfig,
       ),
+      hireInput.runtimeConfig,
     );
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -4431,7 +4463,7 @@ export function agentRoutes(
       adapterType: hireInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig);
+    const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, hireInput.adapterType, normalizedAdapterConfig, hireInput.runtimeConfig);
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
@@ -4726,7 +4758,7 @@ export function agentRoutes(
       adapterType: createInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = normalizeNewAgentRuntimeConfig(createInput.runtimeConfig);
+    const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, createInput.adapterType, normalizedAdapterConfig, createInput.runtimeConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),

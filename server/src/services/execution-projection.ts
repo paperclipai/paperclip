@@ -29,6 +29,7 @@ const executionRunColumns = {
   status: heartbeatRuns.status,
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
     'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+    'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
@@ -230,6 +231,10 @@ export function projectExecution(
   )
     return set("finishing", "Finishing");
   if (successorRunId) return set("completed", "Continued in another run");
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === "ai_connection_busy") {
+    projection.nextAction = "Waiting for the AI subscription's current execution to finish; the scheduled check will revalidate access.";
+    return set("retry_scheduled", "Waiting for AI subscription");
+  }
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === "workspace_busy") {
     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";
     return set("retry_scheduled", "Waiting for workspace");

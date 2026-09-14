@@ -31,8 +31,10 @@ export function legacyExecutionNeedsReconciliation(
       && evidence.providerStopped === true && evidence.sessionPreserved === true
       && evidence.actionOutcomes === "settled"
       && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
-  // Waiting for a live workspace holder precedes provider execution. It is a
-  // resource wait, not a failed provider attempt or permission to replay work.
+  // Waiting for a subscription or workspace precedes provider execution. It is
+  // a resource wait, not a failed provider attempt or permission to replay work.
+  if (run.status === "cancelled" && run.errorCode === "ai_connection_busy" &&
+      evidence?.kind === "ai_connection_wait" && evidence.providerWorkStarted === false) return false;
   if (run.status === "cancelled" && run.errorCode === "workspace_busy" &&
       evidence?.kind === "workspace_wait" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;

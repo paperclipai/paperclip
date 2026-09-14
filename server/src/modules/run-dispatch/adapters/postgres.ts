@@ -113,6 +113,7 @@ function readNonEmptyString(value: unknown): string | null {
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
+  if (retryReason === "ai_connection_busy") return "ai_connection_wait";
   if (retryReason === "native_safe_replacement") return "native_safe_replacement";
   return "other";
 }
@@ -274,7 +275,7 @@ export function createPostgresRunDispatchAdapter(
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
-      enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation",
+      enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation" || retryReasonKind === "ai_connection_wait",
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, input.contextSnapshot),
       budgetBlock: null,
       agentInvokable: true,
@@ -907,9 +908,9 @@ export function createPostgresRunDispatchAdapter(
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    if (!issueId) return { issueId: null, decision: { stale: false as const } };
+    if (!issueId) return { issueId: null, facts: null, decision: { stale: false as const } };
     const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
-    if (recovery) return { issueId, decision: { stale: true as const,
+    if (recovery) return { issueId, facts: null, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },
     } };
@@ -925,7 +926,7 @@ export function createPostgresRunDispatchAdapter(
       now,
       tx,
     );
-    return { issueId, decision: decideQueuedRunStaleness(facts, now) };
+    return { issueId, facts, decision: decideQueuedRunStaleness(facts, now) };
   }
 
   async function cancelStaleQueuedRun(
@@ -933,8 +934,21 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
-      const { issueId, decision } = await decideCurrentRunStaleness(tx, run, input.now);
-      if (!decision.stale || !issueId) return { outcome: "not_stale" as const };
+      const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
+      if (!decision.stale || !issueId) {
+        if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
+          // Preserve the authority accepted under the issue/run locks. Later
+          // preflight reads can observe a reassignment; they must not turn an
+          // assignee comment into a non-assignee subscription-wait exception.
+          await tx.update(heartbeatRuns).set({
+            runnerProfileJson: {
+              ...parseObject(run.runnerProfileJson),
+              aiConnectionNonAssigneeCommentWake: facts.issueAssigneeAgentId !== run.agentId,
+            },
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+        }
+        return { outcome: "not_stale" as const };
+      }
       return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
     };
 
