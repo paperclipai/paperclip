@@ -3718,8 +3718,9 @@ export function issueRoutes(
       if (parent.status === "done" && child.status === "done") {
         // A closing note can name its parent, but another task reference
         // can be a separate request. Preserve that mention's normal wake.
+        const childIdentifier = child.identifier;
         if ([...references].some((identifier) =>
-          identifier !== child.identifier && identifier !== parent.identifier
+          identifier !== childIdentifier && identifier !== parent.identifier
         )) return null;
         logger.info({ issueId: parent.id, childIssueId: child.id, agentId: mentionedAgentId },
           "skipped completed delegation mention wake");
