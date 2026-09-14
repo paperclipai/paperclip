@@ -199,3 +199,13 @@ An optional announcement card shares product news with board users on opening
 or returning to Paperclip. Dismissals persist per user across companies and
 browsers within an instance. Operators can disable fetching independently of
 telemetry. See [Announcements](ANNOUNCEMENTS.md).
+
+### Agent chat discovery
+
+With Agent Chat enabled, the Chats sidebar always includes the company's
+earliest-created agent, plus personal starred agents and up to four other recent
+conversations. First use has the same compact rows as returning use. The compose
+icon shares a column with stars and appears on hover or keyboard focus (always on
+touch). It opens a company-wide name/role search, independent of sidebar membership.
+Selecting an agent opens their persistent conversation; it does not reset history
+or create a task until the existing first-write flow requires one.

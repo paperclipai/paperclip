@@ -30,20 +30,3 @@ export const chatIdentifier = (id: string) =>
     : `PAP-${249 + chatAgents.findIndex((agent) => agent.id === id)}`;
 export const chatHref = (id: string) =>
   `/issues/${chatIdentifier(id)}?chatAgent=${encodeURIComponent(id)}`;
-
-import { AgentChatSidebar as ProductionAgentChatSidebar } from "@/components/AgentChatSidebar";
-export function AgentChatSidebar(props: {
-  activeId: string;
-  starredIds: string[];
-  recentIds: string[];
-  onToggleStar: (id: string) => void;
-  agents?: typeof chatAgents;
-}) {
-  return (
-    <ProductionAgentChatSidebar
-      {...props}
-      agents={props.agents ?? chatAgents}
-      href={chatHref}
-    />
-  );
-}
