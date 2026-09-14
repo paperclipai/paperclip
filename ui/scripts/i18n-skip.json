@@ -1,0 +1,11 @@
+{
+  "_comment": "Strings to keep as literals. A string that is also a TypeScript literal type, or copy that a source-text contract test asserts on. \"*\" keeps the whole file. Paths are relative to ui/.",
+  "src/pages/IssueDetail.tsx": ["Assignee", "Originating"],
+  "src/pages/apps/app-detail/PermissionsPanel.tsx": ["Search agents…"],
+  "src/pages/apps/app-detail/TestPanel.tsx": ["Search agents…"],
+  "src/pages/apps/AppsConnect.tsx": ["Search agents…"],
+  "src/pages/tools/AuditTab.tsx": ["Search agents…"],
+  "src/pages/tools/ProfilesTab.tsx": ["Search agents…"],
+  "src/pages/apps/chat/ChatEndpointSetup.tsx": ["*"],
+  "src/pages/apps/chat/ChatEndpointDetail.tsx": ["*"]
+}
