@@ -59582,6 +59582,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deferred).toHaveLength(4);
     await drainDeferred();
     await vi.waitFor(async () => {
+      // Dispatch callbacks queued by the asynchronous ingress work too.
+      // A callback returning does not mean its background task has finished.
+      await drainDeferred();
       const deliveries = await db
         .select({
           eventKind: chatDeliveries.eventKind,
