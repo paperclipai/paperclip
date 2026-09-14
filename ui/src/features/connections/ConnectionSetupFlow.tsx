@@ -2358,6 +2358,15 @@ export function ConnectionSetupFlow({
       )}
 
       {step === "access" && (
+        <>
+        {entry?.slug === "railway" && (
+          <div className="mb-6 space-y-3 text-sm text-muted-foreground">
+            <p>{accessStepMethod?.guidanceMd}</p>
+            <ul className="list-disc space-y-2 pl-5">
+              {accessStepMethod?.warnings?.map((warning) => <li key={warning}>{warning}</li>)}
+            </ul>
+          </div>
+        )}
         <AccessStep
           companyId={selectedCompanyId}
           authKind={accessStepAuthKind}
@@ -2391,6 +2400,7 @@ export function ConnectionSetupFlow({
             else setStep("key");
           }}
         />
+        </>
       )}
 
       {step === "success" && (

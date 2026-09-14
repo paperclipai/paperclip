@@ -15,6 +15,7 @@ import {
   type ToolConnection,
   type ToolConnectionCreateCapabilities,
   connectToolAppSchema,
+  configureRailwaySshSchema,
   createConnectionGrantDelegationSchema,
   createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
@@ -54,6 +55,7 @@ import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, ge
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { RailwayError } from "../services/railway.js";
 import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
@@ -1667,6 +1669,19 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (!connection) return;
     await assertToolConnectionConfigureAccess(req, connection);
     res.json(await svc.listComposioServices(connection.id, getActorInfo(req)));
+  });
+
+  router.post("/tool-connections/:connectionId/railway/ssh", validate(configureRailwaySshSchema), async (req, res) => {
+    assertBoard(req);
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertToolConnectionConfigureAccess(req, connection);
+    const setup = await svc.configureRailwaySsh(connection.id, connection.companyId, req.body, getActorInfo(req)).catch((error) => {
+      if (error instanceof RailwayError) throw new HttpError(error.status, error.message);
+      throw error;
+    });
+    await logActivity(db, { companyId: connection.companyId, actorType: "user", actorId: req.actor.userId ?? "board", action: "tool_connection.railway_ssh_updated", entityType: "tool_connection", entityId: connection.id, details: { action: req.body.action, grantId: req.body.grantId, enabled: setup?.enabled ?? false } });
+    res.json(setup);
   });
 
   router.post("/tool-connections/:connectionId/services/:toolkitSlug/connect", async (req, res) => {

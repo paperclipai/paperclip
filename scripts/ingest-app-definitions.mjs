@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 const root = process.cwd();
+// Provider definitions can be regenerated without the external research corpus.
+// This mode preserves the checked-in ingestion report.
+const definitionsOnly = process.argv.includes("--definitions-only");
 const corpus =
   process.env.PAPERCLIP_CONTENT_TEMPLATES ??
   path.resolve(
@@ -203,6 +206,44 @@ const apps = [
         whenToUse: "Use the complete provider-generated MCP URL from Zapier.",
       },
     ),
+  ],
+  [
+    "railway",
+    "Railway",
+    "Inspect services and logs, deploy applications, and run commands in your Railway containers.",
+    "developer",
+    "railway.com",
+    ["https://mcp.railway.com/"],
+    method(
+      "mcp-oauth",
+      "mcp_remote",
+      "oauth",
+      {
+        serverUrl: "https://mcp.railway.com",
+        scopesHint: ["openid", "offline_access", "workspace:member"],
+        oauthAuthorizationParams: { prompt: "consent" },
+      },
+      "S4",
+      "Sign in to Railway and select the workspaces your agents may use. Paperclip adds direct service, deployment, and bounded log tools when Railway accepts the connection for API access. Container commands require the separate SSH setup on the connection. Project tokens are not supported by Railway's hosted connection.",
+      {
+        label: "Connect Railway",
+        ownershipModes: ["dcr", "customer"],
+        whenToUse: "Authorize your Railway account in the browser.",
+        consoleLinks: {
+          docs: "https://docs.railway.com/ai/mcp-server",
+          register: "https://docs.railway.com/integrations/oauth/creating-an-app",
+          settings: "https://railway.com/account",
+        },
+        warnings: [
+          "Railway enforces the workspaces selected at consent. Selected actions start Allowed; choose Ask first for operations you want to approve.",
+          "Logs and container commands can expose application data and secrets. Grant access only to agents trusted with the selected services.",
+          "The general Railway agent and committing staged changes are unavailable because their internal changes cannot be individually reviewed in Paperclip.",
+          "Live Railway qualification is pending. If Railway rejects API access, reconnect with the required permissions; Paperclip never falls back to another credential.",
+        ],
+        requiredResourceFilters: ["workspace", "project", "environment", "service"],
+      },
+    ),
+    { redirectConstraints: "https-or-loopback-http" },
   ],
   [
     "github",
@@ -1386,6 +1427,7 @@ const reviewedGoogleSlugs = [
   "google-chat",
   "google-people",
   "google-workspace-search",
+
 ];
 for (const slug of reviewedGoogleSlugs) {
   const existingIndex = apps.findIndex((app) => app.slug === slug);
@@ -1534,11 +1576,11 @@ const validateApp = (app) => {
         );
   }
 };
-const captureFiles = fs
+const captureFiles = definitionsOnly ? [] : fs
   .readdirSync(corpus)
   .filter((fileName) => fileName.endsWith(".md") && fileName !== "INDEX.md")
   .sort();
-if (captureFiles.length !== 99)
+if (!definitionsOnly && captureFiles.length !== 99)
   throw new Error(`Expected 99 captures, found ${captureFiles.length}`);
 const parsedCaptures = Object.fromEntries(
   captureFiles.map((fileName) => [
@@ -1575,7 +1617,7 @@ for (const app of apps)
     path.join(out, `${app.slug}.json`),
     JSON.stringify(app, null, 2) + "\n",
   );
-fs.writeFileSync(
+if (!definitionsOnly) fs.writeFileSync(
   path.join(root, "packages/shared/src/app-definitions.ingestion-report.json"),
   JSON.stringify(reviewReport, null, 2) + "\n",
 );

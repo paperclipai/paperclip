@@ -66,6 +66,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Read and update pages in your workspace.",
     short: "Read and update pages in your workspace.",
   },
+  railway: {
+    tagline: "Inspect services, read logs, and manage deployments.",
+    short: "Connect Railway for deployments, logs, and container access.",
+  },
   posthog: {
     tagline: "Explore product usage, errors, flags, and experiments.",
     short: "Sign in with PostHog. Project pinning and access controls are optional.",

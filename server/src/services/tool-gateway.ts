@@ -85,6 +85,8 @@ import type {
 } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
+import { RAILWAY_SSH_SECRET_PATH, runRailwaySshCommand } from "./railway-ssh.js";
 import {
   initializeMcpHttpSession,
   mcpHttpRequestHeaders,
@@ -378,7 +380,7 @@ type RemoteHttpExecutionResult = {
 type RemoteHttpExecutionAudit = {
   transport: "mcp_remote";
   request: {
-    protocol: "MCP JSON-RPC 2.0";
+    protocol: "MCP JSON-RPC 2.0" | "Railway GraphQL" | "Railway GraphQL + SSH";
     httpMethod: "POST";
     endpoint: string;
     mcpMethod: "tools/call";
@@ -1218,11 +1220,12 @@ export function createToolGatewayService(
       .orderBy(toolConnections.name, toolCatalogEntries.name);
 
     const eligibleRows = rows.filter(
-      ({ connection, application }) =>
-        (connection.transport === "mcp_remote" &&
+      ({ catalogEntry, connection, application }) =>
+        !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
+        ((connection.transport === "mcp_remote" &&
           application.type === "mcp_http") ||
         (connection.transport === "local_stdio" &&
-          application.type === "mcp_stdio"),
+          application.type === "mcp_stdio")),
     );
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
@@ -4672,6 +4675,9 @@ export function createToolGatewayService(
         },
       );
     }
+    if (isRailwayEndpoint(connection.config.url) && isRailwayToolBlocked(entry.toolName)) {
+      throw new ToolGatewayHttpError(403, "This Railway action cannot be individually governed. Use the dedicated deployment actions.", "railway_action_blocked");
+    }
     return { entry, connection };
   }
 
@@ -5741,11 +5747,15 @@ export function createToolGatewayService(
     ms: number,
     invocationId: string,
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
+    useDefaultTimeout = false,
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(
       session,
       tool,
     );
+    if (useDefaultTimeout && isRailwayConnection(connection) && entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`) {
+      ms = railwayCommandBudgetMs(parameters);
+    }
     const grant = await resolveConnectionGrant(session, connection);
     const composioScopeRevision = `${grant.id}:${grant.status}:${grant.updatedAt.toISOString()}`;
     const composioChild = composioChildConfig(connection);
@@ -5802,6 +5812,35 @@ export function createToolGatewayService(
               // letting the tighter default cut a legitimately slow tool short.
               responseTimeoutMs: ms,
             });
+      if (isRailwayEndpoint(connection.config.url) && normalizeRailwayToolName(entry.toolName).startsWith(RAILWAY_TOOL_PREFIX)) {
+        if (!isRailwayConnection(connection) || connection.config.railwayApiStatus !== "available") {
+          throw new ToolGatewayHttpError(422, "Railway API access is not verified. Refresh actions or reconnect this Railway connection.", "railway_api_not_verified");
+        }
+        const ssh = asRecord(connection.config.railwaySsh);
+        const sshRef = grant.credentialSecretRefs.find((ref) => ref.configPath === RAILWAY_SSH_SECRET_PATH);
+        execution.request.endpoint = RAILWAY_API_URL;
+        execution.request.protocol = entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command` ? "Railway GraphQL + SSH" : "Railway GraphQL";
+        const client = createRailwayClient({
+          authorization: credentialHeaders.Authorization ?? "",
+          signal: controller.signal,
+          request: dispatchRemote,
+          runCommand: ssh?.grantId === grant.id && ssh?.enabled === true && sshRef
+            ? async (input) => runRailwaySshCommand({
+                ...input,
+                privateKey: await resolveGrantSecretValue(session, connection, grant, sshRef),
+                knownHosts: typeof ssh.knownHosts === "string" ? ssh.knownHosts : "",
+              })
+            : undefined,
+        });
+        const data = await client.call(entry.toolName, parameters);
+        const record = asRecord(data);
+        const failedCommand = entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command` && (record?.exitCode !== 0 || record?.timedOut === true || record?.truncated === true);
+        return {
+          result: normalizeMcpToolResult({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data, isError: failedCommand }, "mcp_http", entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`, "railway"),
+          headerSummary,
+          execution,
+        };
+      }
       let requestHeaders = headers;
       if (connection.config.mcpSessionRequired === true) {
         requestHeaders = await initializeMcpHttpSession({
@@ -6078,6 +6117,9 @@ export function createToolGatewayService(
       );
       return { result, headerSummary, execution };
     } catch (error) {
+      if (error instanceof RailwayError) {
+        throw new ToolGatewayHttpError(error.status, error.message, error.code, { connectionId: connection.id, catalogEntryId: entry.id, execution });
+      }
       if (error instanceof ToolGatewayHttpError) {
         throw new ToolGatewayHttpError(
           error.status,
@@ -6979,6 +7021,8 @@ export function createToolGatewayService(
               args.parameters,
               executionTimeoutMs,
               args.invocationId,
+              undefined,
+              args.timeoutMs === undefined,
             )
           : args.tool.providerType === "mcp_local_stdio"
             ? await executeLocalStdioTool(
@@ -10212,6 +10256,7 @@ export function createToolGatewayService(
                 executionTimeoutMs,
                 invocationId,
                 input.callerHeaders,
+                input.timeoutMs === undefined,
               )
             : tool.providerType === "mcp_local_stdio"
               ? await executeLocalStdioTool(
