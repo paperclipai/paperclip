@@ -11,6 +11,7 @@ export const CONNECTION_INTENT_AGENT_GUIDANCE = [
   "- This applies both when the user explicitly asks to connect a service and when the requested work implicitly depends on that service.",
   "- If search returns `ready`, use the installed connection; do not create a connection intent.",
   "- If search returns `available` or `needs_user_action`, call `connection_request` with the returned service identifier.",
+  "- When the user has already asked to connect a known service, use the real connection request. Do not ask whether to connect again or imitate the Connect / Not now card with `ask_user_questions`, a generic confirmation, or a comment. Only `connection_request` creates the actual connection setup card.",
   "- If search returns `unavailable`, explain that the service is unavailable and do not call `connection_request`.",
   "- If `connection_request` returns `needs_user_action`, finish any independent work, then yield in a waiting posture. Do not retry the request, ask for credentials in comments, or claim access.",
   "- Do not use connection tools for arbitrary MCP URLs, unsupported services, or work that does not require an external service.",
@@ -21,10 +22,12 @@ export const CONNECTION_INTENT_AGENT_GUIDANCE = [
 export const CONNECTIONS_SEARCH_TOOL_DESCRIPTION = [
   "Search Paperclip's catalog services and authorized configured custom connections and report this run's agent-relative access state.",
   "Use it when work requires a known external service and usable access is uncertain; do not use it for arbitrary MCP URLs or unrelated work.",
+  "If the user already asked to connect the service, search and request it through the connection tools instead of asking a generic confirmation question.",
 ].join(" ");
 
 export const CONNECTION_REQUEST_TOOL_DESCRIPTION = [
   "Request access to a known connectable service for this run's agent from the responsible user.",
+  "This creates the real Connect / Not now setup card. When the user already asked to connect, use this tool; do not recreate those choices with ask_user_questions, request_confirmation, or a comment. A generic question does not start connection setup.",
   "Call it only with the service identifier returned as available or needs_user_action by connections_search; if user action is needed, finish independent work, then yield without retrying or asking for credentials in comments.",
 ].join(" ");
 

@@ -35,8 +35,9 @@ The fault injector never clicks Retry or rewrites task state to obtain a pass.
 
 ## Matrix and running
 
-The local matrix has eight cases on native Codex `gpt-5.6-sol`, native ACPX Claude
-`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 24 cells. The two core profiles
+The local matrix has ten cases on native Codex `gpt-5.6-sol`, native ACPX Claude
+`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 29 cells, excluding Claude
+from the Codex-specific safe-replacement probe. The two core profiles
 also declare build/revise, delegation, and controller-restart cases on Daytona:
 six cells. Remote runner-process killing is not supported. For remote controller
 restart, a verified first download supplies the persistence checkpoint; the

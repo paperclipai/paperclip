@@ -1261,3 +1261,13 @@ its scoped access binding. The qualified ACPX sidecar receives the gateway name,
 URL, and token together through the launch allowlist; unrelated environment
 secrets remain excluded. This does not restrict arbitrary network access to a
 public service outside the gateway.
+
+
+### Use real connection requests (2026-09-14)
+
+When a user asks to connect a known service, the agent searches for that service
+and uses `connection_request` if setup is needed. The agent must not ask the same
+permission again or copy Connect / Not now into a generic question. A generic
+question does not start setup. The real connection card keeps user identity,
+access grants, the decision, and continuation together. This guidance does not
+approve a connection or bypass its normal user decision.
