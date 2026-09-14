@@ -32,6 +32,36 @@ export const DEFAULT_GITHUB_TOKEN_SECRET_NAMES = ["GITHUB_TOKEN", "GH_TOKEN", "P
 export const DEFAULT_GITLAB_TOKEN_SECRET_NAMES = ["GITLAB_TOKEN", "GL_TOKEN", "PAPERCLIP_GITLAB_TOKEN"] as const;
 
 /**
+ * Company-secret names that declare a self-hosted GitLab. Its host cannot be
+ * known here, so the operator names it and the token is offered to that host
+ * and to no other — the same rule the built-in list follows, with the operator
+ * writing the entry instead of this file.
+ *
+ * The value may be a bare hostname or a URL; only its host is used.
+ */
+export const GITLAB_HOST_SECRET_NAMES = ["GITLAB_HOST", "GITLAB_URL", "PAPERCLIP_GITLAB_HOST"] as const;
+
+/** The hostname a declared value names, or null when it names none. */
+export function hostnameFromDeclaration(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  const withScheme = value.includes("://") ? value : `https://${value}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    return null;
+  }
+  // A declaration carrying credentials or naming a scheme we will not speak is
+  // a misconfiguration, not a host: refuse it rather than authenticate against
+  // something the operator did not mean.
+  if (parsed.protocol !== "https:") return null;
+  if (parsed.username || parsed.password) return null;
+  const host = parsed.hostname.toLowerCase();
+  return host.includes(".") ? host : null;
+}
+
+/**
  * A code host we can authenticate against. Everything host-specific lives here
  * rather than in literals spread through the module: the hostnames the helper
  * answers for, the username the host expects beside a token, the company-secret
@@ -75,9 +105,18 @@ export const GIT_FORGES: readonly GitForge[] = [
   },
 ];
 
-function forgeForHost(hostname: string): GitForge | null {
+function forgeForHost(hostname: string, declaredGitLabHost?: string | null): GitForge | null {
   const host = hostname.toLowerCase();
-  return GIT_FORGES.find((forge) => forge.hosts.includes(host)) ?? null;
+  const known = GIT_FORGES.find((forge) => forge.hosts.includes(host));
+  if (known) return known;
+  // A self-hosted GitLab is the one host an operator may add, and only the one
+  // they named: the forge is built for that host alone, so the helper is
+  // installed for it and answers for nothing else.
+  if (declaredGitLabHost && host === declaredGitLabHost) {
+    const gitlab = GIT_FORGES.find((forge) => forge.key === "gitlab")!;
+    return { ...gitlab, hosts: [host] };
+  }
+  return null;
 }
 
 /** Env var the credential helper reads the token from; never appears in argv. */
@@ -135,7 +174,7 @@ export function isGitHubHttpsRemoteUrl(remoteUrl: string): boolean {
 
 /** The forge a plain `https://host/...` remote belongs to, or null. Inline
  *  userinfo is never overridden, and any other scheme is not an https remote. */
-export function httpsForgeForRemoteUrl(remoteUrl: string): GitForge | null {
+export function httpsForgeForRemoteUrl(remoteUrl: string, declaredGitLabHost?: string | null): GitForge | null {
   let parsed: URL;
   try {
     parsed = new URL(remoteUrl);
@@ -146,7 +185,7 @@ export function httpsForgeForRemoteUrl(remoteUrl: string): GitForge | null {
   if (parsed.username || parsed.password) return null;
   // github.com keeps its own matcher, which knows the host's spellings.
   if (isGitHubDotCom(parsed.hostname)) return GIT_FORGES[0];
-  return forgeForHost(parsed.hostname);
+  return forgeForHost(parsed.hostname, declaredGitLabHost);
 }
 
 /**
@@ -155,20 +194,20 @@ export function httpsForgeForRemoteUrl(remoteUrl: string): GitForge | null {
  * to a forge because the invocation rewrites it to https, which is the only
  * way a token can authenticate it.
  */
-export function forgeForRemoteUrl(remoteUrl: string): GitForge | null {
-  const https = httpsForgeForRemoteUrl(remoteUrl);
+export function forgeForRemoteUrl(remoteUrl: string, declaredGitLabHost?: string | null): GitForge | null {
+  const https = httpsForgeForRemoteUrl(remoteUrl, declaredGitLabHost);
   if (https) return https;
   const scp = /^git@([^\s:]+):[^\s]+$/i.exec(remoteUrl);
   if (scp) {
     const host = scp[1]!.toLowerCase();
     if (isGitHubDotCom(host)) return GIT_FORGES[0];
-    return forgeForHost(host);
+    return forgeForHost(host, declaredGitLabHost);
   }
   try {
     const parsed = new URL(remoteUrl);
     if (parsed.protocol !== "ssh:" || parsed.username !== "git" || parsed.password) return null;
     if (isGitHubDotCom(parsed.hostname)) return GIT_FORGES[0];
-    return forgeForHost(parsed.hostname);
+    return forgeForHost(parsed.hostname, declaredGitLabHost);
   } catch {
     return null;
   }
@@ -303,6 +342,30 @@ export function createGitRemoteAuthProvider(
   // One resolution per host, not one per provider: a run may touch a GitHub
   // repository and a GitLab one, and each needs its own token.
   const credentialPromises = new Map<string, Promise<GitCredential | null>>();
+  // Read once per provider: a run either has a self-hosted GitLab declared or
+  // it does not, and the answer cannot change under it.
+  let declaredHostPromise: Promise<string | null> | null = null;
+  const declaredGitLabHost = async (): Promise<string | null> => {
+    for (const name of GITLAB_HOST_SECRET_NAMES) {
+      const secret = await Promise.resolve(secrets.getByName(companyId, name)).catch(() => null);
+      if (!secret) continue;
+      const value = await secrets
+        .resolveSecretValue(companyId, secret.id, "latest", {
+          accessContext: {
+            consumerType: "system",
+            consumerId: "workspace-git-credential",
+            actorType: "system",
+            issueId: context?.issueId ?? null,
+            heartbeatRunId: context?.heartbeatRunId ?? null,
+            responsibleUserId: context?.responsibleUserId ?? null,
+          },
+        })
+        .catch(() => "");
+      const host = hostnameFromDeclaration(value ?? "");
+      if (host) return host;
+    }
+    return null;
+  };
 
   const resolveCredential = async (forge: GitForge): Promise<GitCredential | null> => {
     const secretNames = deps?.secretNames ?? forge.secretNames;
@@ -344,7 +407,13 @@ export function createGitRemoteAuthProvider(
   };
 
   return async (remoteUrl: string) => {
-    const forge = forgeForRemoteUrl(remoteUrl);
+    // github.com and gitlab.com resolve without a lookup; anything else needs
+    // the operator's declaration before it is even considered.
+    let forge = forgeForRemoteUrl(remoteUrl);
+    if (!forge) {
+      declaredHostPromise ??= declaredGitLabHost();
+      forge = forgeForRemoteUrl(remoteUrl, await declaredHostPromise);
+    }
     if (!forge) return null;
     // The per-run GitHub identity is GitHub's own; another host resolves a
     // token the ordinary way.

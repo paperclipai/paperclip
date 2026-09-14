@@ -11,6 +11,7 @@ import {
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
   forgeForRemoteUrl,
+  hostnameFromDeclaration,
   isGitHubHttpsRemoteUrl,
   scrubGitCredentialText,
 } from "../services/git-credentials.ts";
@@ -67,6 +68,46 @@ describe("forgeForRemoteUrl", () => {
     expect(forgeForRemoteUrl("http://gitlab.com/example/repo.git")).toBeNull();
     expect(forgeForRemoteUrl("https://alice:token@gitlab.com/example/repo.git")).toBeNull();
     expect(forgeForRemoteUrl("/local/path/repo.git")).toBeNull();
+  });
+});
+
+describe("a declared self-hosted GitLab", () => {
+  it("reads a host out of a declaration in either shape", () => {
+    expect(hostnameFromDeclaration("gitlab.acme.example")).toBe("gitlab.acme.example");
+    expect(hostnameFromDeclaration("https://gitlab.acme.example")).toBe("gitlab.acme.example");
+    expect(hostnameFromDeclaration("https://gitlab.acme.example/groups/team/")).toBe("gitlab.acme.example");
+    expect(hostnameFromDeclaration("  GitLab.Acme.Example  ")).toBe("gitlab.acme.example");
+  });
+
+  it("refuses a declaration that is not a host we will speak https to", () => {
+    expect(hostnameFromDeclaration("")).toBeNull();
+    expect(hostnameFromDeclaration("http://gitlab.acme.example")).toBeNull();
+    expect(hostnameFromDeclaration("https://alice:token@gitlab.acme.example")).toBeNull();
+    expect(hostnameFromDeclaration("localhost")).toBeNull();
+    expect(hostnameFromDeclaration("not a host")).toBeNull();
+  });
+
+  it("answers for the declared host and for no other", () => {
+    const declared = "gitlab.acme.example";
+    expect(forgeForRemoteUrl("https://gitlab.acme.example/team/repo.git", declared)?.key).toBe("gitlab");
+    expect(forgeForRemoteUrl("git@gitlab.acme.example:team/repo.git", declared)?.key).toBe("gitlab");
+    // A neighbour on the same domain is not the declared host.
+    expect(forgeForRemoteUrl("https://gitlab.other.example/team/repo.git", declared)).toBeNull();
+    // And without the declaration the same remote is nobody's.
+    expect(forgeForRemoteUrl("https://gitlab.acme.example/team/repo.git")).toBeNull();
+  });
+
+  it("installs the helper for the declared host alone", () => {
+    const forge = forgeForRemoteUrl("https://gitlab.acme.example/team/repo.git", "gitlab.acme.example")!;
+    const invocation = buildGitAuthInvocation(
+      { token: "glpat-selfhosted", source: "company_secret", secretName: "GITLAB_TOKEN" },
+      forge,
+    );
+    const config = invocation.configArgs.join(" ");
+    expect(config).toContain("credential.https://gitlab.acme.example.helper=");
+    expect(config).toContain("username=oauth2");
+    expect(config).not.toContain("gitlab.com");
+    expect(config).not.toContain("github.com");
   });
 });
 
