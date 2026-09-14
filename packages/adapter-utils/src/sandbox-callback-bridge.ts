@@ -198,6 +198,12 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/execution-workspaces\/[^/]+$/ },
   { method: "POST", path: /^\/api\/execution-workspaces\/[^/]+\/runtime-services\/(?:start|stop|restart)$/ },
 
+  // Managed service V2 API: the server rechecks task/company authority. Preview
+  // viewer activity, sharing, and destructive storage operations are not bridged.
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/runtime-services(?:\/[^/]+(?:\/logs)?)?$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/runtime-services(?:\/register|\/[^/]+\/control)?$/ },
+  { method: "PATCH", path: /^\/api\/companies\/[^/]+\/runtime-services\/[^/]+\/policy$/ },
+
   // Routines (agents manage their own routines and triggers)
   { method: "GET", path: /^\/api\/routines\/[^/]+$/ },
   { method: "GET", path: /^\/api\/routines\/[^/]+\/runs$/ },

@@ -1,0 +1,102 @@
+[
+  {
+    "entry": {
+      "idx": 273,
+      "version": "7",
+      "when": 1789239094326,
+      "tag": "0273_careless_cammi",
+      "breakpoints": true
+    },
+    "sql": "CREATE TABLE \"runtime_service_allocations\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"provider\" text NOT NULL,\n\t\"reuse_key\" text NOT NULL,\n\t\"environment_lease_id\" uuid,\n\t\"execution_workspace_id\" uuid,\n\t\"cwd\" text NOT NULL,\n\t\"metadata\" jsonb DEFAULT '{}'::jsonb NOT NULL,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL,\n\t\"updated_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE \"runtime_service_events\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"service_id\" uuid NOT NULL,\n\t\"request_key\" text,\n\t\"kind\" text NOT NULL,\n\t\"actor\" jsonb NOT NULL,\n\t\"revision\" integer NOT NULL,\n\t\"details\" jsonb DEFAULT '{}'::jsonb NOT NULL,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE \"runtime_service_shares\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"service_id\" uuid NOT NULL,\n\t\"endpoint_name\" text NOT NULL,\n\t\"token_hash\" text NOT NULL,\n\t\"expires_at\" timestamp with time zone NOT NULL,\n\t\"revoked_at\" timestamp with time zone,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE \"runtime_services\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"allocation_id\" uuid NOT NULL,\n\t\"name\" text NOT NULL,\n\t\"purpose\" text NOT NULL,\n\t\"issue_id\" uuid,\n\t\"started_by_run_id\" uuid,\n\t\"created_by_agent_id\" uuid,\n\t\"created_by_user_id\" text,\n\t\"creation_key\" text NOT NULL,\n\t\"spec\" jsonb NOT NULL,\n\t\"policy\" jsonb NOT NULL,\n\t\"state\" text DEFAULT 'pending' NOT NULL,\n\t\"desired_state\" text DEFAULT 'running' NOT NULL,\n\t\"revision\" integer DEFAULT 0 NOT NULL,\n\t\"process_ref\" jsonb,\n\t\"endpoints\" jsonb DEFAULT '[]'::jsonb NOT NULL,\n\t\"restart_count\" integer DEFAULT 0 NOT NULL,\n\t\"retry_at\" timestamp with time zone,\n\t\"last_activity_at\" timestamp with time zone DEFAULT now() NOT NULL,\n\t\"started_at\" timestamp with time zone,\n\t\"stopped_at\" timestamp with time zone,\n\t\"error\" text,\n\t\"stop_reason\" text,\n\t\"controller_id\" text,\n\t\"controller_expires_at\" timestamp with time zone,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL,\n\t\"updated_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nALTER TABLE \"runtime_service_allocations\" ADD CONSTRAINT \"runtime_service_allocations_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_allocations\" ADD CONSTRAINT \"runtime_service_allocations_environment_lease_id_environment_leases_id_fk\" FOREIGN KEY (\"environment_lease_id\") REFERENCES \"public\".\"environment_leases\"(\"id\") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_allocations\" ADD CONSTRAINT \"runtime_service_allocations_execution_workspace_id_execution_workspaces_id_fk\" FOREIGN KEY (\"execution_workspace_id\") REFERENCES \"public\".\"execution_workspaces\"(\"id\") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_events\" ADD CONSTRAINT \"runtime_service_events_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_events\" ADD CONSTRAINT \"runtime_service_events_service_id_runtime_services_id_fk\" FOREIGN KEY (\"service_id\") REFERENCES \"public\".\"runtime_services\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_shares\" ADD CONSTRAINT \"runtime_service_shares_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_shares\" ADD CONSTRAINT \"runtime_service_shares_service_id_runtime_services_id_fk\" FOREIGN KEY (\"service_id\") REFERENCES \"public\".\"runtime_services\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_services\" ADD CONSTRAINT \"runtime_services_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_services\" ADD CONSTRAINT \"runtime_services_allocation_id_runtime_service_allocations_id_fk\" FOREIGN KEY (\"allocation_id\") REFERENCES \"public\".\"runtime_service_allocations\"(\"id\") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_services\" ADD CONSTRAINT \"runtime_services_issue_id_issues_id_fk\" FOREIGN KEY (\"issue_id\") REFERENCES \"public\".\"issues\"(\"id\") ON DELETE set null ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_services\" ADD CONSTRAINT \"runtime_services_started_by_run_id_heartbeat_runs_id_fk\" FOREIGN KEY (\"started_by_run_id\") REFERENCES \"public\".\"heartbeat_runs\"(\"id\") ON DELETE set null ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_services\" ADD CONSTRAINT \"runtime_services_created_by_agent_id_agents_id_fk\" FOREIGN KEY (\"created_by_agent_id\") REFERENCES \"public\".\"agents\"(\"id\") ON DELETE set null ON UPDATE no action;--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_allocations_company_reuse_idx\" ON \"runtime_service_allocations\" USING btree (\"company_id\",\"reuse_key\");--> statement-breakpoint\nCREATE INDEX \"runtime_service_allocations_environment_idx\" ON \"runtime_service_allocations\" USING btree (\"environment_lease_id\");--> statement-breakpoint\nCREATE INDEX \"runtime_service_allocations_workspace_idx\" ON \"runtime_service_allocations\" USING btree (\"execution_workspace_id\");--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_events_request_idx\" ON \"runtime_service_events\" USING btree (\"service_id\",\"request_key\");--> statement-breakpoint\nCREATE INDEX \"runtime_service_events_service_time_idx\" ON \"runtime_service_events\" USING btree (\"company_id\",\"service_id\",\"created_at\");--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_shares_token_idx\" ON \"runtime_service_shares\" USING btree (\"token_hash\");--> statement-breakpoint\nCREATE INDEX \"runtime_service_shares_service_idx\" ON \"runtime_service_shares\" USING btree (\"company_id\",\"service_id\");--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_services_company_creation_idx\" ON \"runtime_services\" USING btree (\"company_id\",\"creation_key\");--> statement-breakpoint\nCREATE INDEX \"runtime_services_company_issue_idx\" ON \"runtime_services\" USING btree (\"company_id\",\"issue_id\");--> statement-breakpoint\nCREATE INDEX \"runtime_services_allocation_idx\" ON \"runtime_services\" USING btree (\"allocation_id\");--> statement-breakpoint\nCREATE INDEX \"runtime_services_reconcile_idx\" ON \"runtime_services\" USING btree (\"desired_state\",\"controller_expires_at\");"
+  },
+  {
+    "entry": {
+      "idx": 274,
+      "version": "7",
+      "when": 1789247660008,
+      "tag": "0274_simple_black_tom",
+      "breakpoints": true
+    },
+    "sql": "CREATE TABLE \"runtime_service_preview_sessions\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"service_id\" uuid NOT NULL,\n\t\"endpoint_name\" text NOT NULL,\n\t\"subject_type\" text NOT NULL,\n\t\"subject_id\" text NOT NULL,\n\t\"run_id\" uuid,\n\t\"share_id\" uuid,\n\t\"ticket_hash\" text NOT NULL,\n\t\"ticket_expires_at\" timestamp with time zone NOT NULL,\n\t\"consumed_at\" timestamp with time zone,\n\t\"session_hash\" text,\n\t\"expires_at\" timestamp with time zone NOT NULL,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nALTER TABLE \"runtime_service_shares\" ADD COLUMN \"creation_key\" text;--> statement-breakpoint\nALTER TABLE \"runtime_service_shares\" ADD COLUMN \"created_by_user_id\" text;--> statement-breakpoint\nALTER TABLE \"runtime_services\" ADD COLUMN \"preview_last_signal_at\" timestamp with time zone;--> statement-breakpoint\nALTER TABLE \"runtime_service_preview_sessions\" ADD CONSTRAINT \"runtime_service_preview_sessions_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_preview_sessions\" ADD CONSTRAINT \"runtime_service_preview_sessions_service_id_runtime_services_id_fk\" FOREIGN KEY (\"service_id\") REFERENCES \"public\".\"runtime_services\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_preview_sessions\" ADD CONSTRAINT \"runtime_service_preview_sessions_run_id_heartbeat_runs_id_fk\" FOREIGN KEY (\"run_id\") REFERENCES \"public\".\"heartbeat_runs\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_preview_sessions\" ADD CONSTRAINT \"runtime_service_preview_sessions_share_id_runtime_service_shares_id_fk\" FOREIGN KEY (\"share_id\") REFERENCES \"public\".\"runtime_service_shares\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_preview_sessions_ticket_idx\" ON \"runtime_service_preview_sessions\" USING btree (\"ticket_hash\");--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_preview_sessions_session_idx\" ON \"runtime_service_preview_sessions\" USING btree (\"session_hash\");--> statement-breakpoint\nCREATE INDEX \"runtime_service_preview_sessions_expiry_idx\" ON \"runtime_service_preview_sessions\" USING btree (\"expires_at\");--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_shares_creation_idx\" ON \"runtime_service_shares\" USING btree (\"service_id\",\"creation_key\");"
+  },
+  {
+    "entry": {
+      "idx": 275,
+      "version": "7",
+      "when": 1789265193142,
+      "tag": "0275_same_tyrannus",
+      "breakpoints": true
+    },
+    "sql": "CREATE TABLE \"runtime_service_company_policies\" (\n\t\"company_id\" uuid PRIMARY KEY NOT NULL,\n\t\"revision\" integer DEFAULT 0 NOT NULL,\n\t\"config\" jsonb NOT NULL,\n\t\"updated_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nCREATE TABLE \"runtime_service_company_policy_events\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"request_key\" text NOT NULL,\n\t\"input_hash\" text NOT NULL,\n\t\"revision\" integer NOT NULL,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nALTER TABLE \"runtime_service_company_policies\" ADD CONSTRAINT \"runtime_service_company_policies_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_company_policy_events\" ADD CONSTRAINT \"runtime_service_company_policy_events_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_company_policy_events_request_idx\" ON \"runtime_service_company_policy_events\" USING btree (\"company_id\",\"request_key\");"
+  },
+  {
+    "entry": {
+      "idx": 276,
+      "version": "7",
+      "when": 1789266495329,
+      "tag": "0276_remarkable_maddog",
+      "breakpoints": true
+    },
+    "sql": "ALTER TABLE \"runtime_services\" ADD COLUMN \"process_handoff_key\" text;--> statement-breakpoint\nALTER TABLE \"runtime_services\" ADD COLUMN \"process_handoff\" jsonb;--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_services_company_handoff_idx\" ON \"runtime_services\" USING btree (\"company_id\",\"process_handoff_key\");"
+  },
+  {
+    "entry": {
+      "idx": 277,
+      "version": "7",
+      "when": 1789269482883,
+      "tag": "0277_legal_wrecking_crew",
+      "breakpoints": true
+    },
+    "sql": "CREATE TABLE \"runtime_service_task_workspaces\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"allocation_id\" uuid NOT NULL,\n\t\"issue_id\" uuid NOT NULL,\n\t\"host_cwd\" text NOT NULL,\n\t\"created_by_user_id\" text NOT NULL,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nALTER TABLE \"runtime_service_task_workspaces\" ADD CONSTRAINT \"runtime_service_task_workspaces_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_task_workspaces\" ADD CONSTRAINT \"runtime_service_task_workspaces_allocation_id_runtime_service_allocations_id_fk\" FOREIGN KEY (\"allocation_id\") REFERENCES \"public\".\"runtime_service_allocations\"(\"id\") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_task_workspaces\" ADD CONSTRAINT \"runtime_service_task_workspaces_issue_id_issues_id_fk\" FOREIGN KEY (\"issue_id\") REFERENCES \"public\".\"issues\"(\"id\") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_task_workspaces_task_idx\" ON \"runtime_service_task_workspaces\" USING btree (\"company_id\",\"issue_id\");--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_task_workspaces_allocation_idx\" ON \"runtime_service_task_workspaces\" USING btree (\"allocation_id\");"
+  },
+  {
+    "entry": {
+      "idx": 278,
+      "version": "7",
+      "when": 1789270750276,
+      "tag": "0278_silent_thaddeus_ross",
+      "breakpoints": true
+    },
+    "sql": "ALTER TABLE \"runtime_service_task_workspaces\" DROP CONSTRAINT \"runtime_service_task_workspaces_issue_id_issues_id_fk\";\n--> statement-breakpoint\nALTER TABLE \"runtime_service_task_workspaces\" ALTER COLUMN \"issue_id\" DROP NOT NULL;--> statement-breakpoint\nALTER TABLE \"runtime_service_task_workspaces\" ADD COLUMN \"previous_task_workspace\" jsonb;--> statement-breakpoint\nALTER TABLE \"runtime_service_task_workspaces\" ADD CONSTRAINT \"runtime_service_task_workspaces_issue_id_issues_id_fk\" FOREIGN KEY (\"issue_id\") REFERENCES \"public\".\"issues\"(\"id\") ON DELETE set null ON UPDATE no action;"
+  },
+  {
+    "entry": {
+      "idx": 279,
+      "version": "7",
+      "when": 1789307570029,
+      "tag": "0279_past_phantom_reporter",
+      "breakpoints": true
+    },
+    "sql": "ALTER TABLE \"runtime_service_allocations\" ADD COLUMN \"storage_usage\" jsonb;"
+  },
+  {
+    "entry": {
+      "idx": 280,
+      "version": "7",
+      "when": 1789309635347,
+      "tag": "0280_optimal_boom_boom",
+      "breakpoints": true
+    },
+    "sql": "CREATE TABLE \"runtime_service_data_deletions\" (\n\t\"id\" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,\n\t\"company_id\" uuid NOT NULL,\n\t\"allocation_id\" uuid NOT NULL,\n\t\"service_id\" uuid NOT NULL,\n\t\"requested_by_user_id\" text NOT NULL,\n\t\"state\" text DEFAULT 'pending' NOT NULL,\n\t\"target\" jsonb NOT NULL,\n\t\"attempts\" integer DEFAULT 0 NOT NULL,\n\t\"error\" text,\n\t\"retry_at\" timestamp with time zone,\n\t\"provider_deleted_at\" timestamp with time zone,\n\t\"completed_at\" timestamp with time zone,\n\t\"created_at\" timestamp with time zone DEFAULT now() NOT NULL,\n\t\"updated_at\" timestamp with time zone DEFAULT now() NOT NULL\n);\n--> statement-breakpoint\nALTER TABLE \"runtime_service_allocations\" ADD COLUMN \"data_deletion_id\" uuid;--> statement-breakpoint\nALTER TABLE \"runtime_service_data_deletions\" ADD CONSTRAINT \"runtime_service_data_deletions_company_id_companies_id_fk\" FOREIGN KEY (\"company_id\") REFERENCES \"public\".\"companies\"(\"id\") ON DELETE no action ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_data_deletions\" ADD CONSTRAINT \"runtime_service_data_deletions_allocation_id_runtime_service_allocations_id_fk\" FOREIGN KEY (\"allocation_id\") REFERENCES \"public\".\"runtime_service_allocations\"(\"id\") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint\nALTER TABLE \"runtime_service_data_deletions\" ADD CONSTRAINT \"runtime_service_data_deletions_service_id_runtime_services_id_fk\" FOREIGN KEY (\"service_id\") REFERENCES \"public\".\"runtime_services\"(\"id\") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint\nCREATE UNIQUE INDEX \"runtime_service_data_deletions_allocation_idx\" ON \"runtime_service_data_deletions\" USING btree (\"allocation_id\");--> statement-breakpoint\nCREATE INDEX \"runtime_service_data_deletions_pending_idx\" ON \"runtime_service_data_deletions\" USING btree (\"state\",\"retry_at\");"
+  },
+  {
+    "entry": {
+      "idx": 281,
+      "version": "7",
+      "when": 1789317551968,
+      "tag": "0281_lyrical_major_mapleleaf",
+      "breakpoints": true
+    },
+    "sql": "ALTER TABLE \"runtime_service_data_deletions\" ALTER COLUMN \"requested_by_user_id\" DROP NOT NULL;--> statement-breakpoint\nALTER TABLE \"runtime_service_data_deletions\" ADD COLUMN \"authorization\" jsonb DEFAULT '{\"kind\":\"operator\"}'::jsonb NOT NULL;"
+  },
+  {
+    "entry": {
+      "idx": 282,
+      "version": "7",
+      "when": 1789325284392,
+      "tag": "0282_last_komodo",
+      "breakpoints": true
+    },
+    "sql": "ALTER TABLE \"heartbeat_runs\" ADD COLUMN \"process_location\" text;"
+  }
+]

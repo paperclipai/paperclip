@@ -100,6 +100,8 @@ runWorker(plugin, import.meta.url);
 | `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
 | `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
 
+**Retained environment data:** Providers advertise `onEnvironmentDeleteServiceData` and `onEnvironmentDeleteTaskWorkspaceData` independently. The first removes a standalone service allocation; the second removes a run-created task sandbox using its provider-stamped `taskWorkspaceOwnership` lease metadata. Neither falls back to `onEnvironmentDestroyLease`, which must keep protecting retained services during ordinary run cleanup. The host must commit a deletion ID and exclude every dependent run and service before dispatch. The provider verifies the original connection, exact sandbox and ownership, persists a deletion fence, and returns `state: "destroyed"` only after confirming destruction. An accepted provider delete request is insufficient. Retries use the same deletion and resource identities. Missing hooks return `METHOD_NOT_IMPLEMENTED`; older task leases lacking an ownership receipt require explicit recovery, not ownership inferred during deletion.
+
 **Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 
 **Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
@@ -1258,6 +1260,94 @@ await ctx.agents.sessions.close(session.sessionId, companyId);
 Requires capabilities: `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send`, `agent.sessions.close`.
 
 Exported types: `AgentSession`, `AgentSessionEvent`, `AgentSessionSendResult`, `PluginAgentSessionsClient`.
+
+## Managed service resource verification
+
+`environmentGetServiceConnection` accepts an optional `checkResources: true` for a read-only resource preflight. Return `resourcesVerified: true` only when the requested resource allocation can be honored. An absent field means the worker cannot provide this verification. The check must not rent, start, resize, or delete compute. Connection-only calls omit this flag, including recovery and deletion of retained allocations whose original image or snapshot may no longer exist.
+
+The Daytona implementation verifies named snapshots against their fixed CPU, memory, disk and GPU allocation instead of dropping configured sizes. Image creation passes explicit resource settings to the provider. The host checks before accepting a new service and again before committing its acquisition intent; the provider checks mutable snapshot configuration immediately before a fresh create. Existing named allocations remain recoverable without consulting a missing snapshot.
+
+Service `start`, `inspect`, and `endpoint` operations return `RESOURCE_CONFIGURATION_MISMATCH` when actual provider sizes cannot be verified against the captured environment configuration. The host performs a policy stop, retains data, and keeps the failure visible until an explicit retry or Stop. Providers must leave Stop, retention, compute release and saved logs available in this condition. A resource failure must not start a crash-retry loop, resize a shared allocation, or terminate another consumer implicitly.
+
+## Existing command handoff
+
+`environmentProcessHandoff` is negotiated separately from `environmentService`.
+Implement `onEnvironmentProcessHandoff` only when the provider can verify a
+command against the active run's trusted root-process identity. There is no
+fallback to ordinary command execution or whole-sandbox termination.
+
+Capture is read-only and returns a stable key plus an opaque ownership receipt.
+The host checks active run ownership, provider capability and the original
+workspace connection, then commits the service, capacity reservation and receipt
+before requesting Stop. Stop must confirm the captured process group has ended
+before a managed replacement starts. It must work after the original run ends
+and handle a repeated request after a lost response. The host supplies the exact
+committed receipt and validates service/company/allocation ownership again.
+
+Both operations require the original `workspaceConnection` and echo it after
+verification. Daytona checks the connection before sandbox lookup, refreshes
+ownership labels and observes deletion fences. The exported fixed Linux program
+`runtimeServiceProcessHandoffSource` verifies kernel boot/PID-namespace, UID,
+process birth, ancestry, group membership and working directory. It does not
+read another process's environment or command arguments. Neither operation rents,
+wakes, resizes or deletes compute, changes retention, or stops a whole sandbox.
+Missing trusted root identity remains an explicit unsupported registration path.
+
+## Existing remote runner control
+
+`environmentRunProcessControl` is negotiated separately from command execution,
+process handoff and service management. Providers implement
+`onEnvironmentRunProcessControl` only when they can inspect or signal the original
+run's kernel identity without allocating, waking, resuming or stopping compute.
+The request carries the original `workspaceConnection` and a trusted pre-exec
+owner receipt. The provider verifies its connection and current allocation
+ownership, observes deletion fences, and echoes the verified connection.
+
+`inspect` distinguishes a live exact process, an exited process, an identity
+mismatch and unavailable evidence. `signal` permits SIGINT, SIGTERM or SIGKILL
+only against the exact owner. `stop_group` verifies the dedicated root group and
+its observed members. The shared `remoteProcessControlSource` implements these
+Linux operations; `parseRemoteProcessControlResponse` accepts only bounded,
+operation-specific results. Credentials and free-form provider output are not
+part of that result. There is no generic-execute fallback.
+
+The host rechecks the active original lease and owner after the provider call.
+Missing, stale or changed evidence remains unverified. A root/group result does
+not prove all provider descendants in other groups have stopped and cannot
+authorize a replacement run or whole-allocation release. Reattaching the durable
+runner authority requires its separate recovery, lease and transport checks.
+
+`environmentRunnerRecovery` is another independently negotiated capability,
+implemented with `onEnvironmentRunnerRecovery`. Its two operations are
+`ingress` and `read_state`. Both require the original connection, allocation,
+workspace and process receipt. The host derives the session hash from the
+persisted native session; an agent cannot select a state-file path. Missing
+support or uncertain ownership must not fall back to ordinary ingress lookup,
+command execution, lease acquisition or resume.
+
+`ingress` returns the authenticated WebSocket endpoint for the existing runner
+on port 43127, with the exact run path and a connection generation. It requires
+the original runner to be alive and the sandbox already started. Refresh uses
+the same recovery operation. The host keeps the provider token out of normal
+serialization. `read_state` may read the original runner's retained state after
+its verified exit, but only while the same sandbox remains started. Daytona's
+fixed reader checks canonical paths, file ownership and regular-file type,
+rejects symlinks and bounds the result to 8 MiB. Neither operation starts or
+stops compute or stages files. Returned state still needs durable protocol
+identity validation; a matching run ID alone does not authorize reattachment
+or replacement.
+
+`environmentRunnerRecoveryExecute`, implemented with
+`onEnvironmentRunnerRecoveryExecute`, separately negotiates host checkpoint and
+workspace-copy commands on that original allocation. Each command's working
+directory must be inside the saved workspace. Commands must finish within 120 seconds and pass ownership and
+connection checks before and after execution. An exited original runner permits
+checkpoint reads only while its compute is still started. The Daytona executor
+uses a one-shot shell without sourcing login profiles. Timeouts, incomplete
+results or changed ownership remain unverified; there is no ordinary-execute or
+resume fallback. Recovery targets disable ordinary native file sync so their
+existing archive-copy fallback uses this same protected command path. This is a
+host capability, not an agent-facing command tool or proof of runner termination.
 
 ## Testing utilities
 

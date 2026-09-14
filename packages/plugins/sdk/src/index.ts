@@ -50,6 +50,7 @@
 // ---------------------------------------------------------------------------
 
 export { definePlugin } from "./define-plugin.js";
+export { runtimeServiceStorageSource } from "./runtime-service-storage.js";
 export { createTestHarness, createEnvironmentTestHarness, createFakeEnvironmentDriver, filterEnvironmentEvents, assertEnvironmentEventOrder, assertLeaseLifecycle, assertWorkspaceRealizationLifecycle, assertExecutionLifecycle, assertEnvironmentError } from "./testing.js";
 export { createPluginBundlerPresets } from "./bundlers.js";
 export { startPluginDevServer, getUiBuildSnapshot } from "./dev-server.js";
@@ -181,6 +182,14 @@ export type {
   PluginEnvironmentProbeResult,
   PluginEnvironmentLease,
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentAcquireServiceLeaseParams,
+  PluginEnvironmentServiceConnectionParams,
+  PluginEnvironmentServiceConnection,
+  PluginEnvironmentDeleteServiceDataParams,
+  PluginEnvironmentDeleteTaskWorkspaceDataParams,
+  PluginEnvironmentTaskWorkspaceOwnership,
+  PluginEnvironmentTaskWorkspaceDataDeletionReceipt,
+  PluginEnvironmentServiceDataDeletionReceipt,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentTerminationReceipt,
@@ -448,3 +457,13 @@ export {
   MEMBERSHIP_STATUSES,
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
+export { runtimeServiceLocalHostSource } from "./runtime-service-host.js";
+export { runtimeServiceRemoteControlSource } from "./runtime-service-control.js";
+export type { PluginEnvironmentServiceParams, PluginEnvironmentServiceResult } from "./protocol.js";
+export type { PluginEnvironmentProcessHandoffParams, PluginEnvironmentProcessHandoffResult } from "./protocol.js";
+export type { PluginEnvironmentRunProcessControlParams, PluginEnvironmentRunProcessControlResult } from "./protocol.js";
+export type { PluginEnvironmentRunnerRecoveryParams, PluginEnvironmentRunnerRecoveryResult } from "./protocol.js";
+export type { PluginEnvironmentRunnerRecoveryExecuteParams, PluginEnvironmentRunnerRecoveryExecuteResult } from "./protocol.js";
+export { remoteProcessControlSource, parseRemoteProcessControlResponse } from "@paperclipai/shared/remote-process-control";
+export { isRemoteProcessIdentity } from "@paperclipai/shared/remote-process-identity";
+export { runtimeServiceProcessHandoffSource } from "./runtime-service-process-handoff.js";

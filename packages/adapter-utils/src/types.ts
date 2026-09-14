@@ -6,6 +6,17 @@ import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
 import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
+import type { RemoteProcessIdentity } from "./remote-process-identity.js";
+
+export interface AdapterProcessSpawnMetadata {
+  pid: number;
+  processGroupId: number | null;
+  startedAt: string;
+  /** Omission preserves local adapter compatibility; remote launchers set this explicitly. */
+  processLocation?: "local" | "remote";
+  /** Trusted pre-exec receipt, never a value supplied by an agent tool. */
+  remoteProcessIdentity?: RemoteProcessIdentity;
+}
 
 export interface AdapterAgent {
   id: string;
@@ -171,6 +182,16 @@ export interface AdapterRuntimeMcpAccess {
 
 export type AdapterRuntimeToolDelivery = "native_mcp" | "environment" | "invocation_context";
 
+export interface AdapterRuntimeServiceAccess {
+  version: 1;
+  guidance: string;
+  mcpEndpoint: string;
+  callEndpoint: string;
+  bearerToken: string;
+  expiresAt: string;
+  tools: readonly string[];
+}
+
 export interface AdapterRuntimeToolAccess {
   version: 1;
   /** Provider-neutral instructions shared by every delivery strategy. */
@@ -220,6 +241,7 @@ export interface AdapterExecutionContext {
   };
   runtimeMcp?: AdapterRuntimeMcpAccess;
   runtimeTools?: AdapterRuntimeToolAccess;
+  runtimeServices?: AdapterRuntimeServiceAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -231,7 +253,7 @@ export interface AdapterExecutionContext {
    * remote operation.
    */
   onDispatch?: () => void;
-  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: AdapterProcessSpawnMetadata) => Promise<void>;
   authToken?: string;
   /**
    * The injected OpenTelemetry startup trace context (tracer + root

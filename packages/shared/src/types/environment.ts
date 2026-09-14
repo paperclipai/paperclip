@@ -95,6 +95,7 @@ export type EnvironmentDeleteBlockedReason =
   | "managed_local"
   | "instance_default"
   | "reusable_sandbox_lease"
+  | "runtime_service_retention"
   | "pending_sandbox_cleanup";
 
 /**
@@ -143,6 +144,8 @@ export interface EnvironmentDeleteBlastRadius {
    * release and destroy paths, so these leases block deletion.
    */
   reusableSandboxLeaseCount: number;
+  /** Retained service files prevent deleting their environment and credentials. */
+  retainedServiceAllocationCount?: number;
   /**
    * One entry per lease behind `reusableSandboxLeaseCount`, so a client can
    * name the blocking workspaces/issues instead of reporting a bare count.

@@ -52,8 +52,21 @@
 import type { PluginContext } from "./types.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentAcquireServiceLeaseParams,
+  PluginEnvironmentServiceConnectionParams,
+  PluginEnvironmentServiceConnection,
+  PluginEnvironmentDeleteServiceDataParams,
+  PluginEnvironmentDeleteTaskWorkspaceDataParams,
+  PluginEnvironmentTaskWorkspaceDataDeletionReceipt,
+  PluginEnvironmentServiceDataDeletionReceipt,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentServiceParams,
+  PluginEnvironmentServiceResult,
+  PluginEnvironmentProcessHandoffParams,
+  PluginEnvironmentProcessHandoffResult,
+  PluginEnvironmentRunProcessControlParams,
+  PluginEnvironmentRunProcessControlResult,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentRunnerIngressEndpointParams,
   PluginEnvironmentRunnerIngressEndpoint,
@@ -377,6 +390,17 @@ export interface PluginDefinition {
     params: PluginEnvironmentAcquireLeaseParams,
   ): Promise<PluginEnvironmentLease>;
 
+  /** Recoverably acquire the host's durable service allocation, independent of runs. */
+  onEnvironmentAcquireServiceLease?(params: PluginEnvironmentAcquireServiceLeaseParams): Promise<PluginEnvironmentLease>;
+
+  /** Read the allocation's effective connection identity without allocating compute. */
+  onEnvironmentGetServiceConnection?(params: PluginEnvironmentServiceConnectionParams): Promise<PluginEnvironmentServiceConnection>;
+
+  /** Delete a host-fenced, independently owned service allocation's data. This
+   * must never be used as the fallback for ordinary run release or destruction. */
+  onEnvironmentDeleteServiceData?(params: PluginEnvironmentDeleteServiceDataParams): Promise<PluginEnvironmentServiceDataDeletionReceipt>;
+  onEnvironmentDeleteTaskWorkspaceData?(params: PluginEnvironmentDeleteTaskWorkspaceDataParams): Promise<PluginEnvironmentTaskWorkspaceDataDeletionReceipt>;
+
   /** Called to reconnect to a previously acquired provider lease. */
   onEnvironmentResumeLease?(
     params: PluginEnvironmentResumeLeaseParams,
@@ -401,6 +425,16 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+  onEnvironmentService?(params: PluginEnvironmentServiceParams): Promise<PluginEnvironmentServiceResult>;
+
+  /** Capture a verified command or stop a handoff already committed by the host. */
+  onEnvironmentProcessHandoff?(params: PluginEnvironmentProcessHandoffParams): Promise<PluginEnvironmentProcessHandoffResult>;
+  /** Fixed kernel control through the original workspace connection; never wakes compute. */
+  onEnvironmentRunProcessControl?(params: PluginEnvironmentRunProcessControlParams): Promise<PluginEnvironmentRunProcessControlResult>;
+  /** Read original runner state/ingress without allocating, waking or staging. */
+  onEnvironmentRunnerRecovery?(params: import("./protocol.js").PluginEnvironmentRunnerRecoveryParams): Promise<import("./protocol.js").PluginEnvironmentRunnerRecoveryResult>;
+  /** Execute host recovery work without waking compute or sourcing login profiles. */
+  onEnvironmentRunnerRecoveryExecute?(params: import("./protocol.js").PluginEnvironmentRunnerRecoveryExecuteParams): Promise<import("./protocol.js").PluginEnvironmentRunnerRecoveryExecuteResult>;
 
   /** Return an authenticated private WebSocket ingress for runnerd. */
   onEnvironmentRunnerIngressEndpoint?(

@@ -629,8 +629,44 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
   path: string;
 }
 
+/** Read-only recovery of the original runner. Separate negotiation prevents an
+ * older ingress implementation from ignoring a no-wake request. */
+export interface PluginEnvironmentRunnerRecoveryParams extends Omit<PluginEnvironmentRunProcessControlParams, "operation"> {
+  runId: string;
+  workspaceRoot: string;
+  sessionHash: string;
+  operation: "ingress" | "read_state";
+}
+export type PluginEnvironmentRunnerRecoveryResult =
+  | { state: "unverified" }
+  | { state: "ready"; workspaceConnection: { scopeId: string; fingerprint: string }; endpoint: PluginEnvironmentRunnerIngressEndpoint }
+  | { state: "ready"; workspaceConnection: { scopeId: string; fingerprint: string }; runnerState: Record<string, unknown> };
+
+/** Host recovery commands against an already-started original allocation.
+ * This capability never inherits ordinary execute's wake/session behavior. */
+export interface PluginEnvironmentRunnerRecoveryExecuteParams extends Omit<PluginEnvironmentRunProcessControlParams, "operation"> {
+  workspaceRoot: string;
+  execution: Pick<PluginEnvironmentExecuteParams, "command" | "args" | "cwd" | "env" | "stdin" | "timeoutMs">;
+}
+export type PluginEnvironmentRunnerRecoveryExecuteResult =
+  | { state: "unverified" }
+  | { state: "executed"; workspaceConnection: { scopeId: string; fingerprint: string }; result: PluginEnvironmentExecuteResult };
+
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
+  /** Connection proof for a workspace that may outlive its creating run. The
+   * provider checks it before any lookup/create and echoes it in lease metadata.
+   * scopeId is the host's original run UUID, not the agent's identity. */
+  workspaceConnection?: { scopeId: string; fingerprint: string };
+  /**
+   * Durable service allocation UUID, committed by the host before acquisition.
+   * The provider must recover this exact allocation on replay, verify ownership,
+   * and preserve it after initialization errors. Never generate a replacement
+   * identity after an ambiguous create response. Ordinary run/probe callers omit it.
+   */
+  serviceAllocationId?: string;
+  /** Persisted result of environmentGetServiceConnection; checked before creating compute. */
+  serviceConnectionFingerprint?: string;
   workspaceMode?: string;
   requestedCwd?: string;
   agentId?: string;
@@ -659,6 +695,63 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  /** Must be checked before looking up or starting a retained service sandbox. */
+  workspaceConnection?: { scopeId: string; fingerprint: string };
+}
+
+/** A separately advertised operation: older workers must not allocate an ephemeral fallback. */
+export type PluginEnvironmentAcquireServiceLeaseParams = PluginEnvironmentAcquireLeaseParams & { serviceAllocationId: string; serviceConnectionFingerprint: string };
+
+/** Read-only connection identity for a durable allocation; must not create provider resources. */
+export interface PluginEnvironmentServiceConnectionParams extends PluginEnvironmentDriverBaseParams {
+  serviceAllocationId: string;
+  /** Read-only resource preflight before committing a new acquisition intent.
+   * Omit for connection recovery and cleanup of an existing allocation. */
+  checkResources?: boolean;
+}
+export interface PluginEnvironmentServiceConnection {
+  /** Opaque, non-secret digest including effective provider credentials/account and API endpoint. */
+  fingerprint: string;
+  /** Required affirmative result when the caller requested resource preflight.
+   * An absent value means the worker does not support that verification. */
+  resourcesVerified?: boolean;
+}
+
+/** Explicit irreversible data deletion, separately negotiated from run cleanup.
+ * The host must persist deletionId and fence all consumers before invoking it. */
+export interface PluginEnvironmentDeleteServiceDataParams extends PluginEnvironmentServiceConnectionParams {
+  providerLeaseId: string;
+  serviceConnectionFingerprint: string;
+  deletionId: string;
+}
+/** Only provider-confirmed destruction, never an accepted deletion request. */
+export interface PluginEnvironmentServiceDataDeletionReceipt {
+  providerLeaseId: string;
+  serviceAllocationId: string;
+  deletionId: string;
+  state: "destroyed";
+}
+
+/** Provider-stamped ownership of a run-created task sandbox. Kept in lease
+ * metadata across resume/reassignment; never inferred from a current agent. */
+export interface PluginEnvironmentTaskWorkspaceOwnership {
+  version: 1;
+  executionWorkspaceId: string;
+  createdByRunId: string;
+  sandboxName: string;
+}
+/** Separately negotiated from standalone service deletion and ordinary cleanup. */
+export interface PluginEnvironmentDeleteTaskWorkspaceDataParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  workspaceConnection: { scopeId: string; fingerprint: string };
+  ownership: PluginEnvironmentTaskWorkspaceOwnership;
+  deletionId: string;
+}
+export interface PluginEnvironmentTaskWorkspaceDataDeletionReceipt {
+  providerLeaseId: string;
+  executionWorkspaceId: string;
+  deletionId: string;
+  state: "destroyed";
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -730,6 +823,75 @@ export interface PluginEnvironmentExecuteResult {
   stdout: string;
   stderr: string;
   metadata?: Record<string, unknown>;
+}
+
+/** Durable service operations run independently of an agent's session. */
+export interface PluginEnvironmentServiceParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  workspaceConnection?: { scopeId: string; fingerprint: string };
+  serviceId: string;
+  generation: string;
+  action: "start" | "inspect" | "stop" | "logs" | "endpoint" | "retain" | "release_compute" | "storage_usage";
+  /** Server-resolved workspace and explicitly authorized application environment. */
+  launch?: {
+    command: string;
+    cwd: string;
+    env: Record<string, string>;
+    secretKeys: string[];
+    endpoints: Array<{ name: string; port?: number; portEnv: string; healthPath: string }>;
+  };
+  processRef?: Record<string, unknown>;
+  endpointName?: string;
+  limitBytes?: number;
+}
+
+export interface PluginEnvironmentServiceResult {
+  storageUsage?: { bytes: number } | { unavailable: "compute_stopped" | "measurement_failed" };
+  /** Echoed after checking an optional workspace connection precondition. */
+  workspaceConnection?: { scopeId: string; fingerprint: string };
+  /** Stable machine-readable failures survive JSON-RPC error serialization. */
+  errorCode?: "EADDRINUSE" | "ENOENT" | "IDENTITY_LOST" | "RESOURCE_CONFIGURATION_MISMATCH" | "SERVICE_OPERATION_FAILED";
+  state: "running" | "exited" | "missing" | "retained" | "stopped";
+  processRef?: Record<string, unknown>;
+  exitCode?: number | null;
+  endpoints?: Array<{ name: string; port: number; healthy: boolean }>;
+  logs?: string;
+  /** Private upstream material: never expose these headers to an app or user. */
+  upstream?: { url: string; headers: Record<string, string> };
+}
+
+/** Fixed provider operation; capture is read-only, stop requires a persisted host handoff. */
+export interface PluginEnvironmentProcessHandoffParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  workspaceConnection: { scopeId: string; fingerprint: string };
+  operation: {
+    action: "capture";
+    sourcePid: number;
+    owner: { version: 1; pid: number; uid: number; processGroupId: number; bootId: string; startTicks: string };
+    cwd: string;
+    workspaceRoot: string;
+  } | { action: "stop"; receipt: Record<string, unknown> };
+}
+
+/** Revalidate or control an attested runner without allocating or waking compute. */
+export interface PluginEnvironmentRunProcessControlParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string;
+  workspaceConnection: { scopeId: string; fingerprint: string };
+  owner: import("@paperclipai/shared/remote-process-identity").RemoteProcessIdentity;
+  operation: import("@paperclipai/shared/remote-process-control").RemoteProcessControlOperation;
+}
+
+export interface PluginEnvironmentRunProcessControlResult {
+  state: import("@paperclipai/shared/remote-process-control").RemoteProcessControlState;
+  workspaceConnection?: { scopeId: string; fingerprint: string };
+}
+
+export interface PluginEnvironmentProcessHandoffResult {
+  state: "captured" | "stopped" | "failed";
+  key?: string;
+  receipt?: Record<string, unknown>;
+  workspaceConnection?: { scopeId: string; fingerprint: string };
+  errorCode?: "PROCESS_OWNERSHIP_UNVERIFIED" | "PROCESS_HANDOFF_UNVERIFIED" | "PROCESS_HANDOFF_UNAVAILABLE";
 }
 
 /**
@@ -1367,6 +1529,10 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentAcquireLeaseParams,
     result: PluginEnvironmentLease,
   ];
+  environmentAcquireServiceLease: [params: PluginEnvironmentAcquireServiceLeaseParams, result: PluginEnvironmentLease];
+  environmentGetServiceConnection: [params: PluginEnvironmentServiceConnectionParams, result: PluginEnvironmentServiceConnection];
+  environmentDeleteServiceData: [params: PluginEnvironmentDeleteServiceDataParams, result: PluginEnvironmentServiceDataDeletionReceipt];
+  environmentDeleteTaskWorkspaceData: [params: PluginEnvironmentDeleteTaskWorkspaceDataParams, result: PluginEnvironmentTaskWorkspaceDataDeletionReceipt];
   environmentResumeLease: [
     params: PluginEnvironmentResumeLeaseParams,
     result: PluginEnvironmentLease,
@@ -1387,6 +1553,11 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentService: [params: PluginEnvironmentServiceParams, result: PluginEnvironmentServiceResult];
+  environmentProcessHandoff: [params: PluginEnvironmentProcessHandoffParams, result: PluginEnvironmentProcessHandoffResult];
+  environmentRunProcessControl: [params: PluginEnvironmentRunProcessControlParams, result: PluginEnvironmentRunProcessControlResult];
+  environmentRunnerRecovery: [params: PluginEnvironmentRunnerRecoveryParams, result: PluginEnvironmentRunnerRecoveryResult];
+  environmentRunnerRecoveryExecute: [params: PluginEnvironmentRunnerRecoveryExecuteParams, result: PluginEnvironmentRunnerRecoveryExecuteResult];
   environmentRunnerIngressEndpoint: [
     params: PluginEnvironmentRunnerIngressEndpointParams,
     result: PluginEnvironmentRunnerIngressEndpoint,
@@ -1476,11 +1647,20 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentValidateConfig",
   "environmentProbe",
   "environmentAcquireLease",
+  "environmentAcquireServiceLease",
+  "environmentGetServiceConnection",
+  "environmentDeleteServiceData",
+  "environmentDeleteTaskWorkspaceData",
   "environmentResumeLease",
   "environmentReleaseLease",
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentService",
+  "environmentProcessHandoff",
+  "environmentRunProcessControl",
+  "environmentRunnerRecovery",
+  "environmentRunnerRecoveryExecute",
   "environmentRunnerIngressEndpoint",
   "environmentSyncIn",
   "environmentSyncOut",

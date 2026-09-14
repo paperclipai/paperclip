@@ -756,6 +756,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "issue",
   "run",
   "tool_connection",
+  "runtime_service",
   "system",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
@@ -1007,6 +1008,7 @@ export const PERMISSION_KEYS = [
   "skills:create",
   "skills:suggest-changes",
   "environments:manage",
+  "services:manage",
   "tools:admin",
   "tools:manage_connections",
   "tools:manage_profiles",

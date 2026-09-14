@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
+import { CONNECTION_INTENT_AGENT_GUIDANCE, RUNTIME_SERVICE_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
@@ -20,9 +20,22 @@ import {
 } from "./paperclip-runner-permissions.js";
 import type {
   AdapterRuntimeToolAccess,
+  AdapterRuntimeServiceAccess,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
+
+export function buildRuntimeServicesEnv(access: AdapterRuntimeServiceAccess | null | undefined): Record<string, string> {
+  if (!access) return {};
+  return {
+    PAPERCLIP_RUNTIME_SERVICES_MCP_URL: access.mcpEndpoint,
+    PAPERCLIP_RUNTIME_SERVICES_CALL_URL: access.callEndpoint,
+    PAPERCLIP_RUNTIME_SERVICES_TOKEN: access.bearerToken,
+    PAPERCLIP_RUNTIME_SERVICES_EXPIRES_AT: access.expiresAt,
+    PAPERCLIP_RUNTIME_SERVICES_AVAILABLE: access.tools.join(","),
+    PAPERCLIP_RUNTIME_SERVICES_GUIDANCE: access.guidance,
+  };
+}
 
 export function buildRuntimeToolsEnv(
   access: AdapterRuntimeToolAccess | null | undefined,
@@ -227,6 +240,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- When the server-authenticated wake payload includes an External chat response contract, that narrower contract replaces the generic Paperclip comment, status, checkout, and final-disposition steps above for that turn. Follow the external-chat contract exactly; it does not relax any permission, approval, execution-policy, containment, budget, pause/cancel, or company boundary.",
   "",
   CONNECTION_INTENT_AGENT_GUIDANCE,
+  RUNTIME_SERVICE_AGENT_GUIDANCE,
 ].join("\n");
 
 // Chat behavior is supplied centrally by the server's task-context markdown.

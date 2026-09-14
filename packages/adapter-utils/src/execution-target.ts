@@ -5,6 +5,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
+import type { AdapterProcessSpawnMetadata } from "./types.js";
+import { RemoteProcessReceiptStream, remoteOwnedProcessCommand } from "./remote-owned-process.js";
+import { parseRemoteProcessLaunchReceipt, type RemoteProcessIdentity } from "./remote-process-identity.js";
 import { githubLauncherSource } from "./github-launcher.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
@@ -25,7 +28,7 @@ import type {
   WorkspaceInboundMode,
 } from "./sandbox-managed-runtime.js";
 import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
-import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+import { captureDirectorySnapshot, directorySnapshotSha256, type DirectorySnapshot } from "./workspace-restore-merge.js";
 export { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
 export type {
   AdditionalSourceStagingFailure,
@@ -204,6 +207,14 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   readonly reusableLeaseConfigured?: boolean;
   /** Host-observed provenance for this exact sandbox acquisition. */
   readonly sandboxLeaseAcquisition?: SandboxLeaseAcquisition | null;
+  /** Host-verified service allocation: never replace its working tree on entry. */
+  readonly retainedServiceWorkspace?: {
+    hostBaseline: { sha256: string; exclude: string[] } | null;
+    /** Server-authorized first import for an independent allocation. */
+    initialImport?: { hostCwd: string };
+  };
+  /** Host-only persistence after a successful sync back. Not parsed from JSON. */
+  recordWorkspaceSync?: (baseline: { sha256: string; exclude: string[] }) => Promise<void>;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
@@ -216,6 +227,17 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
     port: number;
     path: string;
   }) => Promise<RunnerIngressEndpoint>;
+  /** Host-owned callbacks for one verified surviving native runner. They never
+   * invoke ordinary acquire/execute/sync paths, and are not agent tool input. */
+  nativeRunnerRecovery?: {
+    process: AdapterProcessSpawnMetadata;
+    /** Bind once before recovery. Only the initial liveness probe may run
+     * unbound; all later operations use this controller's allocation fence. */
+    bindController(controller: { leaseOwner: string; controllerGeneration: number }): void;
+    isAlive(): Promise<boolean>;
+    signal(signal: NodeJS.Signals): Promise<boolean>;
+    readState(): Promise<Record<string, unknown>>;
+  };
   /**
    * Sandbox-backed adapter runs stream the agent CLI's stdout/stderr
    * incrementally via a log-tail loop beside the callback bridge instead of
@@ -278,7 +300,7 @@ export interface AdapterExecutionTargetProcessOptions {
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
-  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: AdapterProcessSpawnMetadata) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
   /**
    * Sandbox-only: factory from the Paperclip bridge handle that streams the
@@ -363,6 +385,8 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
 
 export interface AdapterExecutionTargetProcessSessionBridgeHandle {
   agentCommand: string;
+  /** The host relay PID must not replace this bridge's attested remote owner. */
+  reportsRemoteProcessOwnership?: boolean;
   stop(): Promise<void>;
 }
 
@@ -865,6 +889,51 @@ export async function runAdapterExecutionTargetProcess(
       phase: "adapter_startup",
       message: "Starting adapter in environment",
     });
+    if (target.providerKey === "daytona" && options.onSpawn) {
+      const timeoutSec = options.timeoutSec > 0 ? options.timeoutSec : (target.timeoutMs ?? 0) / 1000;
+      // The provider's batch execute result has no trusted process owner. Use
+      // the same pre-exec receipt and owned teardown as the interactive bridge.
+      // Its relay supplies ordered stdout/stderr, so do not also start the
+      // legacy file-log tail. Only the remote receipt reaches onSpawn.
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId,
+        target,
+        runtimeRootDir: null,
+        adapterKey: "cli",
+        command,
+        args,
+        cwd: target.remoteCwd,
+        env,
+        // The host relay owns the CLI deadline. Leave the provider enough time
+        // for that timeout's graceful stop and the bridge's bounded teardown,
+        // instead of turning a provider timeout into a generic relay exit.
+        timeoutSec: timeoutSec > 0
+          ? timeoutSec + Math.max(0, options.graceSec) + 2 * DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS / 1000
+          : timeoutSec,
+        onSpawn: options.onSpawn,
+        onLog: async (stream, chunk) => {
+          if (stream === "stderr") await options.onLog(stream, chunk);
+        },
+        streamOutputViaSession: target.effectiveCapabilities?.incrementalSessionOutput === true,
+      });
+      if (!bridge) throw new Error("remote_process_ownership_unverified");
+      try {
+        const result = await runChildProcess(runId, process.execPath, [bridge.agentCommand], {
+          cwd: options.cwd,
+          env: {},
+          stdin: options.stdin,
+          timeoutSec,
+          graceSec: options.graceSec,
+          onLog: options.onLog,
+          terminalResultCleanup: options.terminalResultCleanup,
+        });
+        // The relay is host plumbing, not the adapter process. Keep the remote
+        // result's existing null PID contract and settle before bridge teardown.
+        return applyRunDispositionSeam({ ...result, pid: null }, options.settleRunDisposition);
+      } finally {
+        await bridge.stop();
+      }
+    }
     const runLogTail = options.runLogTail?.create() ?? null;
     let execCommand = command;
     let execArgs = args;
@@ -884,7 +953,7 @@ export async function runAdapterExecutionTargetProcess(
         // runner's end-of-run batched onLog to avoid duplicate log bytes.
         onLog: runLogTail ? undefined : options.onLog,
         onSpawn: options.onSpawn
-          ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
+          ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null, processLocation: "remote" })
           : undefined,
       });
       // Settle the duplex run disposition synchronously at the clean-completion
@@ -1484,6 +1553,31 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     };
   }
 
+  let workspaceBaseline = input.workspaceBaseline;
+  if (target.retainedServiceWorkspace && input.syncWorkspace !== false) {
+    const baseline = target.retainedServiceWorkspace.hostBaseline;
+    if (!baseline) {
+      const initialImport = target.retainedServiceWorkspace.initialImport;
+      if (!initialImport) throw new Error("The retained service workspace has no completed file-sync receipt. Recover its files before continuing.");
+      if (await fs.realpath(input.workspaceLocalDir) !== await fs.realpath(initialImport.hostCwd)) {
+        throw new Error("The first service import must use its authorized host mirror");
+      }
+      // Check every entry, including hidden/ignored files. An absent receipt
+      // never authorizes replacing an existing checkout or user-created data.
+      const empty = await captureDirectorySnapshot(input.workspaceLocalDir);
+      if (empty.entries.size) throw new Error("The first service import requires an empty host mirror; existing files were preserved");
+      workspaceBaseline = empty;
+    } else {
+      const host = await captureDirectorySnapshot(input.workspaceLocalDir, { exclude: baseline.exclude });
+      if (directorySnapshotSha256(host) !== baseline.sha256) {
+        throw new Error("The host working tree changed while its service workspace was retained. Reconcile those changes before continuing; the running app's files were preserved.");
+      }
+      // Recovery snapshots describe a run; only the host-owned service receipt
+      // authorizes reuse of this mirror. Always validate it, including when a
+      // native recovery supplies an older snapshot or different exclusions.
+      workspaceBaseline = host;
+    }
+  }
   const prepared = await prepareCommandManagedRuntime({
     runner: requireSandboxRunner(target),
     spec: {
@@ -1500,9 +1594,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
     syncWorkspace: input.syncWorkspace,
-    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceInboundMode: target.retainedServiceWorkspace ? "adopt_remote" : input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
-    workspaceBaseline: input.workspaceBaseline,
+    workspaceBaseline,
+    requireUnchangedHostOnRestore: Boolean(target.retainedServiceWorkspace),
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
@@ -1522,7 +1617,14 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     additionalSourceDirs: prepared.additionalSourceDirs,
     additionalSourceFailures: prepared.additionalSourceFailures,
     workspaceSyncSnapshot: prepared.workspaceSyncSnapshot,
-    restoreWorkspace: prepared.restoreWorkspace,
+    restoreWorkspace: async (onProgress) => {
+      await prepared.restoreWorkspace(onProgress);
+      if (target.recordWorkspaceSync && prepared.workspaceSyncSnapshot) {
+        const exclude = prepared.workspaceSyncSnapshot.baseline.exclude;
+        const host = await captureDirectorySnapshot(input.workspaceLocalDir, { exclude });
+        await target.recordWorkspaceSync({ sha256: directorySnapshotSha256(host), exclude });
+      }
+    },
   };
 }
 
@@ -1938,6 +2040,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // merged env in right before the launch.
   env: Record<string, string> | (() => Promise<Record<string, string>>);
   timeoutSec?: number | null;
+  onSpawn?: (metadata: AdapterProcessSpawnMetadata) => Promise<void>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   // Return the current-run parent-context token. The socket handlers and the
   // poll timer read it per unit of work and run under it, so their run-time
@@ -1989,6 +2092,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // path, so a warm sandbox can hold both wrapper scripts without the content
   // hash-skip gate thrashing when a run switches output mode.
   const streamOutput = input.streamOutputViaSession === true;
+  const reportsRemoteProcessOwnership = target.providerKey === "daytona" && Boolean(input.onSpawn);
+  const ownershipNonce = randomUUID();
+  const ownershipStartedAt = new Date().toISOString();
+  let polledProcessIdentity: RemoteProcessIdentity | null = null;
+  const persistRemoteOwner = async (identity: RemoteProcessIdentity) => {
+    await input.onSpawn?.({ pid: identity.pid, processGroupId: null, startedAt: ownershipStartedAt,
+      processLocation: "remote", remoteProcessIdentity: identity });
+  };
   const remoteScriptPath = path.posix.join(
     bridgeRuntimeDir,
     streamOutput ? PROCESS_SESSION_REMOTE_STREAM_SCRIPT : PROCESS_SESSION_REMOTE_SCRIPT,
@@ -2033,7 +2144,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // as one foreground session command further down instead, so skip this.
   if (!streamOutput) {
     await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
-    const startResult = await runner.execute({
+    const legacyPollCommand = {
       command: shellCommand,
       args: shellCommandArgs(
         [
@@ -2045,9 +2156,18 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             `nohup node ${shellQuote(remoteScriptPath)} >/dev/null 2>&1 < /dev/null &`,
         ].join("\n"),
       ),
+    };
+    const startResult = await runner.execute({
+      ...(reportsRemoteProcessOwnership
+        ? remoteOwnedProcessCommand({ nonce: ownershipNonce, command: "node", args: [remoteScriptPath], detached: true })
+        : legacyPollCommand),
       cwd: target.remoteCwd,
       env: {
         PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+        ...(reportsRemoteProcessOwnership ? {
+          PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
+          PAPERCLIP_PROCESS_SESSION_COMMAND_B64: commandPayload,
+        } : {}),
       },
       timeoutMs,
       // The wrapper launch is bridge plumbing. Keep it off the persistent
@@ -2056,6 +2176,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     });
     if (startResult.timedOut || (startResult.exitCode ?? 1) !== 0) {
       throw new Error(`Failed to start sandbox ACP process session bridge: ${startResult.stderr || startResult.stdout}`);
+    }
+    if (reportsRemoteProcessOwnership) {
+      polledProcessIdentity = parseRemoteProcessLaunchReceipt(startResult.stdout, ownershipNonce);
     }
   }
 
@@ -2110,7 +2233,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       socket.end();
     } else if (event.type === "error") {
       stopping = true;
-      socket.destroy();
+      // Flush the failure frame before closing so the relay keeps its cause.
+      socket.end();
     }
     return true;
   };
@@ -2362,9 +2486,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     void runRuntimeWork("sandbox.agentProcess", async () => {
       const commandSettled = (async () => {
         try {
+          const ownership = reportsRemoteProcessOwnership ? new RemoteProcessReceiptStream(ownershipNonce, persistRemoteOwner) : null;
           const result = await runner.execute({
-            command: shellCommand,
-            args: shellCommandArgs(`node ${shellQuote(remoteScriptPath)}`),
+            ...(reportsRemoteProcessOwnership
+              ? remoteOwnedProcessCommand({ nonce: ownershipNonce, command: "node", args: [remoteScriptPath], detached: false })
+              : { command: shellCommand, args: shellCommandArgs(`node ${shellQuote(remoteScriptPath)}`) }),
             cwd: target.remoteCwd,
             env: {
               PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
@@ -2374,10 +2500,21 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             timeoutMs,
             useSession: true,
             onLog: async (stream, chunk) => {
-              if (stream === "stdout") ingestStreamChunk(chunk);
+              if (stream !== "stdout") return;
+              try {
+                ingestStreamChunk(ownership ? await ownership.consume(chunk) : chunk);
+              } catch (error) {
+                // Do not wait for the long-lived provider RPC to finish before
+                // failing the relay. Its caller must be able to run teardown.
+                if (!stopping && !sawTerminal) {
+                  sawTerminal = true;
+                  deliverRemoteEvent({ type: "error", message: error instanceof Error ? error.message : "remote_process_ownership_unverified" });
+                }
+                throw error;
+              }
             },
           });
-          ingestFinalText(result.stdout);
+          ingestFinalText(ownership ? await ownership.finish(result.stdout) : result.stdout);
           if (!sawTerminal && !stopping) {
             deliverRemoteEvent({
               type: "exit",
@@ -2385,7 +2522,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             });
           }
         } catch (error) {
-          if (!stopping) {
+          if (!stopping && !sawTerminal) {
             deliverRemoteEvent({
               type: "error",
               message: error instanceof Error ? error.message : String(error),
@@ -2436,8 +2573,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     })();
   };
 
-  return {
+  const handle: AdapterExecutionTargetProcessSessionBridgeHandle = {
     agentCommand,
+    reportsRemoteProcessOwnership,
     stop: async () => {
       stopping = true;
       // End the `sandbox.agentProcess` span now, before the caller ends the run
@@ -2512,6 +2650,16 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
     },
   };
+  if (reportsRemoteProcessOwnership && !streamOutput) {
+    try {
+      if (!polledProcessIdentity) throw new Error("remote_process_ownership_unverified");
+      await persistRemoteOwner(polledProcessIdentity);
+    } catch (error) {
+      await handle.stop();
+      throw error;
+    }
+  }
+  return handle;
 }
 
 function getProcessSessionProxySource(input: { port: number; token: string }): string {
@@ -2547,10 +2695,14 @@ socket.on("data", (chunk) => {
       process.stderr.write(String(message.message || "Process session bridge failed.") + "\\n");
       exiting = true;
       process.exitCode = 1;
+      process.stdin.pause();
+      process.stdin.destroy();
       socket.end();
     } else if (message.type === "exit") {
       exiting = true;
       process.exitCode = typeof message.code === "number" ? message.code : 1;
+      process.stdin.pause();
+      process.stdin.destroy();
       socket.end();
     }
   }

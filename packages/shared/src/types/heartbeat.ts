@@ -202,6 +202,7 @@ export interface HeartbeatRun {
   errorCode: string | null;
   externalRunId: string | null;
   processPid: number | null;
+  processLocation?: "local" | "remote" | null;
   processGroupId?: number | null;
   processStartedAt: Date | null;
   lastOutputAt: Date | null;

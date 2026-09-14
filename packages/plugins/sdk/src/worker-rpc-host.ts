@@ -86,8 +86,14 @@ import type {
   ResolveExternalObjectParams,
   RefreshExternalObjectsParams,
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentAcquireServiceLeaseParams,
+  PluginEnvironmentServiceConnectionParams,
+  PluginEnvironmentDeleteServiceDataParams,
+  PluginEnvironmentDeleteTaskWorkspaceDataParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
+  PluginEnvironmentServiceParams,
+  PluginEnvironmentProcessHandoffParams,
   PluginEnvironmentRunnerIngressEndpointParams,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
@@ -1631,6 +1637,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentAcquireLease":
         return handleEnvironmentAcquireLease(params as PluginEnvironmentAcquireLeaseParams);
 
+      case "environmentAcquireServiceLease":
+        if (!plugin.definition.onEnvironmentAcquireServiceLease) throw methodNotImplemented("environmentAcquireServiceLease");
+        return plugin.definition.onEnvironmentAcquireServiceLease(params as PluginEnvironmentAcquireServiceLeaseParams);
+      case "environmentGetServiceConnection":
+        if (!plugin.definition.onEnvironmentGetServiceConnection) throw methodNotImplemented("environmentGetServiceConnection");
+        return plugin.definition.onEnvironmentGetServiceConnection(params as PluginEnvironmentServiceConnectionParams);
+      case "environmentDeleteServiceData":
+        if (!plugin.definition.onEnvironmentDeleteServiceData) throw methodNotImplemented("environmentDeleteServiceData");
+        return plugin.definition.onEnvironmentDeleteServiceData(params as PluginEnvironmentDeleteServiceDataParams);
+
+      case "environmentDeleteTaskWorkspaceData":
+        if (!plugin.definition.onEnvironmentDeleteTaskWorkspaceData) throw methodNotImplemented("environmentDeleteTaskWorkspaceData");
+        return plugin.definition.onEnvironmentDeleteTaskWorkspaceData(params as PluginEnvironmentDeleteTaskWorkspaceDataParams);
       case "environmentResumeLease":
         return handleEnvironmentResumeLease(params as PluginEnvironmentResumeLeaseParams);
 
@@ -1645,6 +1664,21 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
+      case "environmentService":
+        if (!plugin.definition.onEnvironmentService) throw methodNotImplemented("environmentService");
+        return plugin.definition.onEnvironmentService(params as PluginEnvironmentServiceParams);
+      case "environmentProcessHandoff":
+        if (!plugin.definition.onEnvironmentProcessHandoff) throw methodNotImplemented("environmentProcessHandoff");
+        return plugin.definition.onEnvironmentProcessHandoff(params as PluginEnvironmentProcessHandoffParams);
+      case "environmentRunProcessControl":
+        if (!plugin.definition.onEnvironmentRunProcessControl) throw methodNotImplemented("environmentRunProcessControl");
+        return plugin.definition.onEnvironmentRunProcessControl(params as import("./protocol.js").PluginEnvironmentRunProcessControlParams);
+      case "environmentRunnerRecovery":
+        if (!plugin.definition.onEnvironmentRunnerRecovery) throw methodNotImplemented("environmentRunnerRecovery");
+        return plugin.definition.onEnvironmentRunnerRecovery(params as import("./protocol.js").PluginEnvironmentRunnerRecoveryParams);
+      case "environmentRunnerRecoveryExecute":
+        if (!plugin.definition.onEnvironmentRunnerRecoveryExecute) throw methodNotImplemented("environmentRunnerRecoveryExecute");
+        return plugin.definition.onEnvironmentRunnerRecoveryExecute(params as import("./protocol.js").PluginEnvironmentRunnerRecoveryExecuteParams);
 
       case "environmentRunnerIngressEndpoint":
         return handleEnvironmentRunnerIngressEndpoint(
@@ -1735,11 +1769,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
     if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
+    if (plugin.definition.onEnvironmentAcquireServiceLease) supportedMethods.push("environmentAcquireServiceLease");
+    if (plugin.definition.onEnvironmentGetServiceConnection) supportedMethods.push("environmentGetServiceConnection");
+    if (plugin.definition.onEnvironmentDeleteServiceData) supportedMethods.push("environmentDeleteServiceData");
+    if (plugin.definition.onEnvironmentDeleteTaskWorkspaceData) supportedMethods.push("environmentDeleteTaskWorkspaceData");
     if (plugin.definition.onEnvironmentResumeLease) supportedMethods.push("environmentResumeLease");
     if (plugin.definition.onEnvironmentReleaseLease) supportedMethods.push("environmentReleaseLease");
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentService) supportedMethods.push("environmentService");
+    if (plugin.definition.onEnvironmentProcessHandoff) supportedMethods.push("environmentProcessHandoff");
+    if (plugin.definition.onEnvironmentRunProcessControl) supportedMethods.push("environmentRunProcessControl");
+    if (plugin.definition.onEnvironmentRunnerRecovery) supportedMethods.push("environmentRunnerRecovery");
+    if (plugin.definition.onEnvironmentRunnerRecoveryExecute) supportedMethods.push("environmentRunnerRecoveryExecute");
     if (plugin.definition.onEnvironmentRunnerIngressEndpoint) {
       supportedMethods.push("environmentRunnerIngressEndpoint");
     }

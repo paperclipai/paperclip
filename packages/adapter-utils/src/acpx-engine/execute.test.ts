@@ -2981,6 +2981,36 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
     return { root, stateDir, localCwd, remoteCwd, executionTarget };
   }
 
+  it.each([true, false])("keeps the bridge's remote owner separate from its local relay (attested=%s)", async reportsRemoteProcessOwnership => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const onSpawn = vi.fn(async (_metadata: unknown) => {});
+    const remote = { pid: 4321, processGroupId: null, startedAt: "2026-09-13T00:00:00.000Z", processLocation: "remote" as const,
+      remoteProcessIdentity: { version: 1 as const, pid: 4321, uid: 1000, processGroupId: 4321,
+        bootId: "1d2c2412-544b-4f04-955e-c41256fe5866", startTicks: "123456" } };
+    const local = { pid: 9999, startedAt: "2026-09-13T00:00:01.000Z" };
+    const processStop = vi.fn(async () => {});
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: async () => {} }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async input => {
+      expect(input.onSpawn).toBe(onSpawn);
+      if (reportsRemoteProcessOwnership) await input.onSpawn?.(remote);
+      return { agentCommand: "/fixture/relay", reportsRemoteProcessOwnership, stop: processStop };
+    });
+    const execute = createAcpxEngineExecutor({ createRuntime: options => {
+      const runtime = buildRuntime();
+      return { ...runtime, ensureSession: async (input: Record<string, unknown>) => {
+        await (options as AcpRuntimeOptions & { onAgentSpawn?: (meta: typeof local) => Promise<void> }).onAgentSpawn?.(local);
+        return runtime.ensureSession(input);
+      } } as never;
+    } });
+    const result = await execute({ runId: "run-remote-owner", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, context: {},
+      authToken: "fixture-run-token", executionTarget, onSpawn, onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith(reportsRemoteProcessOwnership ? remote : { ...local, processGroupId: null });
+    expect(processStop).toHaveBeenCalledTimes(1);
+  });
+
   it("test_remote_buildRuntime_crosses_staging_seam", async () => {
     const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
     const { sessionInputs, events } = await runExecutor(

@@ -1441,6 +1441,13 @@ describe("sandbox callback bridge", () => {
       { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/start" },
       { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/stop" },
       { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/restart" },
+      { method: "GET", path: "/api/companies/co-1/runtime-services" },
+      { method: "GET", path: "/api/companies/co-1/runtime-services/svc-1" },
+      { method: "GET", path: "/api/companies/co-1/runtime-services/svc-1/logs" },
+      { method: "POST", path: "/api/companies/co-1/runtime-services" },
+      { method: "POST", path: "/api/companies/co-1/runtime-services/register" },
+      { method: "POST", path: "/api/companies/co-1/runtime-services/svc-1/control" },
+      { method: "PATCH", path: "/api/companies/co-1/runtime-services/svc-1/policy" },
       { method: "GET", path: "/api/routines/r-1" },
       { method: "GET", path: "/api/routines/r-1/runs" },
       { method: "POST", path: "/api/companies/co-1/routines" },
@@ -1455,6 +1462,10 @@ describe("sandbox callback bridge", () => {
     }
 
     const denied: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/runtime-services/svc-1/activity" },
+      { method: "POST", path: "/api/companies/co-1/runtime-services/svc-1/shares" },
+      { method: "DELETE", path: "/api/companies/co-1/runtime-services/svc-1/storage" },
+      { method: "POST", path: "/mcp/runtime-services" },
       { method: "POST", path: "/api/companies/co-1/email/inboxes" },
       { method: "POST", path: "/api/companies/co-1/email/connections" },
       { method: "POST", path: "/api/companies/co-1/email/inspect" },

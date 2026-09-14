@@ -542,6 +542,7 @@ export async function prepareCommandManagedRuntime(input: {
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceBaseline?: DirectorySnapshot;
+  requireUnchangedHostOnRestore?: boolean;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
@@ -607,6 +608,7 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceInboundMode: input.workspaceInboundMode,
           workspaceDurableSeed: input.workspaceDurableSeed,
           workspaceBaseline: input.workspaceBaseline,
+          requireUnchangedHostOnRestore: input.requireUnchangedHostOnRestore,
           workspaceGitSnapshot: input.workspaceGitSnapshot,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
@@ -650,6 +652,7 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceBaseline: input.workspaceBaseline,
+    requireUnchangedHostOnRestore: input.requireUnchangedHostOnRestore,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,

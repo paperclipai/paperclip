@@ -71,6 +71,161 @@ function startTestWorker(plugin: ReturnType<typeof definePlugin>) {
 }
 
 describe("environment sync verb negotiation", () => {
+  it("negotiates recovery execution independently of ordinary execute and read-only recovery", async () => {
+    const seen: unknown[] = [];
+    const worker = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentRunnerRecoveryExecute(params) {
+      seen.push(params); return { state: "unverified" };
+    } }));
+    const input = { execution: { command: "tar" } };
+    try {
+      const initialized = await worker.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).toContain("environmentRunnerRecoveryExecute");
+      expect(await worker.callWorker("environmentRunnerRecoveryExecute", input)).toEqual({ state: "unverified" }); expect(seen).toEqual([input]);
+    } finally { worker.stop(); }
+    const legacy = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentExecute() { throw new Error("Must not wake compute"); },
+      async onEnvironmentRunnerRecovery() { return { state: "unverified" }; } }));
+    try {
+      const initialized = await legacy.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).not.toContain("environmentRunnerRecoveryExecute");
+      await expect(legacy.callWorker("environmentRunnerRecoveryExecute", input)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { legacy.stop(); }
+  });
+  it("negotiates recovery independently of ingress that can wake compute", async () => {
+    const seen: unknown[] = [];
+    const worker = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentRunnerRecovery(params) {
+      seen.push(params); return { state: "unverified" };
+    } }));
+    const input = { operation: "read_state", runId: "original-run" };
+    try {
+      const initialized = await worker.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).toContain("environmentRunnerRecovery");
+      expect(await worker.callWorker("environmentRunnerRecovery", input)).toEqual({ state: "unverified" }); expect(seen).toEqual([input]);
+    } finally { worker.stop(); }
+    const legacy = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentRunnerIngressEndpoint() { throw new Error("Must not wake compute"); } }));
+    try {
+      const initialized = await legacy.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).not.toContain("environmentRunnerRecovery");
+      await expect(legacy.callWorker("environmentRunnerRecovery", input)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { legacy.stop(); }
+  });
+  it("negotiates run process control separately from arbitrary execution and service handoff", async () => {
+    const seen: unknown[] = [];
+    const worker = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentRunProcessControl(params) {
+      seen.push(params); return { state: "running", workspaceConnection: params.workspaceConnection };
+    } }));
+    const input = { driverKey: "daytona", companyId: "company", environmentId: "environment", providerLeaseId: "sandbox", config: {},
+      workspaceConnection: { scopeId: "run", fingerprint: "a".repeat(64) }, operation: { action: "inspect" },
+      owner: { version: 1, pid: 40, uid: 1000, processGroupId: 40, bootId: "boot", startTicks: "1" } };
+    try {
+      const initialized = await worker.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).toContain("environmentRunProcessControl");
+      expect(await worker.callWorker("environmentRunProcessControl", input)).toEqual({ state: "running", workspaceConnection: input.workspaceConnection });
+      expect(seen).toEqual([input]);
+    } finally { worker.stop(); }
+    const legacy = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentExecute() { throw new Error("No general-execution fallback"); } }));
+    try {
+      const initialized = await legacy.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).not.toContain("environmentRunProcessControl");
+      await expect(legacy.callWorker("environmentRunProcessControl", input)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { legacy.stop(); }
+  });
+
+  it("negotiates process handoff independently and dispatches capture and stop", async () => {
+    const seen: unknown[] = [];
+    const worker = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentProcessHandoff(params) {
+      seen.push(params); return params.operation.action === "capture" ? { state: "captured", key: "key", receipt: { opaque: true } } : { state: "stopped" };
+    } }));
+    const base = { driverKey: "daytona", companyId: "company", environmentId: "environment", providerLeaseId: "sandbox", config: {}, workspaceConnection: { scopeId: "run", fingerprint: "a".repeat(64) } };
+    const capture = { ...base, operation: { action: "capture", sourcePid: 42, owner: { version: 1, pid: 40, uid: 1000, processGroupId: 40, bootId: "boot", startTicks: "1" }, cwd: "/workspace", workspaceRoot: "/workspace" } };
+    const stop = { ...base, operation: { action: "stop", receipt: { opaque: true } } };
+    try {
+      const initialized = await worker.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).toContain("environmentProcessHandoff");
+      expect(await worker.callWorker("environmentProcessHandoff", capture)).toEqual({ state: "captured", key: "key", receipt: { opaque: true } });
+      expect(await worker.callWorker("environmentProcessHandoff", stop)).toEqual({ state: "stopped" });
+      expect(seen).toEqual([capture, stop]);
+    } finally { worker.stop(); }
+    const legacy = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentService() { throw new Error("No service-operation fallback"); } }));
+    try {
+      const initialized = await legacy.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).not.toContain("environmentProcessHandoff");
+      await expect(legacy.callWorker("environmentProcessHandoff", capture)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { legacy.stop(); }
+  });
+
+  it("negotiates task-workspace deletion separately from standalone service and run destruction", async () => {
+    const seen: unknown[] = [];
+    const worker = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentDeleteTaskWorkspaceData(params) {
+      seen.push(params); return { providerLeaseId: params.providerLeaseId, executionWorkspaceId: params.ownership.executionWorkspaceId, deletionId: params.deletionId, state: "destroyed" };
+    } }));
+    const params = { driverKey: "daytona", companyId: "company", environmentId: "environment", providerLeaseId: "sandbox", deletionId: "intent", config: {},
+      workspaceConnection: { scopeId: "original-run", fingerprint: "a".repeat(64) }, ownership: { version: 1, executionWorkspaceId: "workspace", createdByRunId: "original-run", sandboxName: "task" } };
+    try {
+      const initialized = await worker.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).toContain("environmentDeleteTaskWorkspaceData");
+      expect(await worker.callWorker("environmentDeleteTaskWorkspaceData", params)).toEqual({ providerLeaseId: "sandbox", executionWorkspaceId: "workspace", deletionId: "intent", state: "destroyed" });
+      expect(seen).toEqual([params]);
+    } finally { worker.stop(); }
+    const legacy = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentDeleteServiceData() { throw new Error("Must not fall back"); }, async onEnvironmentDestroyLease() { throw new Error("Must not fall back"); } }));
+    try {
+      const initialized = await legacy.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).not.toContain("environmentDeleteTaskWorkspaceData");
+      await expect(legacy.callWorker("environmentDeleteTaskWorkspaceData", params)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { legacy.stop(); }
+  });
+
+  it("negotiates explicit service data deletion without falling back to run destruction", async () => {
+    const seen: unknown[] = [];
+    const worker = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentDeleteServiceData(params) {
+      seen.push(params); return { providerLeaseId: params.providerLeaseId, serviceAllocationId: params.serviceAllocationId, deletionId: params.deletionId, state: "destroyed" };
+    } }));
+    const params = { driverKey: "daytona", companyId: "company", environmentId: "environment", serviceAllocationId: "allocation",
+      providerLeaseId: "sandbox", deletionId: "committed-intent", serviceConnectionFingerprint: "a".repeat(64), config: {} };
+    try {
+      const initialized = await worker.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).toContain("environmentDeleteServiceData");
+      expect(await worker.callWorker("environmentDeleteServiceData", params)).toEqual({ providerLeaseId: "sandbox", serviceAllocationId: "allocation", deletionId: "committed-intent", state: "destroyed" });
+      expect(seen).toEqual([params]);
+    } finally { worker.stop(); }
+    const legacy = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentDestroyLease() { throw new Error("Must not fall back to ordinary destruction"); } }));
+    try {
+      const initialized = await legacy.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).not.toContain("environmentDeleteServiceData");
+      await expect(legacy.callWorker("environmentDeleteServiceData", params)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { legacy.stop(); }
+  });
+
+  it("negotiates durable service acquisition separately from ordinary run acquisition", async () => {
+    const seen: string[] = [];
+    const worker = startTestWorker(definePlugin({ async setup() {},
+      async onEnvironmentGetServiceConnection(params) { return { fingerprint: "a".repeat(64), ...(params.checkResources ? { resourcesVerified: params.config.cpu === 4 } : {}) }; },
+      async onEnvironmentAcquireServiceLease(params) {
+        seen.push(params.serviceAllocationId); return { providerLeaseId: "durable-sandbox" };
+      },
+    }));
+    try {
+      const initialized = await worker.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).toContain("environmentAcquireServiceLease");
+      expect(initialized.supportedMethods).toContain("environmentGetServiceConnection");
+      const params = { driverKey: "daytona", companyId: "company", environmentId: "environment", runId: "allocation", serviceAllocationId: "allocation", serviceConnectionFingerprint: "a".repeat(64), config: {} };
+      expect(await worker.callWorker("environmentGetServiceConnection", params)).toEqual({ fingerprint: "a".repeat(64) });
+      expect(await worker.callWorker("environmentGetServiceConnection", { ...params, checkResources: true, config: { cpu: 4 } }))
+        .toEqual({ fingerprint: "a".repeat(64), resourcesVerified: true });
+      expect(await worker.callWorker("environmentGetServiceConnection", { ...params, checkResources: true, config: { cpu: 8 } }))
+        .toEqual({ fingerprint: "a".repeat(64), resourcesVerified: false });
+      expect(await worker.callWorker("environmentAcquireServiceLease", params)).toEqual({ providerLeaseId: "durable-sandbox" });
+      expect(seen).toEqual(["allocation"]);
+    } finally { worker.stop(); }
+    const legacy = startTestWorker(definePlugin({ async setup() {}, async onEnvironmentAcquireLease() { throw new Error("Must not acquire an ordinary run sandbox"); } }));
+    try {
+      const initialized = await legacy.callWorker<{ supportedMethods: string[] }>("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      expect(initialized.supportedMethods).not.toContain("environmentAcquireServiceLease");
+      expect(initialized.supportedMethods).not.toContain("environmentGetServiceConnection");
+      await expect(legacy.callWorker("environmentAcquireServiceLease", {})).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+      await expect(legacy.callWorker("environmentGetServiceConnection", {})).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { legacy.stop(); }
+  });
+
   it("advertises environmentSyncIn/environmentSyncOut only when the hooks are defined", async () => {
     const withHooks = startTestWorker(
       definePlugin({

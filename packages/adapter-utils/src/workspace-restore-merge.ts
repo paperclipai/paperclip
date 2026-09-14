@@ -441,6 +441,8 @@ export async function captureDirectorySnapshot(
 
 export async function mergeDirectoryWithBaseline(input: {
   baseline: DirectorySnapshot;
+  /** Opt-in for retained service workspaces. Check before any Git/file writes. */
+  requireUnchangedTarget?: boolean;
   sourceDir: string;
   targetDir: string;
   beforeApply?: () => Promise<void>;
@@ -448,6 +450,13 @@ export async function mergeDirectoryWithBaseline(input: {
 }): Promise<void> {
   const source = await captureDirectorySnapshot(input.sourceDir, { exclude: input.baseline.exclude });
   await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+    if (input.requireUnchangedTarget) {
+      const before = await captureDirectorySnapshot(canonicalTargetDir, { exclude: input.baseline.exclude });
+      const hash = directorySnapshotSha256(before);
+      if (hash !== directorySnapshotSha256(input.baseline) && hash !== directorySnapshotSha256(source)) {
+        throw new Error("The host working tree changed during the retained service run. Both copies were preserved; reconcile them before restoring.");
+      }
+    }
     await input.beforeApply?.();
     const current = await captureDirectorySnapshot(canonicalTargetDir, { exclude: input.baseline.exclude });
     const deletedLeafEntries = [...input.baseline.entries.entries()]

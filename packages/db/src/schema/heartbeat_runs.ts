@@ -72,6 +72,7 @@ export const heartbeatRuns = pgTable(
     controllerLeaseExpiresAt: timestamp("controller_lease_expires_at", { withTimezone: true }),
     executionStage: text("execution_stage"),
     processPid: integer("process_pid"),
+    processLocation: text("process_location").$type<"local" | "remote">(),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),

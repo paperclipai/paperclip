@@ -77,6 +77,8 @@ export function consumerTypeLabel(consumerType: SecretAccessEvent["consumerType"
       return "Plugin worker";
     case "tool_connection":
       return "Tool connection";
+    case "runtime_service":
+      return "Runtime service";
     default:
       return consumerType.charAt(0).toUpperCase() + consumerType.slice(1);
   }

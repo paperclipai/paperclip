@@ -2359,6 +2359,7 @@ async function buildRuntime(input: {
           getRuntimeParentContext: input.getRuntimeParentContext,
           runtimeSpan: input.runtimeSpan,
           streamOutputViaSession: streamAgentSessionOutput,
+          onSpawn: input.ctx.onSpawn,
         }),
       measureBridgeStep: (step, run) =>
         measureStartupStep(input.ctx, nowMs, step, run, concurrentBridgeStepMetrics),
@@ -4235,6 +4236,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? (chunk) => routeChildStderr(childStderrState, chunk)
             : undefined,
           onAgentSpawn: async (meta) => {
+            // This process is the host-side socket relay. The bridge emits the
+            // sandbox wrapper's trusted identity through its own launch path.
+            if (prepared.processSessionBridge?.reportsRemoteProcessOwnership) return;
             processIdentitySink.latest = meta;
             processIdentitySink.localProcess = prepared.processSessionBridge ? undefined : captureLocalProcess(meta.pid);
             await processIdentitySink.current?.({

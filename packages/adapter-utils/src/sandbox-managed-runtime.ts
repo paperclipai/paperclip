@@ -1061,6 +1061,8 @@ export async function prepareSandboxManagedRuntime(input: {
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   /** Durable snapshots supplied when reconstructing an interrupted restore. */
   workspaceBaseline?: DirectorySnapshot;
+  /** A retained app is authoritative remotely; preserve a diverged host tree. */
+  requireUnchangedHostOnRestore?: boolean;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
@@ -1817,6 +1819,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 const gitHeadToIntegrate = importedHead;
                 await mergeDirectoryWithBaseline({
                   baseline: baselineSnapshot!,
+                  requireUnchangedTarget: input.requireUnchangedHostOnRestore,
                   sourceDir: extractedDir,
                   targetDir: input.workspaceLocalDir,
                   beforeApply: gitHeadToIntegrate

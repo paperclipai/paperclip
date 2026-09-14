@@ -1,5 +1,6 @@
 export type {
   AdapterAgent,
+  AdapterProcessSpawnMetadata,
   AdapterRuntime,
   UsageSummary,
   AdapterBillingType,
@@ -11,6 +12,7 @@ export type {
   AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
   AdapterRuntimeToolAccess,
+  AdapterRuntimeServiceAccess,
   AdapterRuntimeToolDelivery,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
@@ -44,6 +46,8 @@ export type {
   CLIAdapterModule,
   CreateConfigValues,
 } from "./types.js";
+export { isRemoteProcessIdentity, parseRemoteProcessLaunchReceipt, remoteProcessIdentityPrelude } from "./remote-process-identity.js";
+export type { RemoteProcessIdentity } from "./remote-process-identity.js";
 export type {
   SessionCompactionPolicy,
   NativeContextManagement,
