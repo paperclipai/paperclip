@@ -390,6 +390,72 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     } finally { finish.resolve(); await running; vi.useRealTimers(); }
   });
 
+  it.each([false, true])("settles an active renewal before the escalated cooldown (renewal fails: %s)", async renewalFails => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0),
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP - 1, [CAP_WARNED_KEY]: true },
+    });
+    const providerStarted = Promise.withResolvers<void>(), providerFinished = Promise.withResolvers<void>();
+    const renewalStarted = Promise.withResolvers<void>(), releaseRenewal = Promise.withResolvers<void>();
+    const timerStopped = Promise.withResolvers<void>();
+    let holdNextRenewal = false, renewalSettled = false, cooldownStarted = false;
+    const realUpdate = db.update.bind(db);
+    const updateSpy = vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
+      const builder = (realUpdate as (t: unknown) => unknown)(table) as { set: (values: Record<string, unknown>) => unknown };
+      const realSet = builder.set.bind(builder);
+      builder.set = values => {
+        const query = realSet(values) as { where: (predicate: unknown) => unknown };
+        if (table === environmentLeases && Object.keys(values).length === 1 && values.metadata) {
+          if (holdNextRenewal) {
+            holdNextRenewal = false;
+            const realWhere = query.where.bind(query);
+            query.where = predicate => (async () => {
+              renewalStarted.resolve();
+              await releaseRenewal.promise;
+              try {
+                if (renewalFails) throw new Error("renewal connection failed");
+                return await realWhere(predicate);
+              } finally { renewalSettled = true; }
+            })();
+          } else {
+            cooldownStarted = true;
+          }
+        }
+        return query;
+      };
+      return builder;
+    }) as unknown as typeof db.update);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const realClearInterval = globalThis.clearInterval;
+    const clearSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(timer => {
+      realClearInterval(timer);
+      timerStopped.resolve();
+    });
+    const service = heartbeatService(db, { environmentRuntime: { retryPendingSandboxTeardown: async () => {
+      providerStarted.resolve(); await providerFinished.promise; throw new Error("provider unavailable");
+    } } as unknown as HeartbeatEnvironmentRuntime });
+    const running = service.sweepPendingCleanupLeases();
+    try {
+      await providerStarted.promise;
+      holdNextRenewal = true;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await renewalStarted.promise;
+      providerFinished.resolve();
+      await timerStopped.promise;
+      expect(renewalSettled).toBe(false);
+      expect(cooldownStarted).toBe(false);
+      releaseRenewal.resolve();
+      await running;
+      const metadata = await readMetadata(leaseId);
+      expect(metadata?.pendingCleanupInFlight).toBe(false);
+      expect(metadata?.pendingCleanupRetryAfterMs).toBeGreaterThan(Date.now() + 29 * 60_000);
+      expect((await service.sweepPendingCleanupLeases()).swept).toBe(0);
+    } finally {
+      providerFinished.resolve(); releaseRenewal.resolve(); await running;
+      clearSpy.mockRestore(); vi.useRealTimers(); updateSpy.mockRestore();
+    }
+  });
+
   it.each([false, true])("ignores a superseded cleanup completion (throws: %s)", async throws => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0) });

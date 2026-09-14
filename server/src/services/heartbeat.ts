@@ -18436,17 +18436,17 @@ export function heartbeatService(
       if (!claimed) continue;
       pendingCleanupAttemptsInFlight.add(row.id);
       lease.metadata = { ...lease.metadata, pendingCleanupAttemptId: claimed };
-      let renewing = false;
+      let activeRenewal: Promise<void> | null = null;
       const renewal = setInterval(() => {
-        if (renewing) return;
-        renewing = true;
-        void db.update(environmentLeases).set({
+        if (activeRenewal) return;
+        activeRenewal = db.update(environmentLeases).set({
           metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupRetryAfterMs}', to_jsonb(${Date.now() + 15 * 60_000}::bigint))`,
         }).where(and(eq(environmentLeases.id, row.id), eq(environmentLeases.status, "pending_cleanup"),
           sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`,
           sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`))
+          .then(() => {})
           .catch(() => logger.warn({ leaseId: row.id }, "cleanup ownership renewal failed"))
-          .finally(() => { renewing = false; });
+          .finally(() => { activeRenewal = null; });
       }, 30_000);
       renewal.unref();
 
@@ -18507,7 +18507,10 @@ export function heartbeatService(
         );
       } finally {
         clearInterval(renewal);
-        pendingCleanupAttemptsInFlight.delete(row.id);
+        // Stopping the timer does not settle a renewal already sent to the DB.
+        // Drain it before replacing the ownership deadline with the cooldown.
+        try { await activeRenewal; }
+        finally { pendingCleanupAttemptsInFlight.delete(row.id); }
       }
       if (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
         capped += 1;
