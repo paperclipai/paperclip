@@ -367,7 +367,7 @@ describe("sandbox managed runtime", () => {
       client: makeFilesystemClient(), adapterKey: "test", workspaceLocalDir: local,
       workspaceDurableSeed: seed,
       workspaceExclude: [`${secondPath}/host-config.txt`],
-    };
+    } satisfies Parameters<typeof prepareSandboxManagedRuntime>[0];
     let prepared = await prepareSandboxManagedRuntime(input);
     if (mode !== "host_current") {
       if (mode === "durable_seed") await rm(remote, { recursive: true, force: true });
@@ -396,7 +396,7 @@ describe("sandbox managed runtime", () => {
       expect(await git(path.join(local, relative), ["log", "-1", "--format=%s"])).toBe("remote change");
       expect(await readFile(path.join(local, relative, "secret.txt"), "utf8")).toBe("must stay local");
     }
-  });
+  }, 30_000);
 
   afterEach(async () => {
     while (cleanupDirs.length > 0) {

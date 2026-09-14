@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promises";
 import os from "node:os";
@@ -31,14 +32,18 @@ suite("task project repository provisioning", () => {
     database = await startEmbeddedPostgresTestDatabase("project-repositories");
     db = createDb(database.connectionString);
     heartbeat = heartbeatService(db);
+    execute.mockImplementation(async (input) => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, input.context.issueId));
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
   }, 30_000);
   afterAll(async () => {
     if (db && heartbeat) await drainHeartbeatRunsToQuiescence(db, heartbeat);
-    await db?.$client.end();
+    await db?.$client.end({ timeout: 5 });
     await database?.cleanup();
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
-  });
+  }, 60_000);
 
   it.each([1, 2])("gives a task all %i repositories without any configured local folders", async (count) => {
     const companyId = randomUUID();

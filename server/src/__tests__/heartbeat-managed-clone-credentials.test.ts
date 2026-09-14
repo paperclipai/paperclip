@@ -116,6 +116,30 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
       await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
     }
   });
+  it("rechecks the repository when another process wins the checkout rename", async () => {
+    const first = await createLocalSourceRepo();
+    const second = await createLocalSourceRepo();
+    const companyId = "cross-process-race";
+    const projectId = "same-name";
+    const sharedCwd = resolveManagedProjectWorkspaceDir({ companyId, projectId });
+    try {
+      // A different process does not share managedCheckoutMaterializations. Publish
+      // its completed checkout after this caller chose its destination, before rename.
+      const resolveGitAuth = vi.fn(async () => {
+        if (!(await fs.stat(sharedCwd).catch(() => null))) {
+          await execFile("git", ["clone", second, sharedCwd]);
+        }
+        return null;
+      });
+      const result = await ensureManagedProjectWorkspace({ companyId, projectId, repoUrl: first, resolveGitAuth });
+      expect((await execFile("git", ["remote", "get-url", "origin"], { cwd: result.cwd })).stdout.trim()).toBe(first);
+      expect((await execFile("git", ["remote", "get-url", "origin"], { cwd: sharedCwd })).stdout.trim()).toBe(second);
+      expect(result.cwd).not.toBe(sharedCwd);
+    } finally {
+      await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
   it("clones exactly as before when no auth provider is configured", async () => {
     const sourceRepo = await createLocalSourceRepo();
     try {

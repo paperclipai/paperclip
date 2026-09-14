@@ -2374,11 +2374,12 @@ export async function ensureManagedProjectWorkspace(input: {
   /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
-  let cwd = resolveManagedProjectWorkspaceDir({
+  const defaultCwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
     projectId: input.projectId,
     repoName: deriveRepoNameFromRepoUrl(input.repoUrl),
   });
+  let cwd = defaultCwd;
   if (input.repoUrl && await fs.stat(path.join(cwd, ".git")).catch(() => null)) {
     const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
       .then((result) => result.stdout.trim()).catch(() => null);
@@ -2396,7 +2397,18 @@ export async function ensureManagedProjectWorkspace(input: {
     managedCheckoutMaterializations.delete(cwd);
   });
   managedCheckoutMaterializations.set(cwd, attempt);
-  return attempt;
+  const result = await attempt;
+  if (input.repoUrl) {
+    // A different server process can publish a same-name checkout between the
+    // initial origin check and the atomic rename. Never adopt its other repo.
+    const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
+      .then((value) => value.stdout.trim()).catch(() => null);
+    if (origin && origin !== input.repoUrl) {
+      if (cwd !== defaultCwd) throw new Error("Managed checkout origin does not match the requested repository");
+      return ensureManagedProjectWorkspace(input);
+    }
+  }
+  return result;
 }
 
 async function materializeManagedProjectWorkspace(
