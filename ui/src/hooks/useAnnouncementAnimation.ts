@@ -7,7 +7,6 @@ export function useAnnouncementAnimation(announcement: Announcement, previewSrc?
   const src = previewSrc ?? `/api/announcements/${encodeURIComponent(announcement.id)}/animation`;
   const key = `${src}:${announcement.animation?.path ?? ""}`;
   const [loaded, setLoaded] = useState<{ key: string; document: string } | null>(null);
-  const [pausedKey, setPausedKey] = useState<string | null>(null);
   const enabled = Boolean(announcement.animation) && !reducedMotion;
 
   useEffect(() => {
@@ -33,7 +32,5 @@ export function useAnnouncementAnimation(announcement: Announcement, previewSrc?
     return () => { controller.abort(); clearTimeout(timeout); };
   }, [enabled, key, src]);
 
-  const document = enabled && loaded?.key === key ? loaded.document : null;
-  const paused = pausedKey === key;
-  return { document, paused, toggle: () => setPausedKey(paused ? null : key) };
+  return enabled && loaded?.key === key ? loaded.document : null;
 }

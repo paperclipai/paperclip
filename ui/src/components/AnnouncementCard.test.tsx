@@ -16,7 +16,7 @@ describe("AnnouncementCard", () => {
     await act(async () => root.render(<AnnouncementCard announcement={announcementAnimationPreview} onDismiss={dismiss} />));
     return { div, root, dismiss, cleanup: async () => { await act(async () => root.unmount()); div.remove(); } };
   }
-  it("isolates HTML, pauses to its poster and resumes without dismissing", async () => {
+  it("renders isolated animated media with only the announcement controls", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<div>Animated hero</div>", { headers: { "Content-Type": "text/html" } })));
     const { div, dismiss, cleanup } = await animatedCard();
     const frame = div.querySelector("iframe")!;
@@ -26,11 +26,9 @@ describe("AnnouncementCard", () => {
     expect(frame.srcdoc).toContain("default-src 'none'");
     expect(frame.srcdoc).toContain("Animated hero");
     expect(div.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(announcementAnimationPreview.animation!.alt);
-    await act(async () => div.querySelector<HTMLButtonElement>('[aria-label="Pause animation"]')!.click());
-    expect(div.querySelector("iframe")).toBeNull();
-    expect(div.querySelector("img")?.alt).toBe(announcementAnimationPreview.image!.alt);
-    await act(async () => div.querySelector<HTMLButtonElement>('[aria-label="Play animation"]')!.click());
-    expect(div.querySelector("iframe")).not.toBeNull();
+    expect(Array.from(div.querySelectorAll("button"), (button) => button.getAttribute("aria-label")))
+      .toEqual(["Dismiss announcement"]);
+    expect(div.querySelectorAll("a")).toHaveLength(2);
     expect(dismiss).not.toHaveBeenCalled();
     await cleanup();
   });
@@ -41,7 +39,6 @@ describe("AnnouncementCard", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(div.querySelector("iframe")).toBeNull();
     expect(div.querySelector("img")).not.toBeNull();
-    expect(div.querySelector('[aria-label="Pause animation"]')).toBeNull();
     await cleanup();
   });
   it.each([404, 503])("keeps the poster and actions usable for animation HTTP %s", async (status) => {

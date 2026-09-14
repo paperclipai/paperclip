@@ -113,9 +113,9 @@ the publisher's page in an unsandboxed frame. The frame cannot receive pointer
 or keyboard focus; its accessible description is supplied by `animation.alt`.
 See [iframe sandboxing](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe).
 
-The static image stays visible while loading and on failure. Pause replaces
-the animation with its static image; Play restarts it. With reduced motion
-enabled, Paperclip does not request or play the animation. Also include a
+The animation plays automatically without playback controls. The static image
+stays visible while loading and on failure. With reduced motion enabled,
+Paperclip does not request or play the animation. Also include a
 `prefers-reduced-motion` CSS rule in authored documents for standalone previews.
 Animations share the feed's constrained host, three-second server timeout,
 bounded cache, request deduplication and fifteen-minute failure cooldown.
@@ -134,7 +134,7 @@ node cli/node_modules/tsx/dist/cli.mjs scripts/publish-announcements.ts .papercl
 ```
 
 Point the isolated instance at the printed URL and restart it. Verify movement,
-Pause/Play, reduced motion, mobile sizing, and dismissal across reloads. Try a
+reduced motion, mobile sizing, and dismissal across reloads. Try a
 missing animation asset: the poster and native controls must remain usable.
 Storybook's Animated, AnimatedDark, AnimatedMobile and MissingAnimation stories,
 and the design guide, provide local examples without changing the remote feed.
