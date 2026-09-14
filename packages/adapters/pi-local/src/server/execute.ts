@@ -32,6 +32,7 @@ import {
   parseObject,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  buildRuntimeServicesEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -276,6 +277,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const env: Record<string, string> = {
     ...buildPaperclipEnv(agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    ...buildRuntimeServicesEnv(ctx.runtimeServices),
   };
   env.PAPERCLIP_RUN_ID = runId;
 

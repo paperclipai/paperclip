@@ -56,11 +56,7 @@ export interface CodexAppServerDriverOptions {
   now?: () => Date;
   runnerInstanceId?: string;
   onDiagnostic?: (message: string) => void;
-  onSpawn?: (meta: {
-    pid: number;
-    processGroupId: number | null;
-    startedAt: string;
-  }) => Promise<void>;
+  onSpawn?: (meta: import("../../contracts/process-ownership.js").RunnerProcessOwnershipMetadata) => Promise<void>;
   capabilities?: Partial<{
     resume: boolean;
     read: boolean;

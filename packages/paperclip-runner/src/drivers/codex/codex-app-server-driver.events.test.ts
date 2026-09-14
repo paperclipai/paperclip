@@ -44,7 +44,35 @@ import {
 } from "./codex-app-server-driver.test-support.js";
 
 describe("Codex app-server Codex driver", () => {
-  it("admits a strictly bound semantic result from the durable runner", async () => {
+  it("contains failed background cleanup while explicit close still reports its failure", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-failed-warm-transport",
+      normalizedSessionId: "normalized-failed-warm-transport",
+      workingDirectory: WORKSPACE,
+    });
+    const cleanupFailure = new Error("runner did not durably suspend before checkpoint");
+    let closePromise: Promise<void> | undefined;
+    let closeCalls = 0;
+    // A promise-aware spy attaches its own rejection handler and would hide
+    // the unhandled rejection this regression must exercise.
+    transport.close = () => {
+      closeCalls += 1;
+      closePromise ??= Promise.reject(cleanupFailure);
+      return closePromise;
+    };
+    transport.queue.fail(new Error("runner process exited"));
+    const events = await collectUntilTerminal(session.events());
+    expect(events).toContainEqual(expect.objectContaining({ eventType: "session.failed" }));
+    expect(events.some((event) => event.eventType === "run.result.proposed")).toBe(false);
+    // Allow Node to detect any unhandled background rejection before the
+    // owning runtime explicitly awaits the transport's cached close result.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(closeCalls).toBe(1);
+    await expect(session.close({ reason: "runtime cleanup" })).rejects.toBe(cleanupFailure);
+  });
+
+  it.each([false, true])("admits a strictly bound semantic result with global skills invalidation=%s", async (skillsChanged) => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
       runId: "run-durable-result",
@@ -58,6 +86,7 @@ describe("Codex app-server Codex driver", () => {
       threadId: "thread-1",
       turn: { id: turn.turnId, status: "inProgress" },
     });
+    if (skillsChanged) transport.push("skills/changed", {});
     transport.push("paperclip/runResult", {
       threadId: "thread-1",
       turnId: turn.turnId,

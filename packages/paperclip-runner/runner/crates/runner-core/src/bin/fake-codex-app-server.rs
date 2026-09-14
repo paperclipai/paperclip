@@ -617,6 +617,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--opencode-proxy-runtime-question");
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
+    let emit_skills_changed = args.iter().any(|value| value == "--emit-skills-changed");
     let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
     let split_event_suffix_count = argument(&args, "--split-event-suffix-count")
         .map(|value| value.parse::<usize>())
@@ -647,7 +648,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
-    let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
+    let finish_result = argument(&args, "--finish-result-file")
+        .map(|path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+        })
+        .transpose()?;
+    let emit_tool_call =
+        finish_result.is_some() || args.iter().any(|value| value == "--emit-tool-call");
+    let finish_first_turn_only = args.iter().any(|value| value == "--finish-first-turn-only");
     let replay_completed_tool_call = args
         .iter()
         .any(|value| value == "--replay-completed-tool-call");
@@ -922,12 +930,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
-            if !matches_task_context_result(
-                &result,
-                expected_from_file
-                    .as_ref()
-                    .or(expected_canonical_task_context.as_ref()),
-            ) {
+            if finish_result.is_none()
+                && !matches_task_context_result(
+                    &result,
+                    expected_from_file
+                        .as_ref()
+                        .or(expected_canonical_task_context.as_ref()),
+                )
+            {
                 return Err("semantic tool response changed the operation result".into());
             }
             log_call(call_log.as_deref(), &format!("tool-response:{text}"))?;
@@ -1430,6 +1440,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if emit_skills_changed {
+                    send(json!({"method": "skills/changed", "params": {}}))?;
+                }
                 if descendant_notifications {
                     for index in 0..300 {
                         send(json!({"method": "thread/started", "params": {"thread": {
@@ -1545,7 +1558,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }))?;
                 } else if exit_after_turn_start {
                     return Ok(());
-                } else if emit_tool_call {
+                } else if emit_tool_call && !(finish_first_turn_only && state.next_turn > 1) {
                     send(json!({
                         "id": "tool-request-1",
                         "method": "item/tool/call",
@@ -1553,8 +1566,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "threadId": state.thread_id,
                             "turnId": provider_turn_id,
                             "callId": if durable_tool_ids { format!("semantic-call-{}", state.next_turn) } else { "semantic-call-1".to_owned() },
-                            "tool": "get_task_context",
-                            "arguments": {}
+                            "tool": if finish_result.is_some() { "paperclip_finish" } else { "get_task_context" },
+                            "arguments": finish_result.as_ref().unwrap_or(&json!({}))
                         }
                     }))?;
                     if complete_after_tool_call || finish_turn_with_pending_tool {

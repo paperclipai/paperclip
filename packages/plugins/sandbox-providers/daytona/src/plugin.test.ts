@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +39,8 @@ import plugin, {
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
+import { SERVICE_DATA_DELETION_LABEL } from "./service-data-deletion.js";
+import { TASK_WORKSPACE_LABEL } from "./task-workspace-data-deletion.js";
 
 function createMockSandbox(overrides: {
   id?: string;
@@ -130,6 +133,10 @@ describe("Daytona sandbox provider plugin", () => {
       message: "Daytona sandbox provider plugin healthy",
     });
     expect(plugin.definition.onEnvironmentAcquireLease).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentAcquireServiceLease).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentGetServiceConnection).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentDeleteServiceData).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentDeleteTaskWorkspaceData).toBeTypeOf("function");
     expect(plugin.definition.onEnvironmentExecute).toBeTypeOf("function");
     expect(plugin.definition.onEnvironmentStartInteractiveSetup).toBeTypeOf("function");
     expect(plugin.definition.onEnvironmentCaptureTemplate).toBeTypeOf("function");
@@ -602,6 +609,350 @@ describe("Daytona sandbox provider plugin", () => {
       "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
       300,
     );
+  });
+
+  it("preflights snapshot sizes without renting compute or changing connection identity", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const params = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), serviceAllocationId: randomUUID(),
+      config: { snapshot: "service-image", cpu: 4, memory: 8, disk: 20 } };
+    const original = await plugin.definition.onEnvironmentGetServiceConnection!(params);
+    expect(mockSnapshotGet).not.toHaveBeenCalled();
+    mockSnapshotGet.mockResolvedValueOnce({ cpu: 4, mem: 8, disk: 20, gpu: 0 });
+    expect(await plugin.definition.onEnvironmentGetServiceConnection!({ ...params, checkResources: true })).toEqual({ ...original, resourcesVerified: true });
+    mockSnapshotGet.mockResolvedValueOnce({ cpu: 8, mem: 8, disk: 20, gpu: 0 });
+    expect(await plugin.definition.onEnvironmentGetServiceConnection!({ ...params, checkResources: true })).toEqual({ ...original, resourcesVerified: false });
+    expect(mockCreate).not.toHaveBeenCalled(); expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it("refuses changed snapshot sizes at acquisition before creating provider compute", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), runId: randomUUID(), serviceAllocationId: randomUUID(),
+      config: { snapshot: "service-image", cpu: 4, memory: 8, disk: 20 } };
+    mockSnapshotGet.mockResolvedValueOnce({ cpu: 4, mem: 8, disk: 20, gpu: 0 });
+    const preflight = await plugin.definition.onEnvironmentGetServiceConnection!({ ...base, checkResources: true });
+    expect(preflight.resourcesVerified).toBe(true);
+    mockGet.mockRejectedValueOnce(new MockDaytonaNotFoundError());
+    mockSnapshotGet.mockResolvedValueOnce({ cpu: 8, mem: 16, disk: 20, gpu: 0 });
+    expect(await plugin.definition.onEnvironmentAcquireServiceLease!({ ...base, serviceConnectionFingerprint: preflight.fingerprint }))
+      .toEqual({ providerLeaseId: null, metadata: { resourceConfigurationMismatch: true } });
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("recovers service initialization without deleting the allocation or rewriting its existing sentinel", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = Object.assign(createMockSandbox({ id: randomUUID() }), { labels: {} as Record<string, string> });
+    let exists = false;
+    let sentinel: string | undefined;
+    mockGet.mockImplementation(async () => { if (!exists) throw new MockDaytonaNotFoundError(); return sandbox; });
+    mockCreate.mockImplementation(async (params) => { exists = true; sandbox.name = params.name; sandbox.labels = params.labels; return sandbox; });
+    sandbox.fs.uploadFile.mockImplementation(async (buffer: Buffer) => { sentinel = buffer.toString("utf8"); });
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => ({ exitCode: 0, result: command.startsWith("if test -e") ? sentinel ?? "absent" : "bash", artifacts: { stdout: "" } }));
+    sandbox.getWorkDir.mockRejectedValueOnce(new Error("Initialization interrupted"));
+    const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), runId: randomUUID(), serviceAllocationId: randomUUID(), config: { image: "node:24" } };
+    const params = { ...base, serviceConnectionFingerprint: (await plugin.definition.onEnvironmentGetServiceConnection!(base)).fingerprint };
+    await expect(plugin.definition.onEnvironmentAcquireServiceLease!(params)).rejects.toThrow("Initialization interrupted");
+    expect(sandbox.delete).not.toHaveBeenCalled();
+    const recovered = await plugin.definition.onEnvironmentAcquireServiceLease!(params);
+    expect(recovered.providerLeaseId).toBe(sandbox.id); expect(recovered.metadata?.workspaceSentinel).toMatchObject({ result: "written" });
+    const replay = await plugin.definition.onEnvironmentAcquireServiceLease!(params);
+    expect(replay.metadata?.workspaceSentinel).toMatchObject({ result: "matched" });
+    expect(mockCreate).toHaveBeenCalledTimes(1); expect(sandbox.fs.uploadFile).toHaveBeenCalledTimes(1);
+    sentinel = JSON.stringify({ token: "foreign-identity" });
+    await expect(plugin.definition.onEnvironmentAcquireServiceLease!(params)).rejects.toThrow("workspace identity");
+    expect(sandbox.fs.uploadFile).toHaveBeenCalledTimes(1); expect(sandbox.delete).not.toHaveBeenCalled();
+  });
+
+  it("binds an ordinary run's workspace to the connection checked before acquisition", async () => {
+    vi.stubEnv("DAYTONA_API_KEY", "workspace-original-key");
+    try {
+      const sandbox = createMockSandbox();
+      const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), runId: randomUUID(), config: { image: "node:24", reuseLease: false } };
+      const connection = await plugin.definition.onEnvironmentGetServiceConnection!({ ...base, serviceAllocationId: base.runId });
+      const workspaceConnection = { scopeId: base.runId, fingerprint: connection.fingerprint };
+      mockCreate.mockImplementation(async () => {
+        vi.stubEnv("DAYTONA_API_KEY", "workspace-next-key");
+        return sandbox;
+      });
+      const lease = await plugin.definition.onEnvironmentAcquireLease!({ ...base, workspaceConnection });
+      expect(lease.metadata?.workspaceConnection).toEqual(workspaceConnection);
+      expect(JSON.stringify(lease)).not.toContain("workspace-original-key");
+      expect(JSON.stringify(lease)).not.toContain("workspace-next-key");
+      await expect(plugin.definition.onEnvironmentResumeLease!({ ...base, providerLeaseId: sandbox.id, leaseMetadata: lease.metadata, workspaceConnection })).rejects.toThrow(/provider connection changed/);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"])("checks %s before retained workspace lookup or compute mutation", async (key) => {
+    try {
+      vi.stubEnv("DAYTONA_API_KEY", "original-workspace-key");
+      vi.stubEnv("DAYTONA_API_URL", "https://original.daytona.test/api");
+      vi.stubEnv("DAYTONA_TARGET", "us");
+      const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), config: { image: "node:24" } };
+      const scopeId = randomUUID();
+      const connection = await plugin.definition.onEnvironmentGetServiceConnection!({ ...base, serviceAllocationId: scopeId });
+      const workspaceConnection = { scopeId, fingerprint: connection.fingerprint };
+      vi.stubEnv(key, key === "DAYTONA_API_URL" ? "https://changed.daytona.test/api" : "changed");
+      await expect(plugin.definition.onEnvironmentAcquireLease!({ ...base, runId: randomUUID(), workspaceConnection })).rejects.toThrow(/provider connection changed/);
+      await expect(plugin.definition.onEnvironmentResumeLease!({ ...base, providerLeaseId: "retained-workspace", workspaceConnection })).rejects.toThrow(/provider connection changed/);
+      await expect(plugin.definition.onEnvironmentService!({ ...base, providerLeaseId: "retained-workspace", workspaceConnection,
+        serviceId: randomUUID(), generation: randomUUID(), action: "inspect" })).rejects.toThrow(/provider connection changed/);
+      await expect(plugin.definition.onEnvironmentRunProcessControl!({ ...base, providerLeaseId: "retained-workspace", workspaceConnection,
+        owner: { version: 1, pid: 40, processGroupId: 40, uid: 1000, bootId: randomUUID(), startTicks: "1" }, operation: { action: "inspect" } })).rejects.toThrow(/provider connection changed/);
+      await expect(plugin.definition.onEnvironmentRunnerRecovery!({ ...base, providerLeaseId: "retained-workspace", workspaceConnection,
+        owner: { version: 1, pid: 40, processGroupId: 40, uid: 1000, bootId: randomUUID(), startTicks: "1" }, operation: "ingress", runId: randomUUID(), workspaceRoot: "/workspace", sessionHash: "b".repeat(64) })).rejects.toThrow(/provider connection changed/);
+      await expect(plugin.definition.onEnvironmentRunnerRecoveryExecute!({ ...base, providerLeaseId: "retained-workspace", workspaceConnection,
+        owner: { version: 1, pid: 40, processGroupId: 40, uid: 1000, bootId: randomUUID(), startTicks: "1" }, workspaceRoot: "/workspace", execution: { command: "pwd" } })).rejects.toThrow(/provider connection changed/);
+      for (const operation of [{ action: "capture" as const, sourcePid: 42, owner: { version: 1 as const, pid: 40, uid: 1000, processGroupId: 40, bootId: randomUUID(), startTicks: "1" }, cwd: "/workspace", workspaceRoot: "/workspace" }, { action: "stop" as const, receipt: {} }]) {
+        await expect(plugin.definition.onEnvironmentProcessHandoff!({ ...base, providerLeaseId: "retained-workspace", workspaceConnection, operation })).rejects.toThrow(/provider connection changed/);
+      }
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockGet).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["started", "stopped", "incomplete"])("uses only the protected one-shot path for %s recovery commands", async condition => {
+    vi.stubEnv("DAYTONA_API_KEY", "recovery-fixture-key");
+    try {
+      const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), config: { image: "node:24" } };
+      const sandbox = Object.assign(createMockSandbox({ id: randomUUID(), state: condition === "stopped" ? "stopped" : "started" }),
+        { labels: { "paperclip-company-id": base.companyId, "paperclip-environment-id": base.environmentId } });
+      mockGet.mockResolvedValue(sandbox);
+      const scopeId = randomUUID();
+      const connection = await plugin.definition.onEnvironmentGetServiceConnection!({ ...base, serviceAllocationId: scopeId });
+      const commands: string[] = [];
+      sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+        commands.push(command);
+        if (commands.length === 2) return { exitCode: condition === "incomplete" ? undefined : 0, result: "archive output" };
+        return { exitCode: 0, result: JSON.stringify({ state: "running" }) };
+      });
+      const result = await plugin.definition.onEnvironmentRunnerRecoveryExecute!({ ...base, providerLeaseId: sandbox.id,
+        workspaceConnection: { scopeId, fingerprint: connection.fingerprint },
+        owner: { version: 1, pid: 40, processGroupId: 40, uid: 1000, bootId: randomUUID(), startTicks: "100" },
+        workspaceRoot: "/workspace/app", execution: { command: "tar", args: ["-czf", "-", "."] } });
+      expect(result).toMatchObject(condition === "started" ? { state: "executed", result: { exitCode: 0, stdout: "archive output" } } : { state: "unverified" });
+      expect(commands).toHaveLength(condition === "stopped" ? 0 : condition === "incomplete" ? 2 : 3);
+      if (condition !== "stopped") {
+        expect(commands[1]).toContain("cd '/'");
+        expect(commands[1]).toContain("PAPERCLIP_RECOVERY_EXECUTION=");
+        expect(commands[1]).toContain("process.chdir(input.root)");
+        expect(commands[1]).toContain("process.cwd() !== input.root"); expect(commands[1]).toContain('"command":"tar","args":["-czf","-","."]');
+        expect(commands[1]).not.toMatch(/\/etc\/profile|\.bashrc|\.bash_profile|\.zprofile|\.profile/);
+      }
+      for (const operation of [mockCreate, sandbox.start, sandbox.stop, sandbox.delete, sandbox.process.createSession,
+        sandbox.process.executeSessionCommand, sandbox.process.deleteSession]) expect(operation).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("returns a connection receipt only after the same retained workspace passes its sentinel check", async () => {
+    vi.stubEnv("DAYTONA_API_KEY", "workspace-key");
+    try {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), runId: randomUUID(), executionWorkspaceId: randomUUID(), config: { image: "node:24" } };
+      const scopeId = base.runId;
+      const { fingerprint } = await plugin.definition.onEnvironmentGetServiceConnection!({ ...base, serviceAllocationId: scopeId });
+      const workspaceConnection = { scopeId, fingerprint };
+      const initial = await plugin.definition.onEnvironmentAcquireLease!({ ...base, workspaceConnection });
+      const sentinel = JSON.parse((sandbox.fs.uploadFile.mock.calls[0]![0] as Buffer).toString("utf8"));
+      sandbox.process.executeCommand.mockImplementation(async (command: string) => ({ exitCode: 0,
+        result: command.includes("reusable-sandbox-lease.json") ? JSON.stringify(sentinel) : "bash", artifacts: { stdout: "" } }));
+      const resumed = await plugin.definition.onEnvironmentResumeLease!({ ...base, providerLeaseId: sandbox.id, leaseMetadata: initial.metadata, workspaceConnection });
+      expect(resumed).toMatchObject({ providerLeaseId: sandbox.id, metadata: { workspaceConnection, workspaceSentinel: { result: "matched", token: sentinel.token } } });
+      expect(sandbox.fs.uploadFile).toHaveBeenCalledTimes(1);
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("checks the recorded service connection before provider lookup or allocation, including worker environment changes", async () => {
+    const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), runId: randomUUID(), serviceAllocationId: randomUUID(), config: { image: "node:24" } };
+    try {
+      vi.stubEnv("DAYTONA_API_KEY", "first-provider-key");
+      vi.stubEnv("DAYTONA_API_URL", "https://first.daytona.test/api");
+      vi.stubEnv("DAYTONA_TARGET", "us");
+      const connection = await plugin.definition.onEnvironmentGetServiceConnection!(base);
+      expect(connection.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(connection)).not.toContain("first-provider-key");
+      expect(mockGet).not.toHaveBeenCalled(); expect(mockCreate).not.toHaveBeenCalled();
+      const params = { ...base, serviceConnectionFingerprint: connection.fingerprint };
+      for (const [name, next, original] of [
+        ["DAYTONA_API_KEY", "second-provider-key", "first-provider-key"],
+        ["DAYTONA_API_URL", "https://second.daytona.test/api", "https://first.daytona.test/api"],
+        ["DAYTONA_TARGET", "eu", "us"],
+      ] as const) {
+        vi.stubEnv(name, next);
+        await expect(plugin.definition.onEnvironmentAcquireServiceLease!(params)).rejects.toThrow(/provider connection changed/);
+        vi.stubEnv(name, original);
+      }
+      await expect(plugin.definition.onEnvironmentAcquireServiceLease!({ ...params, serviceConnectionFingerprint: "" })).rejects.toThrow(/provider connection changed/);
+      expect(mockGet).not.toHaveBeenCalled(); expect(mockCreate).not.toHaveBeenCalled();
+      expect(await plugin.definition.onEnvironmentGetServiceConnection!(base)).toEqual(connection);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  async function taskDeletionFixture(state = "stopped") {
+    const scopeId = randomUUID(), companyId = randomUUID(), environmentId = randomUUID();
+    const config = { apiKey: "task-delete-fixture-key", image: "node:24" };
+    const { fingerprint } = await plugin.definition.onEnvironmentGetServiceConnection!({ driverKey: "daytona", companyId, environmentId, serviceAllocationId: scopeId, config });
+    const ownership = { version: 1 as const, executionWorkspaceId: randomUUID(), createdByRunId: randomUUID(), sandboxName: "original-task-sandbox" };
+    const sandbox = { ...createMockSandbox({ id: randomUUID(), name: ownership.sandboxName, state }), labels: {
+      "paperclip-provider": "daytona", "paperclip-company-id": companyId, "paperclip-environment-id": environmentId, "paperclip-run-id": ownership.createdByRunId,
+      [TASK_WORKSPACE_LABEL]: ownership.executionWorkspaceId, "paperclip-services-retained": "true",
+    } as Record<string, string>, setLabels: vi.fn(async (labels: Record<string, string>) => { sandbox.labels = labels; }) };
+    let present = true;
+    mockGet.mockImplementation(async () => { if (!present) throw new MockDaytonaNotFoundError("Missing"); return sandbox; });
+    sandbox.delete.mockImplementation(async () => { present = false; });
+    const params = { driverKey: "daytona", companyId, environmentId, config, ownership, providerLeaseId: sandbox.id, workspaceConnection: { scopeId, fingerprint }, deletionId: randomUUID() };
+    return { params, sandbox, gone: () => { present = false; }, run: () => plugin.definition.onEnvironmentDeleteTaskWorkspaceData!(params) };
+  }
+
+  it("stamps run-created task ownership at acquisition and carries it across resume", async () => {
+    const f = await taskDeletionFixture("started");
+    delete f.sandbox.labels["paperclip-services-retained"];
+    const runId = randomUUID();
+    mockCreate.mockImplementation(async (params) => { f.sandbox.labels = params.labels; return f.sandbox; });
+    const acquired = await plugin.definition.onEnvironmentAcquireLease!({ ...f.params, runId, executionWorkspaceId: f.params.ownership.executionWorkspaceId });
+    expect(mockCreate.mock.calls[0]![0].labels).toMatchObject({ [TASK_WORKSPACE_LABEL]: f.params.ownership.executionWorkspaceId, "paperclip-run-id": runId });
+    const expected = { ...f.params.ownership, createdByRunId: runId };
+    expect(acquired.metadata?.taskWorkspaceOwnership).toEqual(expected);
+    f.sandbox.process.executeCommand.mockResolvedValueOnce({ exitCode: 0, result: JSON.stringify({ token: (acquired.metadata?.workspaceSentinel as { token: string }).token }), artifacts: { stdout: "" } });
+    const resumed = await plugin.definition.onEnvironmentResumeLease!({ ...f.params, leaseMetadata: acquired.metadata ?? undefined });
+    expect(resumed.metadata?.taskWorkspaceOwnership).toEqual(expected);
+  });
+
+  it.each(["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"])("pins %s before any task deletion lookup, including already missing sandboxes", async (key) => {
+    try {
+      vi.stubEnv("DAYTONA_API_KEY", "task-original-key"); vi.stubEnv("DAYTONA_API_URL", "https://task-original.daytona.test/api"); vi.stubEnv("DAYTONA_TARGET", "us");
+      const f = await taskDeletionFixture(); const config = { image: "node:24" };
+      const { fingerprint } = await plugin.definition.onEnvironmentGetServiceConnection!({ ...f.params, config, serviceAllocationId: f.params.workspaceConnection.scopeId });
+      vi.stubEnv(key, key === "DAYTONA_API_URL" ? "https://changed.daytona.test/api" : "changed");
+      await expect(plugin.definition.onEnvironmentDeleteTaskWorkspaceData!({ ...f.params, config, workspaceConnection: { ...f.params.workspaceConnection, fingerprint } })).rejects.toThrow("provider connection changed");
+      expect(mockGet).not.toHaveBeenCalled(); expect(mockCreate).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("preserves ordinary run retention and recovers task deletion after worker replacement", async () => {
+    const f = await taskDeletionFixture();
+    await expect(plugin.definition.onEnvironmentDestroyLease!(f.params)).rejects.toThrow("retained by runtime services");
+    f.sandbox.delete.mockRejectedValueOnce(new Error("Lost provider response")); await expect(f.run()).rejects.toThrow("Lost provider response");
+    __resetDaytonaSandboxHandleCacheForTest();
+    await expect(plugin.definition.onEnvironmentResumeLease!(f.params)).rejects.toThrow("being deleted");
+    await expect(plugin.definition.onEnvironmentService!({ ...f.params, serviceId: randomUUID(), generation: randomUUID(), action: "start" })).rejects.toThrow("being deleted");
+    expect(f.sandbox.start).not.toHaveBeenCalled(); expect(mockCreate).not.toHaveBeenCalled();
+    expect(await f.run()).toEqual({ state: "destroyed", providerLeaseId: f.params.providerLeaseId, executionWorkspaceId: f.params.ownership.executionWorkspaceId, deletionId: f.params.deletionId });
+    expect(await f.run()).toMatchObject({ state: "destroyed" }); expect(f.sandbox.delete).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces task deletion retries and rejects a different task or standalone deletion while in flight", async () => {
+    const f = await taskDeletionFixture(); let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    f.sandbox.delete.mockImplementationOnce(async () => { await gate; f.gone(); });
+    const first = f.run(), retry = f.run();
+    try {
+      await vi.waitFor(() => expect(f.sandbox.delete).toHaveBeenCalledTimes(1));
+      await expect(plugin.definition.onEnvironmentDeleteTaskWorkspaceData!({ ...f.params, ownership: { ...f.params.ownership, createdByRunId: randomUUID() } })).rejects.toThrow("different deletion");
+      await expect(plugin.definition.onEnvironmentDeleteTaskWorkspaceData!({ ...f.params, deletionId: randomUUID() })).rejects.toThrow("different deletion");
+      await expect(plugin.definition.onEnvironmentDeleteServiceData!({ ...f.params, serviceAllocationId: f.params.workspaceConnection.scopeId, serviceConnectionFingerprint: f.params.workspaceConnection.fingerprint })).rejects.toThrow("different deletion");
+      release(); expect(await first).toEqual(await retry); expect(f.sandbox.delete).toHaveBeenCalledTimes(1);
+    } finally { release(); await Promise.allSettled([first, retry]); }
+  });
+
+  it("drains task service activity before deletion and prevents concurrent resume", async () => {
+    const f = await taskDeletionFixture("started"); let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    f.sandbox.process.executeCommand.mockImplementationOnce(async () => { await gate; return { exitCode: 0, result: JSON.stringify({ state: "running", logs: "saved" }) }; });
+    const logs = plugin.definition.onEnvironmentService!({ ...f.params, serviceId: randomUUID(), generation: randomUUID(), action: "logs" });
+    await vi.waitFor(() => expect(f.sandbox.process.executeCommand).toHaveBeenCalledTimes(1));
+    const deletion = f.run(); const resume = plugin.definition.onEnvironmentResumeLease!(f.params); const observed = Promise.allSettled([resume]);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0)); expect(f.sandbox.delete).not.toHaveBeenCalled();
+      release(); await logs; expect(await deletion).toMatchObject({ state: "destroyed" });
+      expect((await observed)[0]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("still settling cancelled work") }) });
+      expect(await plugin.definition.onEnvironmentResumeLease!(f.params)).toMatchObject({ providerLeaseId: null, metadata: { expired: true } });
+      expect(f.sandbox.start).not.toHaveBeenCalled();
+    } finally { release(); await Promise.allSettled([logs, deletion, observed]); }
+  });
+
+  async function deletionFixture(state = "stopped") {
+    const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), serviceAllocationId: randomUUID(), config: { apiKey: "service-delete-fixture-key", image: "node:24" } };
+    const { fingerprint } = await plugin.definition.onEnvironmentGetServiceConnection!(base);
+    const sandbox = { ...createMockSandbox({ id: randomUUID(), name: `paperclip-service-${base.serviceAllocationId}`, state }),
+      labels: { "paperclip-provider": "daytona", "paperclip-company-id": base.companyId, "paperclip-environment-id": base.environmentId,
+        "paperclip-purpose": "runtime_service", "paperclip-service-allocation-id": base.serviceAllocationId, "paperclip-services-retained": "true" } as Record<string, string>,
+      setLabels: vi.fn(async (labels: Record<string, string>) => { sandbox.labels = labels; }),
+    };
+    let present = true;
+    mockGet.mockImplementation(async () => { if (!present) throw new MockDaytonaNotFoundError("Not found"); return sandbox; });
+    sandbox.delete.mockImplementation(async () => { present = false; });
+    const params = { ...base, providerLeaseId: sandbox.id, serviceConnectionFingerprint: fingerprint, deletionId: randomUUID() };
+    return { base, params, sandbox, remove: () => { present = false; }, run: () => plugin.definition.onEnvironmentDeleteServiceData!(params) };
+  }
+
+  it.each(["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"])("checks %s before deleting service data, including missing-resource recovery", async (key) => {
+    try {
+      vi.stubEnv("DAYTONA_API_KEY", "original-delete-key"); vi.stubEnv("DAYTONA_API_URL", "https://original.daytona.test/api"); vi.stubEnv("DAYTONA_TARGET", "us");
+      const base = { driverKey: "daytona", companyId: randomUUID(), environmentId: randomUUID(), serviceAllocationId: randomUUID(), config: { image: "node:24" } };
+      const { fingerprint } = await plugin.definition.onEnvironmentGetServiceConnection!(base);
+      vi.stubEnv(key, key === "DAYTONA_API_URL" ? "https://changed.daytona.test/api" : "changed");
+      await expect(plugin.definition.onEnvironmentDeleteServiceData!({ ...base, serviceConnectionFingerprint: fingerprint, providerLeaseId: randomUUID(), deletionId: randomUUID() })).rejects.toThrow("provider connection changed");
+      expect(mockGet).not.toHaveBeenCalled(); expect(mockCreate).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("returns the explicit deletion receipt and preserves the ordinary run-retention guard", async () => {
+    const f = await deletionFixture();
+    await expect(plugin.definition.onEnvironmentDestroyLease!(f.params)).rejects.toThrow("retained by runtime services");
+    expect(f.sandbox.delete).not.toHaveBeenCalled();
+    expect(await f.run()).toEqual({ state: "destroyed", providerLeaseId: f.sandbox.id, serviceAllocationId: f.params.serviceAllocationId, deletionId: f.params.deletionId });
+    expect(f.sandbox.delete).toHaveBeenCalledExactlyOnceWith(expect.any(Number), true);
+    expect(await f.run()).toMatchObject({ state: "destroyed", deletionId: f.params.deletionId });
+    expect(f.sandbox.delete).toHaveBeenCalledTimes(1); expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("keeps an incomplete deletion fenced after worker replacement, including resume and acquisition", async () => {
+    const f = await deletionFixture(); f.sandbox.delete.mockRejectedValueOnce(new Error("Deletion timed out"));
+    await expect(f.run()).rejects.toThrow("Deletion timed out");
+    __resetDaytonaSandboxHandleCacheForTest();
+    await expect(plugin.definition.onEnvironmentResumeLease!(f.params)).rejects.toThrow("being deleted");
+    await expect(plugin.definition.onEnvironmentService!({ ...f.params, serviceId: randomUUID(), generation: randomUUID(), action: "start" })).rejects.toThrow("being deleted");
+    await expect(plugin.definition.onEnvironmentAcquireServiceLease!({ ...f.params, runId: f.params.serviceAllocationId })).rejects.toThrow("being deleted");
+    expect(f.sandbox.start).not.toHaveBeenCalled(); expect(mockCreate).not.toHaveBeenCalled();
+    expect(f.sandbox.labels[SERVICE_DATA_DELETION_LABEL]).toBe(f.params.deletionId);
+    expect(await f.run()).toMatchObject({ state: "destroyed" });
+  });
+
+  it("coalesces concurrent deletion retries and rejects a competing intent", async () => {
+    const f = await deletionFixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    f.sandbox.delete.mockImplementationOnce(async () => { await gate; f.remove(); });
+    const first = f.run(), retry = f.run();
+    try {
+      await vi.waitFor(() => expect(f.sandbox.delete).toHaveBeenCalledTimes(1));
+      await expect(plugin.definition.onEnvironmentDeleteServiceData!({ ...f.params, deletionId: randomUUID() })).rejects.toThrow("different deletion");
+      expect(f.sandbox.setLabels).toHaveBeenCalledTimes(1);
+      release(); expect(await first).toEqual(await retry);
+      expect(f.sandbox.delete).toHaveBeenCalledTimes(1);
+    } finally { release(); await Promise.allSettled([first, retry]); }
+  });
+
+  it("drains an in-flight service operation and prevents a concurrent resume during deletion", async () => {
+    const f = await deletionFixture("started");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    f.sandbox.process.executeCommand.mockImplementationOnce(async () => { await gate; return { exitCode: 0, result: JSON.stringify({ state: "running", logs: "saved output" }) }; });
+    const logs = plugin.definition.onEnvironmentService!({ ...f.params, serviceId: randomUUID(), generation: randomUUID(), action: "logs" });
+    await vi.waitFor(() => expect(f.sandbox.process.executeCommand).toHaveBeenCalledTimes(1));
+    const deletion = f.run();
+    const resume = plugin.definition.onEnvironmentResumeLease!(f.params);
+    const observedResume = Promise.allSettled([resume]);
+    try {
+      expect(f.sandbox.delete).not.toHaveBeenCalled();
+      release(); await logs;
+      expect(await deletion).toMatchObject({ state: "destroyed" });
+      expect((await observedResume)[0]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("still settling cancelled work") }) });
+      expect(await plugin.definition.onEnvironmentResumeLease!(f.params)).toMatchObject({ providerLeaseId: null, metadata: { expired: true } });
+      expect(f.sandbox.start).not.toHaveBeenCalled();
+    } finally { release(); await Promise.allSettled([logs, deletion, resume]); }
   });
 
   it("does not configure a provider ttl when the acquire carries no requested expiry", async () => {

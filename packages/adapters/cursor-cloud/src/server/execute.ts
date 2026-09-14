@@ -17,6 +17,7 @@ import {
   asString,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  buildRuntimeServicesEnv,
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
@@ -110,6 +111,7 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
     ...configEnv,
     ...buildPaperclipEnv(agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    ...buildRuntimeServicesEnv(ctx.runtimeServices),
     PAPERCLIP_RUN_ID: runId,
   };
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run

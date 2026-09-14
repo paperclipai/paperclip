@@ -103,7 +103,13 @@ export class CodexSessionState {
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
-  readonly eventQueue = new AsyncQueue<PrpEvent>();
+  eventQueue = new AsyncQueue<PrpEvent>();
+
+  protected beginAttachedEventStream(): void {
+    // Consumers of a reconstructed completed run must stay at EOF. Give the
+    // newly admitted run its own stream instead of reopening the old queue.
+    this.eventQueue = new AsyncQueue<PrpEvent>();
+  }
   sourceSequence: number;
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;

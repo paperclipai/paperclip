@@ -20,11 +20,7 @@ export interface CodexNativeSessionBackendOptions {
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   runnerInstanceId?: string;
-  onSpawn?: (meta: {
-    pid: number;
-    processGroupId: number | null;
-    startedAt: string;
-  }) => Promise<void>;
+  onSpawn?: (meta: import("../contracts/process-ownership.js").RunnerProcessOwnershipMetadata) => Promise<void>;
   transportFactory?: (context?: {
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
     persistedSession?: Pick<

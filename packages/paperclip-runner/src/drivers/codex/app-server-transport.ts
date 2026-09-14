@@ -63,7 +63,7 @@ export interface CodexAppServerTransport {
   recordTraceInterpretation?(input: CodexTraceInterpretation): void;
 }
 
-export interface CodexTransportProcessInfo {
+export interface CodexTransportProcessInfo extends Omit<import("../../contracts/process-ownership.js").RunnerProcessOwnershipMetadata, "pid"> {
   pid: number | null;
   processGroupId: number | null;
   startedAt: string;

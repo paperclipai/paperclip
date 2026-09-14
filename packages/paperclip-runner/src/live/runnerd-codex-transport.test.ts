@@ -3907,6 +3907,37 @@ function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
   ];
 }
 
+it("preserves remote process ownership from the launcher through live runnerd transport reports", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-process-ownership-"));
+  const startedAt = "2000-01-01T00:00:00.000Z";
+  let child: ReturnType<typeof spawn> | undefined;
+  let completion: Promise<durableControlPlane.RunnerProcessResult> | undefined;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex, codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+    runnerProcessLauncher: (spec) => {
+      child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, detached: true, stdio: "ignore" });
+      completion = new Promise((resolveExit, rejectExit) => { child!.once("error", rejectExit); child!.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" })); });
+      return { child, completion, startedAt, processLocation: "remote", processGroupId: child.pid,
+        remoteProcessIdentity: { version: 1, pid: child.pid!, uid: 1000, processGroupId: child.pid!, bootId: "dcd261b9-2e65-4d1c-8b57-c68b5592c870", startTicks: "12345" } };
+    },
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: stateDirectory, dynamicTools: [] });
+    const reported = bundle.transport.processInfo!();
+    expect(reported).toMatchObject({ pid: child!.pid, startedAt, processLocation: "remote", processGroupId: null,
+      remoteProcessIdentity: { pid: child!.pid, startTicks: "12345" }, exited: false });
+    reported.remoteProcessIdentity!.pid = 999;
+    expect(bundle.transport.processInfo!().remoteProcessIdentity?.pid).toBe(child!.pid);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    if (child && child.exitCode === null && child.signalCode === null) {
+      try { process.kill(-child.pid!, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    }
+    await completion;
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 15_000);
+
 function assignedRuntimeContext(
   skillRoot: string,
   instructionRoot: string,
@@ -7478,14 +7509,22 @@ it.each([
   30_000,
 );
 
-it("rotates PRP authority in place for a warm cross-run attachment", async () => {
+it.each([true, false])("rotates PRP authority and checkpoint ownership in place for a warm cross-run attachment (final checkpoint: %s)", async (finalCheckpoint) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-attach-"));
+  const checkpoints = [vi.fn(), vi.fn(), vi.fn()];
+  let registrationCount = 0;
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory),
     stateDirectory,
     lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    controlPlaneRegistration: async authority => {
+      const index = registrationCount++;
+      if (index === 0) await authority.start();
+      return { connectUrl: authority.connectUrl, release: () => undefined,
+        ...(index < 2 || finalCheckpoint ? { checkpoint: checkpoints[index]! } : {}) };
+    },
   });
   bundle.transport.setServerRequestHandler(async () => ({
     success: true,
@@ -7587,6 +7626,11 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
       codexPid: providerPid,
       runnerExited: false,
     });
+    await bundle.transport.close();
+    expect(registrationCount).toBe(3);
+    expect(checkpoints[0]).not.toHaveBeenCalled();
+    expect(checkpoints[1]).not.toHaveBeenCalled();
+    expect(checkpoints[2]).toHaveBeenCalledTimes(finalCheckpoint ? 1 : 0);
   } finally {
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
@@ -7726,13 +7770,14 @@ it("waits for a warm runner to re-authenticate before probing attachment readine
   }
 }, 30_000);
 
-it("releases both PRP authorities when warm rotation activation fails", async () => {
+it.each(["activation", "old_release"])("releases both PRP authorities when warm rotation %s fails", async failurePhase => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-warm-attach-activation-failure-"),
   );
   const server = createServer();
   const authorities = new Map<string, DurablePrpControlPlane>();
   const released: string[] = [];
+  const oldCheckpoint = vi.fn(), newCheckpoint = vi.fn();
   server.on("upgrade", (request, socket, head) => {
     const route = request.url ?? "";
     const authority = authorities.get(route);
@@ -7762,7 +7807,8 @@ it("releases both PRP authorities when warm rotation activation fails", async ()
       authorities.set(route, authority);
       return {
         connectUrl: `ws://127.0.0.1:${address.port}${route}`,
-        ...(registrationCount === 1
+        checkpoint: registrationCount === 1 ? oldCheckpoint : newCheckpoint,
+        ...(registrationCount === 1 || failurePhase !== "activation"
           ? {}
           : {
               activate: () => {
@@ -7772,6 +7818,9 @@ it("releases both PRP authorities when warm rotation activation fails", async ()
         release: () => {
           released.push(route);
           if (authorities.get(route) === authority) authorities.delete(route);
+          if (failurePhase === "old_release" && route === "/runner-1" && registrationCount > 1) {
+            throw new Error("rotation old_release failed");
+          }
         },
       };
     },
@@ -7794,12 +7843,17 @@ it("releases both PRP authorities when warm rotation activation fails", async ()
         turnId: "turn-warm-activation-failure",
         itemId: "item-warm-activation-failure",
       }),
-    ).rejects.toThrow("rotation activation failed");
+    ).rejects.toThrow(`rotation ${failurePhase} failed`);
     expect(new Set(released)).toEqual(new Set(["/runner-1", "/runner-2"]));
     expect(authorities.size).toBe(0);
     await expect(bundle.transport.request("thread/read", {})).rejects.toThrow(
-      "rotation activation failed",
+      `rotation ${failurePhase} failed`,
     );
+    await bundle.transport.close().catch(() => undefined);
+    expect(oldCheckpoint).not.toHaveBeenCalled();
+    // An unfinished activation keeps the transition held without persisting
+    // either side. A release failure after activation uses the new owner.
+    expect(newCheckpoint).toHaveBeenCalledTimes(failurePhase === "old_release" ? 1 : 0);
   } finally {
     await bundle.transport.close().catch(() => undefined);
     if (runnerPid) {
@@ -8401,6 +8455,8 @@ async function verifyLiveRunnerAdoption(
   mismatchedCheckpoint: boolean,
   mismatchedArtifact = false,
   goalMidTurn = false,
+  remoteMode?: "healthy" | "async_failure" | "sync_failure" | "pending_resume" | "pending_close",
+  perTurn = false,
   detachBeforeCleanup = false,
   startWithoutCheckpoint = false,
 ) {
@@ -8425,7 +8481,7 @@ async function verifyLiveRunnerAdoption(
     authority = next;
     return {
       connectUrl: `ws://127.0.0.1:${address.port}/runner`,
-      ...(mismatchedArtifact ? { checkpoint } : {}),
+      ...(mismatchedArtifact || remoteMode?.startsWith("pending_") ? { checkpoint } : {}),
       release: async () => {
         if (authority === next) authority = null;
       },
@@ -8445,7 +8501,7 @@ async function verifyLiveRunnerAdoption(
     codexArgs: fakeCodexArgs(stateDirectory, ...(goalMidTurn ? ["--goal-autostart", "--goal-item-trigger", join(stateDirectory, "emit-goal-item")] : [])),
     stateDirectory,
     prpIdentity: identity,
-    lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
+    lifecyclePolicy: perTurn ? { mode: "per_turn" as const, idleTimeoutMs: null } : { mode: "warm" as const, idleTimeoutMs: 60_000 },
     controlPlaneRegistration: registration,
   };
   const first = createCapabilityRunnerdCodexTransport(sharedOptions);
@@ -8519,8 +8575,24 @@ async function verifyLiveRunnerAdoption(
     });
     const openedThread = opened.thread as Record<string, unknown>;
     const signal = vi.fn(() => true);
+    // A local runnerd supplies the real PRP connection; only its host-side
+    // remote ownership callback is simulated in this transport contract test.
+    const remoteProcessIdentity = { version: 1 as const, pid: runnerPid!, uid: 1000,
+      processGroupId: runnerPid!, bootId: randomUUID(), startTicks: "100" };
+    let observationLost = false;
+    let inspectionPending = false;
+    const isAlive = vi.fn(() => {
+      if (observationLost) {
+        const error = new Error("private provider diagnostic");
+        if (remoteMode === "sync_failure") throw error;
+        return Promise.reject(error);
+      }
+      try { process.kill(runnerPid!, 0); return true; } catch { return false; }
+    });
+    const inspect = vi.fn(async () => inspectionPending ? "pending" as const : await isAlive() ? "running" as const : "exited" as const);
     adopted = createCapabilityRunnerdCodexTransport({
       ...sharedOptions,
+      ...(remoteMode ? { closeGraceMs: remoteMode.startsWith("pending_") ? 2_000 : 300 } : {}),
       // Hash different stable bytes without replacing the real runner artifact
       // used by concurrent tests. Adoption must never execute this path.
       ...(mismatchedArtifact
@@ -8541,17 +8613,18 @@ async function verifyLiveRunnerAdoption(
         pid: runnerPid!,
         processGroupId: runnerPid,
         startedAt: new Date().toISOString(),
+        ...(remoteMode ? { processLocation: "remote" as const, remoteProcessIdentity } : {}),
         signal,
-        isAlive: () => {
-          try {
-            process.kill(runnerPid!, 0);
-            return true;
-          } catch {
-            return false;
-          }
-        },
+        isAlive,
+        ...(remoteMode?.startsWith("pending_") ? { inspect } : {}),
       },
     });
+    if (perTurn) {
+      const savedAuthority = await readFile(controlPlaneStatePath, "utf8");
+      await expect(adopted.transport.request("thread/start", { cwd: tmpdir() })).rejects.toThrow("native_adopted_runner_requires_resume");
+      expect(await readFile(controlPlaneStatePath, "utf8")).toBe(savedAuthority);
+      expect(duplicateLauncher).not.toHaveBeenCalled(); expect(signal).not.toHaveBeenCalled();
+    }
     if (mismatchedArtifact) {
       await expect(
         adopted.transport.request("thread/read", {}),
@@ -8602,6 +8675,53 @@ async function verifyLiveRunnerAdoption(
       }),
     );
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
+    if (remoteMode) {
+      expect(adopted.transport.processInfo?.()).toMatchObject({
+        pid: runnerPid, processGroupId: null, processLocation: "remote", remoteProcessIdentity, exited: false,
+      });
+      // Returning metadata cannot let a consumer change the adoption receipt.
+      const copy = adopted.transport.processInfo?.().remoteProcessIdentity;
+      if (copy) copy.startTicks = "200";
+      expect(adopted.transport.processInfo?.().remoteProcessIdentity).toEqual(remoteProcessIdentity);
+    }
+    if (remoteMode === "pending_resume" || remoteMode === "pending_close") {
+      expect(isAlive).toHaveBeenCalled();
+      inspectionPending = true;
+      inspect.mockClear(); isAlive.mockClear();
+      await vi.waitFor(() => expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 2_000 });
+      expect(isAlive).not.toHaveBeenCalled();
+      expect(adopted.evidence().runnerExited).toBe(false);
+      await expect(adopted.transport.request("thread/read", {})).resolves.toHaveProperty("thread");
+      if (remoteMode === "pending_close") {
+        const commands = JSON.parse(await readFile(controlPlaneStatePath, "utf8")).commands;
+        await expect(adopted.transport.close()).rejects.toMatchObject({ code: "native_session_close_unrecoverable" });
+        expect(JSON.parse(await readFile(controlPlaneStatePath, "utf8")).commands).toEqual(commands);
+        expect(checkpoint).toHaveBeenCalledExactlyOnceWith("unsettled");
+        expect(adopted.evidence().runnerExited).toBe(false);
+        expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+      } else {
+        inspectionPending = false;
+        await expect(adopted.transport.close()).resolves.toBeUndefined();
+        expect(checkpoint).toHaveBeenCalledExactlyOnceWith("settled");
+        expect(adopted.evidence().runnerExited).toBe(true);
+      }
+      expect(signal).not.toHaveBeenCalled(); expect(duplicateLauncher).not.toHaveBeenCalled();
+      return;
+    }
+    if (remoteMode === "async_failure" || remoteMode === "sync_failure") {
+      observationLost = true;
+      await vi.waitFor(() => expect(adopted!.evidence().diagnostics).toContain(
+        "native_adopted_runner_identity_unverifiable: runner liveness could not be revalidated",
+      ));
+      await expect(adopted.transport.request("thread/read", {})).rejects.toThrow("native_adopted_runner_identity_unverifiable");
+      await adopted.transport.close().catch(() => undefined);
+      expect(adopted.evidence().runnerExited).toBe(false);
+      expect(adopted.evidence().diagnostics.join("\n")).not.toContain("private provider diagnostic");
+      expect(signal).not.toHaveBeenCalled();
+      expect(duplicateLauncher).not.toHaveBeenCalled();
+      expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+      return;
+    }
     if (startWithoutCheckpoint) {
       const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
       for (const type of ["run.prepare", "session.open"]) {
@@ -8631,6 +8751,17 @@ async function verifyLiveRunnerAdoption(
       expect(adopted.evidence().diagnostics).toContain(
         "confirmed adopted provider identity against authenticated recovery session.snapshot",
       );
+    }
+    if (perTurn) {
+      adopted.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
+      await adopted.transport.request("turn/start", { input: [{ type: "text", text: "finish the recovered turn" }] });
+      for await (const notification of adopted.transport.notifications()) {
+        if (notification.method === "turn/completed") break;
+      }
+      await expect(adopted.transport.close()).resolves.toBeUndefined();
+      expect(adopted.evidence().runnerExited).toBe(true);
+      expect(adopted.evidence().diagnostics.join("\n")).not.toContain("native_adopted_runner_exited");
+      expect(signal).not.toHaveBeenCalled(); expect(duplicateLauncher).not.toHaveBeenCalled();
     }
     if (detachBeforeCleanup) {
       await adopted.detachControllerForRestart();
@@ -8667,6 +8798,15 @@ it(
   30_000,
 );
 
+it.each(["healthy", "async_failure", "sync_failure", "pending_resume", "pending_close"] as const)(
+  "preserves remote ownership during live runner adoption (%s)",
+  mode => verifyLiveRunnerAdoption(false, false, false, mode),
+  30_000,
+);
+
+it("closes a recovered remote per-turn runner with verified suspension and no replacement launch", () =>
+  verifyLiveRunnerAdoption(false, false, false, "healthy", true), 30_000);
+
 it(
   "blocks adopted runner artifact drift without duplicate launch, checkpoint replacement, or process signals",
   () => verifyLiveRunnerAdoption(false, true),
@@ -8681,9 +8821,9 @@ it(
 
 it("binds buffered mid-goal items only after the authenticated recovery snapshot", () => verifyLiveRunnerAdoption(false, false, true), 30_000);
 
-it("keeps an adopted runner alive when the detached controller finalizer closes", () => verifyLiveRunnerAdoption(false, false, true, true), 30_000);
+it("keeps an adopted runner alive when the detached controller finalizer closes", () => verifyLiveRunnerAdoption(false, false, true, undefined, false, true), 30_000);
 
-it("adopts an opening session without a checkpoint instead of bootstrapping a duplicate provider", () => verifyLiveRunnerAdoption(false, false, false, false, true), 30_000);
+it("adopts an opening session without a checkpoint instead of bootstrapping a duplicate provider", () => verifyLiveRunnerAdoption(false, false, false, undefined, false, false, true), 30_000);
 
 it("surfaces a runner exit while provider-ingress readiness is still pending", async () => {
   const neverReady = new Promise<void>(() => undefined);

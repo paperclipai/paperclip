@@ -1,4 +1,5 @@
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
+import type { RunnerProcessOwnershipMetadata } from "../contracts/process-ownership.js";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
@@ -1234,15 +1235,16 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
   /**
-   * A verified local runner that outlived its controller. Adoption registers
+   * A verified runner that outlived its controller. Adoption registers
    * the durable authority and waits for this exact process to reconnect; it
    * never calls the process launcher while the process remains alive.
    */
-  adoptExistingRunner?: {
-    pid: number;
-    processGroupId: number | null;
-    startedAt: string;
+  adoptExistingRunner?: RunnerProcessOwnershipMetadata & {
+    /** false proves exit; unavailable or ambiguous observations must throw. */
     isAlive: () => Promise<boolean> | boolean;
+    /** A host-owned handoff can defer monitoring without claiming process
+     * liveness or exit. Startup still requires the exact isAlive proof. */
+    inspect?: () => Promise<"running" | "exited" | "pending">;
     signal?: (signal: NodeJS.Signals) => Promise<boolean> | boolean;
   };
 }
@@ -3797,6 +3799,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
 
       activationStarted = true;
+      // The acknowledged attachment owns all future persistence, including
+      // recovery from an activation/release failure. Never checkpoint the
+      // new runner identity through the previous run's callback.
+      this.#controlPlaneCheckpoint = registration?.checkpoint ?? null;
       core.rotateRunIdentity(desired, runAttachTemplate);
       await registration?.activate?.();
       if (registration?.failure) {
@@ -3908,10 +3914,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   processInfo(): CodexTransportProcessInfo {
+    const location = this.#handle?.processLocation ?? this.options.adoptExistingRunner?.processLocation;
+    const remoteIdentity = this.#handle?.remoteProcessIdentity ?? this.options.adoptExistingRunner?.remoteProcessIdentity;
     return {
       pid: this.#evidence.runnerPid,
-      processGroupId: this.#evidence.runnerProcessGroupId,
-      startedAt: this.#startedAt,
+      processGroupId: location === "remote" ? null : this.#evidence.runnerProcessGroupId,
+      startedAt: this.#handle?.startedAt ?? this.options.adoptExistingRunner?.startedAt ?? this.#startedAt,
+      ...(location ? { processLocation: location } : {}),
+      ...(remoteIdentity ? { remoteProcessIdentity: { ...remoteIdentity } } : {}),
       exited: this.#evidence.runnerExited,
       exitCode: this.#evidence.runnerExitCode,
       signal: this.#evidence.runnerSignal,
@@ -4118,10 +4128,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // `unsettled` and preserve its original bootstrap diagnostic.
     let runnerSuspended = false;
     let providerDrained = false;
-    let suspensionRequired = false;
+    const adoptedInspection = adoptedRunner?.inspect
+      ? await this.#inspectAdoptedRunner(adoptedRunner).catch(() => "pending" as const)
+      : undefined;
+    let suspensionRequired = adoptedInspection !== undefined && this.#core !== null && this.#adoptedRunnerAuthenticated;
     if (
       this.#core !== null &&
       (this.#handle !== null || adoptedRunner !== undefined) &&
+      adoptedInspection !== "pending" &&
       (adoptedRunner === undefined || this.#adoptedRunnerAuthenticated) &&
       (this.#failure === null || this.#startupComplete)
     ) {
@@ -4190,18 +4204,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             this.#diagnostic(result.stderr.trim().slice(-4_096));
         } else if (adoptedRunner) {
           while (
-            (await adoptedRunner.isAlive()) &&
+            (await this.#inspectAdoptedRunner(adoptedRunner)) !== "exited" &&
             Date.now() < closeDeadline
           ) {
             await new Promise((resolveWait) => setTimeout(resolveWait, 25));
           }
-          if (await adoptedRunner.isAlive()) {
+          if (await this.#inspectAdoptedRunner(adoptedRunner) === "running") {
             await adoptedRunner.signal?.("SIGKILL");
           }
-          this.#evidence.runnerExited = !(await adoptedRunner.isAlive());
+          this.#evidence.runnerExited = await this.#inspectAdoptedRunner(adoptedRunner) === "exited";
         }
       } catch (error) {
-        this.#diagnostic(`runner shutdown failed: ${String(error)}`);
+        this.#diagnostic(adoptedRunner
+          ? "runner shutdown failed: adopted runner control is unverified"
+          : `runner shutdown failed: ${String(error)}`);
       }
     }
     this.#flushPendingTraceRehydrations();
@@ -4281,6 +4297,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #start(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    if (this.options.adoptExistingRunner &&
+      (this.options.resumeProviderSession || (this.options.lifecyclePolicy?.mode ?? "per_turn") === "per_turn")) {
+      throw new Error("native_adopted_runner_requires_resume");
+    }
     if (this.#core !== null)
       throw new Error("PRP provider thread is already started");
     if (this.options.adoptExistingRunner) {
@@ -6252,14 +6272,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
+  async #inspectAdoptedRunner(adoptedRunner: NonNullable<CapabilityRunnerdCodexTransportOptions["adoptExistingRunner"]>): Promise<"running" | "exited" | "pending"> {
+    if (!adoptedRunner.inspect) return await adoptedRunner.isAlive() ? "running" : "exited";
+    const state = await adoptedRunner.inspect();
+    if (state !== "running" && state !== "exited" && state !== "pending") throw new Error("native_adopted_runner_identity_unverifiable");
+    return state;
+  }
+
   async #runnerHasExited(): Promise<boolean> {
     if (this.#handle) return this.#handle.child.exitCode !== null;
     const adoptedRunner = this.options.adoptExistingRunner;
     if (!adoptedRunner) return true;
     try {
-      return !(await adoptedRunner.isAlive());
+      return await this.#inspectAdoptedRunner(adoptedRunner) === "exited";
     } catch {
-      return true;
+      // A provider timeout or unavailable identity is not an exit receipt.
+      // Keep ownership and let the bounded recovery/suspension path fail.
+      return false;
     }
   }
 
@@ -6272,9 +6301,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#adoptedRunnerMonitor = setInterval(() => {
       if (checking || this.#closed) return;
       checking = true;
-      void Promise.resolve(adoptedRunner.isAlive())
-        .then((alive) => {
-          if (alive || this.#closed) return;
+      void Promise.resolve().then(() => this.#inspectAdoptedRunner(adoptedRunner))
+        .then((state) => {
+          if (state !== "exited" || this.#closed) return;
           this.#evidence.runnerExited = true;
           this.#publish();
           this.#failTransport(

@@ -8,6 +8,7 @@ import {
   asString,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  buildRuntimeServicesEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
@@ -348,6 +349,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    ...buildRuntimeServicesEnv(ctx.runtimeServices),
     PAPERCLIP_RUN_ID: ctx.runId,
   };
 

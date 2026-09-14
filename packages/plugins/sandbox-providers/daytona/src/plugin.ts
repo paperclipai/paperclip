@@ -1,6 +1,14 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { Daytona, DaytonaNotFoundError, DaytonaTimeoutError } from "@daytonaio/sdk";
+import { acquireDaytonaServiceAllocation } from "./service-allocation.js";
+import { handleDaytonaRunProcessControl } from "./run-process-control.js";
+import { handleDaytonaRunnerRecovery } from "./runner-recovery.js";
+import { handleDaytonaRunnerRecoveryExecute } from "./runner-recovery-execute.js";
+import type { PluginEnvironmentRunProcessControlParams, PluginEnvironmentRunProcessControlResult } from "@paperclipai/plugin-sdk";
+import { DaytonaServiceResourceConfigurationError, verifyDaytonaServiceResourceConfiguration } from "./service-resources.js";
+import { assertDaytonaServiceDataAvailable, deleteDaytonaServiceData } from "./service-data-deletion.js";
+import { daytonaTaskWorkspaceOwnership, deleteDaytonaTaskWorkspaceData, TASK_WORKSPACE_LABEL } from "./task-workspace-data-deletion.js";
 import type {
   CreateSandboxBaseParams,
   CreateSandboxFromImageParams,
@@ -14,6 +22,7 @@ import type {
   PluginContext,
   PluginTracer,
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentServiceConnectionParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentCancelInteractiveSetupResult,
   PluginEnvironmentCaptureTemplateParams,
@@ -23,6 +32,10 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentServiceParams,
+  PluginEnvironmentServiceResult,
+  PluginEnvironmentProcessHandoffParams,
+  PluginEnvironmentProcessHandoffResult,
   PluginEnvironmentRunnerIngressEndpointParams,
   PluginEnvironmentRunnerIngressEndpoint,
   PluginEnvironmentGetInteractiveSetupParams,
@@ -44,6 +57,8 @@ import type {
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
+import { handleDaytonaServiceOperation, assertDaytonaSandboxNotRetained } from "./service-runtime.js";
+import { handleDaytonaProcessHandoff } from "./service-process-handoff.js";
 
 // The Claude `setup-token` login pseudo-terminal (PTY) session for this provider.
 // The session runs the login command on a real pseudo-terminal, streams the
@@ -158,6 +173,8 @@ export function setDaytonaHandleFreshnessClockForTest(now: () => number): () => 
 }
 
 interface DaytonaDriverConfig {
+  /** Operation-local snapshot; never parsed from input or serialized in a receipt. */
+  resolvedConnection?: DaytonaConfig;
   apiKey: string | null;
   apiUrl: string | null;
   target: string | null;
@@ -308,13 +325,38 @@ function resolveApiKey(config: DaytonaDriverConfig): string {
   return envApiKey;
 }
 
-function createDaytonaClient(config: DaytonaDriverConfig): Daytona {
-  const clientConfig: DaytonaConfig = {
+function resolveDaytonaConnection(config: DaytonaDriverConfig): DaytonaConfig {
+  if (config.resolvedConnection) return config.resolvedConnection;
+  return {
     apiKey: resolveApiKey(config),
+    apiUrl: config.apiUrl || process.env.DAYTONA_API_URL?.trim() || process.env.DAYTONA_SERVER_URL?.trim() || "https://app.daytona.io/api",
+    target: config.target || process.env.DAYTONA_TARGET?.trim() || undefined,
   };
-  if (config.apiUrl) clientConfig.apiUrl = config.apiUrl;
-  if (config.target) clientConfig.target = config.target;
-  return new Daytona(clientConfig);
+}
+
+function createDaytonaClient(config: DaytonaDriverConfig): Daytona {
+  return new Daytona(resolveDaytonaConnection(config));
+}
+
+function serviceConnectionFingerprint(params: PluginEnvironmentServiceConnectionParams, config: DaytonaDriverConfig): string {
+  return createHash("sha256").update(stableStringify({
+    version: 1, companyId: params.companyId, environmentId: params.environmentId,
+    allocationId: params.serviceAllocationId, connection: resolveDaytonaConnection(config),
+  })).digest("hex");
+}
+
+function workspaceConnectionConfig(params: Pick<PluginEnvironmentAcquireLeaseParams, "driverKey" | "companyId" | "environmentId" | "config" | "workspaceConnection">): DaytonaDriverConfig {
+  const config = parseDriverConfig(params.config);
+  // Fingerprint and provider client must use the same connection even if the
+  // worker environment changes while this asynchronous operation is in flight.
+  config.resolvedConnection = resolveDaytonaConnection(config);
+  if (params.workspaceConnection) {
+    const { scopeId, fingerprint } = params.workspaceConnection;
+    if (!scopeId || !/^[a-f0-9]{64}$/.test(fingerprint) || fingerprint !== serviceConnectionFingerprint({
+      ...params, serviceAllocationId: scopeId,
+    }, config)) throw new Error("The retained workspace provider connection changed; restore its original connection before attaching");
+  }
+  return config;
 }
 
 function buildResources(config: DaytonaDriverConfig): Resources | undefined {
@@ -375,6 +417,7 @@ function buildSandboxLabels(input: {
   environmentId: string;
   runId?: string;
   setupSessionId?: string;
+  executionWorkspaceId?: string;
   purpose?: string;
   reuseLease: boolean;
 }): Record<string, string> {
@@ -384,6 +427,7 @@ function buildSandboxLabels(input: {
     "paperclip-environment-id": input.environmentId,
     "paperclip-reuse-lease": input.reuseLease ? "true" : "false",
     ...(input.runId ? { "paperclip-run-id": input.runId } : {}),
+    ...(input.executionWorkspaceId ? { [TASK_WORKSPACE_LABEL]: input.executionWorkspaceId } : {}),
     ...(input.setupSessionId ? { "paperclip-setup-session-id": input.setupSessionId } : {}),
     ...(input.purpose ? { "paperclip-purpose": input.purpose } : {}),
   };
@@ -512,9 +556,21 @@ function parseProbeInteger(value: string | undefined | null): number | null {
 }
 
 function workspaceSentinelToken(input: {
-  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "adapterType">;
+  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "adapterType" | "serviceAllocationId" | "workspaceConnection">;
   config: DaytonaDriverConfig;
 }): string | null {
+  if (input.params.serviceAllocationId) {
+    return createHash("sha256").update(stableStringify({
+      provider: "daytona", companyId: input.params.companyId, environmentId: input.params.environmentId,
+      serviceAllocationId: input.params.serviceAllocationId,
+    })).digest("hex");
+  }
+  if (input.params.workspaceConnection && input.params.executionWorkspaceId) {
+    return createHash("sha256").update(stableStringify({
+      provider: "daytona", companyId: input.params.companyId, environmentId: input.params.environmentId,
+      executionWorkspaceId: input.params.executionWorkspaceId, connectionScopeId: input.params.workspaceConnection.scopeId,
+    })).digest("hex");
+  }
   if (!input.config.reuseLease || !input.params.agentId || !input.params.executionWorkspaceId) {
     return null;
   }
@@ -556,6 +612,19 @@ async function writeWorkspaceSentinel(input: {
   if (!token) {
     return { path: sentinelPath, token: null, result: "skipped" };
   }
+  if (input.params.serviceAllocationId) {
+    const current = await input.sandbox.process.executeCommand(
+      `if test -e ${shellQuote(sentinelPath)}; then cat ${shellQuote(sentinelPath)}; else printf 'absent'; fi`,
+      undefined, undefined, input.timeoutSeconds,
+    );
+    if (current.exitCode !== 0) throw new Error("Service workspace identity could not be read");
+    const content = current.result ?? current.artifacts?.stdout ?? "";
+    if (content !== "absent") {
+      const stored = JSON.parse(content) as { token?: unknown };
+      if (stored.token !== token) throw new Error("Service workspace identity does not match its allocation");
+      return { path: sentinelPath, token, result: "matched" };
+    }
+  }
   await input.sandbox.fs.createFolder(path.posix.dirname(sentinelPath), "755");
   await input.sandbox.fs.uploadFile(
     Buffer.from(JSON.stringify({
@@ -566,6 +635,7 @@ async function writeWorkspaceSentinel(input: {
       agentId: input.params.agentId,
       executionWorkspaceId: input.params.executionWorkspaceId,
       adapterType: input.params.adapterType ?? null,
+      ...(input.params.serviceAllocationId ? { serviceAllocationId: input.params.serviceAllocationId } : {}),
       provider: "daytona",
       writtenAt: new Date().toISOString(),
     }, null, 2), "utf8"),
@@ -629,6 +699,7 @@ function leaseMetadata(input: {
     shellCommand: input.shellCommand,
     sandboxId: input.sandbox.id,
     sandboxName: input.sandbox.name,
+    ...(daytonaTaskWorkspaceOwnership(input.sandbox) ? { taskWorkspaceOwnership: daytonaTaskWorkspaceOwnership(input.sandbox) } : {}),
     sandboxState: input.sandboxState ?? input.sandbox.state ?? null,
     image: input.config.image,
     snapshot: input.config.snapshot,
@@ -852,6 +923,7 @@ function buildLoginShellScript(input: {
   cwd?: string;
   env?: Record<string, string>;
   stdinPath?: string;
+  sourceLoginProfiles?: boolean;
 }): string {
   const callerEnv = input.env ?? {};
   for (const key of Object.keys(callerEnv)) {
@@ -874,7 +946,7 @@ function buildLoginShellScript(input: {
   const finalLine = envArgs.length > 0
     ? `env ${envArgs.join(" ")} ${redirectedCommand}`
     : redirectedCommand;
-  const lines = [
+  const lines = input.sourceLoginProfiles === false ? [] : [
     'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     // .bash_profile typically sources .bashrc itself; only source .bashrc
@@ -914,10 +986,27 @@ async function createSandbox(
     companyId: params.companyId,
     environmentId: params.environmentId,
     runId: "runId" in params ? params.runId : undefined,
+    executionWorkspaceId: "workspaceConnection" in params && params.workspaceConnection && !params.serviceAllocationId ? params.executionWorkspaceId ?? undefined : undefined,
     setupSessionId: "sessionId" in params ? params.sessionId : undefined,
     purpose: options.purpose,
     reuseLease: config.reuseLease,
   }));
+  if ("serviceAllocationId" in params && params.serviceAllocationId) {
+    if (params.requestedExpiresAt) throw new Error("Service allocations cannot inherit a run expiry");
+    if (params.serviceConnectionFingerprint !== serviceConnectionFingerprint({ ...params, serviceAllocationId: params.serviceAllocationId }, config)) {
+      throw new Error("Service allocation provider connection changed; restore the recorded connection before retrying");
+    }
+    return acquireDaytonaServiceAllocation({
+      client, allocationId: params.serviceAllocationId, companyId: params.companyId,
+      environmentId: params.environmentId, params: createParams, target: config.target, timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
+      beforeCreate: async () => {
+        try {
+          if (await verifyDaytonaServiceResourceConfiguration(client, params.config)) return;
+        } catch { /* Report a bounded configuration failure, without provider credentials. */ }
+        throw new DaytonaServiceResourceConfigurationError();
+      },
+    });
+  }
   const sandbox = await client.create(createParams, {
     timeout: toTimeoutSeconds(config.timeoutMs),
   });
@@ -1452,6 +1541,34 @@ const sandboxHandleSessionStore = (() => {
   return { get, set, clear, runSingle, reset };
 })();
 
+const serviceDataDeletionRequests = new Map<string, { deletionId: string; identity: string; promise: Promise<unknown> }>();
+
+async function withDaytonaDataDeletion<T>(scope: SandboxScope, identity: string, deletionId: string, remove: () => Promise<T>): Promise<T> {
+  const key = sandboxHandleCacheKey(scope), existing = serviceDataDeletionRequests.get(key);
+  if (existing) {
+    if (existing.deletionId !== deletionId || existing.identity !== identity) throw new Error("A different deletion already owns this allocation");
+    return existing.promise as Promise<T>;
+  }
+  const promise = (async () => {
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
+    try {
+      evictSandboxHandle(scope);
+      await sandboxHandleActivityGates.waitForIdle(scope);
+      const receipt = await remove();
+      sandboxHandleSessionStore.clear(scope);
+      await closeDaytonaDuplexChannelsForLease(scope.providerLeaseId);
+      return receipt;
+    } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
+      evictSandboxHandle(scope);
+    }
+  })();
+  serviceDataDeletionRequests.set(key, { deletionId, identity, promise });
+  try { return await promise; }
+  finally { serviceDataDeletionRequests.delete(key); }
+}
+
 /**
  * Test seam: clear the process-scoped handle cache between tests so a handle
  * memoized under a reused composite key in one test never leaks into the next.
@@ -1464,6 +1581,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleLeaseAdmissionStates.reset();
   sandboxHandleWritableDirs.reset();
   sandboxHandleSessionStore.reset();
+  serviceDataDeletionRequests.clear();
   runnerIngressGenerationStore.reset();
 }
 
@@ -1490,7 +1608,9 @@ export function __getDaytonaWritableDirsForTest(input: {
 }
 
 async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
-  return await sandboxHandleCache.get(scope, options);
+  const sandbox = await sandboxHandleCache.get(scope, options);
+  assertDaytonaServiceDataAvailable(sandbox);
+  return sandbox;
 }
 
 async function getSandboxOrNull(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox | null> {
@@ -1586,6 +1706,7 @@ async function executeOneShot(
   sandbox: Sandbox,
   params: PluginEnvironmentExecuteParams,
   config: DaytonaDriverConfig,
+  options?: { sourceLoginProfiles?: boolean; requireExitCode?: boolean },
 ): Promise<PluginEnvironmentExecuteResult> {
   const gitNet = isGitNetworkCommand(params.command, params.args ?? []);
   const timeoutMs = resolveTimeoutMs(params.timeoutMs, config);
@@ -1613,6 +1734,7 @@ async function executeOneShot(
       cwd: params.cwd,
       env: params.env,
       stdinPath: stdinPath ?? undefined,
+      sourceLoginProfiles: options?.sourceLoginProfiles,
     });
 
     // Pass cwd undefined: `buildLoginShellScript` already injects the `cd` after
@@ -1627,7 +1749,7 @@ async function executeOneShot(
     const durationMs = timingNow() - execStart;
 
     return {
-      exitCode: typeof result.exitCode === "number" ? result.exitCode : 1,
+      exitCode: typeof result.exitCode === "number" ? result.exitCode : options?.requireExitCode ? null : 1,
       timedOut: false,
       stdout: result.result ?? result.artifacts?.stdout ?? "",
       stderr: "",
@@ -2124,9 +2246,10 @@ const plugin = definePlugin({
   async onEnvironmentAcquireLease(
     params: PluginEnvironmentAcquireLeaseParams,
   ): Promise<PluginEnvironmentLease> {
-    const config = parseDriverConfig(params.config);
+    const config = workspaceConnectionConfig(params);
     const sandbox = await createSandbox(params, config);
     try {
+      if (params.serviceAllocationId) await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
       // Configure a provider-side destroy time at or before a caller deadline, so
@@ -2167,25 +2290,68 @@ const plugin = definePlugin({
       return {
         providerLeaseId: sandbox.id,
         expiresAt,
-        metadata: leaseMetadata({
+        metadata: { ...leaseMetadata({
           config,
           sandbox,
           shellCommand,
           remoteCwd,
           resumedLease: false,
           workspaceSentinel,
-        }),
+        }), ...(params.workspaceConnection ? { workspaceConnection: params.workspaceConnection } : {}) },
       };
     } catch (error) {
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+      // The service's durable claim must remain recoverable after interrupted
+      // initialization. A retry finds its named sandbox and verifies ownership.
+      if (!params.serviceAllocationId) await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
       throw error;
     }
+  },
+
+  async onEnvironmentAcquireServiceLease(params) {
+    if (!params.serviceAllocationId) throw new Error("A durable service allocation identity is required");
+    try { return await plugin.definition.onEnvironmentAcquireLease!(params); }
+    catch (error) {
+      if (error instanceof DaytonaServiceResourceConfigurationError) return { providerLeaseId: null, metadata: { resourceConfigurationMismatch: true } };
+      throw error;
+    }
+  },
+
+  async onEnvironmentGetServiceConnection(params) {
+    const config = parseDriverConfig(params.config);
+    config.resolvedConnection = resolveDaytonaConnection(config);
+    return { fingerprint: serviceConnectionFingerprint(params, config),
+      ...(params.checkResources ? { resourcesVerified: await verifyDaytonaServiceResourceConfiguration(createDaytonaClient(config), params.config) } : {}) };
+  },
+
+  async onEnvironmentDeleteServiceData(params) {
+    // Resolve and freeze the original connection before touching a provider
+    // resource, even when a lost response is being recovered as "not found".
+    const config = workspaceConnectionConfig({ ...params, workspaceConnection: {
+      scopeId: params.serviceAllocationId, fingerprint: params.serviceConnectionFingerprint,
+    } });
+    const scope: SandboxScope = { driverKey: params.driverKey, companyId: params.companyId,
+      environmentId: params.environmentId, providerLeaseId: params.providerLeaseId, config };
+    return withDaytonaDataDeletion(scope, `allocation:${params.serviceAllocationId}`, params.deletionId, () =>
+      deleteDaytonaServiceData({ client: createDaytonaClient(config), companyId: params.companyId, environmentId: params.environmentId,
+        allocationId: params.serviceAllocationId, providerLeaseId: params.providerLeaseId, deletionId: params.deletionId,
+        timeoutSeconds: Math.min(120, toTimeoutSeconds(config.timeoutMs)) }));
+  },
+
+  async onEnvironmentDeleteTaskWorkspaceData(params) {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(params.workspaceConnection?.scopeId ?? "")) throw new Error("The original task workspace connection is required");
+    const config = workspaceConnectionConfig(params);
+    const scope: SandboxScope = { driverKey: params.driverKey, companyId: params.companyId,
+      environmentId: params.environmentId, providerLeaseId: params.providerLeaseId, config };
+    return withDaytonaDataDeletion(scope, `task:${stableStringify(params.ownership)}`, params.deletionId, () =>
+      deleteDaytonaTaskWorkspaceData({ client: createDaytonaClient(config), companyId: params.companyId, environmentId: params.environmentId,
+        providerLeaseId: params.providerLeaseId, ownership: params.ownership, deletionId: params.deletionId,
+        timeoutSeconds: Math.min(120, toTimeoutSeconds(config.timeoutMs)) }));
   },
 
   async onEnvironmentResumeLease(
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
-    const config = parseDriverConfig(params.config);
+    const config = workspaceConnectionConfig(params);
     const scope: SandboxScope = {
       driverKey: params.driverKey,
       companyId: params.companyId,
@@ -2248,7 +2414,7 @@ const plugin = definePlugin({
           sandboxHandleLeaseAdmissionStates.open(scope);
           return {
             providerLeaseId: sandbox.id,
-            metadata: leaseMetadata({
+            metadata: { ...leaseMetadata({
               config,
               sandbox,
               shellCommand,
@@ -2257,7 +2423,7 @@ const plugin = definePlugin({
               resumedFromState,
               sandboxState: "started",
               workspaceSentinel,
-            }),
+            }), ...(params.workspaceConnection ? { workspaceConnection: params.workspaceConnection } : {}) },
           };
         } catch (error) {
           evictSandboxHandle(scope);
@@ -2270,6 +2436,73 @@ const plugin = definePlugin({
       },
       { allowClosed: true },
     );
+  },
+
+  async onEnvironmentRunProcessControl(params: PluginEnvironmentRunProcessControlParams): Promise<PluginEnvironmentRunProcessControlResult> {
+    if (!params.workspaceConnection?.scopeId || !params.workspaceConnection.fingerprint) return { state: "unverified" };
+    const scope: SandboxScope = {
+      driverKey: params.driverKey, companyId: params.companyId, environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId, config: workspaceConnectionConfig(params),
+    };
+    return withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      const result = await handleDaytonaRunProcessControl(sandbox, params);
+      return { ...result, workspaceConnection: params.workspaceConnection };
+    }, { allowClosed: true });
+  },
+
+  async onEnvironmentRunnerRecovery(params) {
+    if (!params.workspaceConnection?.scopeId || !params.workspaceConnection.fingerprint) return { state: "unverified" };
+    const scope: SandboxScope = {
+      driverKey: params.driverKey, companyId: params.companyId, environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId, config: workspaceConnectionConfig(params),
+    };
+    return withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      return handleDaytonaRunnerRecovery(sandbox, params, sandbox => runnerIngressGenerationStore.get(sandbox));
+    }, { allowClosed: true });
+  },
+
+  async onEnvironmentRunnerRecoveryExecute(params) {
+    if (!params.workspaceConnection?.scopeId || !params.workspaceConnection.fingerprint) return { state: "unverified" };
+    const scope: SandboxScope = { driverKey: params.driverKey, companyId: params.companyId, environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId, config: workspaceConnectionConfig(params) };
+    return withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      return handleDaytonaRunnerRecoveryExecute(sandbox, params, execution => executeOneShot(sandbox, {
+        driverKey: params.driverKey, companyId: params.companyId, environmentId: params.environmentId, config: { ...scope.config },
+        lease: { providerLeaseId: params.providerLeaseId }, ...execution, bypassSession: true,
+      }, scope.config, { sourceLoginProfiles: false, requireExitCode: true }));
+    }, { allowClosed: true });
+  },
+
+  async onEnvironmentProcessHandoff(params: PluginEnvironmentProcessHandoffParams): Promise<PluginEnvironmentProcessHandoffResult> {
+    if (!params.workspaceConnection?.scopeId || !params.workspaceConnection.fingerprint) {
+      return { state: "failed", errorCode: "PROCESS_HANDOFF_UNAVAILABLE" };
+    }
+    const scope: SandboxScope = {
+      driverKey: params.driverKey, companyId: params.companyId, environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId, config: workspaceConnectionConfig(params),
+    };
+    return withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      const result = await handleDaytonaProcessHandoff(sandbox, params);
+      return { ...result, workspaceConnection: params.workspaceConnection };
+    }, { allowClosed: true });
+  },
+
+  async onEnvironmentService(params: PluginEnvironmentServiceParams): Promise<PluginEnvironmentServiceResult> {
+    const scope: SandboxScope = {
+      driverKey: params.driverKey, companyId: params.companyId, environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId, config: workspaceConnectionConfig(params),
+    };
+    // Services outlive a run's admission state. The host serializes allocation
+    // transitions, and retained labels guard legacy teardown entry points.
+    return withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      const result = await handleDaytonaServiceOperation(sandbox, params);
+      return { ...result, ...(params.workspaceConnection ? { workspaceConnection: params.workspaceConnection } : {}) };
+    }, { allowClosed: true });
   },
 
   async onEnvironmentReleaseLease(
@@ -2305,6 +2538,7 @@ const plugin = definePlugin({
         return { providerLeaseId: params.providerLeaseId, state: "stopped" };
       }
       await sandboxHandleActivityGates.waitForIdle(scope);
+      await assertDaytonaSandboxNotRetained(sandbox);
       await teardownSession(sandbox, scope);
       // Close every duplex channel on this lease before the stop or the delete,
       // so no channel outlives the sandbox and no stored channel id survives.
@@ -2373,6 +2607,7 @@ const plugin = definePlugin({
 
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
+      await assertDaytonaSandboxNotRetained(sandbox);
       await teardownSession(sandbox, scope);
       // Close every duplex channel on this lease before the delete, so no channel
       // outlives the sandbox and no stored channel id survives.

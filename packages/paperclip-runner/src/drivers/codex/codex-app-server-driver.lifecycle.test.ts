@@ -109,6 +109,95 @@ class WarmAttachTransport extends FakeCodexTransport {
 }
 
 describe("Codex app-server Codex driver", () => {
+  async function recoveredTerminal(transport: FakeCodexTransport) {
+    const first = new FakeCodexTransport(), driver = makeDriver([first, transport]);
+    const original = await driver.openSession({ runId: "run-completed", normalizedSessionId: "normalized-completed", workingDirectory: WORKSPACE });
+    await original.startTurn({ message: { role: "user", text: "Finish the first task." } });
+    expect(await first.invoke({ id: "finish", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "finish", tool: "paperclip_finish", arguments: result,
+    } })).toMatchObject({ success: true });
+    first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    await collectUntilTerminal(original.events());
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller replaced" });
+    const recovered = await driver.recoverSession!(snapshot);
+    expect(recovered.recovered).toBe(true);
+    const session = recovered.session!;
+    const priorEvents = session.events()[Symbol.asyncIterator]();
+    while (!(await priorEvents.next()).done) { /* Drain the completed run's finite stream. */ }
+    return { session, priorEvents };
+  }
+
+  it("delivers a new run's events after recovering a completed session without reopening the old stream", async () => {
+    const transport = new WarmAttachTransport(), notifications = vi.spyOn(transport, "notifications");
+    const { session, priorEvents } = await recoveredTerminal(transport);
+    expect(notifications).not.toHaveBeenCalled();
+    await expect(session.startTurn({ message: { role: "user", text: "Do not repeat the old run." } })).rejects.toThrow("session cannot start another turn");
+    await expect(session.attachRun!({ runId: "run-completed" })).rejects.toThrow("requires a new run");
+    expect(transport.attachments).toHaveLength(0);
+    await session.attachRun!({ runId: "run-next" });
+    expect(notifications).toHaveBeenCalledTimes(1);
+    expect(await priorEvents.next()).toMatchObject({ done: true });
+    const collecting = collectUntilTerminal(session.events());
+    await session.startTurn({ message: { role: "user", text: "Edit the same app." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    const events = await collecting;
+    expect(events.some(event => event.eventType === "run.attached")).toBe(true);
+    expect(events.some(event => event.eventType === "turn.started" || event.eventType === "turn.accepted")).toBe(true);
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    expect(events.every(event => event.runId === "run-next")).toBe(true);
+    expect(await priorEvents.next()).toMatchObject({ done: true });
+    await session.close({ reason: "test complete" });
+  });
+
+  it.each(["unsupported", "rejected", "closed"] as const)("does not resume a recovered stream after %s attachment", async cause => {
+    const transport = cause === "unsupported" ? new FakeCodexTransport() : new WarmAttachTransport();
+    const notifications = vi.spyOn(transport, "notifications");
+    const { session, priorEvents } = await recoveredTerminal(transport);
+    if (cause === "rejected") vi.spyOn(transport as WarmAttachTransport, "attachRun").mockRejectedValue(new Error("attachment denied"));
+    if (cause === "closed") await session.close({ reason: "explicitly stopped" });
+    await expect(session.attachRun!({ runId: "run-next" })).rejects.toThrow();
+    expect(notifications).not.toHaveBeenCalled();
+    expect(await priorEvents.next()).toMatchObject({ done: true });
+    expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(0);
+    if (cause !== "closed") await session.close({ reason: "test complete" });
+  });
+
+  it("rejects concurrent attachments and turn starts while run authority is rotating", async () => {
+    const transport = new WarmAttachTransport(), notifications = vi.spyOn(transport, "notifications");
+    const { session } = await recoveredTerminal(transport);
+    let release!: () => void;
+    const attachingTransport = vi.spyOn(transport, "attachRun").mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const first = session.attachRun!({ runId: "run-first" });
+    await expect(session.attachRun!({ runId: "run-second" })).rejects.toThrow("codex_run_attach_busy");
+    await expect(session.startTurn({ message: { role: "user", text: "Wait for attachment." } })).rejects.toThrow("session cannot start another turn");
+    expect(attachingTransport).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    expect(notifications).toHaveBeenCalledTimes(1);
+    attachingTransport.mockRejectedValueOnce(new Error("temporary admission failure"));
+    await expect(session.attachRun!({ runId: "run-second" })).rejects.toThrow("temporary admission failure");
+    await expect(session.attachRun!({ runId: "run-second" })).resolves.toBeUndefined();
+    expect(transport.attachments.at(-1)?.runId).toBe("run-second");
+    await session.close({ reason: "test complete" });
+  });
+
+  it("does not reopen a recovered stream when close wins during attachment", async () => {
+    const transport = new WarmAttachTransport(), notifications = vi.spyOn(transport, "notifications");
+    const { session, priorEvents } = await recoveredTerminal(transport);
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(transport, "attachRun").mockImplementation(() => pending);
+    const attaching = session.attachRun!({ runId: "run-next" });
+    const rejected = expect(attaching).rejects.toThrow("closed while transport attachment was pending");
+    await session.close({ reason: "stop while attachment is pending" });
+    release();
+    await rejected;
+    expect(notifications).not.toHaveBeenCalled();
+    expect(await priorEvents.next()).toMatchObject({ done: true });
+    expect(transport.calls.filter(call => call.method === "turn/start")).toHaveLength(0);
+  });
+
   it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
     const transport = new WarmAttachTransport();
     const driver = makeDriver([transport]);
@@ -291,6 +380,18 @@ describe("Codex app-server Codex driver", () => {
       startedAt: "2026-08-18T18:00:00.000Z",
     });
     expect(transport.calls[0]?.method).toBe("initialize");
+  });
+
+  it("preserves remote ownership through lazy transport reports and never publishes a host process group", async () => {
+    const transport = new FakeCodexTransport();
+    const remoteProcessIdentity = { version: 1 as const, pid: 71_003, uid: 1000, processGroupId: 71_003, bootId: "dcd261b9-2e65-4d1c-8b57-c68b5592c870", startTicks: "12345" };
+    Object.assign(transport, { processInfo: () => ({ pid: transport.calls.length ? remoteProcessIdentity.pid : null,
+      processGroupId: remoteProcessIdentity.processGroupId, startedAt: "2026-09-13T18:00:00.000Z", processLocation: "remote", remoteProcessIdentity,
+      exited: false, exitCode: null, signal: null }) });
+    const onSpawn = vi.fn(async () => undefined);
+    const driver = makeDriver([transport], { onSpawn });
+    await driver.openSession({ runId: "remote-owned", normalizedSessionId: "remote-owned", workingDirectory: WORKSPACE });
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: remoteProcessIdentity.pid, processGroupId: null, startedAt: "2026-09-13T18:00:00.000Z", processLocation: "remote", remoteProcessIdentity });
   });
 
   it("persists process ownership after a lazy transport launches during session open", async () => {

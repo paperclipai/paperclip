@@ -25,6 +25,7 @@ import {
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  buildRuntimeServicesEnv,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   joinPromptSections,
@@ -260,6 +261,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const env: Record<string, string> = {
       ...buildPaperclipEnv(agent),
       ...buildRuntimeToolsEnv(ctx.runtimeTools),
+      ...buildRuntimeServicesEnv(ctx.runtimeServices),
     };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =

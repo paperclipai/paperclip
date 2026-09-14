@@ -588,6 +588,32 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
 }
 
 #[test]
+fn global_skills_invalidation_does_not_interrupt_an_active_turn() {
+    let directory = temporary_directory("skills-changed");
+    let config = provider_config(&directory, &["--emit-skills-changed"]);
+    let mut provider = CodexProvider::start(&config, None).expect("start fake Codex provider");
+    provider
+        .start_turn("Complete the fake task.", &config.cwd)
+        .expect("start provider turn");
+    let turn_id = provider.active_provider_turn_id().map(str::to_owned);
+    assert!(turn_id.is_some());
+
+    // Connection-only invalidations are consumed inside the provider. The
+    // following bound terminal proves that filtering one does not interrupt
+    // or replace the active turn.
+    let completed = wait_for_notification(&mut provider, "turn/completed");
+    assert_eq!(
+        completed.pointer("/turn/id").and_then(Value::as_str),
+        turn_id.as_deref()
+    );
+    assert!(normalize_codex_notification("turn/completed", &completed)
+        .iter()
+        .any(|event| event.event_type == "turn.completed"));
+    provider.shutdown().expect("stop provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn codex_goal_autostart_binds_the_provider_turn_authority() {
     let directory = temporary_directory("goal-autostart");
     let config = provider_config(&directory, &["--goal-autostart"]);

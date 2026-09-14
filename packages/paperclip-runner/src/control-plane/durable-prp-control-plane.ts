@@ -263,7 +263,7 @@ export interface RunnerProcessResult {
   stderr: string;
 }
 
-export interface RunnerProcessHandle {
+export interface RunnerProcessHandle extends Partial<Pick<import("../contracts/process-ownership.js").RunnerProcessOwnershipMetadata, "processLocation" | "remoteProcessIdentity">> {
   child: {
     pid?: number;
     exitCode: number | null;

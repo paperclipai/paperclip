@@ -31,6 +31,7 @@ import {
   runChildProcess,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  buildRuntimeServicesEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -492,6 +493,7 @@ export async function execute(
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    ...buildRuntimeServicesEnv(ctx.runtimeServices),
   };
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;

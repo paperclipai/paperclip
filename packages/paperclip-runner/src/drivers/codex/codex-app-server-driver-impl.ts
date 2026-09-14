@@ -707,13 +707,16 @@ export class CodexAppServerDriver implements HarnessDriver {
     const processInfo: CodexTransportProcessInfo | undefined =
       transport.processInfo?.();
     if (!processInfo || processInfo.exited || processInfo.pid === null) return;
-    const identity = `${processInfo.pid}:${processInfo.processGroupId ?? ""}:${processInfo.startedAt}`;
-    if (this.#persistedProcessIdentities.get(transport) === identity) return;
-    await this.#options.onSpawn({
+    const metadata = {
       pid: processInfo.pid,
-      processGroupId: processInfo.processGroupId,
+      processGroupId: processInfo.processLocation === "remote" ? null : processInfo.processGroupId,
       startedAt: processInfo.startedAt,
-    });
+      ...(processInfo.processLocation ? { processLocation: processInfo.processLocation } : {}),
+      ...(processInfo.remoteProcessIdentity ? { remoteProcessIdentity: { ...processInfo.remoteProcessIdentity } } : {}),
+    };
+    const identity = JSON.stringify(metadata);
+    if (this.#persistedProcessIdentities.get(transport) === identity) return;
+    await this.#options.onSpawn(metadata);
     this.#persistedProcessIdentities.set(transport, identity);
   }
 

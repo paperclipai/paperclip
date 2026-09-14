@@ -32,6 +32,7 @@ import {
   parseObject,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  buildRuntimeServicesEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
@@ -249,6 +250,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let env: Record<string, string> = {
     ...buildPaperclipEnv(agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    ...buildRuntimeServicesEnv(ctx.runtimeServices),
   };
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
