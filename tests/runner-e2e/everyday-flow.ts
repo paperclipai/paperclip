@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { pollUntil, type RunnerApi } from "./api.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
@@ -629,8 +630,10 @@ export async function runEverydayFlow(input: Input) {
         hires.length === 1 &&
           hires[0]!.adapterType === "paperclip_runner" &&
           hires[0]!.adapterConfig?.model === lead?.adapterConfig?.model &&
-          JSON.stringify(hires[0]!.adapterConfig?.env) ===
-            JSON.stringify(lead?.adapterConfig?.env),
+          isDeepStrictEqual(
+            hires[0]!.adapterConfig?.env,
+            lead?.adapterConfig?.env,
+          ),
         "The hire keeps the native model and encrypted connection bindings.",
       );
       const children = ev.issues.filter((i) => i.parentId === parent!.id);
@@ -757,7 +760,7 @@ export async function runEverydayFlow(input: Input) {
           fixtures.agent.id,
           ev.issues.filter((i) => i.parentId === parent!.id).map((i) => i.id),
         ),
-        "The lead must finish after the final child execution, rather than claim completion while delegated work is still underway.",
+        "The lead completes only after the final child execution.",
       );
     }
     const expectedModel = execution.profile.model;
