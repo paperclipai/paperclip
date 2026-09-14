@@ -24,6 +24,9 @@ const task = (updatedAt: number, title: string, status: "todo" | "done" = "todo"
   updatedAt: new Date(updatedAt), hiddenAt: null,
 });
 const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+// Node 24 uses jsdom Storage; newer Node versions use the setup's storage shim.
+// jsdom's Storage proxy does not support spying on instance methods.
+const storageMethods = window.localStorage instanceof window.Storage ? window.Storage.prototype : window.localStorage;
 
 describe("recent task synchronization", () => {
   let container: HTMLDivElement;
@@ -75,7 +78,7 @@ describe("recent task synchronization", () => {
     recordRecentTask(older, "user-1");
     const staleClient = client(older);
     const freshClient = client(newer);
-    const setItem = vi.spyOn(window.localStorage, "setItem");
+    const setItem = vi.spyOn(storageMethods, "setItem");
     await act(async () => root.render(<>
       <QueryClientProvider client={staleClient}><RecentTasks name="stale" /></QueryClientProvider>
       <QueryClientProvider client={freshClient}><RecentTasks name="fresh" /></QueryClientProvider>
@@ -109,7 +112,7 @@ describe("recent task synchronization", () => {
     // Simulate a concurrent write from another tab with an older snapshot.
     const incoming = { ...readRecentTasks(storageKey, "company-1")[0], title: "Older", snapshotUpdatedAt: 10 };
     localStorage.setItem(storageKey, JSON.stringify([incoming]));
-    const setItem = vi.spyOn(window.localStorage, "setItem");
+    const setItem = vi.spyOn(storageMethods, "setItem");
     const publish = vi.fn();
     window.addEventListener(RECENT_TASKS_UPDATED_EVENT, publish);
     try {

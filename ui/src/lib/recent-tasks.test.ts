@@ -21,6 +21,8 @@ const issue = (id: string, companyId = "company-1") => ({
   status: "todo" as const,
   updatedAt: new Date(0),
 });
+// Support both jsdom Storage (Node 24) and the setup's storage shim (newer Node).
+const storageMethods = window.localStorage instanceof window.Storage ? window.Storage.prototype : window.localStorage;
 
 describe("recent task persistence", () => {
   beforeEach(() => window.localStorage.clear());
@@ -131,7 +133,7 @@ describe("recent task persistence", () => {
     const newer = { ...issue("1"), title: "New title", status: "done" as const, updatedAt: new Date(20) };
     recordRecentTask(older, "user-1");
     updateRecentTaskSnapshots(storageKey, "company-1", [newer]);
-    const setItem = vi.spyOn(window.localStorage, "setItem");
+    const setItem = vi.spyOn(storageMethods, "setItem");
     const listener = vi.fn();
     window.addEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
     try {
@@ -174,7 +176,7 @@ describe("recent task persistence", () => {
     recordRecentTask(issue("1"), "user-1", 1);
     recordRecentTask(issue("2"), "user-1", 2);
     const entries = readRecentTasks(storageKey, "company-1");
-    const setItem = vi.spyOn(window.localStorage, "setItem");
+    const setItem = vi.spyOn(storageMethods, "setItem");
     const listener = vi.fn();
     window.addEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
     try {
