@@ -2,6 +2,8 @@ import type { Issue, IssueStatus } from "@paperclipai/shared";
 
 export const RECENT_TASKS_LIMIT = 5;
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";
+const STORAGE_PREFIX = "paperclip.recentTasks.v2:";
+const LEGACY_STORAGE_PREFIX = "paperclip.recentTasks:";
 
 export interface RecentTaskEntry {
   id: string;
@@ -10,6 +12,9 @@ export interface RecentTaskEntry {
   identifier: string | null;
   status: IssueStatus;
   recordedAt: number;
+  // Server version of the title/status snapshot, independent of comment activity.
+  // Legacy entries have no version until a detail query refreshes them.
+  snapshotUpdatedAt?: number;
 }
 
 interface RecentTasksUpdatedDetail {
@@ -18,7 +23,8 @@ interface RecentTasksUpdatedDetail {
 }
 
 export function getRecentTasksStorageKey(companyId: string, userId: string | null | undefined) {
-  return `paperclip.recentTasks:${companyId}:${userId ?? "__local_board__"}`;
+  // Old tabs can still publish stale snapshots. Keep their writes out of v2.
+  return `${STORAGE_PREFIX}${companyId}:${userId ?? "__local_board__"}`;
 }
 
 function isRecentTaskEntry(value: unknown, companyId: string): value is RecentTaskEntry {
@@ -31,13 +37,20 @@ function isRecentTaskEntry(value: unknown, companyId: string): value is RecentTa
     && (entry.identifier === null || typeof entry.identifier === "string")
     && typeof entry.status === "string"
     && typeof entry.recordedAt === "number"
-    && Number.isFinite(entry.recordedAt);
+    && Number.isFinite(entry.recordedAt)
+    && (entry.snapshotUpdatedAt === undefined || (
+      typeof entry.snapshotUpdatedAt === "number" && Number.isFinite(entry.snapshotUpdatedAt)
+    ));
 }
 
 export function readRecentTasks(storageKey: string, companyId: string): RecentTaskEntry[] {
   if (typeof window === "undefined") return [];
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]") as unknown;
+    const legacyKey = storageKey.startsWith(STORAGE_PREFIX)
+      ? LEGACY_STORAGE_PREFIX + storageKey.slice(STORAGE_PREFIX.length)
+      : storageKey;
+    const raw = window.localStorage.getItem(storageKey) ?? window.localStorage.getItem(legacyKey);
+    const parsed = JSON.parse(raw ?? "[]") as unknown;
     if (!Array.isArray(parsed)) return [];
     return normalizeRecentTasks(
       parsed.filter((entry): entry is RecentTaskEntry => isRecentTaskEntry(entry, companyId)),
@@ -45,6 +58,17 @@ export function readRecentTasks(storageKey: string, companyId: string): RecentTa
   } catch {
     return [];
   }
+}
+
+export function migrateRecentTasks(storageKey: string, companyId: string) {
+  if (typeof window === "undefined") return;
+  try {
+    if (window.localStorage.getItem(storageKey) !== null) return;
+  } catch {
+    return;
+  }
+  // Persist even an empty list so an old tab cannot seed it again later.
+  writeRecentTasks(storageKey, readRecentTasks(storageKey, companyId));
 }
 
 function normalizeRecentTasks(entries: RecentTaskEntry[]) {
@@ -70,11 +94,31 @@ export function writeRecentTasks(storageKey: string, entries: RecentTaskEntry[])
   if (typeof window === "undefined") return;
   const bounded = normalizeRecentTasks(entries);
   try {
-    window.localStorage.setItem(storageKey, JSON.stringify(bounded));
+    const serialized = JSON.stringify(bounded);
+    if (window.localStorage.getItem(storageKey) === serialized) return;
+    window.localStorage.setItem(storageKey, serialized);
   } catch {
     // The in-tab event still keeps mounted navigation current for this session.
   }
   publishRecentTasks(storageKey, bounded);
+}
+
+type TaskSnapshot = Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt">;
+
+export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnapshot): RecentTaskEntry {
+  if (entry.id !== issue.id || entry.companyId !== issue.companyId) return entry;
+  const snapshotUpdatedAt = new Date(issue.updatedAt).getTime();
+  if (!Number.isFinite(snapshotUpdatedAt)) return entry;
+  // Equal versions retain the persisted snapshot, so conflicting caches settle.
+  if (entry.snapshotUpdatedAt !== undefined && snapshotUpdatedAt <= entry.snapshotUpdatedAt) return entry;
+  return {
+    ...entry,
+    title: issue.title,
+    identifier: issue.identifier,
+    status: issue.status,
+    snapshotUpdatedAt,
+    recordedAt: Math.max(entry.recordedAt, snapshotUpdatedAt),
+  };
 }
 
 export function recordRecentTask(
@@ -89,14 +133,20 @@ export function recordRecentTask(
   const activityAt = Number.isFinite(recordedAt)
     ? recordedAt
     : existing?.recordedAt ?? Date.now();
-  const entry: RecentTaskEntry = {
+  const snapshotUpdatedAt = new Date(issue.updatedAt).getTime();
+  const snapshot: RecentTaskEntry = existing ? mergeRecentTaskSnapshot(existing, issue) : {
     id: issue.id,
     companyId: issue.companyId,
     title: issue.title,
     identifier: issue.identifier,
     status: issue.status,
-    // A stale detail query must not undo a newer comment or activity update.
-    recordedAt: Math.max(activityAt, existing?.recordedAt ?? activityAt),
+    recordedAt: activityAt,
+    ...(Number.isFinite(snapshotUpdatedAt) ? { snapshotUpdatedAt } : {}),
+  };
+  const entry: RecentTaskEntry = {
+    ...snapshot,
+    // A comment can promote activity even when its task details are stale.
+    recordedAt: Math.max(activityAt, snapshot.recordedAt),
   };
   if (
     existing
@@ -104,6 +154,7 @@ export function recordRecentTask(
     && existing.identifier === entry.identifier
     && existing.status === entry.status
     && existing.recordedAt === entry.recordedAt
+    && existing.snapshotUpdatedAt === entry.snapshotUpdatedAt
   ) return;
 
   writeRecentTasks(
@@ -128,7 +179,7 @@ export function pruneRecentTasks(
 export function updateRecentTaskSnapshots(
   storageKey: string,
   companyId: string,
-  issues: ReadonlyArray<Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt">>,
+  issues: ReadonlyArray<TaskSnapshot>,
 ) {
   const issueById = new Map(issues.map((issue) => [issue.id, issue]));
   const current = readRecentTasks(storageKey, companyId);
@@ -136,24 +187,9 @@ export function updateRecentTaskSnapshots(
   const next = current.map((entry) => {
     const issue = issueById.get(entry.id);
     if (!issue || issue.companyId !== companyId) return entry;
-    const activityAt = new Date(issue.updatedAt).getTime();
-    const nextRecordedAt = Number.isFinite(activityAt)
-      ? Math.max(activityAt, entry.recordedAt)
-      : entry.recordedAt;
-    if (
-      issue.title === entry.title
-      && issue.identifier === entry.identifier
-      && issue.status === entry.status
-      && nextRecordedAt === entry.recordedAt
-    ) return entry;
-    changed = true;
-    return {
-      ...entry,
-      title: issue.title,
-      identifier: issue.identifier,
-      status: issue.status,
-      recordedAt: nextRecordedAt,
-    };
+    const nextEntry = mergeRecentTaskSnapshot(entry, issue);
+    if (nextEntry !== entry) changed = true;
+    return nextEntry;
   });
   if (changed) writeRecentTasks(storageKey, next);
 }

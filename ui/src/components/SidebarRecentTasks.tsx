@@ -35,8 +35,9 @@ const RECENT_TASK_MENU_ITEM_CLASS =
   "h-(--profile-popover-row-height) gap-(--profile-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) focus:bg-accent/50 focus:text-foreground";
 const RESTART_WAKE_RETRY_STORAGE_SUFFIX = ":restart-wake-retry";
 
-function restartWakeRetryStorageKey(storageKey: string | null) {
-  return storageKey ? `${storageKey}${RESTART_WAKE_RETRY_STORAGE_SUFFIX}` : null;
+function restartWakeRetryStorageKey(companyId: string, userId: string | null) {
+  // Action retry state must survive changes to the recent-task snapshot format.
+  return `paperclip.recentTasks:${companyId}:${userId ?? "__local_board__"}${RESTART_WAKE_RETRY_STORAGE_SUFFIX}`;
 }
 
 function readRestartWakeRetryIssueIds(storageKey: string | null) {
@@ -112,7 +113,7 @@ function RecentTasksList({
   const [renameEntry, setRenameEntry] = useState<RecentTaskEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [pendingAction, setPendingAction] = useState<"rename" | "archive" | "pause" | null>(null);
-  const restartRetryStorageKey = restartWakeRetryStorageKey(storageKey);
+  const restartRetryStorageKey = restartWakeRetryStorageKey(companyId, userId);
 
   if (entries.length === 0) return null;
 
