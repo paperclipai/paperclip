@@ -822,6 +822,19 @@ export async function runEverydayFlow(input: Input) {
         children.length === 1,
         "Exactly one delegated child task.",
       );
+      check(
+        "child-consumed-feedback",
+        Boolean(children[0]) &&
+          storyRepliesConsumed(
+            ev.runs.filter(
+              (run) =>
+                run.contextSnapshot?.issueId === children[0]?.id ||
+                run.contextSnapshot?.taskId === children[0]?.id,
+            ),
+            submittedCommentIds,
+          ),
+        "A completed child execution consumed the delivered user feedback.",
+      );
       if (children[0])
         await download(children[0].id, "max-length", "delegated-delivery");
       check(

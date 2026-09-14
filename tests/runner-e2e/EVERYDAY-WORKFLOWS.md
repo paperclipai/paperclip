@@ -108,8 +108,9 @@ established product defect. Claude has no catalog cell for this Codex-specific
 replacement proof. Deterministic native-safe-replacement tests cover its proof
 and admission gates independently of model behavior.
 
-Delegation now requests direct delivery to the existing child without prescribing
-parent-comment syntax. The child history and downloaded behavior remain required.
+Delegation now submits feedback through the existing child task composer and
+records the delivered comment ID. The child must consume the message and deliver
+the revised program. This does not require a lead to relay a parent comment.
 The separate issue-update-comment-wakeup route tests exercise exact supported
 mention routing, including access, dependency, identity, and duplicate-wake gates.
 
