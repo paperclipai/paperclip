@@ -3406,6 +3406,13 @@ describe("applyPaperclipWorkspaceEnv", () => {
 });
 
 describe("shapePaperclipWorkspaceEnvForExecution", () => {
+  it("maps editable project repositories inside the remote workspace", () => {
+    const result = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/host/task", executionCwd: "/sandbox/task", executionTargetIsRemote: true,
+      workspaceHints: [{ workspaceId: "backend", cwd: "/host/task/.paperclip-repositories/backend" }],
+    });
+    expect(result.workspaceHints).toEqual([{ workspaceId: "backend", cwd: "/sandbox/task/.paperclip-repositories/backend" }]);
+  });
   it("rewrites workspace env paths for remote execution", () => {
     const shaped = shapePaperclipWorkspaceEnvForExecution({
       workspaceCwd: "/tmp/workspace",
