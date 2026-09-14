@@ -559,10 +559,22 @@ export async function runEverydayFlow(input: Input) {
       const interactions = await pollUntil({
         label: "connection approval",
         deadlineAt: input.deadlineAt,
-        load: () => api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
-        accept: (rows) => rows.some((i) => i.status === "pending"),
+        load: async () => {
+          const [interactions, issue] = await Promise.all([
+            api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
+            api.get<StoryIssue>(`/api/issues/${parent!.id}`),
+          ]);
+          return { interactions, issue, calls: review!.invocationCount() };
+        },
+        accept: (state) => state.interactions.some((i) => i.status === "pending"),
+        reject: (state) =>
+          state.calls > 0
+            ? `The provider received ${state.calls} call(s) before approval.`
+            : ["done", "blocked", "cancelled"].includes(state.issue.status)
+              ? `Task reached ${state.issue.status} without requesting tool approval.`
+              : undefined,
       });
-      const pendingInteraction = interactions.find(
+      const pendingInteraction = interactions.interactions.find(
         (i) => i.status === "pending",
       );
       if (pendingInteraction?.kind !== "request_confirmation")
@@ -885,6 +897,13 @@ export async function runEverydayFlow(input: Input) {
           note("saved-source-unavailable-at-final-capture");
         }
       }
+    }
+    if (review) {
+      note("service-final-observation", {
+        invocationCount: review.invocationCount(),
+        requests: review.captures,
+        decisionTaken: ev.timeline.some((entry) => entry.action === "connection-decision"),
+      });
     }
     await input.evidence("everyday-workflow.json", ev);
     await input.evidence("api-state.json", {
