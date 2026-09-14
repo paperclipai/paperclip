@@ -5836,7 +5836,7 @@ registry.registerPath({
   path: "/api/announcements/{id}/dismiss",
   tags: ["announcements"],
   summary: "Dismiss an announcement for the current user",
-  description: "Idempotently saves a personal preference. The supplied company is validated audit context; viewers may dismiss their own announcement. The first dismissal and its audit entry commit together. Previously published IDs remain valid for offline retries.",
+  description: "Idempotently saves a personal preference. The supplied company is validated audit context; viewers may dismiss their own announcement. The first dismissal and its audit entry commit together. IDs from a previously validated feed remain valid for offline retries; unknown IDs return 404 without creating records.",
   request: {
     params: z.object({ id: announcementIdSchema }),
     body: jsonBody(dismissAnnouncementSchema),

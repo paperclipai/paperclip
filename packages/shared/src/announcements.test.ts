@@ -21,6 +21,17 @@ describe("announcement contract", () => {
     expect(announcementManifestSchema.safeParse({ schemaVersion: 2, announcement }).success).toBe(false);
     expect(announcementSchema.safeParse({ ...announcement, description: "a".repeat(401) }).success).toBe(false);
   });
+  it("rejects unknown fields throughout the remotely authored manifest", () => {
+    const image = { path: `assets/${"0".repeat(64)}.png`, alt: "Preview" };
+    const external = { kind: "external", label: "Learn more", url: "https://paperclip.ing" };
+    for (const value of [
+      { schemaVersion: 1, announcement, extra: true },
+      { schemaVersion: 1, announcement: { ...announcement, secondaryLinks: external } },
+      { schemaVersion: 1, announcement: { ...announcement, image: { ...image, title: "Typo" } } },
+      { schemaVersion: 1, announcement: { ...announcement, primaryAction: { ...announcement.primaryAction, extra: true } } },
+      { schemaVersion: 1, announcement: { ...announcement, secondaryLink: { ...external, extra: true } } },
+    ]) expect(announcementManifestSchema.safeParse(value).success).toBe(false);
+  });
   it("checks expiration and minimum versions numerically, including prereleases", () => {
     const item = announcementSchema.parse({ ...announcement, expiresAt: "2027-01-01T00:00:00Z", minimumPaperclipVersion: "2026.913.0" });
     for (const version of ["2026.912.0", "2026.913.0-canary.1", "unknown"]) expect(isAnnouncementEligible(item, version, 0)).toBe(false);

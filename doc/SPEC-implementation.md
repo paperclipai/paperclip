@@ -1672,4 +1672,9 @@ The instance validates/caches content, proxies its raster image, and stores
 user-scoped dismissals. Closing or following an action dismisses the ID; copy
 edits retain it. Writes are board-only, idempotent and transactionally audited
 using an authorized company's context. Viewers may dismiss their own card.
+This is an explicit exception to company-scoped business entities: the
+preference follows one account across companies on the instance. A separate
+instance-level registry retains validated publication IDs, allowing offline
+dismissal retries after withdrawal while rejecting caller-invented IDs. It
+stores no announcement content, account data or interaction events.
 See [Announcements](ANNOUNCEMENTS.md) for API and publishing details.

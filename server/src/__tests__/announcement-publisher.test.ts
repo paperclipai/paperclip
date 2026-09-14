@@ -54,5 +54,7 @@ describe("announcement publishing", () => {
     await expect(prepareAnnouncementPublish(link)).rejects.toThrow("real directory");
     await writeFile(path.join(dir, "current.json"), JSON.stringify({ schemaVersion: 2, announcement: null }));
     await expect(prepareAnnouncementPublish(dir)).rejects.toThrow();
+    await writeFile(path.join(dir, "current.json"), JSON.stringify({ schemaVersion: 1, announcement: null, announcements: [] }));
+    await expect(prepareAnnouncementPublish(dir)).rejects.toThrow();
   });
 });

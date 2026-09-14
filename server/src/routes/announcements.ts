@@ -21,6 +21,7 @@ export function announcementRoutes(db: Db, options: AnnouncementFeedOptions) {
   });
   router.get("/announcements/current", async (req, res) => {
     const announcement = await feed.current();
+    if (announcement) await service.registerPublication(announcement.id);
     res.json(announcement && !await service.isDismissed(req.actor.userId!, announcement.id) ? announcement : null);
   });
   router.get("/announcements/:id/image", async (req, res) => {
@@ -42,7 +43,7 @@ export function announcementRoutes(db: Db, options: AnnouncementFeedOptions) {
     if (!await db.query.companies.findFirst({ where: eq(companies.id, companyId), columns: { id: true } })) {
       throw notFound("Company not found");
     }
-    await service.dismiss(req.actor.userId!, id.data, companyId);
+    if (!await service.dismiss(req.actor.userId!, id.data, companyId)) throw notFound("Announcement not found");
     res.status(204).end();
   });
   return router;

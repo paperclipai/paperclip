@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, announcementDismissals, companies, createDb, startEmbeddedPostgresTestDatabase, type EmbeddedPostgresTestDatabase } from "@paperclipai/db";
+import { activityLog, announcementDismissals, announcementPublications, companies, createDb, startEmbeddedPostgresTestDatabase, type EmbeddedPostgresTestDatabase } from "@paperclipai/db";
 import { announcementRoutes } from "../routes/announcements.js";
 import { announcementService } from "../services/announcements.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -29,7 +29,7 @@ describe("announcement routes and durable dismissals", () => {
     db = createDb(database.connectionString);
     await db.insert(companies).values([{ id: companyId, name: "Test", issuePrefix: "ANN" }, { id: otherCompanyId, name: "Other", issuePrefix: "ANB" }]);
   }, 90_000);
-  beforeEach(async () => { await db.delete(announcementDismissals); await db.delete(activityLog); });
+  beforeEach(async () => { await db.delete(announcementDismissals); await db.delete(announcementPublications); await db.delete(activityLog); });
   afterAll(async () => { await database?.cleanup(); }, 30_000);
   it.each([200, 404])("returns a successful empty response for no remote announcement (HTTP %s)", async (status) => {
     const response = await request(app("alice", undefined, null, status)).get("/api/announcements/current");
@@ -50,16 +50,19 @@ describe("announcement routes and durable dismissals", () => {
   });
   it("accepts viewers and concurrent duplicate dismissals with one audit", async () => {
     const server = app();
+    await request(server).get("/api/announcements/current");
     const responses = await Promise.all(Array.from({ length: 5 }, () => request(server).post(`/api/announcements/${item.id}/dismiss`).send({ companyId })));
     expect(responses.map((res) => res.status)).toEqual([204, 204, 204, 204, 204]);
     expect(await db.select().from(announcementDismissals)).toHaveLength(1);
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "announcement.dismissed"))).toHaveLength(1);
   });
   it("rolls back the dismissal if its audit cannot commit", async () => {
+    await announcementService(db).registerPublication(item.id);
     await expect(announcementService(db).dismiss("alice", item.id, "33333333-3333-4333-8333-333333333333")).rejects.toThrow();
     expect(await announcementService(db).isDismissed("alice", item.id)).toBe(false);
   });
   it("never resurrects a dismissed ID after copy changes or rollback; a new ID appears", async () => {
+    await announcementService(db).registerPublication(item.id);
     await announcementService(db).dismiss("alice", item.id, companyId);
     expect((await request(app("alice", undefined, { ...item, title: "Fixed copy" })).get("/api/announcements/current")).body).toBeNull();
     expect((await request(app("alice", undefined, { ...item, id: "next" })).get("/api/announcements/current")).body.id).toBe("next");
@@ -67,8 +70,27 @@ describe("announcement routes and durable dismissals", () => {
   });
   it("uses the local-board identity without an auth user row", async () => {
     const server = app("local-board", { type: "board", userId: "local-board", source: "local_implicit" });
+    await request(server).get("/api/announcements/current");
     expect((await request(server).post(`/api/announcements/${item.id}/dismiss`).send({ companyId })).status).toBe(204);
     expect(await announcementService(db).isDismissed("local-board", item.id)).toBe(true);
+  });
+  it("rejects invented IDs without storing dismissals or audit entries", async () => {
+    const server = app();
+    await request(server).get("/api/announcements/current");
+    for (const id of ["invented-one", "invented-two", "invented-three"]) {
+      expect((await request(server).post(`/api/announcements/${id}/dismiss`).send({ companyId })).status).toBe(404);
+    }
+    expect(await db.select().from(announcementDismissals)).toHaveLength(0);
+    expect(await db.select().from(activityLog)).toHaveLength(0);
+    expect(await db.select().from(announcementPublications)).toEqual([{ announcementId: item.id }]);
+  });
+  it("accepts offline retries for validated IDs after withdrawal and restart", async () => {
+    await request(app()).get("/api/announcements/current");
+    const restarted = app("alice", undefined, null, 404);
+    expect((await request(restarted).get("/api/announcements/current")).body).toBeNull();
+    expect((await request(restarted).post(`/api/announcements/${item.id}/dismiss`).send({ companyId })).status).toBe(204);
+    expect(await announcementService(db).isDismissed("alice", item.id)).toBe(true);
+    expect(await db.select().from(activityLog)).toHaveLength(1);
   });
   it("rejects anonymous/agent callers and inaccessible audit companies", async () => {
     for (const actor of [{ type: "none" }, { type: "agent", companyId, userId: "alice" }]) {

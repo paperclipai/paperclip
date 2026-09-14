@@ -33,7 +33,8 @@ The shared `announcementManifestSchema` defines the format:
 }
 ```
 
-Content is plain text. Optional fields: `image: { path, alt }`, `expiresAt` (ISO
+Content is plain text. Every manifest object rejects unknown fields, including
+misspellings in actions and images. Optional fields: `image: { path, alt }`, `expiresAt` (ISO
 timestamp), and `minimumPaperclipVersion` (stable `major.minor.patch`). Internal
 actions accept stable pages in `ANNOUNCEMENT_APP_ROUTES` and use the selected
 company. External HTTPS links open a new tab. Actions only navigate.
@@ -217,7 +218,10 @@ Board-only APIs: `GET /api/announcements/current`,
 `GET /api/announcements/:id/image`, and `POST /api/announcements/:id/dismiss`
 with `{ "companyId": "..." }`. Responses use `private, no-store`. Repeated POSTs
 return 204 without duplicate audits. Pending dismissals remain valid after the
-feed moves to another ID.
+feed moves to another ID. The instance retains only the IDs of validated
+announcements in a publication registry, so offline retries survive withdrawal
+and restarts. A caller-invented ID returns 404 without creating dismissal or
+audit rows. This registry is not an archive and records no interaction events.
 
 Production ships with an empty manifest. Design guide / Storybook fixtures are
 never used as a production fallback.

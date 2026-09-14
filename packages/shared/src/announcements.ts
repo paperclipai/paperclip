@@ -21,8 +21,8 @@ const httpsUrl = z.string().max(2048).url().refine((value) => {
 }, "Use an HTTPS URL without credentials");
 
 export const announcementActionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("external"), label, url: httpsUrl }),
-  z.object({ kind: z.literal("route"), label, path: z.enum(ANNOUNCEMENT_APP_ROUTES) }),
+  z.object({ kind: z.literal("external"), label, url: httpsUrl }).strict(),
+  z.object({ kind: z.literal("route"), label, path: z.enum(ANNOUNCEMENT_APP_ROUTES) }).strict(),
 ]);
 
 export const announcementSchema = z.object({
@@ -34,17 +34,17 @@ export const announcementSchema = z.object({
     // Immutable, content-addressed raster assets beneath the feed directory.
     path: z.string().regex(/^assets\/[a-f0-9]{64}\.(png|jpg|webp)$/),
     alt: z.string().max(200),
-  }).optional(),
+  }).strict().optional(),
   secondaryLink: announcementActionSchema.optional(),
   primaryAction: announcementActionSchema,
   expiresAt: z.string().datetime({ offset: true }).optional(),
   minimumPaperclipVersion: z.string().regex(/^\d+\.\d+\.\d+$/).optional(),
-});
+}).strict();
 
 export const announcementManifestSchema = z.object({
   schemaVersion: z.literal(1),
   announcement: announcementSchema.nullable(),
-});
+}).strict();
 export const dismissAnnouncementSchema = z.object({ companyId: z.string().uuid() }).strict();
 export type AnnouncementAction = z.infer<typeof announcementActionSchema>;
 export type Announcement = z.infer<typeof announcementSchema>;
