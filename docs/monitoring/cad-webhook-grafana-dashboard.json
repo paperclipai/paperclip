@@ -1,0 +1,147 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_POSTGRES",
+      "label": "Solaris PostgreSQL",
+      "description": "PostgreSQL datasource pointing at the Solaris production database",
+      "type": "datasource",
+      "pluginId": "postgres"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "postgres", "name": "PostgreSQL", "version": "1.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "table", "name": "Table", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" }
+  ],
+  "annotations": { "list": [] },
+  "description": "Per-agency CAD webhook delivery health — success rate, p95 latency proxy, last event timestamp, and DLQ depth.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Per-Agency Delivery Health",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "Percentage of webhook calls that successfully created or updated an alert vs total attempts (including DLQ entries) per agency, rolling 1 h.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "green", "value": 95 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+          "rawSql": "SELECT\n  a.created_by AS agency_code,\n  ROUND(\n    100.0 * COUNT(*) FILTER (WHERE a.source = 'CAD')\n    / NULLIF(COUNT(*) FILTER (WHERE a.source = 'CAD') + COALESCE(dlq.fail_count, 0), 0),\n  2) AS success_rate_pct\nFROM solaris_alerts a\nLEFT JOIN (\n  SELECT agency_code, COUNT(*) AS fail_count\n  FROM cad_webhook_dlq\n  WHERE created_at >= NOW() - INTERVAL '1 hour'\n  GROUP BY agency_code\n) dlq ON dlq.agency_code = a.created_by\nWHERE a.source = 'CAD'\n  AND a.created_at >= NOW() - INTERVAL '1 hour'\nGROUP BY a.created_by, dlq.fail_count\nORDER BY agency_code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Delivery Success Rate (rolling 1 h) — per agency",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "Timestamp of the most recent successfully ingested CAD event per agency.",
+      "fieldConfig": {
+        "defaults": { "unit": "dateTimeAsLocal" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+          "rawSql": "SELECT\n  created_by AS agency_code,\n  MAX(created_at) AS last_event_at\nFROM solaris_alerts\nWHERE source = 'CAD'\nGROUP BY created_by\nORDER BY agency_code",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "Last Event Timestamp — per agency",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "CAD events ingested per minute per agency — use this time series for p95 latency approximation (inter-arrival time) and to spot drops.",
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "id": 4,
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+          "rawSql": "SELECT\n  date_trunc('minute', created_at) AS time,\n  created_by AS agency_code,\n  COUNT(*) AS events_per_min\nFROM solaris_alerts\nWHERE source = 'CAD'\n  AND $__timeFilter(created_at)\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "title": "Events per Minute — per agency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+      "description": "DLQ entries by status. A growing 'exhausted' count indicates systematic failures requiring investigation.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 17 },
+      "id": 5,
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "${DS_POSTGRES}" },
+          "rawSql": "SELECT agency_code, status, COUNT(*) AS depth\nFROM cad_webhook_dlq\nWHERE status IN ('pending', 'exhausted')\nGROUP BY agency_code, status\nORDER BY agency_code, status",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "title": "DLQ Depth — pending + exhausted entries per agency",
+      "type": "table"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": ["solaris", "cad", "webhooks"],
+  "templating": { "list": [] },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "CAD Webhook Health — Per-Agency",
+  "uid": "cad-webhook-health",
+  "version": 1
+}

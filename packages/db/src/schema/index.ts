@@ -110,3 +110,4 @@ export {
   irwinIncidentClassificationEnum,
 } from "./irwin_export_queue.js";
 export { agencyWebhookConfigs } from "./agency_webhook_configs.js";
+export { cadWebhookDlq, cadDlqStatusEnum } from "./cad_webhook_dlq.js";

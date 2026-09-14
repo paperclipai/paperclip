@@ -18,4 +18,4 @@ export { instanceSettingsRoutes } from "./instance-settings.js";
 export { onboardingRoutes } from "./onboarding.js";
 export { annotationRoutes } from "./annotations.js";
 export { solarisAlertRoutes } from "./solaris-alerts.js";
-export { cadWebhookRoutes } from "./cad-webhook.js";
+export { cadWebhookRoutes, cadAdminRoutes } from "./cad-webhook.js";
