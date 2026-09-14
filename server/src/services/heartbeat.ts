@@ -7,7 +7,7 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -491,6 +491,7 @@ import {
   type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
+  AI_CONNECTION_BUSY_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   WAKE_COMMENT_IDS_KEY,
@@ -842,10 +843,6 @@ const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
 export { WORKSPACE_BUSY_RETRY_REASON };
 export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
-const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
-function isAiConnectionBusy(error: unknown): error is HttpError {
-  return error instanceof HttpError && parseObject(error.details).code === AI_CONNECTION_BUSY_RETRY_REASON;
-}
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
 // A running run stops counting as a shared-workspace holder once it has been

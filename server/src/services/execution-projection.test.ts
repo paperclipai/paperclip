@@ -37,6 +37,11 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it("shows subscription contention as a resource wait without failed provider attempts", () => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy",
+      scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeAiConnectionWait: 0 } }), undefined, [], undefined, now))
+      .toMatchObject({ label: "Waiting for AI subscription", phase: "retry_scheduled", attempt: 1, recoveryOwner: null });
+  });
   it("shows a workspace wait without presenting its deferral count as failed attempts", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryReason: "workspace_busy",
       scheduledRetryAttempt: 12, contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } }), undefined, [], undefined, now))

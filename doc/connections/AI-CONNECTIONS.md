@@ -117,6 +117,14 @@ subscription receives a retryable busy response while it is in use. Refreshes
 are merged only into the originating active grant, with reconnect/revocation
 version checks. Temporary homes are removed on normal completion or failure.
 
+For a fresh task execution, subscription contention creates a durable scheduled
+retry checked every 60–120 seconds. The task shows “Waiting for AI subscription” and
+does not request a reconnect or consume its provider-failure retry allowance.
+Each attempt rechecks task eligibility, ownership, budget, and current credential
+access. Revocation and other configuration failures still require user action.
+Already-started native sessions retain their existing same-run recovery path;
+they must not be replaced by a fresh execution with a pre-provider receipt.
+
 Session reuse includes grant identity, responsible user, and credential
 generation. A changed identity starts a fresh provider session. Managed native
 executions use per-turn lifecycle cleanup; a suspended native execution whose

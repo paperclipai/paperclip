@@ -265,12 +265,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(1);
   });
 
-  it("retains the failure budget after many pre-provider workspace waits", async () => {
+  it.each([
+    ["workspace_busy", "failureRetriesBeforeWorkspaceWait"],
+    ["ai_connection_busy", "failureRetriesBeforeAiConnectionWait"],
+  ])("retains the failure budget after many pre-provider %s waits", async (reason, countKey) => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
     const now = new Date("2026-04-20T12:00:00.000Z");
     await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "overloaded", errorFamily: "transient_upstream" });
-    await db.update(heartbeatRuns).set({ scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 12,
-      contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({ scheduledRetryReason: reason, scheduledRetryAttempt: 12,
+      contextSnapshot: { [countKey]: 1 } }).where(eq(heartbeatRuns.id, runId));
     const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
     expect(scheduled).toMatchObject({ outcome: "scheduled", run: { scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" } });
     if (scheduled.outcome !== "scheduled") throw new Error("Expected a bounded retry");
