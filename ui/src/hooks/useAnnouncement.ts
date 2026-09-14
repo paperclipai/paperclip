@@ -116,9 +116,9 @@ export function useAnnouncement(options: Options) {
       try { channel?.postMessage(id); } catch { /* Storage events are the fallback. */ }
       void sync(id, savedLocally);
     };
+    // Window focus also changes for browser chrome and adjacent app panes.
+    // Only leaving/returning to the tab should clear and revalidate its card.
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", resume);
-    window.addEventListener("blur", suspend);
     window.addEventListener("online", onOnline);
     window.addEventListener("storage", onStorage);
     resume();
@@ -130,8 +130,6 @@ export function useAnnouncement(options: Options) {
       for (const controller of writes.values()) controller.abort();
       channel?.close();
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", resume);
-      window.removeEventListener("blur", suspend);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("storage", onStorage);
       dismissRef.current = () => {};

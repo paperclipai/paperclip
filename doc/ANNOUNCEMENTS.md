@@ -193,6 +193,11 @@ removes a visible card when its deadline arrives.
 Show after three seconds when opening or returning to Paperclip, after company
 selection and onboarding. Dialogs and toasts take priority. Phones show it above
 bottom navigation. No automatic timeout, outside-click dismissal or carousel.
+Tab visibility controls the return check: moving focus to the address bar or
+an adjacent app pane leaves the card visible and does not restart its settling
+period. A hidden tab clears the card; becoming visible fetches fresh dismissal
+state before showing anything, even if that lookup takes longer than three
+seconds.
 
 The instance caches the feed for an hour, deduplicates concurrent fetches, and
 uses conditional requests. Failed requests have a fifteen-minute cooldown; no

@@ -26,6 +26,10 @@ describe("announcement lifecycle", () => {
   const render = async () => { await act(async () => root.render(<Harness />)); };
   const settle = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(3000); }); };
   const event = async (name: string) => { await act(async () => window.dispatchEvent(new Event(name))); };
+  const visibility = async (value: "hidden" | "visible") => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  };
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
@@ -65,6 +69,25 @@ describe("announcement lifecycle", () => {
     await render();
     expect(api.current).toHaveBeenCalledTimes(1);
   });
+  it("keeps a visible card stable when page focus moves to browser chrome or another pane", async () => {
+    await render(); await settle();
+    const request = api.current.mock.calls[0][0] as AbortSignal;
+    await event("blur");
+    expect(container.textContent).toBe(announcementPreview.id);
+    await event("focus");
+    expect(container.textContent).toBe(announcementPreview.id);
+    await settle();
+    expect(api.current).toHaveBeenCalledTimes(1);
+    expect(request.aborted).toBe(false);
+  });
+  it("does not restart the initial settling period when a visible page gains focus", async () => {
+    await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    await event("blur"); await event("focus");
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(container.textContent).toBe(announcementPreview.id);
+    expect(api.current).toHaveBeenCalledTimes(1);
+  });
   it("dismisses immediately and stays dismissed after a remount and copy edit", async () => {
     await render(); await settle();
     await act(async () => observed.dismiss(announcementPreview.id));
@@ -80,11 +103,40 @@ describe("announcement lifecycle", () => {
   it("refreshes on return, showing a new ID but honoring dismissal in another browser", async () => {
     await render(); await settle();
     api.current.mockResolvedValue(null);
-    await event("blur"); await event("focus"); await settle();
+    await visibility("hidden"); await visibility("visible"); await settle();
     expect(container.textContent).toBe("");
     api.current.mockResolvedValue({ ...announcementPreview, id: "new-id" });
-    await event("focus"); await settle();
+    await visibility("hidden"); await visibility("visible"); await settle();
     expect(container.textContent).toBe("new-id");
+  });
+  it("withholds a returning tab until its fresh dismissal check completes", async () => {
+    await render(); await settle();
+    await visibility("hidden");
+    expect(container.textContent).toBe("");
+    let resolve!: (value: null) => void;
+    api.current.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    await visibility("visible");
+    // Browsers may report focus as well; it must not abort or duplicate the check.
+    await event("focus"); await settle();
+    expect(api.current).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toBe("");
+    await act(async () => resolve(null));
+    expect(container.textContent).toBe("");
+  });
+  it("ignores a late response from before the tab was hidden", async () => {
+    let resolve!: (value: typeof announcementPreview) => void;
+    api.current.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    await render();
+    const request = api.current.mock.calls[0][0] as AbortSignal;
+    await visibility("hidden");
+    expect(request.aborted).toBe(true);
+    await act(async () => resolve(announcementPreview)); await settle();
+    expect(container.textContent).toBe("");
+    api.current.mockResolvedValue({ ...announcementPreview, id: "after-return" });
+    await visibility("visible");
+    expect(container.textContent).toBe("");
+    await settle();
+    expect(container.textContent).toBe("after-return");
   });
   it("keeps failed writes pending and retries on reconnect", async () => {
     api.dismiss.mockRejectedValueOnce(new Error("offline"));
@@ -126,7 +178,7 @@ describe("announcement lifecycle", () => {
     vi.spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("Storage denied"); });
     await act(async () => channel.onmessage?.(new MessageEvent("message", { data: announcementPreview.id })));
     expect(container.textContent).toBe("");
-    await event("focus"); await settle();
+    await visibility("hidden"); await visibility("visible"); await settle();
     expect(container.textContent).toBe("");
     expect(api.dismiss).toHaveBeenCalled();
   });
