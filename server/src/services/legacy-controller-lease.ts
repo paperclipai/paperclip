@@ -24,6 +24,10 @@ export async function renewLegacyControllerLease(
   run: Pick<Run, "id" | "companyId" | "controllerBootId">,
   stage?: "dispatching",
 ): Promise<boolean> {
+  // A host suspend can advance PostgreSQL's wall clock past the lease while
+  // pausing this process's renewal timer. The boot id is the ownership fence:
+  // if recovery already revoked the lease, its compare-and-set changed that id
+  // and this update fails. If nobody claimed it, renewing the same id is safe.
   const [renewed] = await db.update(heartbeatRuns).set({
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
     ...(stage ? { executionStage: stage } : {}),
@@ -31,7 +35,6 @@ export async function renewLegacyControllerLease(
     eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
     eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
     eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
-    gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
   )).returning({ id: heartbeatRuns.id });
   return Boolean(renewed);
 }
