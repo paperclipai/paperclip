@@ -145,3 +145,8 @@ stories check a new explanation after the decision and reject repeated requests.
 Historical attempts remain unchanged. This campaign resumes the previously
 deferred decline cases; hiring remains deferred. Notion setup is declined in
 the UI, so this test neither authenticates to nor reads real Notion data.
+
+Decision screenshots are included in the evidence package. Before capturing the
+final screen, the harness waits for the thread and latest persisted agent comment
+to render, then scrolls that comment into view. A Done header alone is not proof
+that the final response was visible.
