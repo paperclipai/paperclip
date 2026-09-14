@@ -124,8 +124,8 @@ export interface RunnerTaskFixture {
   expectedRunCount: number;
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
   expectedTerminalState: {
-    issue: "done" | "in_review";
-    run: "succeeded";
+    issue: "done" | "in_review" | "blocked";
+    run: "succeeded" | "failed";
   };
   buildTitle(nonce: string): string;
   buildPrompt(nonce: string): string;

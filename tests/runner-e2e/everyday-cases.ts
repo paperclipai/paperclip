@@ -97,7 +97,10 @@ export const everydayTasks: readonly RunnerTaskFixture[] = definitions.map(
     flow: "everyday_workflow",
     expectedRunCount,
     attemptTimeoutMs: { local: 12 * 60_000, daytona: 30 * 60_000 },
-    expectedTerminalState: { issue: "done", run: "succeeded" },
+    expectedTerminalState:
+      id === "recover-runner-uncertain"
+        ? { issue: "blocked", run: "failed" }
+        : { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `${label} ${nonce}`,
     buildPrompt: () => prompt,
     buildVisibleMarker: (nonce) => `STUDIO_${nonce}`,
