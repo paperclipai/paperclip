@@ -1,7 +1,10 @@
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, describe, it, expect } from "vitest";
 import {
@@ -369,6 +372,85 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+
+  it.each(["suspended", "ready", "wrong_run", "wrong_thread", "active_provider", "pending_tool", "pending_output", "missing_state", "new_launch"])(
+    "recovers a historical run without process metadata only from exact suspended state (%s)", async kind => {
+      const f = await seed();
+      const stateBase = await mkdtemp(join(tmpdir(), "historical-native-followup-"));
+      const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      try {
+        const nativeSessionId = randomUUID(), runnerInstanceId = randomUUID();
+        const execution = {
+          schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+          binding: { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, runId: f.sourceRunId, executionWorkspaceId: "workspace" },
+          task: { identifier: "TEST", title: "Continue", description: null, prompt: "Continue", workMode: "standard" },
+          workspace: { cwd: stateBase, repoUrl: null, repoRef: null, branchName: null },
+          session: { normalizedSessionId: nativeSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+          completionContract: { id: "contract", sha256: "sha", schemaVersion: "paperclip.completion-contract.v1",
+            contract: { revision: "1", objective: "Continue", criteria: [{ id: "objective", requirement: "Continue" }] } },
+          interactionResponses: [], credentialBindings: [],
+        };
+        await db.update(heartbeatRuns).set({ processPid: null, nativeSessionId, runnerInstanceId,
+          errorCode: "native_runner_process_exited", runnerProfileJson: { nativeExecutionInput: execution,
+            sessionCheckpoint: { sessionId: "exact-thread", providerSessionId: "backend-account" } },
+        }).where(eq(heartbeatRuns.id, f.sourceRunId));
+        const canonical = (value: unknown): string => value && typeof value === "object" && !Array.isArray(value)
+          ? `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`).join(",")}}`
+          : JSON.stringify(value);
+        const root = join(stateBase, createHash("sha256").update(canonical({
+          schema: "paperclip.native-session-scope.v2", companyId: f.companyId, agentId: f.agentId,
+          workspace: { kind: "managed", executionWorkspaceId: "workspace" },
+          provider: { driverKind: "codex_app_server", identity: { kind: "codex" } }, normalizedSessionId: nativeSessionId,
+        })).digest("hex"));
+        if (kind !== "missing_state") {
+          await mkdir(join(root, "control-plane"), { recursive: true });
+          await mkdir(join(root, "runner"), { recursive: true });
+          const identity = { runId: kind === "wrong_run" ? randomUUID() : f.sourceRunId, runnerInstanceId,
+            normalizedSessionId: nativeSessionId, environmentLeaseId: "workspace" };
+          await writeFile(join(root, "control-plane/control-plane-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v1", identity }));
+          await writeFile(join(root, "runner/runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1",
+            ...identity, lifecycle: kind === "ready" ? "ready" : "suspended", outbox: kind === "pending_output" ? [{}] : [] }));
+          await writeFile(join(root, "runner/codex-provider-state.json"), JSON.stringify({
+            schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "prepared",
+            threadId: kind === "wrong_thread" ? "another-thread" : "exact-thread", providerSessionId: "backend-account",
+            activeProviderTurnId: kind === "active_provider" ? "unfinished-turn" : null, ambiguousTurnStartPending: false,
+            config: { provider: "codex", driver: "codex_app_server" }, pendingEvents: [], queuedEvents: [],
+            toolBridge: { pending: kind === "pending_tool" ? { call: {} } : {} }, activeProviderResultFingerprint: null,
+          }));
+        }
+        if (kind === "new_launch") await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId,
+          agentId: f.agentId, eventType: PROCESS_START_REQUESTED });
+        if (kind !== "suspended") {
+          expect(await admit(f, true)).toBeNull();
+          expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+          return;
+        }
+        expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
+        expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+        // Exercise the real message admission path while keeping the provider slot occupied.
+        await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+        const heartbeat = heartbeatService(db);
+        for (let n = 0; n < 2; n++) await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system",
+          reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
+          payload: { issueId: f.issueId, commentId: f.commentId },
+          contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
+        const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+        expect(successors).toHaveLength(1);
+        expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.sourceRunId, forceFreshSession: true, wakeCommentId: f.commentId });
+        expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+        const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+        expect(coordinator).toMatchObject({ phase: "terminal_failure", attempt: 3 });
+        const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+        expect(action.evidence.automaticRecovery).toMatchObject({ actionOutcome: "unknown", replay: "explicit_user_continuation" });
+        expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(false);
+      } finally {
+        if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
   async function seedCancelledStartup() {
     const f = await seed();
     await db.update(heartbeatRuns).set({ status: "cancelled", processPid: null,
