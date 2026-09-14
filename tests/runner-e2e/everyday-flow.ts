@@ -184,19 +184,19 @@ export async function runEverydayFlow(input: Input) {
   async function openParent() {
     await page.goto(taskUrl(parent!), { waitUntil: "domcontentloaded" });
   }
-  async function reply(message: string) {
+  async function reply(message: string, target: StoryIssue = parent!) {
     const priorFailures = ev.checks.filter((c) => !c.passed);
     if (priorFailures.length)
       throw new Error(
         `Story prerequisite failed before the next user request: ${priorFailures.map((c) => c.id).join(", ")}`,
       );
-    const before = await api.get<Row[]>(`/api/issues/${parent!.id}/comments`);
+    const before = await api.get<Row[]>(`/api/issues/${target.id}/comments`);
     lastSubmissionAt = Date.now();
     await submitTaskReply(page, message);
     const after = await pollUntil({
       label: "one persisted user reply",
       deadlineAt: Date.now() + 30_000,
-      load: () => api.get<Row[]>(`/api/issues/${parent!.id}/comments`),
+      load: () => api.get<Row[]>(`/api/issues/${target.id}/comments`),
       accept: (rows) =>
         rows.filter(
           (c) => !c.authorAgentId && !before.some((old) => old.id === c.id),
@@ -211,7 +211,10 @@ export async function runEverydayFlow(input: Input) {
       "A composer submission creates exactly one user message.",
     );
     submittedCommentIds.push(...added.map((c) => c.id));
-    note("composer-message-persisted", { commentIds: added.map((c) => c.id) });
+    note("composer-message-persisted", {
+      issueId: target.id,
+      commentIds: added.map((c) => c.id),
+    });
   }
   async function settled() {
     await pollUntil({
@@ -498,10 +501,10 @@ export async function runEverydayFlow(input: Input) {
         childId: child.id,
         activeRunIds: ev.runs.filter(isActiveStoryRun).map((r) => r.id),
       });
-      await reply(
-        `Please pass this addition to Riley on the existing child task, deliver the requirement directly to ${child.identifier} and verify Riley receives it. ${LATE_REQUIREMENT}`,
-      );
-      note("late-feedback-submitted");
+      await page.goto(taskUrl(child), { waitUntil: "domcontentloaded" });
+      await reply(LATE_REQUIREMENT, child);
+      note("late-feedback-delivered-to-child", { childId: child.id });
+      await openParent();
     }
     if (
       caseId === "recover-controller" ||
@@ -822,7 +825,7 @@ export async function runEverydayFlow(input: Input) {
       if (children[0])
         await download(children[0].id, "max-length", "delegated-delivery");
       check(
-        "feedback-forwarded",
+        "feedback-delivered-to-child",
         Boolean(
           children[0]?.comments.some((c: Row) =>
             String(c.body).includes("--max-length"),
