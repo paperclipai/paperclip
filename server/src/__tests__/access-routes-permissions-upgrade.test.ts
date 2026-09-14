@@ -19,6 +19,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { ownerHasRequiredGrant } from "../security/board-key-owner-authority.js";
+import { accessService } from "../services/access.js";
+import { grantsForHumanRole } from "../services/company-member-roles.js";
 
 vi.hoisted(() => {
   process.env.PAPERCLIP_HOME = "/tmp/paperclip-test-home";
@@ -127,7 +130,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     expect(unchanged.membershipRole).toBe("owner");
   }, 10_000);
 
-  it("keeps custom grants when the role-only member route changes a member role", async () => {
+  it("retires former role defaults but keeps explicit grants when the role-only route demotes a member", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await db
       .insert(companyMemberships)
@@ -140,15 +143,49 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       })
       .returning()
       .then((rows) => rows[0]!);
+    const access = accessService(db);
+    await access.ensureRoleDefaultGrants(
+      company.id,
+      member.principalId,
+      "admin",
+      owner.principalId,
+    );
     const customScope = { projectIds: ["project-1"] };
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "user",
-      principalId: member.principalId,
-      permissionKey: "tasks:assign_scope",
-      scope: customScope,
-      grantedByUserId: owner.principalId,
-    });
+    await db
+      .update(principalPermissionGrants)
+      .set({ grantOrigin: "explicit", grantedByUserId: owner.principalId })
+      .where(and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalId, member.principalId),
+        eq(principalPermissionGrants.permissionKey, "tools:use"),
+      ));
+    await db
+      .update(principalPermissionGrants)
+      .set({
+        grantOrigin: "explicit",
+        grantedByUserId: owner.principalId,
+        scope: customScope,
+      })
+      .where(and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalId, member.principalId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_runtime"),
+      ));
+    const grantsBeforeDemotion = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(grantsBeforeDemotion.filter((grant) => grant.grantOrigin === "role_default"))
+      .toHaveLength(grantsForHumanRole("admin").length - 2);
+    expect(grantsBeforeDemotion.find((grant) => grant.permissionKey === "tools:use"))
+      .toEqual(expect.objectContaining({ grantOrigin: "explicit", scope: null }));
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(true);
 
     const res = await request(await createApp(db, company.id, owner.principalId))
       .patch(`/api/companies/${company.id}/members/${member.id}`)
@@ -166,13 +203,125 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
           eq(principalPermissionGrants.principalType, "user"),
           eq(principalPermissionGrants.principalId, member.principalId),
         ),
-      );
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({
-      permissionKey: "tasks:assign_scope",
-      scope: customScope,
-      grantedByUserId: owner.principalId,
+    );
+    expect(grants).toHaveLength(3);
+    expect(grants).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        permissionKey: "tasks:assign",
+        scope: null,
+      }),
+      expect.objectContaining({
+        permissionKey: "tools:use",
+        scope: null,
+        grantOrigin: "explicit",
+        grantedByUserId: owner.principalId,
+      }),
+      expect.objectContaining({
+        permissionKey: "tools:manage_runtime",
+        scope: customScope,
+        grantOrigin: "explicit",
+        grantedByUserId: owner.principalId,
+      }),
+    ]));
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(false);
+  });
+
+  it("rejects grant-backed board-key authority after membership suspension", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: owner.principalId,
+      permissionKey: "tools:admin",
+      grantOrigin: "explicit",
     });
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      owner.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(true);
+
+    await db
+      .update(companyMemberships)
+      .set({ status: "suspended" })
+      .where(eq(companyMemberships.id, owner.id));
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      owner.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(false);
+  });
+
+  it("requires legacy permission review before a role-only demotion", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: `legacy-admin-${randomUUID()}`,
+      status: "active",
+      membershipRole: "admin",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+      permissionKey: "tools:admin",
+      grantOrigin: "legacy_unknown",
+    });
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(true);
+
+    const res = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${member.id}`)
+      .send({ membershipRole: "operator" });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Review this member's legacy permissions before changing their role",
+    });
+
+    const preserved = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(preserved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ permissionKey: "tools:admin", grantOrigin: "legacy_unknown" }),
+    ]));
+
+    const reviewed = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${member.id}/role-and-grants`)
+      .send({
+        membershipRole: "operator",
+        grants: [{ permissionKey: "tools:admin", scope: null }],
+      });
+    expect(reviewed.status, JSON.stringify(reviewed.body)).toBe(200);
+    expect(reviewed.body.membershipRole).toBe("operator");
+    const reviewedGrants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(reviewedGrants).toEqual([
+      expect.objectContaining({ permissionKey: "tools:admin", grantOrigin: "explicit" }),
+    ]);
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(true);
   });
 
   it("sweeps personal connection access when the member route suspends a user", async () => {

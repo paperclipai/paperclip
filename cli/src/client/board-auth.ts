@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
+import type { BoardApiKeyScopeConfig } from "@paperclipai/shared";
 import { buildCliCommandLabel } from "./command-label.js";
 import { resolveDefaultCliAuthPath } from "../config/home.js";
 
@@ -10,6 +11,7 @@ type RequestedAccess = "board" | "instance_admin_required";
 interface BoardAuthCredential {
   apiBase: string;
   token: string;
+  keyId?: string | null;
   createdAt: string;
   updatedAt: string;
   userId?: string | null;
@@ -43,6 +45,7 @@ interface ChallengeStatusResponse {
   cancelledAt: string | null;
   expiresAt: string;
   approvedByUser: { id: string; name: string; email: string } | null;
+  boardApiKeyId: string | null;
 }
 
 function defaultBoardAuthStore(): BoardAuthStore {
@@ -90,6 +93,7 @@ export function readBoardAuthStore(storePath?: string): BoardAuthStore {
     normalized[normalizeApiBase(key)] = {
       apiBase,
       token,
+      keyId: toStringOrNull(record.keyId),
       createdAt,
       updatedAt,
       userId: toStringOrNull(record.userId),
@@ -116,6 +120,7 @@ export function getStoredBoardCredential(apiBase: string, storePath?: string): B
 export function setStoredBoardCredential(input: {
   apiBase: string;
   token: string;
+  keyId?: string | null;
   userId?: string | null;
   storePath?: string;
 }): BoardAuthCredential {
@@ -126,6 +131,7 @@ export function setStoredBoardCredential(input: {
   const credential: BoardAuthCredential = {
     apiBase: normalizedApiBase,
     token: input.token.trim(),
+    keyId: input.keyId ?? existing?.keyId ?? null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     userId: input.userId ?? existing?.userId ?? null,
@@ -201,6 +207,7 @@ export async function openUrl(url: string): Promise<boolean> {
 export async function loginBoardCli(params: {
   apiBase: string;
   requestedAccess: RequestedAccess;
+  scopeConfig: BoardApiKeyScopeConfig;
   requestedCompanyId?: string | null;
   clientName?: string | null;
   command?: string;
@@ -208,7 +215,7 @@ export async function loginBoardCli(params: {
   print?: boolean;
   openBrowser?: boolean;
   publicBaseUrl?: string;
-}): Promise<{ token: string; approvalUrl: string; userId?: string | null }> {
+}): Promise<{ token: string; approvalUrl: string; userId?: string | null; keyId?: string | null }> {
   const apiBase = normalizeApiBase(params.apiBase);
   const createUrl = `${apiBase}/api/cli-auth/challenges`;
   const command = params.command?.trim() || buildCliCommandLabel();
@@ -220,6 +227,7 @@ export async function loginBoardCli(params: {
       clientName: params.clientName?.trim() || "paperclipai cli",
       requestedAccess: params.requestedAccess,
       requestedCompanyId: params.requestedCompanyId?.trim() || null,
+      scopeConfig: params.scopeConfig,
     }),
   });
 
@@ -253,24 +261,19 @@ export async function loginBoardCli(params: {
     );
 
     if (status.status === "approved") {
-      const me = await requestJson<{ userId: string; user?: { id: string } | null }>(
-        `${apiBase}/api/cli-auth/me`,
-        {
-          headers: {
-            authorization: `Bearer ${challenge.boardApiToken}`,
-          },
-        },
-      );
+      const userId = status.approvedByUser?.id ?? null;
       setStoredBoardCredential({
         apiBase,
         token: challenge.boardApiToken,
-        userId: me.userId ?? me.user?.id ?? null,
+        keyId: status.boardApiKeyId,
+        userId,
         storePath: params.storePath,
       });
       return {
         token: challenge.boardApiToken,
         approvalUrl,
-        userId: me.userId ?? me.user?.id ?? null,
+        userId,
+        keyId: status.boardApiKeyId,
       };
     }
 
@@ -290,13 +293,13 @@ export async function loginBoardCli(params: {
 export async function revokeStoredBoardCredential(params: {
   apiBase: string;
   token: string;
+  keyId: string;
 }): Promise<void> {
   const apiBase = normalizeApiBase(params.apiBase);
-  await requestJson<{ revoked: boolean }>(`${apiBase}/api/cli-auth/revoke-current`, {
-    method: "POST",
+  await requestJson<{ ok: true; keyId: string }>(`${apiBase}/api/board-api-keys/${encodeURIComponent(params.keyId)}`, {
+    method: "DELETE",
     headers: {
       authorization: `Bearer ${params.token}`,
     },
-    body: JSON.stringify({}),
   });
 }

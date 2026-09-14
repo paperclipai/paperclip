@@ -61,6 +61,7 @@ describe("connect command", () => {
       token: "board-login-token",
       approvalUrl: `${API_BASE}/cli-auth/challenge-1`,
       userId: "user-1",
+      keyId: "board-login-key-1",
     });
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
@@ -106,12 +107,16 @@ describe("connect command", () => {
       contextPath,
       "--api-base",
       API_BASE,
+      "--company-id",
+      COMPANY_ID,
       "--json",
     ], { from: "user" });
 
     expect(loginBoardCli).toHaveBeenCalledWith(expect.objectContaining({
       apiBase: API_BASE,
       requestedAccess: "board",
+      requestedCompanyId: COMPANY_ID,
+      scopeConfig: expect.objectContaining({ companyIds: [COMPANY_ID] }),
       command: "paperclipai connect",
     }));
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", new URL(String(call[0])).pathname])).toEqual([
@@ -170,6 +175,8 @@ describe("connect command", () => {
       contextPath,
       "--api-base",
       API_BASE,
+      "--company-id",
+      COMPANY_ID,
       "--json",
     ], { from: "user" });
 

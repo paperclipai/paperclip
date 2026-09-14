@@ -362,6 +362,8 @@
   --tc-composer-bottom: var(--sz-calc-8);
   /* Together with the dock's pb-2, match the page's p-4 side gutters. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+  --cli-auth-scope-section-gap: 0.75rem;
+  --cli-auth-scope-item-gap: 0.25rem;
 }
 
 .dark {
