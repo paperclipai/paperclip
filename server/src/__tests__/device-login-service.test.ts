@@ -259,6 +259,19 @@ function createMemoryStore(): AdapterAuthSessionStore & {
       }
       return null;
     },
+    async getActiveByOwner(companyId, startedByUserId, adapterType) {
+      for (const row of rows.values()) {
+        if (
+          row.companyId === companyId &&
+          row.startedByUserId === startedByUserId &&
+          row.adapterType === adapterType &&
+          isActive(row.status)
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
+    },
     async withCompanyAdapterPromotionLock(_companyId, _startedByUserId, _adapterType, fn) {
       // The in-memory store runs on a single event loop, so it needs no real
       // lock. The pass-through keeps the store contract satisfied.
@@ -305,8 +318,20 @@ describe("device login service", () => {
     const activity: LoginSessionActivityEvent[] = [];
     const promoted: Buffer[] = [];
     const promotionContexts: { sessionId: string; companyId: string }[] = [];
+    // Gate the login after the prompt surfaces, so the row stays in
+    // `waiting_for_user` long enough for the test to read the prompt (twice)
+    // before it releases the gate and lets the login race to `authenticated`.
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const execGated: ExecBehavior = async ({ onStdout }) => {
+      onStdout(PROMPT_OUTPUT);
+      await gate;
+      return { exitCode: 0 };
+    };
     const { runtime, deleteCalls } = createFakeRuntime({
-      exec: execSuccess,
+      exec: execGated,
       authBytes: Buffer.from('{"token":"secret"}'),
     });
     const companyId = randomUUID();
@@ -344,6 +369,14 @@ describe("device login service", () => {
     const other = await service.readOwnerSession(session.sessionId, companyId, OWNER_B);
     expect(other?.prompt).toBeNull();
 
+    // The prompt survives a repeated read while the session is still active. The
+    // read never consumes it, so a page reload does not lose the code.
+    const repeatWhileActive = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(repeatWhileActive?.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+
+    // Release the gate, so the login proceeds to the promotion and the
+    // authenticated terminal.
+    releaseGate();
     const outcome = await completed;
     expect(outcome.status).toBe("authenticated");
     expect(outcome.cleanupPending).toBe(false);
@@ -357,9 +390,11 @@ describe("device login service", () => {
     expect(promotionContexts).toEqual([{ sessionId: internalRow?.id, companyId }]);
     expect(internalRow?.id).not.toBe(session.sessionId);
 
-    // The prompt is one-time: a second owner read returns null.
-    const secondRead = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
-    expect(secondRead?.prompt).toBeNull();
+    // The session is now terminal (authenticated). A read after a terminal
+    // transition returns a null prompt, and it carries `Cache-Control:
+    // no-store, private` at the route layer (see agent-device-login-routes.test.ts).
+    const afterTerminal = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(afterTerminal?.prompt).toBeNull();
 
     const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("authenticated");
@@ -382,16 +417,102 @@ describe("device login service", () => {
     expect(JSON.stringify(activity)).not.toContain(PROMPT_CODE);
   });
 
+  it("wraps the terminal authenticated commit in a promotion's runTerminalCommit", async () => {
+    // A promotion that defines `runTerminalCommit` gets the chance to wrap the
+    // service's own terminal write, so it can hold a lock across a check it
+    // already ran once earlier in `promote` and the write that publishes
+    // `authenticated`.
+    const store = createMemoryStore();
+    const { runtime } = createFakeRuntime({
+      exec: execSuccess,
+      authBytes: Buffer.from('{"token":"secret"}'),
+    });
+    const companyId = randomUUID();
+    const wrapCalls: unknown[] = [];
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {},
+        async runTerminalCommit(commit, context) {
+          wrapCalls.push(context);
+          return commit();
+        },
+      },
+    });
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+
+    const outcome = await completed;
+    expect(outcome.status).toBe("authenticated");
+    expect(wrapCalls).toHaveLength(1);
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    expect(row?.status).toBe("authenticated");
+  });
+
+  it("records a failed terminal, and never authenticates, when runTerminalCommit rejects", async () => {
+    // A promotion's `runTerminalCommit` rejects when its own re-check, run
+    // immediately before the terminal write, finds the value it validated
+    // earlier no longer holds (for example, a rotation landed in the gap).
+    // The service must fail the login the same way a `promote` rejection
+    // does, never publishing `authenticated` for the stale value.
+    const store = createMemoryStore();
+    const { runtime, deleteCalls } = createFakeRuntime({
+      exec: execSuccess,
+      authBytes: Buffer.from('{"token":"secret"}'),
+    });
+    const companyId = randomUUID();
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {},
+        async runTerminalCommit() {
+          // A real promotion would run its re-check here, find the bound
+          // value stale, and throw before ever calling `commit`.
+          throw new Error("the bound value no longer matches");
+        },
+      },
+    });
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+
+    const outcome = await completed;
+    expect(outcome.status).toBe("failed");
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    expect(row?.status).toBe("failed");
+    expect(row?.failureReason).toBe("promotion_failed");
+    // The service still deletes the sandbox on this failure path, the same
+    // as a `promote` rejection.
+    expect(deleteCalls).toHaveLength(1);
+  });
+
   it("gives a Grok prompt to a grok_local session, and the session surfaces the Grok code and URL", async () => {
     // This proves the Grok parser ran: the profile map resolves the parser from
     // the trusted adapter type, so a `grok_local` session runs the Grok parser,
     // not the Codex parser.
     const store = createMemoryStore();
-    const execGrokSuccess: ExecBehavior = async ({ onStdout }) => {
+    // Gate the login after the prompt surfaces, so the row stays in
+    // `waiting_for_user` long enough for the test to read the prompt before the
+    // login races to its own terminal.
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const execGrokGatedSuccess: ExecBehavior = async ({ onStdout }) => {
       onStdout(GROK_PROMPT_OUTPUT);
+      await gate;
       return { exitCode: 0 };
     };
-    const { runtime } = createFakeRuntime({ exec: execGrokSuccess, authBytes: Buffer.from("{}") });
+    const { runtime } = createFakeRuntime({ exec: execGrokGatedSuccess, authBytes: Buffer.from("{}") });
     const companyId = randomUUID();
     const service = makeService({ store, runtime });
     const { session, completed } = await service.start({
@@ -407,6 +528,7 @@ describe("device login service", () => {
     const owner = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
     expect(owner?.prompt).toEqual({ url: GROK_DEVICE_LOGIN_URL, code: GROK_CODE });
 
+    releaseGate();
     await completed;
   });
 
@@ -527,9 +649,17 @@ describe("device login service", () => {
 
     const store = createMemoryStore();
     const activity: LoginSessionActivityEvent[] = [];
+    // Gate the login after the prompt surfaces, so the row stays in
+    // `waiting_for_user` long enough for the test to read the prompt before the
+    // login races to its own terminal.
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
     const { runtime } = createFakeRuntime({
       exec: async ({ onStdout }) => {
         onStdout(GROK_PROMPT_OUTPUT);
+        await gate;
         return { exitCode: 0 };
       },
       authBytes: grokAuthBytes,
@@ -552,6 +682,7 @@ describe("device login service", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     const owner = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    releaseGate();
     const outcome = await completed;
     expect(outcome.status).toBe("authenticated");
 
@@ -731,6 +862,36 @@ describe("device login service", () => {
     expect(deleteCalls).toHaveLength(1);
     const row = await store.getByPublicId(session.sessionId, companyId);
     expect(row?.status).toBe("cancelled");
+  });
+
+  it("clears the prompt on a cancellation, so the owner read returns a null prompt with Cache-Control set at the route layer", async () => {
+    const store = createMemoryStore();
+    const { runtime } = createFakeRuntime({ exec: execHang });
+    const service = makeService({ store, runtime });
+    const controller = new AbortController();
+    const companyId = randomUUID();
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+      signal: controller.signal,
+    });
+
+    await waitForStatus(store, session.sessionId, companyId, "waiting_for_user");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The prompt is present while the session is active.
+    const whileActive = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(whileActive?.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+
+    controller.abort();
+    await completed;
+
+    // The session is now terminal (cancelled). The prompt is gone.
+    const afterCancel = await service.readOwnerSession(session.sessionId, companyId, OWNER_A);
+    expect(afterCancel?.status).toBe("cancelled");
+    expect(afterCancel?.prompt).toBeNull();
   });
 
   it("releases the lease when a transition fails after acquisition", async () => {
@@ -1010,6 +1171,79 @@ describe("device login service", () => {
       releasePromotion();
       const outcome = await completed;
       expect(outcome.status).toBe("authenticated");
+    });
+  });
+
+  describe("active session lookup", () => {
+    it("finds the caller's active session for a company and adapter, with no session id", async () => {
+      const store = createMemoryStore();
+      const { runtime } = createFakeRuntime({ exec: execHang });
+      const service = makeService({ store, runtime });
+      const controller = new AbortController();
+      const companyId = randomUUID();
+      const { session, completed } = await service.start({
+        companyId,
+        environmentId: randomUUID(),
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      });
+      await waitForStatus(store, session.sessionId, companyId, "waiting_for_user");
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const active = await service.readActiveOwnerSession(companyId, ADAPTER_TYPE, OWNER_A);
+      expect(active?.sessionId).toBe(session.sessionId);
+      expect(active?.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+
+      controller.abort();
+      await completed;
+    });
+
+    it("returns null for another owner, another company, and another adapter", async () => {
+      const store = createMemoryStore();
+      const { runtime } = createFakeRuntime({ exec: execHang });
+      const service = makeService({ store, runtime });
+      const controller = new AbortController();
+      const companyId = randomUUID();
+      await service.start({
+        companyId,
+        environmentId: randomUUID(),
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      });
+
+      expect(await service.readActiveOwnerSession(companyId, ADAPTER_TYPE, OWNER_B)).toBeNull();
+      expect(
+        await service.readActiveOwnerSession(randomUUID(), ADAPTER_TYPE, OWNER_A),
+      ).toBeNull();
+      expect(await service.readActiveOwnerSession(companyId, "grok_local", OWNER_A)).toBeNull();
+
+      controller.abort();
+    });
+
+    it("returns null once the caller's session has no active row", async () => {
+      const store = createMemoryStore();
+      const { runtime } = createFakeRuntime({ exec: execHang });
+      const service = makeService({ store, runtime });
+      const controller = new AbortController();
+      const companyId = randomUUID();
+      const { completed } = await service.start({
+        companyId,
+        environmentId: randomUUID(),
+        adapterType: ADAPTER_TYPE,
+        startedByUserId: OWNER_A,
+        signal: controller.signal,
+      });
+
+      // No active session for this owner before any start ever ran.
+      expect(await service.readActiveOwnerSession(companyId, ADAPTER_TYPE, OWNER_A)).not.toBeNull();
+
+      controller.abort();
+      await completed;
+
+      // The session is now terminal, so it no longer counts as active.
+      expect(await service.readActiveOwnerSession(companyId, ADAPTER_TYPE, OWNER_A)).toBeNull();
     });
   });
 

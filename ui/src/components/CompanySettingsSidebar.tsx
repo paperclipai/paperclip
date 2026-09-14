@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-  ChevronLeft,
+  ArrowLeft,
   Cpu,
   Download,
   FlaskConical,
@@ -17,16 +17,17 @@ import type { PluginRecord } from "@paperclipai/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
-import { Link, NavLink } from "@/lib/router";
+import { NavLink } from "@/lib/router";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
-import { useSidebar } from "@/context/SidebarContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
+import { primarySidebarStyles } from "./primary-sidebar-styles";
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -41,8 +42,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { selectedCompanyId } = useCompany();
   const { hidden: hiddenSettings } = useHiddenSettings();
   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
   const showPlugins = showPage("instance.plugins");
@@ -82,22 +82,26 @@ export function CompanySettingsSidebar() {
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
-    <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
-      <div className="flex flex-col gap-1 px-3 py-3 shrink-0">
-        <Link
-          to="/dashboard"
-          onClick={() => {
-            if (isMobile) setSidebarOpen(false);
-          }}
-          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-        >
-          <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{selectedCompany?.name ?? "Organization"}</span>
-        </Link>
+    <ContextualSidebarFrame
+      surface="settings"
+      title="Settings"
+      showHeader={false}
+      className={primarySidebarStyles.surface}
+    >
+      <div
+        data-slot="settings-sidebar-header"
+        className="flex h-(--sz-60px) shrink-0 items-center px-3"
+      >
+        <div data-slot="settings-back-group" className={`${primarySidebarStyles.group} w-full`}>
+          <SidebarNavItem to="/dashboard" label="Back to app" icon={ArrowLeft} />
+        </div>
       </div>
-
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
-        <div className="flex flex-col gap-0.5">
+      <nav
+        aria-label="Settings"
+        data-slot="contextual-sidebar-nav"
+        className={primarySidebarStyles.nav}
+      >
+        <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           {showPage("instance.profile") && (
             <SidebarNavItem
@@ -196,6 +200,6 @@ export function CompanySettingsSidebar() {
           )}
         </div>
       </nav>
-    </aside>
+    </ContextualSidebarFrame>
   );
 }

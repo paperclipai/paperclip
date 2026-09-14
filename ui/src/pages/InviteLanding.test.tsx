@@ -129,6 +129,50 @@ describe("InviteLandingPage", () => {
     vi.clearAllMocks();
   });
 
+  it("keeps agent-invite onboarding on legacy adapters", async () => {
+    getInviteMock.mockResolvedValue({
+      id: "invite-1",
+      companyId: "company-1",
+      companyName: "Acme Robotics",
+      companyLogoUrl: null,
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      humanRole: null,
+      expiresAt: "2027-03-07T00:10:00.000Z",
+      inviteMessage: null,
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const adapterSelect = Array.from(container.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "claude_local"),
+    );
+    expect(adapterSelect).toBeTruthy();
+    expect(Array.from(adapterSelect!.options).map((option) => option.value))
+      .not.toContain("paperclip_runner");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("defaults invite auth to account creation and guides existing users back to sign in", async () => {
     signUpEmailMock.mockRejectedValue(
       Object.assign(new Error("User already exists. Use another email."), {

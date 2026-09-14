@@ -18,7 +18,12 @@ import { formatDate } from "../lib/utils";
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
 
-const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
+// Agent-invite onboarding remains a legacy-adapter flow. Native runner setup
+// belongs in authenticated agent configuration after an administrator enables
+// the experimental flag.
+const joinAdapterOptions: AgentAdapterType[] = AGENT_ADAPTER_TYPES.filter(
+  (type) => type !== "paperclip_runner",
+);
 const ENABLED_INVITE_ADAPTERS = new Set([
   "claude_local",
   "codex_local",

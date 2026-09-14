@@ -64,6 +64,24 @@ Paperclip now treats **bind** as a separate concern from auth:
 - recommended bind is `loopback` behind a reverse proxy; direct `lan/custom` is advanced
 - local stdio MCP runtime slots fail closed by default; set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` only when a trusted worker/runtime host is configured to supervise those processes. Remote HTTP MCP remains the preferred public-hosted path.
 
+### Paperclip Cloud warm-pool identity
+
+A Cloud-managed warm-pool process initially boots under a `pool-*` origin. It
+receives only Cloud's public verification set in
+`PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS`. Before Cloud activates a claimed stack,
+the existing server-to-server health request carries a short-lived Ed25519 JWS
+that binds the immutable `PAPERCLIP_CLOUD_STACK_ID`, pool claim, previous
+origin, canonical HTTPS origin, and slug. Paperclip verifies and persists that
+one-time assertion, updates its live public/API URL provider, and acknowledges
+the exact origin in `/api/health` before the first user request is admitted.
+
+The Harness signing private key is never present in Paperclip, browsers, or
+other tenant stacks. A different claim or destination cannot replace the
+persisted identity. On restart, the durable identity is loaded before auth,
+routes, and child-runtime configuration, even when provider variables are
+temporarily stale. Self-hosted deployments continue to use their configured
+`PAPERCLIP_PUBLIC_URL` and do not participate in this protocol.
+
 ## 4. Onboarding UX Contract
 
 Default onboarding remains interactive and flagless:
@@ -144,6 +162,12 @@ admin and then falls through to normal onboarding. The endpoint is available
 only to real browser session actors in `authenticated/private`; unauthenticated
 requests, agent keys, board API keys, and local implicit board actors are
 rejected.
+
+This is intentionally a first-claim bootstrap contract: before an instance
+admin exists, the first authenticated browser session that completes the claim
+wins. Operators must keep a `bootstrap_pending` private deployment on a trusted
+network and complete setup before admitting untrusted users. This behavior is
+not an account-recovery or public-deployment mechanism.
 
 The CLI fallback remains supported in all authenticated setup states:
 

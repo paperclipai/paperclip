@@ -1,7 +1,7 @@
 import { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 
-import { ProcessCodexAppServerTransport, redactCodexDiagnostic } from "./app-server-transport.js";
+import { createSanitizedCodexEnvironment, ProcessCodexAppServerTransport, redactCodexDiagnostic } from "./app-server-transport.js";
 
 function nodeTransport(
   source: string,
@@ -16,6 +16,42 @@ function nodeTransport(
 }
 
 describe("Codex app-server transport limits", () => {
+  it("passes only bounded controller-projected GitHub credentials", () => {
+    expect(
+      createSanitizedCodexEnvironment({
+        PATH: "/safe/bin",
+        GH_TOKEN: "github-token",
+        PAPERCLIP_GIT_TOKEN: "github-token",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+        GIT_CONFIG_VALUE_0: "!trusted-helper",
+        GIT_CONFIG_KEY_1: "must.not.cross",
+        GIT_CONFIG_VALUE_1: "must-not-cross",
+        PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+        DATABASE_URL: "must-not-cross",
+      }),
+    ).toEqual({
+      PATH: "/safe/bin",
+      GH_TOKEN: "github-token",
+      PAPERCLIP_GIT_TOKEN: "github-token",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+      GIT_CONFIG_VALUE_0: "!trusted-helper",
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+    });
+
+    const invalid = createSanitizedCodexEnvironment({
+      GH_TOKEN: "github-token",
+      GIT_CONFIG_COUNT: "33",
+      GIT_CONFIG_KEY_0: "must.not.cross",
+    });
+    expect(invalid.GH_TOKEN).toBe("github-token");
+    expect(invalid.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(invalid.GIT_CONFIG_KEY_0).toBeUndefined();
+  });
+
   it("redacts real Basic credentials without corrupting ordinary question copy", () => {
     expect(redactCodexDiagnostic("Authorization: Basic dXNlcjpwYXNz"))
       .toBe("Authorization: Basic [REDACTED]");

@@ -20,6 +20,7 @@ export const sessionCodec: AdapterSessionCodec = {
 
     return {
       ...(runtimeSessionName ? { runtimeSessionName } : {}),
+      ...(record.interruptedCheckpoint === true ? { interruptedCheckpoint: true } : {}),
       ...(readString(record.sessionKey) ? { sessionKey: readString(record.sessionKey) } : {}),
       ...(readString(record.acpxRecordId) ? { acpxRecordId: readString(record.acpxRecordId) } : {}),
       ...(acpSessionId ? { acpSessionId } : {}),

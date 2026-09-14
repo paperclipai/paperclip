@@ -186,6 +186,8 @@ export interface SandboxProviderCapabilities {
    * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
    */
   duplexCommandStream?: boolean;
+  /** Provider can expose runnerd through a private authenticated WebSocket ingress. */
+  runnerWebSocketIngress?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {

@@ -11,7 +11,9 @@ const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
 // neutral `supportsLoginPty`.
 // 0.1.4 adds the `concurrentSyncOperations` sandbox capability to the driver.
 // 0.1.5 adds the `duplexCommandStream` sandbox capability to the driver.
-const PLUGIN_VERSION = "0.1.5";
+// 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
+// 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
+const PLUGIN_VERSION = "0.1.7";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -58,6 +60,7 @@ const manifest: PaperclipPluginManifestV1 = {
         incrementalSessionOutput: true,
         concurrentSyncOperations: true,
         duplexCommandStream: true,
+        runnerWebSocketIngress: true,
       },
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
@@ -168,6 +171,21 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Whether to stop and later resume the sandbox across runs instead of deleting it on release.",
             default: false,
+          },
+          runnerLifecycleMode: {
+            type: "string",
+            enum: ["inherit", "per_turn", "warm"],
+            description:
+              "paperclip_runner lifecycle for this environment. Inherit uses the agent setting; warm keeps runnerd and the sandbox available between turns.",
+            default: "inherit",
+          },
+          runnerIdleTimeoutMs: {
+            type: "integer",
+            description:
+              "How long an idle warm paperclip_runner stays alive before it checkpoints and suspends.",
+            minimum: 1000,
+            maximum: 86400000,
+            default: 300000,
           },
         },
       },

@@ -122,6 +122,27 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     expect(record[0]?.issueId).toBe(companyIssues[0]?.id);
   });
 
+  it("keeps server-seeded onboarding on a legacy adapter when native runner is requested", async () => {
+    const previous = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
+    process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = "paperclip_runner";
+    try {
+      const { companyId, app } = await seedCompany();
+
+      const response = await post(app, companyId, SEED);
+
+      expect(response.status).toBe(200);
+      const companyAgents = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+      expect(companyAgents).toHaveLength(1);
+      expect(companyAgents[0]?.adapterType).toBe("claude_local");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
+      } else {
+        process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = previous;
+      }
+    }
+  });
+
   it("is idempotent per revision — a replay creates no second agent or task", async () => {
     const { companyId, app } = await seedCompany();
 

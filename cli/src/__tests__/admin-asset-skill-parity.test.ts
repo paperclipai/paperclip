@@ -90,7 +90,6 @@ describe("admin, asset, and skill parity commands", () => {
     await run(["adapter", "config-schema", "codex_local"]);
     await run(["adapter", "ui-parser", "codex_local"]);
     await run(["adapter", "models", "codex_local", "--company-id", COMPANY_ID, "--refresh", "--environment-id", "env-1"]);
-    await run(["adapter", "model-profiles", "codex_local", "--company-id", COMPANY_ID]);
     await run(["adapter", "detect-model", "codex_local", "--company-id", COMPANY_ID]);
     await run(["adapter", "test-environment", "codex_local", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
     await run(["adapter", "delete", "codex_local"]);
@@ -107,7 +106,6 @@ describe("admin, asset, and skill parity commands", () => {
       ["GET", "http://localhost:3100/api/adapters/codex_local/config-schema"],
       ["GET", "http://localhost:3100/api/adapters/codex_local/ui-parser.js"],
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/adapters/codex_local/models?refresh=true&environmentId=env-1`],
-      ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/adapters/codex_local/model-profiles`],
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/adapters/codex_local/detect-model`],
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/adapters/codex_local/test-environment`],
       ["DELETE", "http://localhost:3100/api/adapters/codex_local"],

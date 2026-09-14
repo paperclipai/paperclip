@@ -548,7 +548,8 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
   });
 
-  it("emits a stable code when an application name is already used", async () => {
+  it("automatically gives a new connection a distinct name when its default is already used", async () => {
+    installMcpOAuthFixture({ auth: "public" });
     const company = await createCompany(db);
     await db.insert(toolApplications).values({
       companyId: company.id,
@@ -565,12 +566,19 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     const response = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
-      .send({ link: "http://127.0.0.1:8848/mcp", name: "Taken fixture name" })
-      .expect(409);
+      .send({ link: MCP_URL, name: "Taken fixture name" })
+      .expect(201);
 
-    expect(response.body).toMatchObject({
-      details: { code: "tool_access_name_conflict" },
-    });
+    expect(response.body.application.name).toBe("Taken fixture name (2)");
+    expect(response.body.connection.name).toBe("Taken fixture name (2)");
+    await expect(
+      db.select({ name: toolApplications.name })
+        .from(toolApplications)
+        .where(eq(toolApplications.companyId, company.id)),
+    ).resolves.toEqual(expect.arrayContaining([
+      { name: "Taken fixture name" },
+      { name: "Taken fixture name (2)" },
+    ]));
   });
 
   it("emits deployment guidance without exposing server env-var names", async () => {
@@ -1544,7 +1552,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, state))).resolves.toHaveLength(0);
   });
 
-  it("returns browser denials to setup without reflecting provider-authored details", async () => {
+  it("returns browser denials to Permissions without reflecting provider-authored details", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
     installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
@@ -1572,7 +1580,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     expect(res.status).toBe(303);
     const location = new URL(res.headers.location, PUBLIC_BASE_URL);
-    expect(location.pathname).toBe(`/${company.issuePrefix}/apps/${connected.connectionId}/setup`);
+    expect(location.pathname).toBe(`/${company.issuePrefix}/apps/${connected.connectionId}/permissions`);
     expect(location.searchParams.get("oauth")).toBe("denied");
     expect(location.searchParams.get("code")).toBe("oauth_authorization_denied");
     expect(res.headers.location).not.toContain(PROVIDER_CANARY);
@@ -2136,6 +2144,18 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       application_type: "web",
     });
     expect(JSON.stringify(response.body)).not.toContain(company.id);
+  });
+
+  it("uses the configured auth origin for self-hosted OAuth callbacks", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://public.paperclip.example");
+    vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "https://auth.paperclip.example");
+    const app = createRouteApp(db);
+
+    const response = await request(app).get("/api/tools/oauth/client-metadata").expect(200);
+
+    expect(response.body.redirect_uris).toEqual([
+      "https://auth.paperclip.example/api/tools/oauth/callback",
+    ]);
   });
 
   it("uses the managed runtime origin when no explicit callback origin is configured", async () => {

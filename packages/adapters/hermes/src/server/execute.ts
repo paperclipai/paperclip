@@ -34,6 +34,7 @@ import {
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   joinPromptSections,
   renderPaperclipWakePrompt,
   selectPaperclipTaskMarkdown,
@@ -140,9 +141,10 @@ export function buildPrompt(
   config: Record<string, unknown>,
   options: { resumedSession?: boolean } = {},
 ): string {
-  const template = cfgString(config.promptTemplate) || HERMES_DEFAULT_PROMPT_TEMPLATE;
-
   const context = (ctx as any).context || {};
+  const template = cfgString(config.promptTemplate) || (context.conversationMode === true
+    ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+    : HERMES_DEFAULT_PROMPT_TEMPLATE);
   const taskId = cfgString(context.taskId) || cfgString(context.issueId) || cfgString(ctx.config?.taskId);
   const taskTitle = cfgString(context.taskTitle) || cfgString(ctx.config?.taskTitle) || "";
   const taskBody = cfgString(context.taskBody) || cfgString(ctx.config?.taskBody) || "";
@@ -166,6 +168,7 @@ export function buildPrompt(
     resumedSession: options.resumedSession === true,
   });
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    conversationMode: context.conversationMode === true,
     resumedSession: options.resumedSession === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.

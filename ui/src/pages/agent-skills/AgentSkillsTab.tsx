@@ -95,7 +95,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   const paperclipCoreSkill = useMemo(
     () => (companySkills ?? []).find((skill) => skill.key === PAPERCLIP_CORE_SKILL_KEY) ?? null,
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Seeded releases (release_id IS NOT NULL) for the paperclip core skill. Only
@@ -230,7 +230,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   // Library skills → row models (the store's visual language, tuned for rows).
   const libraryRows = useMemo<AgentSkillRowData[]>(
     () =>
-      (companySkills ?? []).map((skill) => ({
+      (companySkills ?? []).filter((skill) => !(skillSnapshot?.entries ?? []).some((entry) => entry.key === skill.key && entry.readOnly)).map((skill) => ({
         key: skill.key,
         name: skill.name,
         icon: {
@@ -251,14 +251,14 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         description: skill.description,
         categories: skill.categories,
       })),
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Adapter-detected, user-installed / unmanaged skills → read-only rows.
   const detectedRows = useMemo<AgentSkillRowData[]>(
     () =>
       (skillSnapshot?.entries ?? [])
-        .filter((entry) => isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
+        .filter((entry) => (entry.readOnly && entry.desired) || isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
         .map((entry) => ({
           key: entry.key,
           name: entry.runtimeName ?? entry.key,
@@ -345,6 +345,16 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const releasePickerActive = betaSkillsEnabled && paperclipReleases.length > 0;
 
   const renderRow = (row: AgentSkillRowData, variant: "enabled" | "available") => {
+    // Historical assignments stay interactive so the user can remove them.
+    // The server rejects new assignments and omits stale ones from native
+    // runtime context, so disabling an enabled row would only trap stale data.
+    const legacyPaperclipBlocked = agent.adapterType === "paperclip_runner"
+      && variant === "available"
+      && row.key === PAPERCLIP_CORE_SKILL_KEY;
+    const rowDisabled = unsupported || legacyPaperclipBlocked;
+    const rowDisabledReason = legacyPaperclipBlocked
+      ? "Paperclip Runner uses native semantic coordination and cannot attach the legacy Paperclip operational skill."
+      : unsupportedMessage;
     const showReleasePicker =
       releasePickerActive && variant === "enabled" && row.key === PAPERCLIP_CORE_SKILL_KEY;
     const pinnedVersionId = versionPins[row.key] ?? null;
@@ -358,8 +368,8 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         variant={variant}
         data={row}
         checked={variant === "enabled"}
-        disabled={unsupported}
-        disabledReason={unsupportedMessage}
+        disabled={rowDisabled}
+        disabledReason={rowDisabledReason}
         onCheckedChange={(next) => toggleSkill(row.key, next)}
         badge={
           showReleasePicker && pinnedRelease ? (
@@ -373,7 +383,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
             <AgentSkillReleasePicker
               releases={paperclipReleases}
               value={pinnedVersionId}
-              disabled={unsupported || syncSkills.isPending}
+              disabled={rowDisabled || syncSkills.isPending}
               onChange={(versionId) => handleReleaseChange(row.key, versionId)}
             />
           ) : undefined
@@ -508,7 +518,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                     )}
                   />
                   <span className="text-xs font-medium text-muted-foreground">
-                    Detected on adapter (read-only)
+                    Automatic and detected skills (read-only)
                   </span>
                   <span className="text-xs text-muted-foreground/70">{filteredDetected.length}</span>
                 </CollapsibleTrigger>

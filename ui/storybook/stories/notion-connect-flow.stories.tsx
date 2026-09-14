@@ -113,6 +113,7 @@ function OAuthStateHost({
         phase={phase}
         error={error}
         onRetry={() => undefined}
+        onBack={() => undefined}
         onCancel={() => undefined}
       />
     </div>
@@ -129,6 +130,7 @@ function notionConnection(
     name: "Notion",
     uid: "notion-storybook",
     connectionKind: "managed",
+    connectionPurpose: "tool",
     ownership: "dcr",
     transport: "mcp_remote",
     authKind: "oauth",
@@ -247,11 +249,13 @@ function ConnectedHost() {
                 credentialPolicy="per_user"
                 ownerUserId="board-user"
                 connectedUser={{ label: "Dotta", image: null }}
+                dedicatedAgent={null}
                 grantsQuery={personalGrantsResponse(grant)}
                 loading={false}
                 error={false}
                 onConnectAsMe={() => undefined}
                 onConnectOrganization={() => undefined}
+                onConnectAgent={() => undefined}
                 onReplaceAudience={() => undefined}
                 connectPending={false}
                 audiencePending={false}

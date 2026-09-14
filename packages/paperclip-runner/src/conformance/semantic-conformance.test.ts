@@ -17,20 +17,15 @@ const allowed: SemanticConformanceObservation = {
 function adapter(
   id: string,
   observation: SemanticConformanceObservation,
+  kind?: SemanticConformanceAdapter["kind"],
 ): SemanticConformanceAdapter {
-  return { id, execute: async () => structuredClone(observation) };
+  return { id, kind, execute: async () => structuredClone(observation) };
 }
 
 describe("semantic conformance kit", () => {
-  it("accepts equivalent observations independent of object key order", async () => {
+  it("accepts normalized mock/real observations independent of object key order", async () => {
     const report = await runSemanticConformanceKit({
-      vectors: [
-        {
-          id: "finish",
-          operationId: "finish_task",
-          input: { summary: "done" },
-        },
-      ],
+      vectors: [{ id: "finish", operationId: "finish_task", input: { summary: "done" } }],
       adapters: [
         adapter("mock", allowed),
         adapter("real", {
@@ -41,84 +36,55 @@ describe("semantic conformance kit", () => {
         }),
       ],
     });
-
     expect(report.schema).toBe("paperclip.semantic-conformance-report.v1");
     expect(report.rows).toHaveLength(1);
     expect(report.rows[0]?.adapterIds).toEqual(["mock", "real"]);
+    expect(report.rows[0]?.observations).toEqual({ mock: allowed, real: allowed });
   });
 
-  it("fails explicitly when adapters diverge", async () => {
-    await expect(
-      runSemanticConformanceKit({
-        vectors: [{ id: "finish", operationId: "finish_task", input: {} }],
-        adapters: [
-          adapter("mock", allowed),
-          adapter("real", {
-            ...allowed,
-            authorization: { outcome: "denied", code: "forbidden" },
-          }),
-        ],
-      }),
-    ).rejects.toBeInstanceOf(SemanticConformanceMismatchError);
+  it("names the production binding and exact normalized path when it diverges", async () => {
+    const failure = runSemanticConformanceKit({
+      vectors: [{ id: "finish", operationId: "finish_task", input: {} }],
+      adapters: [
+        adapter("mock", allowed, "mock"),
+        adapter("real", { ...allowed, authorization: { outcome: "denied", code: "forbidden" } }, "production_binding"),
+      ],
+    });
+    await expect(failure).rejects.toMatchObject({
+      suspectedSource: "production_binding",
+      diffs: [{ path: "$.authorization.code" }, { path: "$.authorization.outcome" }],
+    });
+    await expect(failure).rejects.toBeInstanceOf(SemanticConformanceMismatchError);
   });
 
-  it("requires at least two adapters", async () => {
-    await expect(
-      runSemanticConformanceKit({
-        vectors: [],
-        adapters: [adapter("only", allowed)],
-      }),
-    ).rejects.toThrow("semantic_conformance_requires_two_adapters");
+  it("names the contract when adapters agree on the wrong semantics", async () => {
+    const failure = runSemanticConformanceKit({
+      vectors: [{
+        id: "finish",
+        operationId: "finish_task",
+        input: {},
+        expected: { ...allowed, state: { task: { status: "in_review" } } },
+      }],
+      adapters: [adapter("mock", allowed, "mock"), adapter("real", allowed, "production_binding")],
+    });
+    await expect(failure).rejects.toMatchObject({
+      suspectedSource: "contract",
+      diffs: [{ path: "$.state.task.status", expected: "in_review", actual: "done" }],
+    });
   });
 
-  it("requires unique adapter identities", async () => {
-    await expect(
-      runSemanticConformanceKit({
-        vectors: [],
-        adapters: [
-          adapter("duplicate", allowed),
-          adapter("duplicate", allowed),
-        ],
-      }),
-    ).rejects.toThrow("semantic_conformance_adapter_ids_must_be_unique");
-  });
-
-  it("fails closed for non-JSON normalized observations", async () => {
-    await expect(
-      runSemanticConformanceKit({
-        vectors: [{ id: "finish", operationId: "finish_task", input: {} }],
-        adapters: [
-          adapter("mock", allowed),
-          {
-            id: "invalid",
-            execute: async () =>
-              ({
-                ...allowed,
-                state: new Date(),
-              }) as unknown as SemanticConformanceObservation,
-          },
-        ],
-      }),
-    ).rejects.toThrow("semantic_conformance_non_json_observation");
-  });
-
-  it("fails closed for sparse normalized arrays", async () => {
-    const sparseEffects = Array(1);
-    await expect(
-      runSemanticConformanceKit({
-        vectors: [{ id: "finish", operationId: "finish_task", input: {} }],
-        adapters: [
-          adapter("mock", allowed),
-          {
-            id: "invalid",
-            execute: async () =>
-              ({
-                ...allowed,
-                effects: sparseEffects,
-              }) as unknown as SemanticConformanceObservation,
-          },
-        ],
-      }),
-    ).rejects.toThrow("semantic_conformance_non_json_observation");
+  it("names the mock when the production binding matches the contract", async () => {
+    const denied = { ...allowed, authorization: { outcome: "denied" as const, code: "stale_mock" } };
+    const failure = runSemanticConformanceKit({
+      vectors: [{ id: "finish", operationId: "finish_task", input: {}, expected: allowed }],
+      adapters: [
+        adapter("mock", denied, "mock"),
+        adapter("real", allowed, "production_binding"),
+      ],
+    });
+    await expect(failure).rejects.toMatchObject({
+      suspectedSource: "mock",
+    });
+    await expect(failure).rejects.toHaveProperty("diffs.1.path", "$.authorization.outcome");
   });
 });

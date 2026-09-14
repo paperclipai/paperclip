@@ -53,7 +53,7 @@
     "probe:quota:raw": "pnpm exec tsx src/cli/quota-probe.ts --json --raw-cli"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.70.0",
+    "@agentclientprotocol/claude-agent-acp": "^0.73.0",
     "@anthropic-ai/sdk": "0.121.0",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/shared": "workspace:*",

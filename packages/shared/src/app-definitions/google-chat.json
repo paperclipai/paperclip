@@ -34,7 +34,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "chat.read",
       "capabilityProfile": {
         "key": "read",
@@ -42,7 +42,8 @@
         "description": "Search conversations and read messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -74,7 +75,8 @@
         "description": "Search conversations and read messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -112,7 +114,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "chat.write",
       "capabilityProfile": {
         "key": "write",
@@ -120,7 +122,8 @@
         "description": "Read Chat and send messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -154,7 +157,8 @@
         "description": "Read Chat and send messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

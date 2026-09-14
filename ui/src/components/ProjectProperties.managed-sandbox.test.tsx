@@ -125,10 +125,10 @@ describe("ProjectProperties — local folder under the managed-sandbox-only poli
     expect(buttonLabels()).not.toContain("Change local folder");
     expect(container.querySelector('button[aria-label="Clear local folder"]')).toBeNull();
     // The repo row is unrelated to the host filesystem, so it stays.
-    expect(container.textContent).toContain("Repo");
+    expect(container.textContent).toContain("Source repos");
   });
 
-  it("keeps only the managed-folder label for a managed checkout when the policy is on", () => {
+  it("omits the host codebase section for a managed checkout when the policy is on", () => {
     render(
       makeProject(makeCodebase({
         localFolder: null,
@@ -138,7 +138,7 @@ describe("ProjectProperties — local folder under the managed-sandbox-only poli
       { enableIsolatedWorkspaces: true, enableManagedSandboxOnly: true },
     );
 
-    expect(container.textContent).toContain("Paperclip-managed folder.");
+    expect(container.textContent).not.toContain("Codebase");
     expect(container.textContent).not.toContain(MANAGED_FOLDER);
     expect(container.querySelector(".font-mono")?.textContent).not.toBe(MANAGED_FOLDER);
     expect(buttonLabels()).not.toContain("Set local folder");
@@ -151,7 +151,7 @@ describe("ProjectProperties — local folder under the managed-sandbox-only poli
 
     expect(container.textContent).not.toContain("Local folder");
     expect(container.textContent).not.toContain(LOCAL_FOLDER);
-    expect(container.textContent).toContain("Repo");
+    expect(container.textContent).toContain("Source repos");
   });
 
   it("never opens the absolute-path edit panel when the policy is on", () => {

@@ -7,11 +7,9 @@ import {
   parsePrpFixtureText,
   PRP_PROTOCOL_VERSION,
 } from "./replay-contract.js";
+import { reducePrpFixture } from "../reducer/session-reducer.js";
 
-const fixtureDirectory = new URL(
-  "../../protocol/fixtures/replay/",
-  import.meta.url,
-);
+const fixtureDirectory = new URL("../../protocol/fixtures/replay/", import.meta.url);
 const validFixtures = [
   "happy-path.json",
   "failed-run.json",
@@ -26,9 +24,7 @@ const validFixtures = [
   "semantic-tool-unknown-optional-envelope.json",
 ];
 
-async function readFixture(
-  name = "happy-path.json",
-): Promise<Record<string, unknown>> {
+async function readFixture(name = "happy-path.json"): Promise<Record<string, unknown>> {
   return JSON.parse(
     await readFile(new URL(name, fixtureDirectory), "utf8"),
   ) as Record<string, unknown>;
@@ -71,10 +67,7 @@ describe("PRP v1 JSON Schema contract", () => {
 
   it("preserves unknown optional fields for forward compatibility", async () => {
     const result = parsePrpFixtureText(
-      await readFile(
-        new URL("unknown-optional-fields.json", fixtureDirectory),
-        "utf8",
-      ),
+      await readFile(new URL("unknown-optional-fields.json", fixtureDirectory), "utf8"),
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -87,10 +80,7 @@ describe("PRP v1 JSON Schema contract", () => {
 
   it("fails closed on an unsupported required protocol version", async () => {
     const result = parsePrpFixtureText(
-      await readFile(
-        new URL("unsupported-required-version.json", fixtureDirectory),
-        "utf8",
-      ),
+      await readFile(new URL("unsupported-required-version.json", fixtureDirectory), "utf8"),
     );
     expect(result).toMatchObject({
       ok: false,
@@ -266,10 +256,32 @@ describe("PRP v1 JSON Schema contract", () => {
     });
   });
 
+  it("accepts unknown optional semantic fields without changing projection", async () => {
+    const result = parsePrpFixtureText(
+      await readFile(
+        new URL("semantic-tool-unknown-optional-envelope.json", fixtureDirectory),
+        "utf8",
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(
+      result.fixture.events[0]?.payload.semantic_tool?.futureEnvelopeHint,
+    ).toEqual({ version: "1.1-preview" });
+
+    const withoutEnvelope = structuredClone(result.fixture);
+    for (const event of withoutEnvelope.events) {
+      delete event.payload.semantic_tool;
+    }
+    expect(reducePrpFixture(result.fixture)).toEqual(
+      reducePrpFixture(withoutEnvelope),
+    );
+  });
+
   it("fails closed on unsupported nested required schema versions", async () => {
     const fixture = await readFixture();
     const events = fixture.events as Array<Record<string, unknown>>;
-    events[0]!.schemaVersion = 2;
+    events[0]!.schemaVersion = 3;
     expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
       ok: false,
       issues: [
@@ -281,19 +293,17 @@ describe("PRP v1 JSON Schema contract", () => {
     });
   });
 
-  it("rejects source sequences that cannot be represented exactly", async () => {
+  it("rejects unsafe event source sequences", async () => {
     const fixture = await readFixture();
     const events = fixture.events as Array<Record<string, unknown>>;
     events[0]!.sourceSeq = Number.MAX_SAFE_INTEGER + 1;
-    expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
-      ok: false,
-      issues: [
-        {
-          code: "schema_validation",
-          path: "/events/0/sourceSeq",
-        },
-      ],
-    });
+    const result = parsePrpFixtureText(JSON.stringify(fixture));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues.some((issue) =>
+        issue.code === "schema_validation" && issue.path === "/events/0/sourceSeq"
+      )).toBe(true);
+    }
   });
 
   it("requires the declared result to match the replayed result event", async () => {
@@ -330,9 +340,7 @@ describe("PRP v1 JSON Schema contract", () => {
   it("requires exactly one unique terminal event", async () => {
     const fixture = await readFixture();
     const events = fixture.events as Array<Record<string, unknown>>;
-    fixture.events = events.filter(
-      (event) => event.eventType !== "run.terminal",
-    );
+    fixture.events = events.filter((event) => event.eventType !== "run.terminal");
     expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
       ok: false,
       issues: [
@@ -357,7 +365,7 @@ describe("PRP v1 JSON Schema contract", () => {
         { min: 1, max: PRP_PROTOCOL_VERSION },
         { min: 1, max: 2 },
       ),
-    ).toBe(1);
+    ).toBe(2);
     expect(
       negotiateProtocolVersion({ min: 2, max: 3 }, { min: 1, max: 1 }),
     ).toBeNull();

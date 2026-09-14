@@ -193,6 +193,39 @@ export const storybookAgents: Agent[] = [
 
 export const storybookAgentMap = new Map(storybookAgents.map((agent) => [agent.id, agent]));
 
+/**
+ * The agent the onboarding hire returns.
+ *
+ * Kept out of `storybookAgents` deliberately: that list is what the company
+ * already has, and this one does not exist until the wizard's Connect step
+ * creates it. Putting it in the list would give the review step an agent it had
+ * not yet hired.
+ */
+export const storybookHiredAgent: Agent = {
+  id: "agent-storybook",
+  companyId: "company-storybook",
+  name: "Darnold",
+  urlKey: "darnold",
+  role: "general",
+  title: "Chief of Staff",
+  icon: "sparkles",
+  status: "idle",
+  reportsTo: null,
+  capabilities: "Runs the company's first workflows and hires the team behind them.",
+  adapterType: "claude_local",
+  adapterConfig: {},
+  runtimeConfig: {},
+  budgetMonthlyCents: 100_000,
+  spentMonthlyCents: 0,
+  pauseReason: null,
+  pausedAt: null,
+  permissions: { canCreateAgents: true },
+  lastHeartbeatAt: null,
+  metadata: null,
+  createdAt: recent(0),
+  updatedAt: recent(0),
+};
+
 export const storybookIssueLabels: IssueLabel[] = [
   {
     id: "label-ui",

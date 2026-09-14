@@ -1,15 +1,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { Issue, IssueDocument, IssueThreadInteraction } from "@paperclipai/shared";
-import { isArtifactReviewDocumentKey } from "@paperclipai/shared";
+import type { Issue, IssueThreadInteraction } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecompositionsSection";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { useIssueDocuments } from "@/hooks/useIssueDocuments";
-import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesPlansTabProps {
@@ -26,45 +23,6 @@ function hasPendingPlanConfirmation(interactions: IssueThreadInteraction[] | und
       && interaction.status === "pending"
       && interaction.payload.target?.type === "issue_document"
       && interaction.payload.target.key === "plan",
-  );
-}
-
-function OtherDocumentSection({ issueId, doc, locationHash }: { issueId: string; doc: IssueDocument; locationHash: string }) {
-  const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
-  return (
-    <section data-testid="issue-other-document" className="space-y-2 border-t border-border pt-4 first:border-t-0 first:pt-0">
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold">{documentDisplayTitle(doc)}</h3>
-        <div className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-          {`Revision ${doc.latestRevisionNumber ?? 1} · updated ${new Date(doc.updatedAt).toLocaleString([], {
-            month: "short",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-          })}`}
-          <DocumentAnnotationsCountChip
-            issueId={issueId}
-            docKey={doc.key}
-            panelOpen={annotationPanelOpen}
-            onToggle={() => setAnnotationPanelOpen((open) => !open)}
-          />
-        </div>
-      </div>
-      <IssueDocumentAnnotations
-        issueId={issueId}
-        doc={doc}
-        bodyMarkdown={doc.body}
-        draftDirty={false}
-        draftConflicted={false}
-        historicalPreview={false}
-        locationHash={locationHash}
-        panelOpen={annotationPanelOpen}
-        onPanelOpenChange={setAnnotationPanelOpen}
-        panelPlacement="popover"
-      >
-        <MarkdownBody>{doc.body}</MarkdownBody>
-      </IssueDocumentAnnotations>
-    </section>
   );
 }
 
@@ -89,17 +47,10 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
     queryKey: queryKeys.issues.interactions(issue.id),
     queryFn: () => issuesApi.listInteractions(issue.id),
   });
-  const { data: documents } = useIssueDocuments(issue.id);
   const hasPlans = (data?.length ?? 0) > 0;
   const pendingPlanConfirmation = hasPendingPlanConfirmation(interactions);
-  // Every other non-system document (e.g. `synthesis`) renders below the plan;
-  // the `plan` doc itself stays on its dedicated annotated surface above, and
-  // proxy `artifact-review-*` documents surface only through their Work product.
-  const otherDocuments = (documents ?? []).filter(
-    (doc) => doc.key !== "plan" && !isArtifactReviewDocumentKey(doc.key),
-  );
 
-  if (!planDocument && !hasPlans && otherDocuments.length === 0) {
+  if (!planDocument && !hasPlans) {
     return (
       <div className="px-1 py-6 text-sm text-muted-foreground">
         {planDocumentLoading ? (
@@ -162,9 +113,6 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
           </IssueDocumentAnnotations>
         </section>
       ) : null}
-      {otherDocuments.map((doc) => (
-        <OtherDocumentSection key={doc.key} issueId={issue.id} doc={doc} locationHash={location.hash} />
-      ))}
       {hasPlans ? (
         <IssuePlanDecompositionsSection issueId={issue.id} issueIdentifier={issue.identifier} />
       ) : null}

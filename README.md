@@ -336,6 +336,25 @@ To try Paperclip without installing anything permanently:
 npx --registry https://registry.npmjs.org paperclipai onboard --yes
 ```
 
+For an isolated manual test instance that is already initialized with a CEO
+agent, use `test-drive`. It stays in the foreground, never installs a service
+or creates a first task, and opens the browser only after setup succeeds:
+
+```bash
+ANTHROPIC_API_KEY=... npx paperclipai test-drive
+OPENAI_API_KEY=... npx paperclipai test-drive --harness codex
+OPENROUTER_API_KEY=... npx paperclipai test-drive \
+  --harness opencode \
+  --model openrouter/anthropic/claude-sonnet-4.5
+```
+
+Each run without `--data-dir` gets a unique, retained temporary directory; its
+absolute path is printed at startup. Pass `--data-dir` to reuse one, or
+`--no-browser` to leave the initialized instance unopened. When invoked from a
+linked Git worktree, `test-drive` also enables task execution in that worktree.
+See [`doc/CLI.md`](doc/CLI.md#isolated-manual-test-drives) for credential and
+reuse behavior.
+
 > **Troubleshooting: private npm registry `.npmrc`**
 >
 > If this fails with an `E404` for `paperclipai` (or similar) and you use a private npm registry (for example GitHub Packages) via a global `~/.npmrc`, `npx` may be resolving `paperclipai` against that private registry instead of the public npm registry.
@@ -469,7 +488,7 @@ Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-p
 
 Paperclip ships with opt-in OpenTelemetry auto-instrumentation for the server (traces only). It activates when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and supports `grpc`, `http/protobuf`, and `http/json` via the standard `OTEL_EXPORTER_OTLP_PROTOCOL` env var. `@opentelemetry/api` is a normal server dependency; the SDK, auto-instrumentation, and exporter packages are optional peer dependencies — install them only if you want tracing. See [doc/observability.md](doc/observability.md) for install commands and the full env-var reference.
 
-Paperclip also ships with opt-in Sentry error monitoring for the server and the browser. Set `SENTRY_DSN` to activate it — the server and the browser then report to the same Sentry project. The supported server SDK version is `@sentry/node@10.71.0`; it is an optional peer dependency for the server, so install it only if you want error monitoring. The browser SDK, `@sentry/browser`, is pinned to the same exact version. See [doc/observability.md](doc/observability.md#sentry-error-monitoring) for the install command, the privacy settings, and the full default capture set.
+Paperclip also ships with opt-in Sentry error monitoring for the server and the browser. Set `SENTRY_DSN_FRONTEND` to activate it for the browser and `SENTRY_DSN_BACKEND` to activate it for the server — each variable is optional, and the legacy `SENTRY_DSN` variable still works as a fallback for either component. The supported server SDK version is `@sentry/node@10.71.0`; it is an optional peer dependency for the server, so install it only if you want error monitoring. The browser SDK, `@sentry/browser`, is pinned to the same exact version. See [doc/observability.md](doc/observability.md#sentry-error-monitoring) for the install command, the privacy settings, and the full default capture set.
 
 ## Telemetry
 

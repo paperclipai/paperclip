@@ -230,7 +230,7 @@ describe("Services tab visibility", () => {
   });
 
   it("does not gate the ordinary tabs behind broker-only", () => {
-    for (const tab of ["setup", "test", "review", "permissions", "activity"] as const) {
+    for (const tab of ["review", "permissions"] as const) {
       expect(BROKER_ONLY_APP_TABS.has(tab)).toBe(false);
     }
   });

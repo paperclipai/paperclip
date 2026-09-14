@@ -77,6 +77,7 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -101,6 +102,12 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Fri: 5,
   Sat: 6,
 };
+
+export function routineWebhookUrl(publicId: string): string {
+  const baseUrl = runtimePublicOrigin() ?? process.env.PAPERCLIP_API_URL?.trim();
+  if (!baseUrl) throw new Error("PAPERCLIP_API_URL is required to create a routine webhook");
+  return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
+}
 
 type ExecutionIssueTransientFailureStatus = (typeof EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES)[number];
 
@@ -2438,7 +2445,7 @@ export function routineService(
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
         secretMaterial = {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+          webhookUrl: routineWebhookUrl(publicId),
           webhookSecret: created.secretValue,
         };
       }
@@ -2621,7 +2628,7 @@ export function routineService(
       return {
         trigger: trigger as RoutineTrigger,
         secretMaterial: {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
+          webhookUrl: routineWebhookUrl(existing.publicId),
           webhookSecret: secretValue,
         },
         revision,
@@ -2701,7 +2708,7 @@ export function routineService(
             secretId: created.secret.id,
             secretMaterial: {
               triggerId: trigger.id,
-              webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+              webhookUrl: routineWebhookUrl(publicId),
               webhookSecret: created.secretValue,
             },
           });

@@ -1,7 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
-  issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
@@ -288,55 +287,6 @@ export function instanceSettingsRoutes(db: Db) {
         ),
       );
       res.json(updated.experimental);
-    },
-  );
-
-  router.post(
-    "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
-    validate(issueGraphLivenessAutoRecoveryRequestSchema),
-    async (req, res) => {
-      assertCanManageInstanceSettings(req);
-      res.json(await heartbeat.buildIssueGraphLivenessAutoRecoveryPreview({
-        lookbackHours: req.body.lookbackHours,
-      }));
-    },
-  );
-
-  router.post(
-    "/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
-    validate(issueGraphLivenessAutoRecoveryRequestSchema),
-    async (req, res) => {
-      assertCanManageInstanceSettings(req);
-      const actor = getActorInfo(req);
-      const result = await heartbeat.reconcileIssueGraphLiveness({
-        runId: actor.runId,
-        force: true,
-        lookbackHours: req.body.lookbackHours,
-      });
-      const companyIds = await svc.listCompanyIds();
-      await Promise.all(
-        companyIds.map((companyId) =>
-          logActivity(db, {
-            companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "instance.settings.issue_graph_liveness_auto_recovery_run",
-            entityType: "instance_settings",
-            entityId: "default",
-            details: {
-              lookbackHours: result.lookbackHours,
-              escalationsCreated: result.escalationsCreated,
-              existingEscalations: result.existingEscalations,
-              skippedOutsideLookback: result.skippedOutsideLookback,
-              escalationIssueIds: result.escalationIssueIds,
-            },
-          }),
-        ),
-      );
-      res.json(result);
     },
   );
 

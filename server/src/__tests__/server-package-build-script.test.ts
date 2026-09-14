@@ -8,6 +8,12 @@ const packageJsonPath = fileURLToPath(
 const runnerShimPath = fileURLToPath(
   new URL("../vendor/paperclip-runner/index.ts", import.meta.url),
 );
+const evidenceClassifierPath = fileURLToPath(
+  new URL("../services/native-runtime/evidence-classifier.ts", import.meta.url),
+);
+const workspaceDiffReprojectionPath = fileURLToPath(
+  new URL("../services/provider-trace-workspace-diff-reprojection.ts", import.meta.url),
+);
 
 describe("server package build script", () => {
   it("builds the compiled package entry during prepack", () => {
@@ -56,6 +62,22 @@ describe("server package build script", () => {
     );
   });
 
+  it("verifies vendored runner dependencies are mirrored before building", () => {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    // See scripts/verify-runner-vendor-dependencies.mjs: packages/paperclip-runner
+    // is vendored with a raw `cp -R` of its compiled dist/, so every runtime
+    // dependency it imports must also be a direct dependency of server. This
+    // check derives that requirement from an esbuild scan of the vendored
+    // entry points instead of relying on a human to have kept a hand-copied
+    // list in sync (the smol-toml incident in #13110/#13116).
+    expect(packageJson.scripts?.build).toContain(
+      "node scripts/verify-runner-vendor-dependencies.mjs",
+    );
+  });
+
   it("loads runner source when the source server starts before workspace builds", () => {
     const shim = readFileSync(runnerShimPath, "utf8");
 
@@ -65,5 +87,17 @@ describe("server package build script", () => {
     expect(shim).not.toContain(
       'export * from "@paperclipai/paperclip-runner"',
     );
+  });
+
+  it("routes source-mode runtime imports through the runner shim", () => {
+    for (const consumerPath of [
+      evidenceClassifierPath,
+      workspaceDiffReprojectionPath,
+    ]) {
+      const consumer = readFileSync(consumerPath, "utf8");
+
+      expect(consumer).toContain('vendor/paperclip-runner/index.js"');
+      expect(consumer).not.toContain('from "@paperclipai/paperclip-runner"');
+    }
   });
 });

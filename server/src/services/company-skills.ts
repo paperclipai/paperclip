@@ -1,3 +1,5 @@
+import { logger } from "../middleware/logger.js";
+import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -1118,6 +1120,12 @@ async function statPath(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+async function hasExactSkillFile(directoryPath: string) {
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true }).catch(() => []);
+  const skillEntry = entries.find((entry) => entry.name === "SKILL.md");
+  return Boolean(skillEntry && (skillEntry.isFile() || skillEntry.isSymbolicLink()));
+}
+
 function pathIsContained(rootPath: string, candidatePath: string) {
   const relativePath = path.relative(rootPath, candidatePath);
   return relativePath === ""
@@ -1145,13 +1153,26 @@ async function validateProjectSkillImportPath(
 ) {
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const resolvedSkillDir = path.resolve(skillDir);
-  if (!pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir)) {
-    throw unprocessable(`Project skill candidate ${resolvedSkillDir} is outside workspace root ${resolvedWorkspaceRoot}.`);
+  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
+  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
+  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
+    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
   }
 
-  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
-  let currentPath = resolvedWorkspaceRoot;
-  const relativeSkillDir = path.relative(resolvedWorkspaceRoot, resolvedSkillDir);
+  // macOS exposes the same temporary directory through both `/var` and
+  // `/private/var`. Discovery returns a canonical path, while a persisted
+  // workspace may retain the user-facing alias. Traverse the lexical path when
+  // possible so symlinks remain detectable; otherwise compare and traverse the
+  // already-verified canonical pair.
+  const lexicalPathIsContained = pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir);
+  const traversalWorkspaceRoot = lexicalPathIsContained
+    ? resolvedWorkspaceRoot
+    : canonicalWorkspaceRoot;
+  const traversalSkillDir = lexicalPathIsContained
+    ? resolvedSkillDir
+    : canonicalSkillDir;
+  let currentPath = traversalWorkspaceRoot;
+  const relativeSkillDir = path.relative(traversalWorkspaceRoot, traversalSkillDir);
   for (const segment of relativeSkillDir.split(path.sep).filter(Boolean)) {
     currentPath = path.join(currentPath, segment);
     const segmentStat = await fs.lstat(currentPath);
@@ -1160,12 +1181,7 @@ async function validateProjectSkillImportPath(
     }
   }
 
-  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
-  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
-    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
-  }
-
-  const skillFilePath = path.join(resolvedSkillDir, "SKILL.md");
+  const skillFilePath = path.join(traversalSkillDir, "SKILL.md");
   const skillFileStat = await fs.lstat(skillFilePath);
   if (skillFileStat.isSymbolicLink()) {
     throw unprocessable(`Project skill candidate contains a symbolic link at ${skillFilePath}.`);
@@ -3135,10 +3151,10 @@ export function companySkillService(db: Db) {
         continue;
       }
 
-      await db
-        .delete(companySkills)
-        .where(eq(companySkills.id, skill.id));
-      await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+      await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
+        await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+        await db.delete(companySkills).where(eq(companySkills.id, skill.id));
+      });
     }
   }
 
@@ -4138,12 +4154,14 @@ export function companySkillService(db: Db) {
       throw error;
     }
 
-    // Remove the stale runtime materialization so runtime sync recreates it
-    // under the new key/slug.
-    await fs.rm(
-      path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
-      { recursive: true, force: true },
-    );
+    // The rename has committed. Cache cleanup must not make a successful rename appear to fail.
+    try {
+      await fs.rm(path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
+        { recursive: true, force: true });
+      await removeRuntimeSkillCache(managedRoot, skill.id);
+    } catch (error) {
+      logger.warn({ err: error, companyId, skillId: skill.id }, "Skill renamed; obsolete runtime cache cleanup failed");
+    }
 
     const renamed = await getById(companyId, skill.id);
     if (!renamed) throw notFound("Renamed skill not found");
@@ -4259,6 +4277,10 @@ export function companySkillService(db: Db) {
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
+    return readLoadedSkillFile(skill, relativePath);
+  }
+
+  async function readLoadedSkillFile(skill: CompanySkill, relativePath: string): Promise<CompanySkillFileDetail> {
     const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
     const fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
     if (!fileEntry) {
@@ -4869,7 +4891,7 @@ export function companySkillService(db: Db) {
         path: entryPath,
         kind: entry.isDirectory() ? "directory" : "file",
         isSkill: entry.isDirectory()
-          ? Boolean((await statPath(path.join(targetPath, entry.name, "SKILL.md")))?.isFile())
+          ? await hasExactSkillFile(path.join(targetPath, entry.name))
           : entry.name === "SKILL.md",
       });
     }
@@ -5658,10 +5680,12 @@ export function companySkillService(db: Db) {
     let wroteSkillFile = false;
     for (const entry of skill.fileInventory) {
       const normalizedPath = normalizePortablePath(entry.path);
-      const detail = await readFile(companyId, skill.id, normalizedPath).catch(() => null);
+      const detail = await readLoadedSkillFile(skill, normalizedPath);
       const content = detail?.content ?? (normalizedPath === "SKILL.md" ? skill.markdown : null);
-      if (content === null) continue;
-      const targetPath = path.resolve(skillDir, entry.path);
+      if (content === null) throw unprocessable("Declared skill file is unavailable");
+      const resolved = resolveVersionSnapshotPath(skillDir, entry.path);
+      if (!resolved) throw unprocessable("Invalid skill file path");
+      const targetPath = resolved.targetPath;
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, content, "utf8");
       if (normalizedPath === "SKILL.md") wroteSkillFile = true;
@@ -5802,6 +5826,24 @@ export function companySkillService(db: Db) {
 
     const source = await resolveExistingSkillDirectory(normalizeSkillDirectory(skill));
     if (source) return { status: "available", source };
+
+    try {
+      const cache = runtimeSkillCacheSpec(resolveManagedSkillsRoot(companyId), skill);
+      if (cache) {
+        const cachedSource = await resolveRuntimeSkillCache(cache,
+          async (relativePath) => (await readLoadedSkillFile(skill, relativePath)).content,
+          options.materializeMissing !== false,
+          async () => (await getById(companyId, skill.id))?.key === skill.key);
+        return cachedSource
+          ? { status: "available", source: cachedSource }
+          : { status: "missing", source: path.join(cache.entry, "files"), detail: buildMissingRuntimeSourceDetail(skill) };
+      }
+    } catch (error) {
+      return {
+        status: "missing", source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: `Failed to materialize skill files: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
 
     if (options.materializeMissing === false) {
       const materializedPath = resolveRuntimeSkillMaterializedPath(companyId, skill);
@@ -6923,13 +6965,12 @@ export function companySkillService(db: Db) {
       );
     }
 
-    // Delete DB row
-    await db
-      .delete(companySkills)
-      .where(eq(companySkills.id, skillId));
-
-    // Clean up materialized runtime files
-    await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+    // Take the cache lifecycle lock before deleting the row. A busy publisher must not
+    // turn a committed deletion into an apparent API failure, nor recreate its cache.
+    await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
+      await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+      await db.delete(companySkills).where(eq(companySkills.id, skillId));
+    });
 
     return skill;
   }

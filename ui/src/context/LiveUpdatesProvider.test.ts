@@ -11,10 +11,63 @@ vi.mock("../api/issues", () => ({
 }));
 
 import { describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
 import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it.each(["issue.attachment_added", "issue.attachment_removed", "issue.work_product_created", "issue.work_product_updated"])("refreshes visible delivered files for %s", action => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.issues.detail("issue-1"), { id: "issue-1", companyId: "company-1", identifier: "PAP-1" });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "issue-1", actorType: "agent", actorId: "agent-1", action,
+    }, { userId: "user-1", agentId: null }, { pathname: "/PAP/issues/PAP-1", isForegrounded: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.attachments("issue-1") });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.workProducts("issue-1") });
+    client.clear();
+  });
+  it("connects trusted local boards without admitting signed-out authenticated users", () => {
+    const canConnect = __liveUpdatesTestUtils.canUseLiveSession;
+    expect(canConnect("success", false, "local_trusted")).toBe(true);
+    expect(canConnect("success", false, "authenticated")).toBe(false);
+    expect(canConnect("success", false, undefined)).toBe(false);
+    expect(canConnect("pending", false, "local_trusted")).toBe(false);
+    expect(canConnect("success", true, "authenticated")).toBe(true);
+  });
+  it("uses the current person's canonical chat for live updates and refreshes reset boundaries", () => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    client.setQueryData(queryKeys.companies.list("user-1"), { companies: [{ id: "company-1", issuePrefix: "PAP" }], unauthorized: false });
+    client.setQueryData(queryKeys.agents.list("company-1"), [{ id: "agent-1", name: "Coder", urlKey: "coder" }]);
+    const chat = { id: "chat-1", companyId: "company-1", identifier: "PAP-1", assigneeAgentId: "agent-1" };
+    client.setQueryData(queryKeys.agentChats.detail("company-1", "user-1", "agent-1"), chat);
+    client.setQueryData(queryKeys.agentChats.detail("company-1", "user-2", "agent-1"), { ...chat, id: "other-chat" });
+    client.setQueryData(queryKeys.issues.detail("chat-1"), chat);
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(client, "/PAP/chats/agent-1", { issueId: "chat-1", runId: "run-1" }, { isForegrounded: true })).toBe(true);
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(client, "/PAP/chats/agent-1", { issueId: "other-chat", runId: "run-2" }, { isForegrounded: true })).toBe(false);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", { entityType: "issue", entityId: "chat-1", action: "issue.conversation_session_started", actorType: "system" }, { userId: "user-1", agentId: null }, { pathname: "/PAP/chats/agent-1", isForegrounded: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["issues", "tree-control-state", "chat-1"] });
+    invalidate.mockClear();
+    __liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(client, "/PAP/chats/agent-1", { agentId: "agent-1", runId: "run-1", status: "succeeded" }, { isForegrounded: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
+    client.clear();
+  });
+  it.each(["ai_connection.default_changed", "ai_connection.reconnected", "connection_grant.revoked"])(
+    "refreshes company AI account previews after %s", (action) => {
+      const invalidateQueries = vi.fn();
+      __liveUpdatesTestUtils.invalidateActivityQueries(
+        { invalidateQueries, getQueryData: () => undefined } as never,
+        "company-1", { entityType: "connection_grant", entityId: "grant-1", action },
+        { userId: "owner", agentId: null },
+      );
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["ai-connections", "company-1"] });
+      expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["ai-connections"] });
+    },
+  );
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
@@ -669,6 +722,58 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("actively refreshes interactions materialized by a visible native status decision", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: (key: unknown) => {
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
+          return {
+            id: "issue-1",
+            identifier: "PAP-759",
+            assigneeAgentId: "agent-1",
+          };
+        }
+        return undefined;
+      },
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.updated",
+        actorType: "system",
+        actorId: "native-status-committer",
+        details: {
+          identifier: "PAP-759",
+          source: "native_status_decision",
+          toStatus: "in_review",
+          reasonCode: "external_verification_required",
+          effectCount: 2,
+        },
+      },
+      { userId: null, agentId: null },
+      { pathname: "/PAP/issues/PAP-759", isForegrounded: true },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+      refetchType: "inactive",
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.interactions("issue-1"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.interactions("issue-1"),
+      refetchType: "inactive",
+    });
+  });
+
   it("keeps visible issue comment updates inactive-only instead of active refetching", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
@@ -794,6 +899,14 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.activeRun("issue-1"),
     });
+    // A native finalizer can persist its selected response without a separate
+    // comment_added event. Terminal refresh must pick up that canonical reply.
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.comments("PAP-759"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.comments("issue-1"),
+    });
     expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("PAP-759")))).toBeNull();
     expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("PAP-759")))).toEqual([]);
     expect(cache.get(JSON.stringify(queryKeys.issues.detail("PAP-759")))).toMatchObject({
@@ -809,6 +922,34 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       executionLockedAt: null,
     });
   });
+
+  it.each(["running", "queued", undefined])(
+    "does not refetch comments on nonterminal run progress: %s",
+    (status) => {
+      const invalidations: unknown[] = [];
+      const queryClient = {
+        invalidateQueries: (input: unknown) => invalidations.push(input),
+        getQueryData: (key: unknown) => {
+          if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
+            return { id: "issue-1", identifier: "PAP-759", assigneeAgentId: "agent-1" };
+          }
+          if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.activeRun("PAP-759"))) {
+            return { id: "run-1" };
+          }
+          return undefined;
+        },
+      };
+      expect(__liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(
+        queryClient as never,
+        "/PAP/issues/PAP-759",
+        { runId: "run-1", agentId: "agent-1", status },
+        { isForegrounded: true },
+      )).toBe(true);
+      for (const ref of ["PAP-759", "issue-1"]) {
+        expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.comments(ref) });
+      }
+    },
+  );
 
   it("ignores run status events for other issues", () => {
     const invalidations: unknown[] = [];
@@ -994,6 +1135,7 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
   it("suppresses run and agent status toasts for the assignee of the visible issue", () => {
     const queryClient = {
       getQueryData: (key: unknown) => {
+        if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.activeRun("PAP-759"))) return { id: "run-1" };
         if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
           return {
             id: "issue-1",
@@ -1061,6 +1203,13 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
     ).toBeNull();
   });
 
+  it.each(["cancelled", "failed"])("does not toast an intentional legacy interruption reported as %s", (status) => {
+    expect(__liveUpdatesTestUtils.buildRunStatusToast({
+      runId: "interrupted-run", agentId: "agent-1", status,
+      errorCode: "operator_interrupted", error: "Interrupted to send queued messages",
+    }, () => "Assistant")).toBeNull();
+  });
+
   it("still builds failure toasts for agent errors and failed runs", () => {
     const queryClient = {
       getQueryData: () => [
@@ -1101,6 +1250,81 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
       title: "CodexCoder run failed",
       body: "boom",
       tone: "error",
+    });
+  });
+
+  it("turns an unlinked chat isolation precondition into one actionable warning without an agent UUID", () => {
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-low-trust",
+          agentId: "31f56712-3944-423e-b7c7-404bb8fbb993",
+          status: "failed",
+          error: "Low-trust execution requires isolated workspaces to be enabled.",
+          errorCode: "low_trust_isolation_unavailable",
+          contextSource: "chat:slack",
+        },
+        () => "Maya E2E",
+      ),
+    ).toEqual({
+      title: "Maya E2E couldn't start this chat",
+      body: "This external chat identity isn't linked, and isolated guest workspaces are disabled. Link the identity in Connectors or enable isolated workspaces, then start a new task.",
+      tone: "warn",
+      ttlMs: 10_000,
+      action: { label: "Open chat connections", href: "/apps" },
+      dedupeKey: "run-status:run-low-trust:failed",
+    });
+
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-low-trust-uncached",
+          agentId: "31f56712-3944-423e-b7c7-404bb8fbb993",
+          status: "failed",
+          errorCode: "low_trust_isolation_unavailable",
+          contextSource: "chat:slack",
+        },
+        () => null,
+      )?.title,
+    ).toBe("Agent couldn't start this chat");
+  });
+
+  it("keeps non-chat and genuine runtime failures on the ordinary error path", () => {
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-low-trust-board",
+          agentId: "agent-1",
+          status: "failed",
+          error: "Low-trust execution requires isolated workspaces to be enabled.",
+          errorCode: "low_trust_isolation_unavailable",
+          contextSource: "issue.assignment",
+        },
+        () => "CodexCoder",
+      ),
+    ).toMatchObject({
+      title: "CodexCoder run failed",
+      tone: "error",
+      action: { label: "View run" },
+    });
+
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-adapter-failure",
+          agentId: "agent-1",
+          status: "failed",
+          error: "Adapter process exited",
+          errorCode: "adapter_failed",
+          contextSource: "chat:slack",
+        },
+        () => "CodexCoder",
+      ),
+    ).toMatchObject({
+      title: "CodexCoder run failed",
+      body: "Adapter process exited",
+      tone: "error",
+      action: { label: "View run" },
     });
   });
 });
@@ -1345,5 +1569,32 @@ describe("dispatchLiveEventToSubscribers", () => {
       ),
     ).not.toThrow();
     expect(received).toEqual(["still-called"]);
+  });
+});
+
+describe("task subtree notification context", () => {
+  const root = { id: "root", companyId: "company", identifier: "PAP-204", assigneeAgentId: "parent-agent" };
+  const descendants = [{ id: "child", identifier: "PAP-205", assigneeAgentId: "child-agent", executionRunId: "child-run" }];
+  const queryClient = {
+    getQueryData: (key: unknown) => {
+      if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-204"))) return root;
+      if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.listByDescendantRoot("company", "root"))) return descendants;
+    },
+  };
+  it("suppresses descendant cancellation and activity on the visible subtree", () => {
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(queryClient as never, "/PAP/issues/PAP-204", { runId: "child-run", agentId: "child-agent", status: "cancelled" }, { isForegrounded: true })).toBe(true);
+    expect(__liveUpdatesTestUtils.shouldSuppressActivityToastForVisibleIssue(queryClient as never, "/PAP/issues/PAP-204", { entityType: "issue", entityId: "child" }, { isForegrounded: true })).toBe(true);
+  });
+  it("uses the event task when a terminal run has already left the cache", () => {
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(queryClient as never, "/PAP/issues/PAP-204", { issueId: "root", runId: "finished-run" }, { isForegrounded: true })).toBe(true);
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(queryClient as never, "/PAP/issues/PAP-204", { issueId: "unrelated", runId: "child-run", agentId: "child-agent" }, { isForegrounded: true })).toBe(false);
+  });
+  it("retains notifications for unrelated tasks and background pages", () => {
+    for (const [agentId, foregrounded] of [["other-agent", true], ["child-agent", true], ["child-agent", false]] as const) {
+      expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(queryClient as never, "/PAP/issues/PAP-204", { agentId, runId: "another-run", status: "cancelled" }, { isForegrounded: foregrounded })).toBe(false);
+    }
+  });
+  it("suppresses the run shown on its own run detail page", () => {
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(queryClient as never, "/PAP/agents/alex/runs/child-run", { runId: "child-run" }, { isForegrounded: true })).toBe(true);
   });
 });

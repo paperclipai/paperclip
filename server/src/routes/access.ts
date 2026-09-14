@@ -57,6 +57,7 @@ import {
   tooManyRequests
 } from "../errors.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 
 /**
  * Floor: when the hosting operator hides the Instance Access surface
@@ -153,6 +154,8 @@ function requestBaseUrl(req: Request) {
 }
 
 function resolveBaseUrl(req: Request, authPublicBaseUrl?: string): string {
+  const runtimeOrigin = runtimeCanonicalOrigin();
+  if (runtimeOrigin) return runtimeOrigin;
   if (authPublicBaseUrl) return authPublicBaseUrl.replace(/\/+$/, "");
   return requestBaseUrl(req);
 }
@@ -666,6 +669,17 @@ export function canReplayOpenClawGatewayInviteAccept(input: {
     input.existingJoinRequest.status === "pending_approval" ||
     input.existingJoinRequest.status === "approved"
   );
+}
+
+export function assertLegacyAgentInviteAdapterType(
+  adapterType: string | null | undefined,
+) {
+  if (adapterType === "paperclip_runner") {
+    throw badRequest(
+      "Paperclip Runner is not available through agent invite onboarding.",
+      { code: "paperclip_runner_invite_onboarding_disabled" },
+    );
+  }
 }
 
 function summarizeSecretForLog(
@@ -3749,6 +3763,11 @@ export function accessRoutes(
           })
         );
       const adapterType = req.body.adapterType ?? null;
+      if (requestType === "agent") {
+        assertLegacyAgentInviteAdapterType(
+          adapterType ?? existingJoinRequestForInvite?.adapterType ?? null,
+        );
+      }
       if (
         inviteAlreadyAccepted &&
         !canReplayHumanInviteAccept &&
@@ -4228,6 +4247,7 @@ export function accessRoutes(
           req.actor.userId ?? null
         );
       } else {
+        assertLegacyAgentInviteAdapterType(existing.adapterType);
         const existingAgents = await agents.list(companyId);
         const managerId = resolveJoinRequestAgentManagerId(existingAgents);
         if (!managerId) {

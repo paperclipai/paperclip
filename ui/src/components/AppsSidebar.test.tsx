@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppsSidebar } from "./AppsSidebar";
+import { AppsSidebar as ProductionAppsSidebar } from "./AppsSidebar.production";
+import { contextualSidebarStyles } from "./contextual-sidebar-styles";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockToolsApi = vi.hoisted(() => ({
@@ -60,6 +62,19 @@ vi.mock("./SidebarNavItem", () => ({
   },
 }));
 
+vi.mock("./SidebarNavItem.production", () => ({
+  SidebarNavItem: (props: {
+    to: string;
+    label: string;
+    end?: boolean;
+    liveCount?: number;
+    badge?: number;
+  }) => {
+    sidebarNavItemMock(props);
+    return <div data-to={props.to}>{props.label}</div>;
+  },
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -97,7 +112,7 @@ describe("AppsSidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("renders Apps and Developer sections in one sidebar", async () => {
+  it("renders the consolidated connector and review doors without a redundant contextual heading", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -112,28 +127,24 @@ describe("AppsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Apps");
-    expect(container.textContent).toContain("Developer");
-    // The Developer boundary caption frames who the door is for (PAP-13241 §5).
-    expect(container.textContent).toContain("Advanced setup for developers");
+    expect(container.textContent).not.toContain("Apps");
+    expect(container.querySelector('nav[aria-label="Connectors"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Developer");
+    expect(container.textContent).not.toContain("Advanced setup for developers");
     expect(container.textContent).not.toContain("Most teams");
     expect(container.textContent).not.toMatch(/you (?:won'?t|will not) need this/i);
-    // "Run your own" / "Paste a config" moved to the Connect-an-app page (PAP-10922);
-    // assert their absence at the item level below.
+    // Paste-config discovery now lives inside the custom connector row;
+    // assert both advanced setup items remain absent at the item level below.
 
-    // Consumer doors stay above the Developer boundary.
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps", label: "Browse", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/connections", label: "Connections", end: true }),
-    );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/review", label: "Review" }),
     );
-    const sidebarText = container.textContent ?? "";
-    expect(sidebarText.indexOf("Connections")).toBeGreaterThan(sidebarText.indexOf("Developer"));
-    // "Needs attention" is no longer a top-level door — it folds into Connections.
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ label: "Connections" }),
+    );
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ label: "Needs attention" }),
     );
@@ -154,8 +165,42 @@ describe("AppsSidebar", () => {
     );
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Rules" }));
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Health" }));
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/advanced/audit" }),
+    );
+    expect(container.querySelector('[data-slot="contextual-sidebar-nav"]')?.className).toBe(
+      contextualSidebarStyles.nav,
+    );
+    expect(
+      Array.from(container.querySelectorAll('[data-slot="contextual-sidebar-group"]')).every(
+        (group) => group.className === contextualSidebarStyles.group,
+      ),
+    ).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uses Connectors terminology throughout the classic contextual sidebar", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProductionAppsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Connectors");
+    expect(container.textContent).not.toContain("Apps");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/audit", label: "Activity", end: true }),
+      expect.objectContaining({ to: "/apps", label: "Browse", end: true }),
     );
 
     await act(async () => {

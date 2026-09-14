@@ -129,7 +129,50 @@ describe("InlineEntitySelector", () => {
 
     const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
+    expect(searchInput?.className).toContain("text-base");
+    expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
     expect(document.activeElement).toBe(searchInput);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("opens on programmatic focus without toggling an open popover closed", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[{ id: "project-1", label: "Project One" }]}
+          placeholder="Project"
+          noneLabel="No project"
+          searchPlaceholder="Search projects..."
+          emptyMessage="No projects found."
+          onChange={vi.fn()}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+
+    await act(async () => {
+      trigger?.focus();
+      await Promise.resolve();
+    });
+    expect(
+      document.querySelector('input[placeholder="Search projects..."]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      trigger?.focus();
+      await Promise.resolve();
+    });
+    expect(
+      document.querySelector('input[placeholder="Search projects..."]'),
+    ).not.toBeNull();
 
     act(() => {
       root.unmount();

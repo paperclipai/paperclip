@@ -34,9 +34,9 @@ The server resolves and persists the runtime once, before provider launch.
 | Persisted runtime | Adapter | Flag | Result |
 | --- | --- | --- | --- |
 | none | Any direct adapter | off or on | Use the existing direct path. |
-| none | `paperclip_runner` with Codex | off | Reject the fresh start with a stable rollout-disabled error. |
-| none | `paperclip_runner` with Codex | on | Use PRP v1 and runnerd. |
-| none | `paperclip_runner` with another provider | on | Reject the unsupported provider before runnerd starts. |
+| none | `paperclip_runner` with any qualified provider | off | Reject the fresh start with a stable rollout-disabled error. |
+| none | `paperclip_runner` with a qualified provider | on | Use PRP v1 and the provider's persisted runnerd backend. |
+| none | `paperclip_runner` with an incomplete or unqualified profile | on | Reject the profile before runnerd starts. |
 | direct | Any | changed later | Keep the persisted direct path. |
 | native | Any | changed later | Keep the persisted native path for read, cancel, recovery, and finalization. |
 
@@ -84,8 +84,8 @@ When the rollout flag is off:
 
 When the rollout flag is on:
 
-- creation, import, and edit accept `paperclip_runner` only with provider
-  `codex` and valid Codex configuration;
+- creation, import, and edit accept `paperclip_runner` only with a qualified
+  Codex, OpenCode, Claude Managed, AWS AgentCore, or Claude/Codex ACPX profile;
 - switching from a direct adapter affects only future unresolved runs; and
 - switching away from the runner affects only future unresolved runs.
 

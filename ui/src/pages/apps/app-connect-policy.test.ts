@@ -25,16 +25,27 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=notion"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=jira"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=asana"))).toBe(true);
-    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
-    expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("byo=1"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(false);
   });
 
-  it("admits retained hidden-provider reconnects without opening fresh setup", () => {
-    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(false);
-    expect(canEnterAppsConnect(new URLSearchParams("source=github&reconnect=connection-1"))).toBe(true);
+  it("keeps only exact custom MCP reconnects on the legacy BYO query contract", () => {
+    expect(canEnterAppsConnect(new URLSearchParams(
+      "byo=1&reconnect=connection-1&applicationId=application-1&link=https%3A%2F%2Fmcp.example.com",
+    ))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams(
+      "byo=1&reconnect=connection-1&applicationId=application-1",
+    ))).toBe(false);
+  });
+
+  it("preserves supported Slack tool setup and exact known-provider reconnects", () => {
+    // Slack's current customer-owned OAuth tool method supports catalog setup.
+    expect(canEnterAppsConnect(new URLSearchParams("source=slack"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=slack&reconnect=connection-1"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown&reconnect=connection-1"))).toBe(false);
   });
 
@@ -57,7 +68,7 @@ describe("app connect policy", () => {
       const href = appSourceConnectHref(app.slug);
       const searchParams = new URL(href, "http://paperclip.test").searchParams;
 
-      expect(canEnterAppsConnect(searchParams), app.slug).toBe(true);
+      expect(canEnterAppsConnect(searchParams, { chatConnectorsEnabled: true }), app.slug).toBe(true);
       expect(resolveAppsConnectRouteKey({ sourceSlug: searchParams.get("source") }), app.slug).toBe(app.slug);
     }
   });
@@ -69,5 +80,13 @@ describe("app connect policy", () => {
     expect(resolveAppsConnectRouteKey({ sourceSlug: "context7" })).toBe("context7");
     expect(resolveAppsConnectRouteKey({ sourceSlug: "supabase" })).toBe("supabase");
     expect(resolveAppsConnectRouteKey({})).toBeUndefined();
+  });
+
+  it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
+    for (const source of ["discord", "telegram", "microsoft-teams"]) {
+      expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);
+      expect(canEnterAppsConnect(new URLSearchParams({ source, reconnect: "connection-1" })), source).toBe(false);
+    }
   });
 });

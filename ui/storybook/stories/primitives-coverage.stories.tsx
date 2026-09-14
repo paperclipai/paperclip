@@ -216,6 +216,7 @@ export const RadioCards: Story = {
               value: "draft",
               title: "Draft for review",
               description: "The agent proposes; you approve before it ships.",
+              icon: <Users className="h-4 w-4" aria-hidden="true" />,
             },
             {
               value: "auto",

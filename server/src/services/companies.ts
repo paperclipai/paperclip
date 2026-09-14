@@ -14,6 +14,7 @@ import {
   projects,
   goals,
   heartbeatRuns,
+  runIdentityContexts,
   heartbeatRunEvents,
   costEvents,
   financeEvents,
@@ -536,6 +537,7 @@ export function companyService(db: Db) {
         }
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
+        await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));

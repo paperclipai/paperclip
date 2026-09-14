@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -9,6 +17,7 @@ import {
   createDb,
   goals,
   heartbeatRuns,
+  issueComments,
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
@@ -25,7 +34,9 @@ import {
 } from "../services/question-response-delivery.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+  ? describe
+  : describe.skip;
 
 const DIRECT_ADAPTER_TYPES = [
   "acpx_local",
@@ -48,16 +59,21 @@ const DIRECT_ADAPTER_TYPES = [
 
 describeEmbeddedPostgres("question response delivery", () => {
   let db!: ReturnType<typeof createDb>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let tempDb: Awaited<
+    ReturnType<typeof startEmbeddedPostgresTestDatabase>
+  > | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-question-delivery-");
+    tempDb = await startEmbeddedPostgresTestDatabase(
+      "paperclip-question-delivery-",
+    );
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
     await db.delete(issueQuestionResponseDeliveries);
     await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -71,12 +87,16 @@ describeEmbeddedPostgres("question response delivery", () => {
     await tempDb?.cleanup();
   });
 
-  async function seed(args: {
-    adapterType?: string;
-    runtimeMode?: "legacy" | "native";
-    sourceStatus?: string;
-    successorStatus?: "queued" | "running";
-  } = {}) {
+  async function seed(
+    args: {
+      adapterType?: string;
+      runtimeMode?: "legacy" | "native";
+      sourceStatus?: string;
+      successorStatus?: "queued" | "running";
+      sourceCommentBody?: string;
+      attachSourceCommentToInteraction?: boolean;
+    } = {},
+  ) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const goalId = randomUUID();
@@ -100,7 +120,13 @@ describeEmbeddedPostgres("question response delivery", () => {
       runtimeConfig: {},
       permissions: {},
     });
-    await db.insert(goals).values({ id: goalId, companyId, title: "Test", level: "task", status: "active" });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Test",
+      level: "task",
+      status: "active",
+    });
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -119,7 +145,9 @@ describeEmbeddedPostgres("question response delivery", () => {
       runtimeMode: args.runtimeMode ?? "native",
       driverKind: "codex",
       contextSnapshot: { issueId },
-      ...(args.sourceStatus === "running" ? { startedAt: new Date() } : { finishedAt: new Date() }),
+      ...(args.sourceStatus === "running"
+        ? { startedAt: new Date() }
+        : { finishedAt: new Date() }),
     });
     if (successorRunId && args.successorStatus) {
       await db.insert(heartbeatRuns).values({
@@ -131,7 +159,20 @@ describeEmbeddedPostgres("question response delivery", () => {
         runtimeMode: args.runtimeMode ?? "native",
         driverKind: "codex",
         contextSnapshot: { issueId },
-        ...(args.successorStatus === "running" ? { startedAt: new Date() } : {}),
+        ...(args.successorStatus === "running"
+          ? { startedAt: new Date() }
+          : {}),
+      });
+    }
+
+    const sourceCommentId = args.sourceCommentBody ? randomUUID() : null;
+    if (sourceCommentId) {
+      await db.insert(issueComments).values({
+        id: sourceCommentId,
+        companyId,
+        issueId,
+        authorUserId: "external-user",
+        body: args.sourceCommentBody!,
       });
     }
 
@@ -141,22 +182,78 @@ describeEmbeddedPostgres("question response delivery", () => {
       {
         kind: "ask_user_questions",
         continuationPolicy: "wake_assignee",
+        sourceCommentId:
+          args.attachSourceCommentToInteraction === false
+            ? null
+            : sourceCommentId,
         sourceRunId,
         payload: {
           version: 1,
           title: "Server choices",
           questions: [
-            { id: "purpose", prompt: "What is it for?", selectionMode: "single", required: true, options: [{ id: "custom", label: "Write an answer", freeText: true }] },
-            { id: "runtime", prompt: "Which runtime?", selectionMode: "single", required: true, options: [{ id: "node", label: "Node.js" }, { id: "bun", label: "Bun" }] },
-            { id: "features", prompt: "Which features?", selectionMode: "multi", options: [{ id: "health", label: "Health check" }, { id: "logs", label: "Request logs" }] },
+            {
+              id: "purpose",
+              prompt: "What is it for?",
+              selectionMode: "single",
+              required: true,
+              options: [
+                { id: "custom", label: "Write an answer", freeText: true },
+              ],
+            },
+            {
+              id: "runtime",
+              prompt: "Which runtime?",
+              selectionMode: "single",
+              required: true,
+              options: [
+                { id: "node", label: "Node.js" },
+                { id: "bun", label: "Bun" },
+              ],
+            },
+            {
+              id: "features",
+              prompt: "Which features?",
+              selectionMode: "multi",
+              options: [
+                { id: "health", label: "Health check" },
+                { id: "logs", label: "Request logs" },
+              ],
+            },
           ],
           questionSet: {
             schema: "paperclip.question_set.v1",
             title: "Server choices",
             questions: [
-              { id: "purpose", header: "Purpose", prompt: "What is it for?", required: true, answerMode: "text" },
-              { id: "runtime", header: "Runtime", prompt: "Which runtime?", required: true, answerMode: "single_select", options: [{ id: "node", label: "Node.js" }, { id: "bun", label: "Bun" }] },
-              { id: "features", header: "Features", prompt: "Which features?", required: false, answerMode: "multi_select", options: [{ id: "health", label: "Health check" }, { id: "logs", label: "Request logs" }], customAnswer: { enabled: true, label: "Other" } },
+              {
+                id: "purpose",
+                header: "Purpose",
+                prompt: "What is it for?",
+                required: true,
+                answerMode: "text",
+              },
+              {
+                id: "runtime",
+                header: "Runtime",
+                prompt: "Which runtime?",
+                required: true,
+                answerMode: "single_select",
+                options: [
+                  { id: "node", label: "Node.js" },
+                  { id: "bun", label: "Bun" },
+                ],
+              },
+              {
+                id: "features",
+                header: "Features",
+                prompt: "Which features?",
+                required: false,
+                answerMode: "multi_select",
+                options: [
+                  { id: "health", label: "Health check" },
+                  { id: "logs", label: "Request logs" },
+                ],
+                customAnswer: { enabled: true, label: "Other" },
+              },
             ],
           },
         },
@@ -166,14 +263,28 @@ describeEmbeddedPostgres("question response delivery", () => {
     const answered = await interactionSvc.answerQuestions(
       { id: issueId, companyId, status: "in_progress" },
       interaction.id,
-      { answers: [
-        { questionId: "purpose", optionIds: [], otherText: "Internal API" },
-        { questionId: "runtime", optionIds: ["node"] },
-        { questionId: "features", optionIds: ["health", "logs"], otherText: "Metrics" },
-      ] },
+      {
+        answers: [
+          { questionId: "purpose", optionIds: [], otherText: "Internal API" },
+          { questionId: "runtime", optionIds: ["node"] },
+          {
+            questionId: "features",
+            optionIds: ["health", "logs"],
+            otherText: "Metrics",
+          },
+        ],
+      },
       { userId: "board-user" },
     );
-    return { companyId, agentId, issueId, sourceRunId, successorRunId, interaction: answered };
+    return {
+      companyId,
+      agentId,
+      issueId,
+      sourceRunId,
+      sourceCommentId,
+      successorRunId,
+      interaction: answered,
+    };
   }
 
   it("persists the receipt atomically and steers exactly once into a running successor", async () => {
@@ -190,10 +301,19 @@ describeEmbeddedPostgres("question response delivery", () => {
       contextSnapshot: { issueId: seeded.issueId },
       startedAt: new Date(),
     });
-    await db.update(issues).set({ executionRunId: seeded.successorRunId })
+    await db
+      .update(issues)
+      .set({ executionRunId: seeded.successorRunId })
       .where(eq(issues.id, seeded.issueId));
-    const persistedBeforeDelivery = await db.select().from(issueQuestionResponseDeliveries)
-      .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id))
+    const persistedBeforeDelivery = await db
+      .select()
+      .from(issueQuestionResponseDeliveries)
+      .where(
+        eq(
+          issueQuestionResponseDeliveries.interactionId,
+          seeded.interaction.id,
+        ),
+      )
       .then((rows) => rows[0]);
     expect(persistedBeforeDelivery).toMatchObject({
       status: "pending",
@@ -219,11 +339,13 @@ describeEmbeddedPostgres("question response delivery", () => {
     });
     expect(second).toMatchObject({ mode: "steered", duplicate: true });
     expect(steer).toHaveBeenCalledTimes(1);
-    expect(steer).toHaveBeenCalledWith(expect.objectContaining({
-      runId: seeded.successorRunId,
-      correlationId: `question-response:${seeded.interaction.id}`,
-      message: expect.stringContaining("- Runtime — Which runtime?: Node.js"),
-    }));
+    expect(steer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: seeded.successorRunId,
+        correlationId: `question-response:${seeded.interaction.id}`,
+        message: expect.stringContaining("- Runtime — Which runtime?: Node.js"),
+      }),
+    );
     expect(wakeup).not.toHaveBeenCalled();
 
     const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
@@ -234,11 +356,221 @@ describeEmbeddedPostgres("question response delivery", () => {
       targetTurnId: "turn-successor",
       attemptCount: 1,
     });
-    const deliveryEvents = await db.select().from(activityLog)
+    const deliveryEvents = await db
+      .select()
+      .from(activityLog)
       .where(eq(activityLog.action, "issue.question_response_delivered"));
     expect(deliveryEvents).toHaveLength(1);
-    expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain("Internal API");
+    expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain(
+      "Internal API",
+    );
     expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain("Node.js");
+  });
+
+  it.each(["native", "legacy"] as const)(
+    "never mixes an external-chat question response into another live chat run in %s mode",
+    async (runtimeMode) => {
+      const seeded = await seed({
+        runtimeMode,
+        sourceStatus: "running",
+        successorStatus: "running",
+        sourceCommentBody:
+          "External request whose complete trailing instructions must survive the response continuation.",
+        attachSourceCommentToInteraction: false,
+      });
+      if (!seeded.sourceCommentId) {
+        throw new Error("Expected a source comment for the external-chat run");
+      }
+      expect(seeded.interaction.sourceCommentId).toBeNull();
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            issueId: seeded.issueId,
+            source: "chat:slack",
+            commentId: seeded.sourceCommentId,
+            wakeCommentId: seeded.sourceCommentId,
+            wakeCommentIds: [seeded.sourceCommentId],
+          },
+        })
+        .where(eq(heartbeatRuns.id, seeded.sourceRunId));
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            issueId: seeded.issueId,
+            source: "chat:telegram",
+            wakeCommentId: randomUUID(),
+          },
+        })
+        .where(eq(heartbeatRuns.id, seeded.successorRunId!));
+      await db
+        .update(issues)
+        .set({ executionRunId: seeded.successorRunId })
+        .where(eq(issues.id, seeded.issueId));
+
+      const [dedicatedRun] = await db
+        .insert(heartbeatRuns)
+        .values({
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          agentId: seeded.agentId,
+          invocationSource: "automation",
+          status: "queued",
+          runtimeMode: "native",
+          driverKind: "codex",
+          contextSnapshot: {
+            issueId: seeded.issueId,
+            interactionId: seeded.interaction.id,
+            sourceRunId: seeded.sourceRunId,
+            source: "issue.interaction.respond",
+          },
+        })
+        .returning();
+      if (!dedicatedRun) throw new Error("Expected dedicated continuation run");
+      const wakeup = vi.fn().mockResolvedValue(dedicatedRun);
+      const cancelRun = vi.fn().mockResolvedValue({
+        id: seeded.sourceRunId,
+        status: "cancelled",
+      });
+      const steer = vi.fn();
+      const resolveNativeQuestion = vi
+        .fn()
+        .mockResolvedValue("queued" as const);
+      const outcome = await questionResponseDeliveryService(db, {
+        heartbeat: { wakeup, cancelRun } as never,
+        steer,
+        resolveNativeQuestion,
+      }).deliver(seeded.interaction.id);
+
+      expect(resolveNativeQuestion).not.toHaveBeenCalled();
+      expect(steer).not.toHaveBeenCalled();
+      expect(cancelRun).toHaveBeenCalledWith(
+        seeded.sourceRunId,
+        "Superseded by a dedicated external-chat answer continuation",
+        expect.objectContaining({
+          errorCode: "external_chat_continuation",
+          resultJson: expect.objectContaining({
+            interactionId: seeded.interaction.id,
+            externalChatContinuation: true,
+          }),
+          terminationGraceMs: 2_000,
+        }),
+      );
+      expect(cancelRun.mock.invocationCallOrder[0]).toBeLessThan(
+        wakeup.mock.invocationCallOrder[0]!,
+      );
+      expect(wakeup).toHaveBeenCalledWith(
+        seeded.agentId,
+        expect.objectContaining({
+          allowRunCoalescing: false,
+          idempotencyKey: `question-response:${seeded.interaction.id}`,
+          payload: expect.objectContaining({
+            externalChatContinuation: true,
+            sourceCommentId: seeded.sourceCommentId,
+            wakeCommentId: seeded.sourceCommentId,
+            wakeCommentIds: [seeded.sourceCommentId],
+          }),
+          contextSnapshot: expect.objectContaining({
+            externalChatContinuation: true,
+            sourceCommentId: seeded.sourceCommentId,
+            wakeCommentId: seeded.sourceCommentId,
+            wakeCommentIds: [seeded.sourceCommentId],
+          }),
+        }),
+      );
+      expect(outcome).toMatchObject({
+        status: "fallback_queued",
+        mode: "wake_fallback",
+        targetRunId: dedicatedRun.id,
+      });
+      expect(dedicatedRun.id).not.toBe(seeded.sourceRunId);
+      const [delivery] = await db
+        .select()
+        .from(issueQuestionResponseDeliveries);
+      expect(delivery).toMatchObject({
+        lastErrorCode: "steering_external_chat_context_incompatible",
+        targetRunId: dedicatedRun.id,
+      });
+    },
+  );
+
+  it("does not promote a source-run wake comment from another issue", async () => {
+    const seeded = await seed();
+    const goalId = await db
+      .select({ goalId: issues.goalId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]?.goalId);
+    if (!goalId) throw new Error("Expected source issue goal");
+    const otherIssueId = randomUUID();
+    const otherCommentId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId: seeded.companyId,
+      goalId,
+      title: "Unrelated issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values({
+      id: otherCommentId,
+      companyId: seeded.companyId,
+      issueId: otherIssueId,
+      authorUserId: "external-user",
+      body: "This other issue must remain outside the continuation.",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: seeded.issueId,
+          source: "chat:slack",
+          wakeCommentId: otherCommentId,
+          wakeCommentIds: [otherCommentId],
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.sourceRunId));
+
+    const fallbackRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: fallbackRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "automation",
+      status: "queued",
+      runtimeMode: "native",
+      driverKind: "codex",
+      contextSnapshot: {
+        issueId: seeded.issueId,
+        interactionId: seeded.interaction.id,
+        source: "issue.interaction.respond",
+      },
+    });
+    const wakeup = vi.fn().mockResolvedValue({
+      id: fallbackRunId,
+      driverKind: "codex",
+    });
+    const resolveNativeQuestion = vi.fn().mockResolvedValue("queued" as const);
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      resolveNativeQuestion,
+    }).deliver(seeded.interaction.id);
+
+    expect(resolveNativeQuestion).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({
+      mode: "wake_fallback",
+      targetRunId: fallbackRunId,
+    });
+    const wakeOptions = wakeup.mock.calls[0]?.[1];
+    expect(wakeOptions?.payload).toMatchObject({ sourceCommentId: null });
+    expect(wakeOptions?.payload).not.toHaveProperty("wakeCommentId");
+    expect(wakeOptions?.payload).not.toHaveProperty("wakeCommentIds");
+    expect(wakeOptions?.contextSnapshot).toMatchObject({
+      sourceCommentId: null,
+    });
+    expect(wakeOptions?.contextSnapshot).not.toHaveProperty("wakeCommentId");
+    expect(wakeOptions?.contextSnapshot).not.toHaveProperty("wakeCommentIds");
   });
 
   it("resolves an in-flight native input request before creating a continuation", async () => {
@@ -260,10 +592,12 @@ describeEmbeddedPostgres("question response delivery", () => {
       mode: "steered",
       targetRunId: seeded.sourceRunId,
     });
-    expect(resolveNativeQuestion).toHaveBeenCalledWith(expect.objectContaining({
-      id: seeded.interaction.id,
-      status: "answered",
-    }));
+    expect(resolveNativeQuestion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: seeded.interaction.id,
+        status: "answered",
+      }),
+    );
     expect(wakeup).not.toHaveBeenCalled();
   });
 
@@ -293,7 +627,9 @@ describeEmbeddedPostgres("question response delivery", () => {
 
   it("coalesces into a queued successor without creating another wake", async () => {
     const seeded = await seed({ successorStatus: "queued" });
-    const successor = await db.select().from(heartbeatRuns)
+    const successor = await db
+      .select()
+      .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, seeded.successorRunId!))
       .then((rows) => rows[0]!);
     const wakeup = vi.fn().mockResolvedValue(successor);
@@ -303,7 +639,11 @@ describeEmbeddedPostgres("question response delivery", () => {
       steer,
     }).deliver(seeded.interaction.id);
 
-    expect(outcome).toMatchObject({ status: "delivered", mode: "coalesced", targetRunId: successor.id });
+    expect(outcome).toMatchObject({
+      status: "delivered",
+      mode: "coalesced",
+      targetRunId: successor.id,
+    });
     expect(steer).not.toHaveBeenCalled();
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
@@ -344,16 +684,20 @@ describeEmbeddedPostgres("question response delivery", () => {
     const wakeup = vi.fn().mockImplementation(async () => {
       wakeAttempts += 1;
       if (wakeAttempts <= 5) return null;
-      return db.insert(heartbeatRuns).values({
-        id: fallbackRunId,
-        companyId: seeded.companyId,
-        agentId: seeded.agentId,
-        invocationSource: "automation",
-        status: "queued",
-        runtimeMode: "legacy",
-        driverKind: "codex",
-        contextSnapshot: { issueId: seeded.issueId },
-      }).returning().then((rows) => rows[0]!);
+      return db
+        .insert(heartbeatRuns)
+        .values({
+          id: fallbackRunId,
+          companyId: seeded.companyId,
+          agentId: seeded.agentId,
+          invocationSource: "automation",
+          status: "queued",
+          runtimeMode: "legacy",
+          driverKind: "codex",
+          contextSnapshot: { issueId: seeded.issueId },
+        })
+        .returning()
+        .then((rows) => rows[0]!);
     });
     const service = questionResponseDeliveryService(db, {
       heartbeat: { wakeup } as never,
@@ -386,17 +730,22 @@ describeEmbeddedPostgres("question response delivery", () => {
     const wakeup = vi.fn().mockImplementation(async () => {
       wakeAttempts += 1;
       if (wakeAttempts <= 5) return null;
-      if (wakeAttempts === 6) throw new Error("scheduler temporarily unavailable");
-      return db.insert(heartbeatRuns).values({
-        id: fallbackRunId,
-        companyId: seeded.companyId,
-        agentId: seeded.agentId,
-        invocationSource: "automation",
-        status: "queued",
-        runtimeMode: "legacy",
-        driverKind: "codex",
-        contextSnapshot: { issueId: seeded.issueId },
-      }).returning().then((rows) => rows[0]!);
+      if (wakeAttempts === 6)
+        throw new Error("scheduler temporarily unavailable");
+      return db
+        .insert(heartbeatRuns)
+        .values({
+          id: fallbackRunId,
+          companyId: seeded.companyId,
+          agentId: seeded.agentId,
+          invocationSource: "automation",
+          status: "queued",
+          runtimeMode: "legacy",
+          driverKind: "codex",
+          contextSnapshot: { issueId: seeded.issueId },
+        })
+        .returning()
+        .then((rows) => rows[0]!);
     });
     const service = questionResponseDeliveryService(db, {
       heartbeat: { wakeup } as never,
@@ -407,7 +756,9 @@ describeEmbeddedPostgres("question response delivery", () => {
       await expect(service.deliver(seeded.interaction.id)).resolves.toBeNull();
     }
     await expect(service.deliver(seeded.interaction.id)).resolves.toBeNull();
-    const [afterError] = await db.select().from(issueQuestionResponseDeliveries);
+    const [afterError] = await db
+      .select()
+      .from(issueQuestionResponseDeliveries);
     expect(afterError).toMatchObject({
       status: "pending",
       attemptCount: 6,
@@ -415,10 +766,12 @@ describeEmbeddedPostgres("question response delivery", () => {
       lastErrorCode: "scheduler temporarily unavailable",
     });
 
-    await expect(service.deliver(seeded.interaction.id)).resolves.toMatchObject({
-      status: "fallback_queued",
-      targetRunId: fallbackRunId,
-    });
+    await expect(service.deliver(seeded.interaction.id)).resolves.toMatchObject(
+      {
+        status: "fallback_queued",
+        targetRunId: fallbackRunId,
+      },
+    );
     const [delivered] = await db.select().from(issueQuestionResponseDeliveries);
     expect(delivered).toMatchObject({
       status: "fallback_queued",
@@ -440,62 +793,77 @@ describeEmbeddedPostgres("question response delivery", () => {
       idempotencyKey,
     } as const;
 
-    await db.insert(agentWakeupRequests).values({ ...request, status: "queued" });
-    await expect(db.insert(agentWakeupRequests).values({
-      ...request,
-      status: "coalesced",
-    })).rejects.toMatchObject({ cause: { code: "23505" } });
+    await db
+      .insert(agentWakeupRequests)
+      .values({ ...request, status: "queued" });
+    await expect(
+      db.insert(agentWakeupRequests).values({
+        ...request,
+        status: "coalesced",
+      }),
+    ).rejects.toMatchObject({ cause: { code: "23505" } });
 
     // Suppression receipts are intentionally outside the fence so the outbox
     // can retry after scheduling is enabled again.
-    await expect(db.insert(agentWakeupRequests).values({
-      ...request,
-      status: "skipped",
-      finishedAt: new Date(),
-    })).resolves.toBeDefined();
+    await expect(
+      db.insert(agentWakeupRequests).values({
+        ...request,
+        status: "skipped",
+        finishedAt: new Date(),
+      }),
+    ).resolves.toBeDefined();
   });
 
   it("reuses the winning wake when a concurrent insert hits the idempotency fence", async () => {
     const seeded = await seed({ sourceStatus: "running" });
     const fallbackRunId = randomUUID();
-    const wakeup = vi.fn().mockImplementation(async (
-      _agentId: string,
-      options: { idempotencyKey?: string | null },
-    ) => {
-      const request = {
-        companyId: seeded.companyId,
-        agentId: seeded.agentId,
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_commented",
-        idempotencyKey: options.idempotencyKey,
-      } as const;
-      const [winner] = await db.insert(agentWakeupRequests).values({
-        ...request,
-        status: "queued",
-      }).returning();
-      await db.insert(heartbeatRuns).values({
-        id: fallbackRunId,
-        companyId: seeded.companyId,
-        agentId: seeded.agentId,
-        invocationSource: "automation",
-        status: "queued",
-        runtimeMode: "legacy",
-        driverKind: "codex",
-        wakeupRequestId: winner!.id,
-        contextSnapshot: { issueId: seeded.issueId },
-      });
-      await db.update(agentWakeupRequests).set({ runId: fallbackRunId })
-        .where(eq(agentWakeupRequests.id, winner!.id));
+    const wakeup = vi
+      .fn()
+      .mockImplementation(
+        async (
+          _agentId: string,
+          options: { idempotencyKey?: string | null },
+        ) => {
+          const request = {
+            companyId: seeded.companyId,
+            agentId: seeded.agentId,
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            idempotencyKey: options.idempotencyKey,
+          } as const;
+          const [winner] = await db
+            .insert(agentWakeupRequests)
+            .values({
+              ...request,
+              status: "queued",
+            })
+            .returning();
+          await db.insert(heartbeatRuns).values({
+            id: fallbackRunId,
+            companyId: seeded.companyId,
+            agentId: seeded.agentId,
+            invocationSource: "automation",
+            status: "queued",
+            runtimeMode: "legacy",
+            driverKind: "codex",
+            wakeupRequestId: winner!.id,
+            contextSnapshot: { issueId: seeded.issueId },
+          });
+          await db
+            .update(agentWakeupRequests)
+            .set({ runId: fallbackRunId })
+            .where(eq(agentWakeupRequests.id, winner!.id));
 
-      // Model the losing claimant reaching the same transactional insert after
-      // the winner commits. The service must recover the winner's receipt.
-      await db.insert(agentWakeupRequests).values({
-        ...request,
-        status: "coalesced",
-      });
-      throw new Error("unreachable");
-    });
+          // Model the losing claimant reaching the same transactional insert after
+          // the winner commits. The service must recover the winner's receipt.
+          await db.insert(agentWakeupRequests).values({
+            ...request,
+            status: "coalesced",
+          });
+          throw new Error("unreachable");
+        },
+      );
 
     const outcome = await questionResponseDeliveryService(db, {
       heartbeat: { wakeup } as never,
@@ -517,9 +885,25 @@ describeEmbeddedPostgres("question response delivery", () => {
     });
   });
 
-  it("reuses a durable wake receipt instead of issuing a duplicate continuation", async () => {
+  it("settles against a canonical wake from the previous assignee without retrying forever", async () => {
     const seeded = await seed({ sourceStatus: "running" });
-    const [wakeRequest] = await db.insert(agentWakeupRequests).values({
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId: seeded.companyId,
+      name: "Replacement runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: replacementAgentId })
+      .where(eq(issues.id, seeded.issueId));
+    await db.insert(agentWakeupRequests).values({
       companyId: seeded.companyId,
       agentId: seeded.agentId,
       source: "automation",
@@ -527,17 +911,57 @@ describeEmbeddedPostgres("question response delivery", () => {
       reason: "issue_commented",
       status: "queued",
       idempotencyKey: `question-response:${seeded.interaction.id}`,
-    }).returning();
-    const [wakeRun] = await db.insert(heartbeatRuns).values({
-      companyId: seeded.companyId,
-      agentId: seeded.agentId,
-      invocationSource: "automation",
-      status: "queued",
-      runtimeMode: "legacy",
-      wakeupRequestId: wakeRequest!.id,
-      contextSnapshot: { issueId: seeded.issueId },
-    }).returning();
-    await db.update(agentWakeupRequests).set({ runId: wakeRun!.id })
+    });
+    const wakeup = vi.fn();
+
+    const outcome = await questionResponseDeliveryService(db, {
+      heartbeat: { wakeup } as never,
+      steer: vi.fn(),
+    }).deliver(seeded.interaction.id);
+
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({
+      status: "fallback_queued",
+      mode: "wake_fallback",
+      targetRunId: null,
+    });
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
+    expect(delivery).toMatchObject({
+      status: "fallback_queued",
+      attemptCount: 1,
+      errorCount: 0,
+    });
+  });
+
+  it("reuses a durable wake receipt instead of issuing a duplicate continuation", async () => {
+    const seeded = await seed({ sourceStatus: "running" });
+    const [wakeRequest] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        status: "queued",
+        idempotencyKey: `question-response:${seeded.interaction.id}`,
+      })
+      .returning();
+    const [wakeRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        invocationSource: "automation",
+        status: "queued",
+        runtimeMode: "legacy",
+        wakeupRequestId: wakeRequest!.id,
+        contextSnapshot: { issueId: seeded.issueId },
+      })
+      .returning();
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: wakeRun!.id })
       .where(eq(agentWakeupRequests.id, wakeRequest!.id));
     const wakeup = vi.fn();
 
@@ -556,27 +980,35 @@ describeEmbeddedPostgres("question response delivery", () => {
 
   it("recovers a completed wake when receipt finalization was interrupted", async () => {
     const seeded = await seed({ sourceStatus: "running" });
-    const [wakeRequest] = await db.insert(agentWakeupRequests).values({
-      companyId: seeded.companyId,
-      agentId: seeded.agentId,
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_commented",
-      status: "completed",
-      idempotencyKey: `question-response:${seeded.interaction.id}`,
-      finishedAt: new Date(),
-    }).returning();
-    const [wakeRun] = await db.insert(heartbeatRuns).values({
-      companyId: seeded.companyId,
-      agentId: seeded.agentId,
-      invocationSource: "automation",
-      status: "succeeded",
-      runtimeMode: "legacy",
-      wakeupRequestId: wakeRequest!.id,
-      contextSnapshot: { issueId: seeded.issueId },
-      finishedAt: new Date(),
-    }).returning();
-    await db.update(agentWakeupRequests).set({ runId: wakeRun!.id })
+    const [wakeRequest] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        status: "completed",
+        idempotencyKey: `question-response:${seeded.interaction.id}`,
+        finishedAt: new Date(),
+      })
+      .returning();
+    const [wakeRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: seeded.companyId,
+        agentId: seeded.agentId,
+        invocationSource: "automation",
+        status: "succeeded",
+        runtimeMode: "legacy",
+        wakeupRequestId: wakeRequest!.id,
+        contextSnapshot: { issueId: seeded.issueId },
+        finishedAt: new Date(),
+      })
+      .returning();
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: wakeRun!.id })
       .where(eq(agentWakeupRequests.id, wakeRequest!.id));
     const wakeup = vi.fn();
 
@@ -629,8 +1061,15 @@ describeEmbeddedPostgres("question response delivery", () => {
 
     const deliveryPromise = service.deliver(seeded.interaction.id);
     await vi.waitFor(() => expect(wakeup).toHaveBeenCalledTimes(1));
-    const [claimedRow] = await db.select().from(issueQuestionResponseDeliveries)
-      .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+    const [claimedRow] = await db
+      .select()
+      .from(issueQuestionResponseDeliveries)
+      .where(
+        eq(
+          issueQuestionResponseDeliveries.interactionId,
+          seeded.interaction.id,
+        ),
+      );
     const claimedAt = claimedRow!.lastAttemptAt!.getTime();
 
     // Move the clock past claimStaleMs, then wait for a real renewal tick to
@@ -638,8 +1077,15 @@ describeEmbeddedPostgres("question response delivery", () => {
     // a fixed real-time sleep was long enough.
     clock = new Date(clock.getTime() + 1000);
     await vi.waitFor(async () => {
-      const [row] = await db.select().from(issueQuestionResponseDeliveries)
-        .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+      const [row] = await db
+        .select()
+        .from(issueQuestionResponseDeliveries)
+        .where(
+          eq(
+            issueQuestionResponseDeliveries.interactionId,
+            seeded.interaction.id,
+          ),
+        );
       expect(row?.lastAttemptAt?.getTime()).toBeGreaterThan(claimedAt);
     });
 
@@ -648,17 +1094,27 @@ describeEmbeddedPostgres("question response delivery", () => {
     await expect(deliveryPromise).resolves.toBeNull();
 
     expect(wakeup).toHaveBeenCalledTimes(1);
-    const [delivery] = await db.select().from(issueQuestionResponseDeliveries)
-      .where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+    const [delivery] = await db
+      .select()
+      .from(issueQuestionResponseDeliveries)
+      .where(
+        eq(
+          issueQuestionResponseDeliveries.interactionId,
+          seeded.interaction.id,
+        ),
+      );
     expect(delivery).toMatchObject({ status: "pending", attemptCount: 1 });
   });
 
   it("fences a stale worker after a newer claim generation takes ownership", async () => {
     const seeded = await seed({ sourceStatus: "running" });
     let releaseFirstWake!: (value: { id: string; driverKind: string }) => void;
-    const firstWakeup = vi.fn(() => new Promise<{ id: string; driverKind: string }>((resolve) => {
-      releaseFirstWake = resolve;
-    }));
+    const firstWakeup = vi.fn(
+      () =>
+        new Promise<{ id: string; driverKind: string }>((resolve) => {
+          releaseFirstWake = resolve;
+        }),
+    );
     const firstService = questionResponseDeliveryService(db, {
       heartbeat: { wakeup: firstWakeup } as never,
       steer: vi.fn(),
@@ -671,22 +1127,36 @@ describeEmbeddedPostgres("question response delivery", () => {
 
     // Simulate recovery after the first worker stopped renewing. The next
     // claim increments attemptCount, which is the fencing generation.
-    await db.update(issueQuestionResponseDeliveries).set({
-      status: "pending",
-      lastAttemptAt: new Date(0),
-    }).where(eq(issueQuestionResponseDeliveries.interactionId, seeded.interaction.id));
+    await db
+      .update(issueQuestionResponseDeliveries)
+      .set({
+        status: "pending",
+        lastAttemptAt: new Date(0),
+      })
+      .where(
+        eq(
+          issueQuestionResponseDeliveries.interactionId,
+          seeded.interaction.id,
+        ),
+      );
 
     const secondRunId = randomUUID();
-    const secondWakeup = vi.fn().mockImplementation(async () => db.insert(heartbeatRuns).values({
-      id: secondRunId,
-      companyId: seeded.companyId,
-      agentId: seeded.agentId,
-      invocationSource: "automation",
-      status: "queued",
-      runtimeMode: "legacy",
-      driverKind: "codex",
-      contextSnapshot: { issueId: seeded.issueId },
-    }).returning().then((rows) => rows[0]!));
+    const secondWakeup = vi.fn().mockImplementation(async () =>
+      db
+        .insert(heartbeatRuns)
+        .values({
+          id: secondRunId,
+          companyId: seeded.companyId,
+          agentId: seeded.agentId,
+          invocationSource: "automation",
+          status: "queued",
+          runtimeMode: "legacy",
+          driverKind: "codex",
+          contextSnapshot: { issueId: seeded.issueId },
+        })
+        .returning()
+        .then((rows) => rows[0]!),
+    );
     const secondOutcome = await questionResponseDeliveryService(db, {
       heartbeat: { wakeup: secondWakeup } as never,
       steer: vi.fn(),
@@ -710,7 +1180,9 @@ describeEmbeddedPostgres("question response delivery", () => {
       targetRunId: secondRunId,
       attemptCount: 2,
     });
-    const deliveryEvents = await db.select().from(activityLog)
+    const deliveryEvents = await db
+      .select()
+      .from(activityLog)
       .where(eq(activityLog.action, "issue.question_response_delivered"));
     expect(deliveryEvents).toHaveLength(1);
   });
@@ -724,15 +1196,21 @@ describeEmbeddedPostgres("question response delivery", () => {
         successorStatus: "running",
       });
       const fallbackRunId = randomUUID();
-      const wakeup = vi.fn().mockImplementation(async () => db.insert(heartbeatRuns).values({
-        id: fallbackRunId,
-        companyId: seeded.companyId,
-        agentId: seeded.agentId,
-        invocationSource: "automation",
-        status: "queued",
-        runtimeMode: "legacy",
-        contextSnapshot: { issueId: seeded.issueId },
-      }).returning().then((rows) => rows[0]!));
+      const wakeup = vi.fn().mockImplementation(async () =>
+        db
+          .insert(heartbeatRuns)
+          .values({
+            id: fallbackRunId,
+            companyId: seeded.companyId,
+            agentId: seeded.agentId,
+            invocationSource: "automation",
+            status: "queued",
+            runtimeMode: "legacy",
+            contextSnapshot: { issueId: seeded.issueId },
+          })
+          .returning()
+          .then((rows) => rows[0]!),
+      );
       const steer = vi.fn();
 
       const outcome = await questionResponseDeliveryService(db, {
@@ -766,15 +1244,21 @@ describeEmbeddedPostgres("question response delivery", () => {
         code: "steering_unsupported",
       }),
     );
-    const wakeup = vi.fn().mockImplementation(async () => db.insert(heartbeatRuns).values({
-      id: fallbackRunId,
-      companyId: seeded.companyId,
-      agentId: seeded.agentId,
-      invocationSource: "automation",
-      status: "queued",
-      driverKind: "codex",
-      contextSnapshot: { issueId: seeded.issueId },
-    }).returning().then((rows) => rows[0]!));
+    const wakeup = vi.fn().mockImplementation(async () =>
+      db
+        .insert(heartbeatRuns)
+        .values({
+          id: fallbackRunId,
+          companyId: seeded.companyId,
+          agentId: seeded.agentId,
+          invocationSource: "automation",
+          status: "queued",
+          driverKind: "codex",
+          contextSnapshot: { issueId: seeded.issueId },
+        })
+        .returning()
+        .then((rows) => rows[0]!),
+    );
     const service = questionResponseDeliveryService(db, {
       heartbeat: { wakeup } as never,
       steer,
@@ -782,7 +1266,11 @@ describeEmbeddedPostgres("question response delivery", () => {
     const first = await service.deliver(seeded.interaction.id);
     const second = await service.deliver(seeded.interaction.id);
 
-    expect(first).toMatchObject({ status: "fallback_queued", mode: "wake_fallback", targetRunId: fallbackRunId });
+    expect(first).toMatchObject({
+      status: "fallback_queued",
+      mode: "wake_fallback",
+      targetRunId: fallbackRunId,
+    });
     expect(second?.duplicate).toBe(true);
     expect(steer).toHaveBeenCalledTimes(1);
     expect(wakeup).toHaveBeenCalledTimes(1);
@@ -796,15 +1284,20 @@ describeEmbeddedPostgres("question response delivery", () => {
       answers: {
         purpose: { text: "Internal API" },
         runtime: { selectedOptionIds: ["node"] },
-        features: { selectedOptionIds: ["health", "logs"], customText: "Metrics" },
+        features: {
+          selectedOptionIds: ["health", "logs"],
+          customText: "Metrics",
+        },
       },
     });
-    expect(formatQuestionResponseSteeringMessage(envelope)).toBe([
-      "Answered questions",
-      "",
-      "- Purpose — What is it for?: Internal API",
-      "- Runtime — Which runtime?: Node.js",
-      "- Features — Which features?: Health check, Request logs, Metrics",
-    ].join("\n"));
+    expect(formatQuestionResponseSteeringMessage(envelope)).toBe(
+      [
+        "Answered questions",
+        "",
+        "- Purpose — What is it for?: Internal API",
+        "- Runtime — Which runtime?: Node.js",
+        "- Features — Which features?: Health check, Request logs, Metrics",
+      ].join("\n"),
+    );
   });
 });

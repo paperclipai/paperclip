@@ -4,7 +4,6 @@ import {
   Braces,
   Clock3,
   Edit3,
-  KeyRound,
   Play,
   Plus,
   X,
@@ -144,7 +143,6 @@ export function OverviewSection({
       .sort((a, b) => a.getTime() - b.getTime())[0];
     return upcoming ? upcoming.toLocaleString() : null;
   }, [routine.triggers]);
-  const boundSecrets = editDraft.env ? Object.keys(editDraft.env).length : 0;
   const lastRun = (routineRuns ?? [])[0] ?? null;
   const recentActivity = (activity ?? []).slice(0, 5);
 
@@ -320,7 +318,7 @@ export function OverviewSection({
       </div>
 
       {/* Summary cards */}
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         <SummaryCard
           icon={Clock3}
           label="Triggers"
@@ -328,14 +326,6 @@ export function OverviewSection({
           hint={nextFire ? `Next fire ${nextFire}` : "No schedule"}
           to={() => navigateToSection("triggers")}
           ariaLabel={`${activeTriggers} triggers. Open triggers.`}
-        />
-        <SummaryCard
-          icon={KeyRound}
-          label="Secrets"
-          value={boundSecrets === 0 ? "None" : `${boundSecrets} bound`}
-          hint="Manage bound secrets"
-          to={() => navigateToSection("secrets")}
-          ariaLabel={`${boundSecrets} secrets bound. Open secrets.`}
         />
         <SummaryCard
           icon={Play}

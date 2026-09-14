@@ -285,6 +285,7 @@ export async function applyManagedEnvironments(
           provider: spec.provider,
           config: { ...spec.config },
           stockVersion: managedConfig.catalogVersion,
+          platformFullyManaged: true,
         })
         .then((result) => {
           logger.info(
@@ -364,6 +365,7 @@ export async function applyManagedEnvironments(
         provider: spec.provider,
         config: { ...spec.config },
         stockVersion: managedConfig.catalogVersion,
+        platformFullyManaged: true,
       });
       if (reconciliation.action === "skipped") skipped += 1;
       else {

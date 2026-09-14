@@ -130,17 +130,22 @@ describe("plugin worker manager duplex channel route", () => {
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           data: [{ chunk: "one" }, { chunk: "two" }, { chunk: "three" }],
+          exitCode: 0,
         }),
       );
-      // Wait so the three data notifications arrive and buffer before a listener
-      // attaches. The drain then delivers them in order.
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // The worker writes the three data notifications and the exit in one
+      // stdout write. The host reads worker stdout line by line, so it buffers
+      // all three data frames before it reads the exit. The exit settles the
+      // wait, so the wait is a deterministic barrier: once it resolves, the
+      // host holds all three frames and no listener has attached yet. This
+      // barrier replaces a fixed sleep, so the test does not race the
+      // subprocess start or the stdio latency.
+      await session.wait();
       const chunks: string[] = [];
       // The session streams raw `Uint8Array` chunks. Decode each one back to
       // text, so the assertion below compares the plain-text payload the
       // fixture directive scripted.
       session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
-      await vi.waitFor(() => expect(chunks.length).toBe(3));
       expect(chunks).toEqual(["one", "two", "three"]);
       await session.close();
     } finally {
@@ -182,6 +187,9 @@ describe("plugin worker manager duplex channel route", () => {
       await handle.start();
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
+          // Batch the exit with the open response to exercise the pre-bind hold
+          // and prove its normalized representation retains the discriminator.
+          batchWithOpenReply: true,
           workerSessionId: "ws-A",
           data: [{ chunk: "one" }],
           // The worker reports a reason-less transport close with no exit code.
@@ -210,11 +218,17 @@ describe("plugin worker manager duplex channel route", () => {
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           data: [{ chunk: "one" }, { chunk: "boom" }, { chunk: "three" }],
+          exitCode: 0,
         }),
       );
-      // Wait so the three data notifications arrive and buffer before a listener
-      // attaches. The drain then delivers them in order.
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // The worker writes the three data notifications and the exit in one
+      // stdout write. The host reads worker stdout line by line, so it buffers
+      // all three data frames before it reads the exit. The exit settles the
+      // wait, so the wait is a deterministic barrier for "the host holds every
+      // pre-bind frame and no listener has attached". This barrier replaces a
+      // fixed sleep, so the test does not race the subprocess start or the
+      // stdio latency.
+      await session.wait();
       const chunks: string[] = [];
       // The listener throws on one buffered chunk. The manager catches the throw
       // inside the drain, so it does not escape `onData` and every buffered chunk
@@ -360,7 +374,7 @@ describe("plugin worker manager duplex channel route", () => {
   // The five explicit bounds. Each bound ends the route when it is exceeded.
   // -------------------------------------------------------------------------
 
-  it("ends the route when the pre-bind buffered bytes pass the bound", async () => {
+  it("ends the route when the post-bind buffered bytes pass the bound", async () => {
     const handle = makeDuplexHandle({
       duplexChannelLimits: { maxPreBindBufferedChars: 10 },
     });
@@ -368,6 +382,10 @@ describe("plugin worker manager duplex channel route", () => {
       await handle.start();
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
+          // Hold these frames until the fixture acknowledges a host write. A
+          // write can only come from the returned session, so this makes the
+          // post-bind path deterministic instead of depending on pipe batching.
+          emitScriptedFramesAfterFirstWrite: true,
           data: [
             { chunk: "aaaaa" }, // total 5 → buffered
             { chunk: "bbbbb" }, // total 10 → buffered
@@ -375,8 +393,10 @@ describe("plugin worker manager duplex channel route", () => {
           ],
         }),
       );
-      // No listener attaches, so the data buffers. The cumulative bytes pass the
-      // bound and the route ends. The login wait resolves with a null exit code.
+      session.write(new TextEncoder().encode("emit"));
+      // No listener attaches, so the post-bind data buffers. The cumulative bytes
+      // pass the bound and the route ends. The channel wait resolves with a null
+      // exit code.
       await expect(session.wait()).resolves.toEqual({ exitCode: null });
     } finally {
       await handle.stop().catch(() => undefined);

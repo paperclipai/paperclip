@@ -132,6 +132,7 @@ function IdentitiesHarness({
         credentialPolicy={credentialPolicy}
         ownerUserId={CURRENT_USER}
         connectedUser={{ label: "Carol", image: null }}
+        dedicatedAgent={null}
         grantsQuery={loading || error ? undefined : response}
         loading={loading}
         error={error}
@@ -143,6 +144,7 @@ function IdentitiesHarness({
         onCloseAudience={() => setOpenAudience(null)}
         onConnectAsMe={() => {}}
         onConnectOrganization={() => {}}
+        onConnectAgent={() => {}}
         onReplaceAudience={() => {}}
       />
     </div>

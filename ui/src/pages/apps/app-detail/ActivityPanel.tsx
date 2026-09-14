@@ -23,7 +23,7 @@ type TimelineRow = {
   dotClass: string;
   /** Secondary "while working on PAP-…" issue link, tool-call rows only. */
   issue?: { identifier: string } | null;
-  /** Deep-link rendered after the timestamp ("View in Setup"), lifecycle rows only. */
+  /** Deep-link rendered after the timestamp, lifecycle rows only. */
   link?: { to: string; label: string } | null;
 };
 
@@ -59,13 +59,13 @@ function RecentActivity({
         };
       });
 
-    const setupHref = appTabHref(connectionId, "setup");
+    const permissionsHref = appTabHref(connectionId, "permissions");
     const lifecycleRows: TimelineRow[] = lifecycleEvents.map((event) => ({
       key: `lifecycle:${event.id}`,
       createdAt: event.createdAt,
       primary: humanizeLifecycleEvent(event, appName, nameById.get(event.agentId ?? "") ?? null),
       dotClass: lifecycleDotColor(event),
-      link: { to: setupHref, label: lifecycleLinkLabel(event) },
+      link: { to: permissionsHref, label: lifecycleLinkLabel(event) },
     }));
 
     return [...callRows, ...lifecycleRows].sort(
@@ -250,7 +250,7 @@ function humanizeAllowlistChange(who: string, details: Record<string, unknown> |
 }
 
 function lifecycleLinkLabel(event: ToolConnectionLifecycleEvent): string {
-  return event.type === "actions_quarantined" ? "Review in Setup" : "View in Setup";
+  return event.type === "actions_quarantined" ? "Review permissions" : "View permissions";
 }
 
 function numberFrom(value: unknown): number {

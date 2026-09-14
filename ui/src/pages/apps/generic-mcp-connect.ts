@@ -78,7 +78,7 @@ export function defaultGenericMcpName(url: string): string | null {
  * this to decide whether to reopen the URL field or the credential section, rather
  * than leaving them to guess which of the two was wrong.
  */
-export type GenericConnectFocus = "url" | "name" | "credentials" | "deployment" | "none";
+export type GenericConnectFocus = "url" | "credentials" | "deployment" | "none";
 
 export interface GenericConnectGuidance {
   title: string;
@@ -126,9 +126,9 @@ export function genericConnectGuidance(
       };
     case "tool_access_name_conflict":
       return {
-        title: "That name is taken",
-        body: "Choose a different name for this connection, then try again.",
-        focus: "name",
+        title: "Paperclip couldn’t name this connection",
+        body: "Try connecting again.",
+        focus: "none",
       };
     case "oauth_challenge":
       return {

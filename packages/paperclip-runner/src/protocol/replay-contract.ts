@@ -1,25 +1,33 @@
-import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import type { FromSchema } from "json-schema-to-ts";
 
 import {
   capabilitiesSchema,
+  capabilitiesV2Schema,
   commandSchema,
+  commandV2Schema,
   eventSchema,
-  fixtureSchema,
+  eventV2Schema,
   identitySchema,
   questionSetSchema,
   requestSchema,
   resultSchema,
   semanticToolSchema,
+  sessionGoalSchema,
   stopReasonSchema,
   terminalSchema,
-  prpSchemaBundle,
 } from "./generated/schema-bundle.js";
+import {
+  eventValidator as standaloneEventV1Validator,
+  eventV2Validator as standaloneEventV2Validator,
+  fixtureValidator as standaloneFixtureValidator,
+  resultValidator as standaloneResultValidator,
+} from "./generated/standalone-validators.js";
 import { normalizeLegacyPrpStructuredRunResult } from "./result-normalization.js";
 
 export const PRP_PROTOCOL_NAME = "paperclip.runner";
-export const PRP_PROTOCOL_VERSION = 1;
+export const PRP_PROTOCOL_MIN_VERSION = 1;
+export const PRP_PROTOCOL_VERSION = 2;
 export const PRP_FIXTURE_SCHEMA = "paperclip.prp.fixture.v1";
 
 type TerminalReferences = [typeof stopReasonSchema];
@@ -29,9 +37,24 @@ type EventReferences = [
   typeof terminalSchema,
   typeof resultSchema,
 ];
+type EventV2References = [typeof sessionGoalSchema];
+type CapabilitiesV2References = [typeof sessionGoalSchema];
 export type PrpIdentity = FromSchema<typeof identitySchema>;
 export type PrpCapabilities = FromSchema<typeof capabilitiesSchema>;
-export type PrpCommand = FromSchema<typeof commandSchema>;
+export type PrpCapabilitiesV2 = FromSchema<
+  typeof capabilitiesV2Schema,
+  { references: CapabilitiesV2References }
+>;
+type PrpCommandV1 = FromSchema<typeof commandSchema>;
+type PrpCommandV2 = FromSchema<typeof commandV2Schema>;
+export interface PrpCommand {
+  schema: PrpCommandV1["schema"] | PrpCommandV2["schema"];
+  commandId: string;
+  controllerSeq: number;
+  type: PrpCommandV1["type"] | PrpCommandV2["type"];
+  issuedAt: string;
+  payload: Record<string, unknown>;
+}
 export type PrpSemanticToolEnvelope = FromSchema<typeof semanticToolSchema>;
 export type PrpStopReason = FromSchema<typeof stopReasonSchema>;
 export type PrpTerminalState = FromSchema<
@@ -39,24 +62,39 @@ export type PrpTerminalState = FromSchema<
   { references: TerminalReferences }
 >;
 type RequestReferences = [typeof questionSetSchema];
-export type PrpRequest = FromSchema<
-  typeof requestSchema,
-  { references: RequestReferences }
->;
+export type PrpRequest = FromSchema<typeof requestSchema, { references: RequestReferences }>;
 export type PrpStructuredRunResult = FromSchema<typeof resultSchema>;
-export type PrpEvent = FromSchema<
-  typeof eventSchema,
-  { references: EventReferences }
->;
+type PrpEventV1 = FromSchema<typeof eventSchema, { references: EventReferences }>;
+type PrpEventV2 = FromSchema<typeof eventV2Schema, { references: EventV2References }>;
+export interface PrpEvent {
+  schema: PrpEventV1["schema"] | PrpEventV2["schema"];
+  sourceEventId: string;
+  sourceSeq: number;
+  sourceInstanceId: string;
+  sourceKind: PrpEventV1["sourceKind"] | PrpEventV2["sourceKind"];
+  runId: string;
+  normalizedSessionId: string;
+  turnId?: string;
+  itemId?: string;
+  eventType: PrpEventV1["eventType"] | PrpEventV2["eventType"];
+  schemaVersion: 1 | 2;
+  priority: 0 | 1 | 2;
+  emittedAt: string;
+  observedAt?: string;
+  source?: string;
+  type?: never;
+  payload: Record<string, unknown>;
+  debug?: Record<string, unknown>;
+}
 /** Runtime-validated composition of the JSON-Schema-derived contract types. */
 export interface PrpFixture {
   schema: typeof PRP_FIXTURE_SCHEMA;
   fixtureVersion: 1;
-  protocolVersion: typeof PRP_PROTOCOL_VERSION;
+  protocolVersion: 1 | 2;
   name: string;
   description: string;
   identity: PrpIdentity;
-  capabilities: PrpCapabilities;
+  capabilities: PrpCapabilities | PrpCapabilitiesV2;
   commands: PrpCommand[];
   events: PrpEvent[];
   requests?: PrpRequest[];
@@ -85,30 +123,13 @@ export interface ProtocolVersionRange {
   max: number;
 }
 
-// Runtime validation compiles the same checked-in schemas used to generate
-// the public TypeScript types. Browser/CSP-specific precompiled validators are
-// intentionally deferred until the browser SDK package boundary is introduced.
-const ajv = new Ajv2020({
-  allErrors: true,
-  strict: true,
-  strictRequired: false,
-  formats: {
-    "date-time": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/,
-  },
-});
-for (const schema of Object.values(prpSchemaBundle)) ajv.addSchema(schema);
-
-function validatorFor<T>(schemaId: string): ValidateFunction<T> {
-  const validator = ajv.getSchema<T>(schemaId);
-  if (validator === undefined) {
-    throw new Error(`Missing generated PRP validator for ${schemaId}`);
-  }
-  return validator;
-}
-
-const fixtureValidator = validatorFor<PrpFixture>(fixtureSchema.$id);
-const eventValidator = validatorFor<PrpEvent>(eventSchema.$id);
-const resultValidator = validatorFor<PrpStructuredRunResult>(resultSchema.$id);
+// The validators are generated from the same checked-in schemas as the types.
+// Keeping compilation out of the runtime lets strict CSP deployments retain
+// `script-src 'self'` without AJV attempting dynamic JavaScript evaluation.
+const fixtureValidator = standaloneFixtureValidator as ValidateFunction<PrpFixture>;
+const eventV1Validator = standaloneEventV1Validator as ValidateFunction<PrpEvent>;
+const eventV2Validator = standaloneEventV2Validator as ValidateFunction<PrpEvent>;
+const resultValidator = standaloneResultValidator as ValidateFunction<PrpStructuredRunResult>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -137,10 +158,7 @@ function versionIssues(value: unknown): ProtocolValidationIssue[] {
   }
 
   const issues: ProtocolValidationIssue[] = [];
-  for (const [field, supported] of [
-    ["fixtureVersion", 1],
-    ["protocolVersion", PRP_PROTOCOL_VERSION],
-  ] as const) {
+  for (const [field, supported] of [["fixtureVersion", 1]] as const) {
     const actual = fixture[field];
     if (typeof actual === "number" && actual !== supported) {
       issues.push({
@@ -150,25 +168,33 @@ function versionIssues(value: unknown): ProtocolValidationIssue[] {
       });
     }
   }
+  const protocolVersion = fixture.protocolVersion;
+  if (
+    typeof protocolVersion === "number" &&
+    (protocolVersion < PRP_PROTOCOL_MIN_VERSION || protocolVersion > PRP_PROTOCOL_VERSION)
+  ) {
+    issues.push({
+      code: "unsupported_required_version",
+      path: "/protocolVersion",
+      message: `protocolVersion ${protocolVersion} is unsupported; this implementation supports ${PRP_PROTOCOL_MIN_VERSION}-${PRP_PROTOCOL_VERSION}`,
+    });
+  }
 
   if (Array.isArray(fixture.events)) {
     fixture.events.forEach((entry, index) => {
       const event = asRecord(entry);
       const actual = event?.schemaVersion;
-      if (typeof actual === "number" && actual !== 1) {
+      if (typeof actual === "number" && actual !== 1 && actual !== 2) {
         issues.push({
           code: "unsupported_required_version",
           path: `/events/${index}/schemaVersion`,
-          message: `event schemaVersion ${actual} is unsupported; this implementation requires 1`,
+          message: `event schemaVersion ${actual} is unsupported; this implementation supports 1-2`,
         });
       }
       const payload = asRecord(event?.payload);
       const semanticTool = asRecord(payload?.semantic_tool);
       const semanticToolVersion = semanticTool?.schemaVersion;
-      if (
-        typeof semanticToolVersion === "number" &&
-        semanticToolVersion !== 1
-      ) {
+      if (typeof semanticToolVersion === "number" && semanticToolVersion !== 1) {
         issues.push({
           code: "unsupported_required_version",
           path: `/events/${index}/payload/semantic_tool/schemaVersion`,
@@ -238,8 +264,7 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       issues.push({
         code: "binding_mismatch",
         path: `/events/${index}/normalizedSessionId`,
-        message:
-          "event normalizedSessionId must match identity.normalizedSessionId",
+        message: "event normalizedSessionId must match identity.normalizedSessionId",
       });
     }
     const existing = uniqueEvents.get(event.sourceEventId);
@@ -257,18 +282,12 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
       return;
     }
     const payload = asRecord(event.payload);
-    const semanticTool = asRecord(
-      payload?.semantic_tool,
-    ) as PrpSemanticToolEnvelope | null;
+    const semanticTool = asRecord(payload?.semantic_tool) as PrpSemanticToolEnvelope | null;
     if (semanticTool !== null) {
       const correlation = asRecord(semanticTool.correlation);
       for (const [field, actual, expected] of [
         ["runId", correlation?.runId, event.runId],
-        [
-          "normalizedSessionId",
-          correlation?.normalizedSessionId,
-          event.normalizedSessionId,
-        ],
+        ["normalizedSessionId", correlation?.normalizedSessionId, event.normalizedSessionId],
         ["turnId", correlation?.turnId, event.turnId],
         ["itemId", correlation?.itemId, event.itemId],
       ] as const) {
@@ -382,17 +401,13 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
     issues.push({
       code: "binding_mismatch",
       path: "/events",
-      message:
-        "scripted fixtures must contain exactly one unique run.result.proposed event",
+      message: "scripted fixtures must contain exactly one unique run.result.proposed event",
     });
-  } else if (
-    canonicalJson(proposedResults[0]?.payload) !== canonicalJson(fixture.result)
-  ) {
+  } else if (canonicalJson(proposedResults[0]?.payload) !== canonicalJson(fixture.result)) {
     issues.push({
       code: "binding_mismatch",
       path: "/result",
-      message:
-        "fixture result must match the run.result.proposed event payload",
+      message: "fixture result must match the run.result.proposed event payload",
     });
   }
 
@@ -403,8 +418,7 @@ function bindingIssues(fixture: PrpFixture): ProtocolValidationIssue[] {
     issues.push({
       code: "binding_mismatch",
       path: "/events",
-      message:
-        "scripted fixtures must contain exactly one unique run.terminal event",
+      message: "scripted fixtures must contain exactly one unique run.terminal event",
     });
   }
   return issues;
@@ -440,10 +454,7 @@ export function parsePrpFixtureText(text: string): ProtocolValidationResult {
         {
           code: "invalid_json",
           path: "/",
-          message:
-            error instanceof Error
-              ? error.message
-              : "fixture is not valid JSON",
+          message: error instanceof Error ? error.message : "fixture is not valid JSON",
         },
       ],
     };
@@ -457,7 +468,7 @@ export type EventValidationResult =
 export function validatePrpEvent(value: unknown): EventValidationResult {
   const record = asRecord(value);
   const schemaVersion = record?.schemaVersion;
-  if (typeof schemaVersion === "number" && schemaVersion !== 1) {
+  if (typeof schemaVersion === "number" && schemaVersion !== 1 && schemaVersion !== 2) {
     return {
       ok: false,
       event: null,
@@ -465,11 +476,12 @@ export function validatePrpEvent(value: unknown): EventValidationResult {
         {
           code: "unsupported_required_version",
           path: "/schemaVersion",
-          message: `event schemaVersion ${schemaVersion} is unsupported; this implementation requires 1`,
+          message: `event schemaVersion ${schemaVersion} is unsupported; this implementation supports 1-2`,
         },
       ],
     };
   }
+  const eventValidator = schemaVersion === 2 ? eventV2Validator : eventV1Validator;
   if (!eventValidator(value)) {
     return {
       ok: false,

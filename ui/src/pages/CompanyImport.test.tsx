@@ -1096,6 +1096,34 @@ describe("CompanyImport", () => {
     });
   });
 
+  it("hides Paperclip Runner import configuration while its experimental flag is off", async () => {
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "codex_local", disabled: false },
+      { type: "paperclip_runner", disabled: true },
+    ]);
+    await previewMixedAdapterPackage();
+
+    for (const select of findAdapterSelects()) {
+      expect(Array.from(select.options).map((option) => option.value))
+        .not.toContain("paperclip_runner");
+    }
+  });
+
+  it("offers Paperclip Runner import configuration after its experimental flag is enabled", async () => {
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "codex_local", disabled: false },
+      { type: "paperclip_runner", disabled: false },
+    ]);
+    await previewMixedAdapterPackage();
+
+    for (const select of findAdapterSelects()) {
+      expect(Array.from(select.options).map((option) => option.value))
+        .toContain("paperclip_runner");
+    }
+  });
+
   it("falls back to the CEO adapter with a visible warning when a manifest adapter is not installed", async () => {
     // The destination has no codex_local adapter; the CEO fallback (an empty
     // agent list defaults to claude_local) takes over — never silently.

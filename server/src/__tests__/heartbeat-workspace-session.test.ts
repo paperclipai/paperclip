@@ -17,7 +17,6 @@ import {
   buildEffectiveRunWorkspaceConfigMetadata,
   buildWorkspaceConfigFreshnessOperation,
   deriveTaskKeyWithHeartbeatFallback,
-  extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
@@ -26,6 +25,7 @@ import {
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
+  resolveNativeRecoveryExecutionWorkspaceBinding,
   resolveExecutionWorkspaceBranchOwnership,
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
@@ -1168,6 +1168,31 @@ describe("resolveWorkspaceAfterLowTrustPreflight", () => {
 });
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
+  it("keeps a legacy projectless Codex session in the default agent workspace", () => {
+    const agentId = "agent-projectless-legacy";
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
+    const previousSessionParams = {
+      sessionId: "legacy-session-1",
+      cwd: fallbackCwd,
+    };
+
+    const result = resolveRuntimeSessionParamsForWorkspace({
+      agentId,
+      previousSessionParams,
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+      }),
+    });
+
+    expect(result).toEqual({
+      sessionParams: previousSessionParams,
+      warning: null,
+    });
+  });
+
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {
     const agentId = "agent-123";
     const fallbackCwd = resolveDefaultAgentWorkspaceDir(agentId);
@@ -1724,6 +1749,17 @@ describe("effective run execution workspace config freshness", () => {
     expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 
+  it("does not mistake a projectless native run-id binding for a missing persisted workspace", () => {
+    expect(resolveNativeRecoveryExecutionWorkspaceBinding({
+      bindingId: "run-projectless",
+      persistedWorkspaceFound: false,
+    })).toBeNull();
+    expect(resolveNativeRecoveryExecutionWorkspaceBinding({
+      bindingId: "workspace-persisted",
+      persistedWorkspaceFound: true,
+    })).toBe("workspace-persisted");
+  });
+
   it.each([
     { name: "a different branch", branchName: "PAP-9001-derived-child-branch" },
     { name: "no recorded branch", branchName: null },
@@ -2105,7 +2141,6 @@ async function buildSessionConfigMetadata(
         maxConcurrentRuns: 1,
       },
     },
-    modelProfile: null,
     issueOverrides: null,
     workspaceConfig: {
       requestedMode: "agent_default",
@@ -2250,6 +2285,45 @@ describe("effective run session config freshness", () => {
     });
   });
 
+  it("does not reset when a reusable execution workspace becomes realized", async () => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        reusableExecutionWorkspaceConfig: null,
+        existingExecutionWorkspace: null,
+      },
+    });
+    const realized = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        reusableExecutionWorkspaceConfig: {
+          strategyType: "project_primary",
+          workspaceGeneration: 1,
+        },
+        existingExecutionWorkspace: {
+          id: "workspace-realized-after-first-turn",
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+        },
+      },
+    });
+
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: realized,
+      }),
+    ).toMatchObject({
+      reset: false,
+      changedCategories: [],
+      reasons: [],
+    });
+  });
+
   it("keeps model-only compatibility as an additional reset reason", async () => {
     const base = await buildSessionConfigMetadata();
 
@@ -2318,24 +2392,13 @@ describe("effective run session config freshness", () => {
     expect(decision.reasons).toEqual([]);
   });
 
-  it("names safe categories for model profile, issue override, env, secret, and runtime skill drift", async () => {
+  it("names safe categories for issue override, env, secret, and runtime skill drift", async () => {
     const base = await buildSessionConfigMetadata();
     const cases: Array<{
       name: string;
       category: string;
       metadata: SessionConfigMetadata;
     }> = [
-      {
-        name: "model profile",
-        category: "modelProfile",
-        metadata: await buildSessionConfigMetadata({
-          modelProfile: {
-            requested: "cheap",
-            applied: true,
-            configSource: "agent_runtime",
-          },
-        }),
-      },
       {
         name: "issue overrides",
         category: "issueOverrides",
@@ -2574,7 +2637,7 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 });
 
 describe("comment wake batching", () => {
-  it("preserves ordered wake comment ids when coalescing queued follow-up wakes", () => {
+  it("updates the latest comment when coalescing queued follow-up wakes", () => {
     const merged = mergeCoalescedContextSnapshot(
       {
         issueId: "issue-1",
@@ -2592,7 +2655,7 @@ describe("comment wake batching", () => {
       },
     );
 
-    expect(extractWakeCommentIds(merged)).toEqual(["comment-1", "comment-2"]);
+    expect(merged.wakeCommentIds).toEqual(["comment-1", "comment-2"]);
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();

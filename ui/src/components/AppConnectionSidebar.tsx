@@ -92,14 +92,14 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">
       <div className="flex shrink-0 flex-col gap-3 px-3 py-3">
         <Link
-          to="/apps/connections"
+          to="/apps"
           onClick={() => {
             if (isMobile) setSidebarOpen(false);
           }}
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         >
           <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">All apps</span>
+          <span className="truncate">All connectors</span>
         </Link>
         <div className="flex min-w-0 items-center gap-2 px-2 py-1">
           <AppLogo

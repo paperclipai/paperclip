@@ -526,29 +526,29 @@ type Story = StoryObj<typeof meta>;
 // ---------------------------------------------------------------------------
 
 export const IntegratedDesktopOpen: Story = {
-  parameters: { viewport: { defaultViewport: "responsive" } },
+  globals: { viewport: { value: "100pct-100pct" } },
   render: () => <IntegratedSurface focusedThreadId="open-1" initialPanelOpen />,
 };
 
 export const IntegratedDesktopZeroComments: Story = {
-  parameters: { viewport: { defaultViewport: "responsive" } },
+  globals: { viewport: { value: "100pct-100pct" } },
   render: () => <IntegratedSurface threads={[]} initialPanelOpen={false} focusedThreadId={null} />,
 };
 
 export const IntegratedDesktopEditMode: Story = {
-  parameters: { viewport: { defaultViewport: "responsive" } },
+  globals: { viewport: { value: "100pct-100pct" } },
   render: () => (
     <IntegratedSurface focusedThreadId="open-1" initialPanelOpen beginEditOnMount />
   ),
 };
 
 export const IntegratedDesktopDirtyDraft: Story = {
-  parameters: { viewport: { defaultViewport: "responsive" } },
+  globals: { viewport: { value: "100pct-100pct" } },
   render: () => <DirtyDraftWithIntegratedHeader />,
 };
 
 export const IntegratedMobileBottomSheet: Story = {
-  parameters: { viewport: { defaultViewport: "mobile1" } },
+  globals: { viewport: { value: "mobile1" } },
   render: () => <IntegratedSurface focusedThreadId="open-1" initialPanelOpen />,
 };
 

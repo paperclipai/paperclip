@@ -52,6 +52,10 @@ export function buildPermissionsForTrustPreset(
   if (preset === LOW_TRUST_REVIEW_PRESET) {
     return {
       ...current,
+      // Hire authority is default-on for standard-trust agents, so demoting
+      // to low-trust must drop it rather than carry the old value forward.
+      // Operators can re-enable it explicitly afterwards.
+      canCreateAgents: false,
       trustPreset: LOW_TRUST_REVIEW_PRESET,
       authorizationPolicy: buildLowTrustReviewPolicy(current.authorizationPolicy),
     };
@@ -65,9 +69,9 @@ export function buildPermissionsForTrustPreset(
   return {
     ...current,
     trustPreset: DEFAULT_TRUST_PRESET,
-    ...(Object.keys(nextPolicy).length > 0
-      ? { authorizationPolicy: nextPolicy }
-      : { authorizationPolicy: undefined }),
+    // Send an explicit empty policy: undefined disappears in JSON, leaving the
+    // prior low-trust boundary intact when the permissions endpoint merges.
+    authorizationPolicy: nextPolicy,
   };
 }
 

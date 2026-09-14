@@ -30,6 +30,10 @@ export interface FakeSandboxEnvironmentConfig {
   reuseLease: boolean;
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
+  /** Override the paperclip_runner lifecycle for this environment. */
+  runnerLifecycleMode?: "inherit" | "per_turn" | "warm";
+  /** Warm runner idle timeout in milliseconds when runnerLifecycleMode is warm. */
+  runnerIdleTimeoutMs?: number;
   /**
    * Archive the sandbox on lease release instead of deleting it, so operators
    * can inspect it from the provider dashboard. Injected by test/probe paths;
@@ -44,6 +48,10 @@ export interface PluginSandboxEnvironmentConfig {
   timeoutMs?: number;
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
+  /** Override the paperclip_runner lifecycle for this environment. */
+  runnerLifecycleMode?: "inherit" | "per_turn" | "warm";
+  /** Warm runner idle timeout in milliseconds when runnerLifecycleMode is warm. */
+  runnerIdleTimeoutMs?: number;
   /**
    * Archive the sandbox on lease release instead of deleting it, so operators
    * can inspect it from the provider dashboard. Injected by test/probe paths;
