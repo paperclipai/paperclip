@@ -701,11 +701,19 @@ function pendingCleanupAttemptsSql() {
 }
 
 function pendingCleanupRetryDueSql(explicitRetry = false) {
+  // Ownership renewal and retry cooldown are separate clocks. A late renewal
+  // cannot change when a completed attempt may retry. Older claims used the
+  // retry field for both clocks, so retain that fallback until they settle.
+  const deadline = sql`case
+    when ${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'
+      and ${environmentLeases.metadata} ? 'pendingCleanupLeaseExpiresAtMs'
+      then ${environmentLeases.metadata}->'pendingCleanupLeaseExpiresAtMs'
+    else ${environmentLeases.metadata}->'pendingCleanupRetryAfterMs' end`;
   return sql`case
     when ${explicitRetry} and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true' then true
-    when jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupRetryAfterMs') = 'number'
-      then (${environmentLeases.metadata}->>'pendingCleanupRetryAfterMs')::numeric <= ${Date.now()}
-        or (${environmentLeases.metadata}->>'pendingCleanupRetryAfterMs')::numeric > ${Date.now() + 30 * 60_000 + 1_000}
+    when jsonb_typeof(${deadline}) = 'number'
+      then (${deadline})::numeric <= ${Date.now()}
+        or (${deadline})::numeric > ${Date.now() + 30 * 60_000 + 1_000}
     else true end`;
 }
 
@@ -18122,8 +18130,8 @@ export function heartbeatService(
         metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)
           || ${JSON.stringify({ ...(manualAttempt ? { pendingCleanupManualAttemptId: randomUUID() } : {}),
             pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
-            pendingCleanupRetryAfterMs: Date.now() + 15 * 60_000,
- })}::jsonb`,
+            pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+          })}::jsonb`,
         lastUsedAt: now,
         updatedAt: now,
       })
@@ -18440,7 +18448,7 @@ export function heartbeatService(
       const renewal = setInterval(() => {
         if (activeRenewal) return;
         activeRenewal = db.update(environmentLeases).set({
-          metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupRetryAfterMs}', to_jsonb(${Date.now() + 15 * 60_000}::bigint))`,
+          metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${Date.now() + 15 * 60_000}::bigint))`,
         }).where(and(eq(environmentLeases.id, row.id), eq(environmentLeases.status, "pending_cleanup"),
           sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`,
           sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`))
@@ -18507,10 +18515,9 @@ export function heartbeatService(
         );
       } finally {
         clearInterval(renewal);
-        // Stopping the timer does not settle a renewal already sent to the DB.
-        // Drain it before replacing the ownership deadline with the cooldown.
-        try { await activeRenewal; }
-        finally { pendingCleanupAttemptsInFlight.delete(row.id); }
+        // A hung renewal must not retain process-local cleanup ownership.
+        // Late renewals are attempt-fenced and never write the retry cooldown.
+        pendingCleanupAttemptsInFlight.delete(row.id);
       }
       if (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
         capped += 1;

@@ -280,6 +280,21 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(destroy).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])("uses the ownership deadline while cleanup is in flight (expired: %s)", async expired => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0), metadata: {
+      pendingCleanupAttemptId: "previous-boot", pendingCleanupInFlight: true,
+      pendingCleanupLeaseExpiresAtMs: Date.now() + (expired ? -60_000 : 60_000),
+      pendingCleanupRetryAfterMs: Date.now() + (expired ? 60_000 : -60_000),
+    } });
+    const teardown = vi.fn(async () => {});
+    const service = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
+    expect((await service.sweepPendingCleanupLeases()).destroyed).toBe(expired ? 1 : 0);
+    expect(teardown).toHaveBeenCalledTimes(expired ? 1 : 0);
+  });
+
   it("starts escalation and the long cooldown on the fifth failed attempt", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertPendingCleanupLease({ companyId, environmentId,
@@ -333,7 +348,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     await started.promise;
     try {
       await db.update(environmentLeases).set({
-        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ pendingCleanupRetryAfterMs: Date.now() - 1 })}::jsonb`,
+        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ pendingCleanupLeaseExpiresAtMs: Date.now() - 1 })}::jsonb`,
       }).where(eq(environmentLeases.id, leaseId));
       await second.sweepPendingCleanupLeases();
       expect(teardown).toHaveBeenCalledTimes(1);
@@ -384,56 +399,55 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     const running = service.sweepPendingCleanupLeases();
     await started.promise;
     try {
-      await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupRetryAfterMs":1}'::jsonb` }).where(eq(environmentLeases.id, leaseId));
+      await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupLeaseExpiresAtMs":1}'::jsonb` }).where(eq(environmentLeases.id, leaseId));
       await vi.advanceTimersByTimeAsync(30000);
-      await vi.waitFor(async () => expect((await readMetadata(leaseId))?.pendingCleanupRetryAfterMs).toBeGreaterThan(Date.now() + 14 * 60_000));
+      await vi.waitFor(async () => expect((await readMetadata(leaseId))?.pendingCleanupLeaseExpiresAtMs).toBeGreaterThan(Date.now() + 14 * 60_000));
     } finally { finish.resolve(); await running; vi.useRealTimers(); }
   });
 
-  it.each([false, true])("settles an active renewal before the escalated cooldown (renewal fails: %s)", async renewalFails => {
+  it.each([
+    { renewalFails: false, retryBeforeSettlement: false },
+    { renewalFails: true, retryBeforeSettlement: false },
+    { renewalFails: false, retryBeforeSettlement: true },
+    { renewalFails: true, retryBeforeSettlement: true },
+  ])("preserves progress and cooldown with hung renewal (fails: $renewalFails, retry first: $retryBeforeSettlement)", async ({ renewalFails, retryBeforeSettlement }) => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0),
       metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP - 1, [CAP_WARNED_KEY]: true },
     });
     const providerStarted = Promise.withResolvers<void>(), providerFinished = Promise.withResolvers<void>();
     const renewalStarted = Promise.withResolvers<void>(), releaseRenewal = Promise.withResolvers<void>();
-    const timerStopped = Promise.withResolvers<void>();
-    let holdNextRenewal = false, renewalSettled = false, cooldownStarted = false;
+    const renewalFinished = Promise.withResolvers<void>();
+    let holdNextRenewal = false, renewalSettled = false;
     const realUpdate = db.update.bind(db);
     const updateSpy = vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
       const builder = (realUpdate as (t: unknown) => unknown)(table) as { set: (values: Record<string, unknown>) => unknown };
       const realSet = builder.set.bind(builder);
       builder.set = values => {
         const query = realSet(values) as { where: (predicate: unknown) => unknown };
-        if (table === environmentLeases && Object.keys(values).length === 1 && values.metadata) {
-          if (holdNextRenewal) {
-            holdNextRenewal = false;
-            const realWhere = query.where.bind(query);
-            query.where = predicate => (async () => {
-              renewalStarted.resolve();
-              await releaseRenewal.promise;
-              try {
-                if (renewalFails) throw new Error("renewal connection failed");
-                return await realWhere(predicate);
-              } finally { renewalSettled = true; }
-            })();
-          } else {
-            cooldownStarted = true;
-          }
+        if (table === environmentLeases && Object.keys(values).length === 1 && values.metadata && holdNextRenewal) {
+          holdNextRenewal = false;
+          const realWhere = query.where.bind(query);
+          query.where = predicate => (async () => {
+            renewalStarted.resolve();
+            await releaseRenewal.promise;
+            try {
+              if (renewalFails) throw new Error("renewal connection failed");
+              return await realWhere(predicate);
+            } finally { renewalSettled = true; renewalFinished.resolve(); }
+          })();
         }
         return query;
       };
       return builder;
     }) as unknown as typeof db.update);
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const realClearInterval = globalThis.clearInterval;
-    const clearSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(timer => {
-      realClearInterval(timer);
-      timerStopped.resolve();
-    });
-    const service = heartbeatService(db, { environmentRuntime: { retryPendingSandboxTeardown: async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const teardown = vi.fn(async () => {
       providerStarted.resolve(); await providerFinished.promise; throw new Error("provider unavailable");
-    } } as unknown as HeartbeatEnvironmentRuntime });
+    });
+    const service = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
     const running = service.sweepPendingCleanupLeases();
     try {
       await providerStarted.promise;
@@ -441,18 +455,27 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       await renewalStarted.promise;
       providerFinished.resolve();
-      await timerStopped.promise;
-      expect(renewalSettled).toBe(false);
-      expect(cooldownStarted).toBe(false);
-      releaseRenewal.resolve();
       await running;
+      expect(renewalSettled).toBe(false);
       const metadata = await readMetadata(leaseId);
       expect(metadata?.pendingCleanupInFlight).toBe(false);
       expect(metadata?.pendingCleanupRetryAfterMs).toBeGreaterThan(Date.now() + 29 * 60_000);
       expect((await service.sweepPendingCleanupLeases()).swept).toBe(0);
+      if (retryBeforeSettlement) {
+        // Advance only the clock: renewal remains blocked across another attempt.
+        vi.setSystemTime(Date.now() + 31 * 60_000);
+        expect((await service.sweepPendingCleanupLeases()).swept).toBe(1);
+        expect(teardown).toHaveBeenCalledTimes(2);
+        expect(renewalSettled).toBe(false);
+      }
+      const afterRetry = await readMetadata(leaseId);
+      releaseRenewal.resolve();
+      await renewalFinished.promise;
+      expect(await readMetadata(leaseId)).toEqual(afterRetry);
     } finally {
       providerFinished.resolve(); releaseRenewal.resolve(); await running;
-      clearSpy.mockRestore(); vi.useRealTimers(); updateSpy.mockRestore();
+      await renewalFinished.promise;
+      vi.useRealTimers(); updateSpy.mockRestore();
     }
   });
 

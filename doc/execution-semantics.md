@@ -1339,3 +1339,8 @@ Explicit Retry can skip the cooldown after a failed cleanup, but cannot take ove
 a live cleanup attempt. Active startup cancellation still stops the sandbox first.
 
 A live cleanup attempt renews its durable claim every 30 seconds. Another sweep in the same controller cannot overlap it, even if the deadline passes. Completion writes require the current attempt identity. After controller loss, cleanup can repeat destruction of the exact quarantined provider resource; providers must make that operation idempotent. A timeout or claim expiry does not prove termination.
+
+Renewal updates only the ownership deadline, never the retry cooldown. Cleanup
+does not await an outstanding renewal; a stalled database response cannot retain
+process-local cleanup ownership. Late responses still require the same active
+attempt, and completed attempts use only the persisted retry cooldown.
