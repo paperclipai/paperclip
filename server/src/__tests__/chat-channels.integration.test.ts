@@ -25250,6 +25250,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(providerRuntime.posts).toHaveLength(1);
   });
 
+  async function processFixtureReceiptReactions(
+    service: ChatChannelService,
+    endpointId: string,
+  ) {
+    // These assertions own one fixture, not the global worker queue. Other
+    // fixtures may deliberately retain pending work and a credential lease.
+    const actions = await db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.endpointId, endpointId),
+          eq(chatActions.kind, "receipt_reaction"),
+        ),
+      );
+    for (const action of actions) {
+      await service.processPendingReceiptReactions(1, action.id);
+    }
+  }
+
   async function waitForProcessedReceiptRemoval(
     endpointId: string,
     receipt: { threadId: string; messageId: string; emoji: string },
@@ -25803,7 +25823,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const beforePosts = f.providerRuntime.posts.length;
           const beforeRemovals = f.providerRuntime.removedReactions.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          await processFixtureReceiptReactions(f.service, f.endpoint.id);
           expect(f.providerRuntime.edits).toEqual([]);
           expect(f.providerRuntime.posts).toHaveLength(beforePosts + 1);
           expect(f.providerRuntime.posts.at(-1)?.text).toBe(close.payload.text);
@@ -26280,7 +26300,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const editCount = f.providerRuntime.edits.length,
             postCount = f.providerRuntime.posts.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          await processFixtureReceiptReactions(f.service, f.endpoint.id);
           expect(f.providerRuntime.edits).toHaveLength(
             editCount + (mode === "working" ? 1 : 0),
           );
@@ -44752,7 +44772,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const editCount = runtime.edits.length,
             postCount = runtime.posts.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          await processFixtureReceiptReactions(f.service, f.endpoint.id);
           expect(runtime.edits).toHaveLength(
             editCount + (mode === "working" ? 1 : 0),
           );
