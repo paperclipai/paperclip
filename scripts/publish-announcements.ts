@@ -4,7 +4,9 @@ import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ANNOUNCEMENT_IMAGE_MAX_BYTES, ANNOUNCEMENT_MANIFEST_MAX_BYTES, announcementIdSchema, announcementManifestSchema } from "../packages/shared/src/announcements.js";
+import { ANNOUNCEMENT_ANIMATION_MAX_BYTES, ANNOUNCEMENT_IMAGE_MAX_BYTES, ANNOUNCEMENT_MANIFEST_MAX_BYTES, announcementIdSchema, announcementManifestSchema } from "../packages/shared/src/announcements.js";
+
+import { validateAnnouncementAnimation } from "../server/src/services/announcement-animation.js";
 
 export function announcementPublishPrefix(staging?: string, hostPrefix?: string) {
   if (hostPrefix !== undefined && !/^[a-z0-9-]+(?:\/[a-z0-9-]+)*$/.test(hostPrefix)) {
@@ -45,15 +47,20 @@ export async function prepareAnnouncementPublish(sourceDirectory: string, stagin
   if (!stat.isFile() || stat.size > ANNOUNCEMENT_MANIFEST_MAX_BYTES) throw new Error("Invalid or oversized current.json");
   const manifest = announcementManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
   const files: Array<{ file: string; key: string; contentType: string; cacheControl: string }> = [];
-  if (manifest.announcement?.image) {
+  for (const kind of ["image", "animation"] as const) {
+    const asset = manifest.announcement?.[kind];
+    if (!asset) continue;
     if (!(await lstat(path.join(source, "assets"))).isDirectory()) throw new Error("Assets must be a real directory");
-    const assetPath = manifest.announcement.image.path;
+    const assetPath = asset.path;
     const file = path.join(source, assetPath);
     const assetStat = await lstat(file);
-    if (!assetStat.isFile() || assetStat.size > ANNOUNCEMENT_IMAGE_MAX_BYTES) throw new Error("Invalid or oversized image");
-    const digest = createHash("sha256").update(await readFile(file)).digest("hex");
-    if (!assetPath.startsWith(`assets/${digest}.`)) throw new Error("Image filename must match its SHA-256 digest");
-    files.push({ file, key: `${prefix}/${assetPath}`, contentType: assetPath.endsWith(".png") ? "image/png" : assetPath.endsWith(".jpg") ? "image/jpeg" : "image/webp", cacheControl: "public,max-age=31536000,immutable" });
+    const maximum = kind === "animation" ? ANNOUNCEMENT_ANIMATION_MAX_BYTES : ANNOUNCEMENT_IMAGE_MAX_BYTES;
+    if (!assetStat.isFile() || assetStat.size > maximum) throw new Error(`Invalid or oversized ${kind}`);
+    const bytes = await readFile(file);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (!assetPath.startsWith(`assets/${digest}.`)) throw new Error("Asset filename must match its SHA-256 digest");
+    if (kind === "animation") validateAnnouncementAnimation(bytes);
+    files.push({ file, key: `${prefix}/${assetPath}`, contentType: kind === "animation" ? "text/html" : assetPath.endsWith(".png") ? "image/png" : assetPath.endsWith(".jpg") ? "image/jpeg" : "image/webp", cacheControl: "public,max-age=31536000,immutable" });
   }
   files.push({ file: manifestPath, key: `${prefix}/current.json`, contentType: "application/json", cacheControl: "public,max-age=300" });
   return { manifest, files };

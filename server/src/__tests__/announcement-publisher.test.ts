@@ -46,6 +46,20 @@ describe("announcement publishing", () => {
     await writeFile(path.join(dir, imagePath), "changed");
     await expect(prepareAnnouncementPublish(dir)).rejects.toThrow("SHA-256");
   });
+  it("validates HTML animation fixtures and uploads both assets before the manifest", async () => {
+    const result = await prepareAnnouncementPublish(path.resolve(import.meta.dirname, "../../../announcements/examples/animated"), "animated-preview");
+    expect(result.files.map((file) => file.contentType)).toEqual(["image/png", "text/html", "application/json"]);
+    const dir = await fixture();
+    await mkdir(path.join(dir, "assets"));
+    const html = "<meta http-equiv='refresh' content='0;url=https://evil.test'>";
+    const asset = `assets/${createHash("sha256").update(html).digest("hex")}.html`;
+    const image = result.files[0];
+    const imagePath = result.manifest.announcement!.image!.path;
+    await writeFile(path.join(dir, imagePath), await import("node:fs/promises").then((fs) => fs.readFile(image.file)));
+    await writeFile(path.join(dir, asset), html);
+    await writeFile(path.join(dir, "current.json"), JSON.stringify({ ...result.manifest, announcement: { ...result.manifest.announcement, animation: { path: asset, alt: "Unsafe" } } }));
+    await expect(prepareAnnouncementPublish(dir)).rejects.toThrow("only visual HTML/CSS");
+  });
   it("supports withdrawal and rejects symlinks and unsupported schemas", async () => {
     const dir = await fixture();
     await writeFile(path.join(dir, "current.json"), JSON.stringify({ schemaVersion: 1, announcement: null }));

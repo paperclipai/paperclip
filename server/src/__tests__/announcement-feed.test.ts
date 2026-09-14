@@ -83,6 +83,7 @@ describe("announcement feed", () => {
       const service = announcementFeedService({ version: "1.0.0", fetch, ...options });
       expect(await service.current()).toBeNull();
       expect(await service.image(item.id)).toBeNull();
+      expect(await service.animation(item.id)).toBeNull();
     }
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -114,4 +115,35 @@ describe("announcement feed", () => {
     expect(await service.image(item.id)).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+  it("deduplicates and caches validated animations on the configured host", async () => {
+    const bytes = Buffer.from("<div style='animation:pulse 2s infinite'>Team</div>");
+    const path = `assets/${createHash("sha256").update(bytes).digest("hex")}.html`;
+    const fetch = vi.fn().mockImplementationOnce(async () => json({ ...item, image: { path: `assets/${"0".repeat(64)}.png`, alt: "Poster" }, animation: { path, alt: "Team" } }))
+      .mockImplementationOnce(async () => new Response(bytes, { headers: { "Content-Type": "text/html; charset=utf-8" } }));
+    const service = announcementFeedService({ version: "1.0.0", feedUrl: "https://mirror.example/preview/current.json", fetch });
+    expect(await service.animation("wrong-id")).toBeNull();
+    const result = await Promise.all([service.animation(item.id), service.animation(item.id)]);
+    expect(result[0]?.bytes.toString()).toContain("Team");
+    expect(result[1]).toEqual(result[0]);
+    await service.animation(item.id);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(String(fetch.mock.calls[1][0])).toBe(`https://mirror.example/preview/${path}`);
+    expect(fetch.mock.calls[1][1]).toMatchObject({ credentials: "omit", redirect: "error", headers: { Accept: "text/html" } });
+  });
+  it.each([
+    ["<script>alert(1)</script>", "text/html", 200],
+    ["<div>ok</div>", "text/plain", 200],
+    ["not found", "text/html", 404],
+    ["x".repeat(128 * 1024 + 1), "text/html", 200],
+  ])("falls back on rejected animation assets and cools down retries", async (html, contentType, status) => {
+    const path = `assets/${createHash("sha256").update(html).digest("hex")}.html`;
+    const fetch = vi.fn().mockImplementationOnce(async () => json({ ...item, image: { path: `assets/${"0".repeat(64)}.png`, alt: "Poster" }, animation: { path, alt: "Team" } }))
+      .mockImplementation(async () => new Response(html, { status, headers: { "Content-Type": contentType } }));
+    const service = announcementFeedService({ version: "1.0.0", fetch });
+    expect(await service.animation(item.id)).toBeNull();
+    expect(await service.animation(item.id)).toBeNull();
+    expect((await service.current())?.id).toBe(item.id);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
 });

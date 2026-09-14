@@ -228,8 +228,9 @@ describe("openapi routes", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;
     const image = spec.paths["/api/announcements/{id}/image"].get;
+    const animation = spec.paths["/api/announcements/{id}/animation"].get;
     const dismiss = spec.paths["/api/announcements/{id}/dismiss"].post;
-    for (const operation of [current, image, dismiss]) {
+    for (const operation of [current, image, animation, dismiss]) {
       expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
       expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
       const success = operation.responses["200"] ?? operation.responses["204"];

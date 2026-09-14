@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { companies, type Db } from "@paperclipai/db";
-import { announcementIdSchema, dismissAnnouncementSchema } from "@paperclipai/shared";
+import { ANNOUNCEMENT_ANIMATION_CSP, announcementIdSchema, dismissAnnouncementSchema } from "@paperclipai/shared";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { assertAuthenticated, assertBoard, hasCompanyAccess } from "./authz.js";
@@ -32,6 +32,17 @@ export function announcementRoutes(db: Db, options: AnnouncementFeedOptions) {
     res.setHeader("Content-Type", image.contentType);
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.send(image.bytes);
+  });
+  router.get("/announcements/:id/animation", async (req, res) => {
+    const id = announcementIdSchema.safeParse(req.params.id);
+    if (!id.success) throw badRequest("Invalid announcement ID");
+    const animation = await feed.animation(id.data);
+    if (!animation) throw notFound("Announcement animation unavailable");
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", `sandbox; ${ANNOUNCEMENT_ANIMATION_CSP}`);
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.send(animation.bytes);
   });
   router.post("/announcements/:id/dismiss", validate(dismissAnnouncementSchema), async (req, res) => {
     const id = announcementIdSchema.safeParse(req.params.id);

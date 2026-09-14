@@ -3,6 +3,10 @@ import { z } from "zod";
 export const DEFAULT_ANNOUNCEMENT_FEED_URL = "https://pages.paperclip.ing/announcements/v1/current.json";
 export const ANNOUNCEMENT_MANIFEST_MAX_BYTES = 64 * 1024;
 export const ANNOUNCEMENT_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+export const ANNOUNCEMENT_ANIMATION_MAX_BYTES = 128 * 1024;
+// Used both in the isolated srcdoc and on the asset endpoint. The HTTP
+// response additionally applies CSP sandbox (not supported in a meta tag).
+export const ANNOUNCEMENT_ANIMATION_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'";
 
 // Only stable, company-relative board pages. Never API paths, entity IDs, or
 // routes that depend on an experimental feature being enabled.
@@ -35,11 +39,17 @@ export const announcementSchema = z.object({
     path: z.string().regex(/^assets\/[a-f0-9]{64}\.(png|jpg|webp)$/),
     alt: z.string().max(200),
   }).strict().optional(),
+  animation: z.object({
+    path: z.string().regex(/^assets\/[a-f0-9]{64}\.html$/),
+    alt: z.string().trim().min(1).max(200),
+  }).strict().optional(),
   secondaryLink: announcementActionSchema.optional(),
   primaryAction: announcementActionSchema,
   expiresAt: z.string().datetime({ offset: true }).optional(),
   minimumPaperclipVersion: z.string().regex(/^\d+\.\d+\.\d+$/).optional(),
-}).strict();
+}).strict().refine((value) => !value.animation || Boolean(value.image), {
+  message: "An animation requires a static fallback image", path: ["image"],
+});
 
 export const announcementManifestSchema = z.object({
   schemaVersion: z.literal(1),

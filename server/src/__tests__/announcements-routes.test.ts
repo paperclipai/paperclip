@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -13,14 +14,14 @@ const item = { id: "new-projects", eyebrow: "New", title: "Projects", descriptio
 describe("announcement routes and durable dismissals", () => {
   let database: EmbeddedPostgresTestDatabase;
   let db: ReturnType<typeof createDb>;
-  function app(userId = "alice", actorOverride?: Record<string, unknown>, announcement: unknown = item, feedStatus = 200) {
+  function app(userId = "alice", actorOverride?: Record<string, unknown>, announcement: unknown = item, feedStatus = 200, animationHtml?: string) {
     const server = express();
     server.use(express.json());
     server.use((req, _res, next) => {
       req.actor = (actorOverride ?? { type: "board", userId, source: "session", companyIds: [companyId, otherCompanyId], memberships: [{ companyId, membershipRole: "viewer", status: "active" }] }) as never;
       next();
     });
-    server.use("/api", announcementRoutes(db, { version: "2026.913.0", fetch: async () => new Response(JSON.stringify({ schemaVersion: 1, announcement }), { status: feedStatus, headers: { "Content-Type": "application/json" } }) }));
+    server.use("/api", announcementRoutes(db, { version: "2026.913.0", fetch: async (url) => animationHtml && url.pathname.endsWith(".html") ? new Response(animationHtml, { headers: { "Content-Type": "text/html" } }) : new Response(JSON.stringify({ schemaVersion: 1, announcement }), { status: feedStatus, headers: { "Content-Type": "application/json" } }) }));
     server.use(errorHandler);
     return server;
   }
@@ -36,6 +37,19 @@ describe("announcement routes and durable dismissals", () => {
     expect(response.status).toBe(200);
     expect(response.body).toBeNull();
     expect(response.headers["cache-control"]).toBe("private, no-store");
+  });
+  it("serves animation documents with a sandbox and network-denying CSP", async () => {
+    const html = "<div>Team</div>";
+    const path = `assets/${createHash("sha256").update(html).digest("hex")}.html`;
+    const server = app("alice", undefined, { ...item, image: { path: `assets/${"0".repeat(64)}.png`, alt: "Poster" }, animation: { path, alt: "Team" } }, 200, html);
+    const response = await request(server).get(`/api/announcements/${item.id}/animation`);
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(response.headers["content-security-policy"]).toContain("sandbox; default-src 'none'");
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.type).toBe("text/html");
+    expect((await request(server).get("/api/announcements/wrong-id/animation")).status).toBe(404);
   });
   it("persists across app/service restarts, browsers and companies, isolated by user", async () => {
     const first = app();
@@ -96,7 +110,7 @@ describe("announcement routes and durable dismissals", () => {
     for (const actor of [{ type: "none" }, { type: "agent", companyId, userId: "alice" }]) {
       const server = app("alice", actor);
       const expected = actor.type === "none" ? 401 : 403;
-      for (const url of ["current", `${item.id}/image`]) expect((await request(server).get(`/api/announcements/${url}`)).status).toBe(expected);
+      for (const url of ["current", `${item.id}/image`, `${item.id}/animation`]) expect((await request(server).get(`/api/announcements/${url}`)).status).toBe(expected);
       expect((await request(server).post(`/api/announcements/${item.id}/dismiss`).send({ companyId })).status).toBe(expected);
     }
     expect((await request(app()).post(`/api/announcements/${item.id}/dismiss`).send({ companyId: "33333333-3333-4333-8333-333333333333" })).status).toBe(404);

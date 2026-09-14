@@ -17,6 +17,15 @@ describe("announcement contract", () => {
   it.each(["../secret.png", "https://example.com/a.png", "/assets/a.png", `assets/${"0".repeat(64)}.svg`])("rejects unsafe image path %s", (path) => {
     expect(announcementSchema.safeParse({ ...announcement, image: { path, alt: "" } }).success).toBe(false);
   });
+  it("requires a content-addressed HTML animation and a static fallback", () => {
+    const image = { path: `assets/${"0".repeat(64)}.png`, alt: "Poster" };
+    const animation = { path: `assets/${"1".repeat(64)}.html`, alt: "Animated team" };
+    expect(announcementSchema.safeParse({ ...announcement, image, animation }).success).toBe(true);
+    expect(announcementSchema.safeParse({ ...announcement, animation }).success).toBe(false);
+    for (const path of ["https://evil.test/a.html", "../a.html", "assets/a.html", `assets/${"1".repeat(64)}.js`]) {
+      expect(announcementSchema.safeParse({ ...announcement, image, animation: { ...animation, path } }).success).toBe(false);
+    }
+  });
   it("rejects unknown schema versions and oversized copy", () => {
     expect(announcementManifestSchema.safeParse({ schemaVersion: 2, announcement }).success).toBe(false);
     expect(announcementSchema.safeParse({ ...announcement, description: "a".repeat(401) }).success).toBe(false);

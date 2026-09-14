@@ -10,7 +10,7 @@ JSON on demand and renders it with native components.
 - `PAPERCLIP_ANNOUNCEMENTS_FEED_URL` overrides the public HTTPS manifest URL.
   Credentials, query strings, private destinations and redirects are rejected.
 
-Announcements are independent of telemetry. Feed/image requests originate from
+Announcements are independent of telemetry. Feed/media requests originate from
 the instance without account IDs, company data, cookies or event tracking. The
 host sees ordinary server network request metadata. The browser requests only
 its own Paperclip API.
@@ -34,7 +34,8 @@ The shared `announcementManifestSchema` defines the format:
 ```
 
 Content is plain text. Every manifest object rejects unknown fields, including
-misspellings in actions and images. Optional fields: `image: { path, alt }`, `expiresAt` (ISO
+misspellings in actions and media. Optional fields: `image: { path, alt }`,
+`animation: { path, alt }`, `expiresAt` (ISO
 timestamp), and `minimumPaperclipVersion` (stable `major.minor.patch`). Internal
 actions accept stable pages in `ANNOUNCEMENT_APP_ROUTES` and use the selected
 company. External HTTPS links open a new tab. Actions only navigate.
@@ -66,7 +67,7 @@ and hyphens in each segment, without leading/trailing slashes.
 node cli/node_modules/tsx/dist/cli.mjs scripts/publish-announcements.ts announcements --publish
 ```
 
-The helper rejects symlinks, validates image digests, uploads images first and
+The helper rejects symlinks, validates asset digests and animated HTML, uploads assets first and
 the manifest last, and verifies the public manifest and asset headers. It writes
 only the resolved announcement prefix; no remote objects are deleted or
 infrastructure changed. Allow up
@@ -78,8 +79,65 @@ including any referenced cache policy. Public response headers alone cannot
 prove the effective cache lifetime or override a higher minimum. See
 [AWS cache expiration](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Expiration.html).
 
-Retain the ID when fixing copy/images. Use a new ID to announce something new.
+Retain the ID when fixing copy/images/animations. Use a new ID to announce something new.
 ETags improve fetching but never determine redisplay.
+
+## Animated hero media
+
+An announcement can show a self-contained **HTML/CSS animation** in its hero
+area. The headline, description, close button and actions remain native
+Paperclip controls. Add an `animation` alongside the required static `image`:
+
+```json
+"image": { "path": "assets/<image-sha256>.png", "alt": "A team working together" },
+"animation": { "path": "assets/<html-sha256>.html", "alt": "Agents plan, build and review work together." }
+```
+
+Replace the placeholders with the files' actual 64-character SHA-256 digests.
+HTML is UTF-8, limited to 128 KiB, and uses a responsive document with zero body
+margin. The hero is about 352 × 136 on desktop and shorter on phones. Use CSS
+keyframes, inline styles, system fonts, and visual HTML (`div`, `span`, `p`,
+`br`, `strong`, `em`, `b`, `i`) or inline SVG shapes/text (`svg`, `g`, `path`,
+`circle`, `ellipse`, `rect`, `line`, `polyline`, `polygon`, `text`, `tspan`,
+`title`, `desc`). No scripts, external libraries, links, forms, iframes, images,
+SVG SMIL/foreignObject, meta refresh or other embedded resources. CSS URL
+requests and imports are blocked by CSP; keep all styling self-contained.
+The publisher and server use the same strict DOMPurify allowlist and reject
+unsupported markup rather than publishing a silently changed animation.
+
+Paperclip verifies the digest, validates the HTML, and renders the result in an
+opaque sandboxed iframe with no permissions. A Content Security Policy blocks
+scripts and network resources both inside the card and on direct API visits.
+The browser fetches HTML from its own authenticated instance; it never loads
+the publisher's page in an unsandboxed frame. The frame cannot receive pointer
+or keyboard focus; its accessible description is supplied by `animation.alt`.
+See [iframe sandboxing](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe).
+
+The static image stays visible while loading and on failure. Pause replaces
+the animation with its static image; Play restarts it. With reduced motion
+enabled, Paperclip does not request or play the animation. Also include a
+`prefers-reduced-motion` CSS rule in authored documents for standalone previews.
+Animations share the feed's constrained host, three-second server timeout,
+bounded cache, request deduplication and fifteen-minute failure cooldown.
+Dismissal and ID reuse rules are identical for animated and static cards.
+Older Paperclip builds that do not recognize `animation` treat that feed as
+unsupported and quietly show no card.
+
+The complete authoring example is `announcements/examples/animated/`. Preview
+it with the same staging/test-drive workflow below:
+
+```sh
+cp -R announcements/examples/animated .paperclip/announcement-animation-preview
+# Edit HTML; recompute its digest and rename it; update current.json.
+node cli/node_modules/tsx/dist/cli.mjs scripts/publish-announcements.ts .paperclip/announcement-animation-preview --staging animated-preview --dry-run
+node cli/node_modules/tsx/dist/cli.mjs scripts/publish-announcements.ts .paperclip/announcement-animation-preview --staging animated-preview --publish
+```
+
+Point the isolated instance at the printed URL and restart it. Verify movement,
+Pause/Play, reduced motion, mobile sizing, and dismissal across reloads. Try a
+missing animation asset: the poster and native controls must remain usable.
+Storybook's Animated, AnimatedDark, AnimatedMobile and MissingAnimation stories,
+and the design guide, provide local examples without changing the remote feed.
 
 ## Preview an announcement before publishing
 
@@ -220,7 +278,7 @@ state on return. Logout clears displayed state and aborts account-bound work.
 A failed state lookup never shows a card.
 
 Board-only APIs: `GET /api/announcements/current`,
-`GET /api/announcements/:id/image`, and `POST /api/announcements/:id/dismiss`
+`GET /api/announcements/:id/image`, `GET /api/announcements/:id/animation`, and `POST /api/announcements/:id/dismiss`
 with `{ "companyId": "..." }`. Responses use `private, no-store`. Repeated POSTs
 return 204 without duplicate audits. Pending dismissals remain valid after the
 feed moves to another ID. The instance retains only the IDs of validated

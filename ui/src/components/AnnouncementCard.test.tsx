@@ -1,13 +1,66 @@
 // @vitest-environment jsdom
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AnnouncementCard } from "./AnnouncementCard";
-import { announcementPreview } from "@/lib/announcement-preview";
+import { announcementPreview, announcementAnimationPreview } from "@/lib/announcement-preview";
 
 vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a> }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 describe("AnnouncementCard", () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  async function animatedCard() {
+    const div = document.createElement("div"); document.body.append(div);
+    const root = createRoot(div);
+    const dismiss = vi.fn();
+    await act(async () => root.render(<AnnouncementCard announcement={announcementAnimationPreview} onDismiss={dismiss} />));
+    return { div, root, dismiss, cleanup: async () => { await act(async () => root.unmount()); div.remove(); } };
+  }
+  it("isolates HTML, pauses to its poster and resumes without dismissing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<div>Animated hero</div>", { headers: { "Content-Type": "text/html" } })));
+    const { div, dismiss, cleanup } = await animatedCard();
+    const frame = div.querySelector("iframe")!;
+    expect(frame.getAttribute("sandbox")).toBe("");
+    expect(frame.getAttribute("tabindex")).toBe("-1");
+    expect(frame.getAttribute("aria-hidden")).toBe("true");
+    expect(frame.srcdoc).toContain("default-src 'none'");
+    expect(frame.srcdoc).toContain("Animated hero");
+    expect(div.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(announcementAnimationPreview.animation!.alt);
+    await act(async () => div.querySelector<HTMLButtonElement>('[aria-label="Pause animation"]')!.click());
+    expect(div.querySelector("iframe")).toBeNull();
+    expect(div.querySelector("img")?.alt).toBe(announcementAnimationPreview.image!.alt);
+    await act(async () => div.querySelector<HTMLButtonElement>('[aria-label="Play animation"]')!.click());
+    expect(div.querySelector("iframe")).not.toBeNull();
+    expect(dismiss).not.toHaveBeenCalled();
+    await cleanup();
+  });
+  it("does not load animation when reduced motion is requested", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const { div, cleanup } = await animatedCard();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(div.querySelector("iframe")).toBeNull();
+    expect(div.querySelector("img")).not.toBeNull();
+    expect(div.querySelector('[aria-label="Pause animation"]')).toBeNull();
+    await cleanup();
+  });
+  it.each([404, 503])("keeps the poster and actions usable for animation HTTP %s", async (status) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("unavailable", { status })));
+    const { div, dismiss, cleanup } = await animatedCard();
+    expect(div.querySelector("iframe")).toBeNull();
+    expect(div.querySelector("img")).not.toBeNull();
+    await act(async () => div.querySelector<HTMLButtonElement>('[aria-label="Dismiss announcement"]')!.click());
+    expect(dismiss).toHaveBeenCalledOnce();
+    await cleanup();
+  });
+  it("aborts a pending animation fetch when dismissed", async () => {
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url, init) => { signal = init.signal; return new Promise(() => {}); }));
+    const { div, cleanup } = await animatedCard();
+    expect(div.querySelector("img")).not.toBeNull();
+    await cleanup();
+    expect(signal?.aborted).toBe(true);
+  });
   it("renders accessible plain text, navigational actions, image fallback and dismissal", async () => {
     const div = document.createElement("div"); document.body.append(div);
     const root = createRoot(div);

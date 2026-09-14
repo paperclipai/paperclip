@@ -1,16 +1,24 @@
 import { createHash } from "node:crypto";
 import {
-  ANNOUNCEMENT_IMAGE_MAX_BYTES, ANNOUNCEMENT_MANIFEST_MAX_BYTES,
+  ANNOUNCEMENT_IMAGE_MAX_BYTES, ANNOUNCEMENT_MANIFEST_MAX_BYTES, ANNOUNCEMENT_ANIMATION_MAX_BYTES,
   DEFAULT_ANNOUNCEMENT_FEED_URL, announcementManifestSchema, isAnnouncementEligible,
   type AnnouncementManifest,
 } from "@paperclipai/shared";
 import { guardedRemoteHttpFetch } from "./remote-http-fetch.js";
+import { validateAnnouncementAnimation } from "./announcement-animation.js";
 import { logger } from "../middleware/logger.js";
 
 export const ANNOUNCEMENT_CACHE_MS = 60 * 60 * 1000;
 export const ANNOUNCEMENT_FAILURE_MS = 15 * 60 * 1000;
 const TIMEOUT_MS = 3000;
-type AnnouncementImage = { path: string; bytes: Buffer; contentType: string };
+type AnnouncementAsset = { path: string; bytes: Buffer; contentType: string };
+function assetSlot() {
+  return {
+    cache: null as AnnouncementAsset | null,
+    pending: null as { path: string; promise: Promise<AnnouncementAsset | null> } | null,
+    failure: null as { path: string; retryAt: number } | null,
+  };
+}
 export interface AnnouncementFeedOptions {
   enabled?: boolean;
   feedUrl?: string;
@@ -54,9 +62,11 @@ export function announcementFeedService(options: AnnouncementFeedOptions) {
   let nextCheck = 0;
   let available = false;
   let pending: Promise<void> | null = null;
-  let imageCache: AnnouncementImage | null = null;
-  let imagePending: { path: string; promise: Promise<AnnouncementImage | null> } | null = null;
-  let imageFailure: { path: string; retryAt: number } | null = null;
+  // One bounded cache slot per media kind, shared across board users.
+  const assets = {
+    image: assetSlot(),
+    animation: assetSlot(),
+  };
 
   function endpoint() {
     const url = new URL(options.feedUrl ?? DEFAULT_ANNOUNCEMENT_FEED_URL);
@@ -133,41 +143,42 @@ export function announcementFeedService(options: AnnouncementFeedOptions) {
     return announcement && isAnnouncementEligible(announcement, options.version, now()) ? announcement : null;
   }
 
-  return {
-    current,
-    async image(id: string) {
-      const announcement = await current();
-      if (announcement?.id !== id || !announcement.image) return null;
-      const path = announcement.image.path;
-      if (imageCache?.path === path) return imageCache;
-      if (imagePending?.path === path) return imagePending.promise;
-      if (imageFailure?.path === path && now() < imageFailure.retryAt) return null;
-      const promise = (async () => {
-        try {
-          const result = await request(new URL(path, endpoint()), { Accept: "image/png,image/jpeg,image/webp" }, async (response) => {
-            const contentType = response.headers.get("content-type")?.split(";")[0]?.trim();
-            const expected = path.endsWith(".png") ? "image/png" : path.endsWith(".jpg") ? "image/jpeg" : "image/webp";
-            if (!response.ok || contentType !== expected) {
-              await response.body?.cancel();
-              throw new Error("Invalid announcement image response");
-            }
-            const bytes = await readAnnouncementBytes(response, ANNOUNCEMENT_IMAGE_MAX_BYTES);
-            const hash = createHash("sha256").update(bytes).digest("hex");
-            if (!path.startsWith(`assets/${hash}.`)) throw new Error("Announcement image digest mismatch");
-            return { path, bytes, contentType };
-          });
-          imageCache = result;
-          imageFailure = null;
-          return result;
-        } catch {
-          imageFailure = { path, retryAt: now() + ANNOUNCEMENT_FAILURE_MS };
-          return null;
-        }
-      })();
-      const entry = { path, promise };
-      imagePending = entry;
-      try { return await promise; }
-      finally { if (imagePending === entry) imagePending = null; }
-    },
-  };
+  async function asset(id: string, kind: "image" | "animation") {
+    const announcement = await current();
+    const media = announcement?.[kind];
+    if (announcement?.id !== id || !media) return null;
+    const { path } = media;
+    const slot = assets[kind];
+    if (slot.cache?.path === path) return slot.cache;
+    if (slot.pending?.path === path) return slot.pending.promise;
+    if (slot.failure?.path === path && now() < slot.failure.retryAt) return null;
+    const expected = kind === "animation" ? "text/html" : path.endsWith(".png") ? "image/png" : path.endsWith(".jpg") ? "image/jpeg" : "image/webp";
+    const promise = (async () => {
+      try {
+        const result = await request(new URL(path, endpoint()), { Accept: expected }, async (response) => {
+          const contentType = response.headers.get("content-type")?.split(";")[0]?.trim();
+          if (!response.ok || contentType !== expected) {
+            await response.body?.cancel();
+            throw new Error("Invalid announcement asset response");
+          }
+          const bytes = await readAnnouncementBytes(response, kind === "animation" ? ANNOUNCEMENT_ANIMATION_MAX_BYTES : ANNOUNCEMENT_IMAGE_MAX_BYTES);
+          const hash = createHash("sha256").update(bytes).digest("hex");
+          if (!path.startsWith(`assets/${hash}.`)) throw new Error("Announcement asset digest mismatch");
+          return { path, bytes: kind === "animation" ? Buffer.from(validateAnnouncementAnimation(bytes)) : bytes, contentType };
+        });
+        slot.cache = result;
+        slot.failure = null;
+        return result;
+      } catch {
+        slot.failure = { path, retryAt: now() + ANNOUNCEMENT_FAILURE_MS };
+        return null;
+      }
+    })();
+    const entry = { path, promise };
+    slot.pending = entry;
+    try { return await promise; }
+    finally { if (slot.pending === entry) slot.pending = null; }
+  }
+
+  return { current, image: (id: string) => asset(id, "image"), animation: (id: string) => asset(id, "animation") };
 }
