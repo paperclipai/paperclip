@@ -1933,6 +1933,13 @@
       "when": 1789260211664,
       "tag": "0277_uneven_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 278,
+      "version": "7",
+      "when": 1789273437612,
+      "tag": "0278_jcode_local_adapter_type",
+      "breakpoints": true
     }
   ]
 }

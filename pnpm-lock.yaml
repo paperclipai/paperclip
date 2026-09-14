@@ -94,6 +94,9 @@ importers:
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
+      '@paperclipai/adapter-jcode-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/jcode-local
       '@paperclipai/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
@@ -317,6 +320,22 @@ importers:
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.12)
+
+  packages/adapters/jcode-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.21
+        version: 22.20.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
 
   packages/adapters/kimi-local:
     dependencies:
@@ -909,6 +928,9 @@ importers:
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
+      '@paperclipai/adapter-jcode-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/jcode-local
       '@paperclipai/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
@@ -1114,6 +1136,9 @@ importers:
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
+      '@paperclipai/adapter-jcode-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/jcode-local
       '@paperclipai/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
