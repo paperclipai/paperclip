@@ -540,6 +540,13 @@
       "when": 1784419200000,
       "tag": "0193_issue_external_blocker",
       "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1789378023478,
+      "tag": "0194_issue_monitor_columns",
+      "breakpoints": true
     }
   ]
 }
