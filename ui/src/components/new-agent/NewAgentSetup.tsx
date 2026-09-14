@@ -808,8 +808,21 @@ function Setup({
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
                         <h3 className="text-sm font-semibold">Runtime</h3>
-                        {aiProviderForAdapter(brandType) && <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
-                          onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />}
+                        {aiProviderForAdapter(brandType) && (
+                          connection && !aiBinding ? (
+                            <div className="space-y-3">
+                              <p className="text-sm text-muted-foreground">
+                                Using the connection selected in the Connect step.
+                              </p>
+                              <Button type="button" variant="outline" onClick={() => setScreen("connect")}>
+                                Change connection
+                              </Button>
+                            </div>
+                          ) : (
+                            <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                              onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
+                          )
+                        )}
                         {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (

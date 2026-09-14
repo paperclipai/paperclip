@@ -785,12 +785,13 @@ export async function testClaudeAcpEnvironment(
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+    const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
     checks.push({
       code: "claude_acp_anthropic_api_key_detected",
-      level: config.managedAiConnection ? "info" : "warn",
-      message: config.managedAiConnection ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
+      level: selectedApiKey ? "info" : "warn",
+      message: selectedApiKey ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: config.managedAiConnection ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: selectedApiKey ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(envConfig.CLAUDE_CODE_OAUTH_TOKEN) ||
