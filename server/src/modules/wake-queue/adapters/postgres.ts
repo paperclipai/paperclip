@@ -4,6 +4,7 @@ import { currentConversationCommentCondition } from "../../../services/agent-con
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
 import {
   agentWakeupRequests,
   agents,
@@ -371,6 +372,41 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
       return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+    },
+
+    async isCompletedDelegationMention({ companyId, issueId, finishingRunId, wakeAgentId, commentIds }) {
+      if (
+        run.companyId !== companyId || run.id !== finishingRunId ||
+        readNonEmptyString(parseObject(run.contextSnapshot).issueId) !== issueId
+      ) return false;
+      const uniqueCommentIds = [...new Set(commentIds)];
+      if (uniqueCommentIds.length === 0) return false;
+      const parent = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0]);
+      if (parent?.status !== "done" || parent.assigneeAgentId !== run.agentId) return false;
+
+      const comments = await tx.select({ body: issueComments.body, createdByRunId: issueComments.createdByRunId,
+        authorAgentId: issueComments.authorAgentId })
+        .from(issueComments).where(and(
+          eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, uniqueCommentIds), isNull(issueComments.deletedAt), currentConversationCommentCondition(),
+        ));
+      if (comments.length !== uniqueCommentIds.length || comments.some((comment) =>
+        comment.createdByRunId !== run.id || (comment.authorAgentId !== null && comment.authorAgentId !== run.agentId)
+      )) return false;
+      const referencesByComment = comments.map((comment) => extractIssueReferenceIdentifiers(comment.body));
+      if (referencesByComment.some((references) => references.length === 0)) return false;
+      const identifiers = [...new Set(referencesByComment.flat())];
+      const children = await tx.select({ identifier: issues.identifier, status: issues.status })
+        .from(issues).where(and(
+          eq(issues.companyId, companyId), eq(issues.parentId, issueId),
+          eq(issues.assigneeAgentId, wakeAgentId), inArray(issues.identifier, identifiers),
+        ));
+      return referencesByComment.every((references) => {
+        const referencedChildren = children.filter((child) => child.identifier !== null && references.includes(child.identifier));
+        return referencedChildren.length === 1 && referencedChildren[0].status === "done";
+      });
     },
 
     async reopenIssue({ companyId, issueId }) {

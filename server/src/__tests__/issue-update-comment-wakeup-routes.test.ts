@@ -680,8 +680,9 @@ describe("issue update comment wakeups", () => {
 
   it.each((["post", "patch"] as const).flatMap((method) => [
     "active_delegation", "completed_delegation", "human_comment", "completed_human_comment", "unrelated_comment", "completed_child",
-    "active_feedback", "ambiguous_delegation", "child_access_denied", "forwarding_failure",
+    "active_feedback", "ambiguous_delegation", "child_access_denied", "child_mutation_denied", "forwarding_failure",
     "source_run_other_issue", "completed_source_run_other_issue",
+    "completed_explicit_resume",
     "completed_delegation_without_blocker", "completed_foreign_company", "completed_unrelated_child", "completed_other_assignee", "completed_lookup_failure",
     "unrelated_child", "foreign_company", "stopped_run", "foreign_run", "unrelated_run", "lookup_failure",
   ].map((scenario) => ({ method, scenario }))))("routes $method mentions correctly for $scenario", async ({ method, scenario }) => {
@@ -716,7 +717,7 @@ describe("issue update comment wakeups", () => {
       if (scenario === "completed_lookup_failure") throw new Error("temporary identifier lookup failure");
       return identifier === child.identifier ? child : null;
     });
-    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id, patch) => scenario === "completed_explicit_resume" ? { ...existing, ...patch } : existing);
     const originalComment = {
       id: "delegation-note", issueId: existing.id, companyId: existing.companyId, body,
       createdByRunId: humanComment ? null : SOURCE_RUN_ID,
@@ -732,6 +733,9 @@ describe("issue update comment wakeups", () => {
     if (scenario === "child_access_denied") {
       mockAccessDecide.mockImplementation(async (input) => ({ allowed: input.resource?.issueId !== child.id, action: input.action, reason: "test_access_decision", explanation: "Test child access decision." }));
     }
+    if (scenario === "child_mutation_denied") {
+      mockAccessDecide.mockImplementation(async (input) => ({ allowed: input.resource?.issueId !== child.id || input.action !== "issue:mutate", action: input.action, reason: "test_access_decision", explanation: "Test child mutation decision." }));
+    }
     mockHeartbeatService.getRun.mockImplementation(async (id) => ({
       id, companyId: id === child.executionRunId && scenario === "foreign_run" ? "other-company" : existing.companyId,
       status: id === child.executionRunId && scenario === "stopped_run" ? "succeeded" : "running",
@@ -743,7 +747,8 @@ describe("issue update comment wakeups", () => {
       ? request(app).post(`/api/issues/${existing.id}/comments`)
       : request(app).patch(`/api/issues/${existing.id}`);
     if (!humanComment) req.set("X-Paperclip-Run-Id", SOURCE_RUN_ID);
-    const res = await req.send(method === "post" ? { body } : { comment: body });
+    const explicitResume = scenario === "completed_explicit_resume" ? { resume: true } : {};
+    const res = await req.send(method === "post" ? { body, ...explicitResume } : { comment: body, ...explicitResume });
     expect(res.status).toBe(method === "post" ? 201 : 200);
     await vi.waitFor(() => {
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(PREVIOUS_AGENT_ID, expect.objectContaining({ reason: "issue_comment_mentioned" }));
@@ -757,8 +762,8 @@ describe("issue update comment wakeups", () => {
       );
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(MENTIONED_AGENT_ID, expect.objectContaining({
         reason: "issue_comment_mentioned",
-        payload: expect.objectContaining({ issueId: child.id, commentId: "forwarded-note" }),
-        contextSnapshot: expect.objectContaining({ issueId: child.id, taskId: child.id, commentId: "forwarded-note", wakeCommentId: "forwarded-note", source: "comment.mention.delegation" }),
+        payload: expect.objectContaining({ issueId: child.id, commentId: "forwarded-note", resumeIntent: true, followUpRequested: true }),
+        contextSnapshot: expect.objectContaining({ issueId: child.id, taskId: child.id, commentId: "forwarded-note", wakeCommentId: "forwarded-note", source: "comment.mention.delegation", resumeIntent: true, followUpRequested: true }),
       }));
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(MENTIONED_AGENT_ID, expect.objectContaining({ payload: expect.objectContaining({ issueId: existing.id }) }));
     } else if (["completed_delegation", "completed_delegation_without_blocker"].includes(scenario)) {

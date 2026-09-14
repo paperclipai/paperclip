@@ -106,6 +106,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     assigneeAgentId?: string | null;
     executionRunId?: string | null;
     checkoutRunId?: string | null;
+    parentId?: string | null;
+    identifier?: string;
   }): Promise<string> {
     const issueId = input.issueId ?? randomUUID();
     await db.insert(issues).values({
@@ -117,6 +119,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       assigneeAgentId: input.assigneeAgentId ?? null,
       executionRunId: input.executionRunId ?? null,
       checkoutRunId: input.checkoutRunId ?? null,
+      parentId: input.parentId ?? null,
+      identifier: input.identifier,
     });
     return issueId;
   }
@@ -164,6 +168,72 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  it.each([
+    "completed", "multiple_comments", "repeated_reference", "no_comments", "missing_comment",
+    "human_comment", "other_run_comment", "foreign_comment", "other_issue_comment", "deleted_comment",
+    "mixed_human_comments", "mixed_other_run_comments", "mixed_unrelated_comments",
+    "no_reference", "code_reference", "ambiguous_children", "child_open", "child_cancelled",
+    "foreign_child", "unrelated_child", "other_child_assignee", "parent_open",
+    "source_other_task", "source_other_agent", "wrong_company", "wrong_run",
+  ])("proves completed delegation from transactional comment and child rows (%s)", async (scenario) => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    const leadId = await seedAgent({ companyId, name: "Lead" });
+    const workerId = await seedAgent({ companyId, name: "Worker" });
+    const foreignAgentId = await seedAgent({ companyId: otherCompanyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: leadId, status: scenario === "parent_open" ? "in_progress" : "done" });
+    const otherIssueId = await seedIssue({ companyId });
+    const foreignIssueId = await seedIssue({ companyId: otherCompanyId });
+    const runId = await seedRun({ companyId, agentId: scenario === "source_other_agent" ? workerId : leadId,
+      status: "succeeded", contextSnapshot: { issueId: scenario === "source_other_task" ? otherIssueId : issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const otherRunId = await seedRun({ companyId, agentId: leadId, status: "succeeded", contextSnapshot: { issueId } });
+    await seedIssue({
+      companyId: scenario === "foreign_child" ? otherCompanyId : companyId,
+      identifier: "QA-2", parentId: scenario === "unrelated_child" ? otherIssueId : issueId,
+      assigneeAgentId: scenario === "foreign_child" ? foreignAgentId : scenario === "other_child_assignee" ? leadId : workerId,
+      status: scenario === "child_open" ? "in_progress" : scenario === "child_cancelled" ? "cancelled" : "done",
+    });
+    if (scenario === "ambiguous_children") {
+      await seedIssue({ companyId, identifier: "QA-3", parentId: issueId, assigneeAgentId: workerId, status: "done" });
+    }
+    const body = scenario === "no_reference" ? "Thanks @Worker" : scenario === "code_reference" ? "Example `QA-2`"
+      : scenario === "ambiguous_children" ? "@Worker completed QA-2 and QA-3"
+      : scenario === "repeated_reference" ? "@Worker completed [QA-2](/issues/QA-2); QA-2 is done"
+      : "@Worker completed QA-2";
+    const [comment] = await db.insert(issueComments).values({
+      companyId: scenario === "foreign_comment" ? otherCompanyId : companyId,
+      issueId: scenario === "foreign_comment" ? foreignIssueId : scenario === "other_issue_comment" ? otherIssueId : issueId,
+      authorAgentId: scenario === "human_comment" ? null : leadId,
+      authorUserId: scenario === "human_comment" ? "responsible-user" : null,
+      createdByRunId: scenario === "human_comment" ? null : scenario === "other_run_comment" ? otherRunId : runId,
+      body, deletedAt: scenario === "deleted_comment" ? new Date() : null,
+    }).returning();
+    const commentIds = scenario === "no_comments" ? [] : [comment.id];
+    if (scenario === "missing_comment") commentIds.push(randomUUID());
+    if (["multiple_comments", "mixed_human_comments", "mixed_other_run_comments", "mixed_unrelated_comments"].includes(scenario)) {
+      const [second] = await db.insert(issueComments).values({ companyId, issueId,
+        authorAgentId: scenario === "mixed_human_comments" ? null : leadId,
+        authorUserId: scenario === "mixed_human_comments" ? "responsible-user" : null,
+        createdByRunId: scenario === "mixed_human_comments" ? null : scenario === "mixed_other_run_comments" ? otherRunId : runId,
+        body: scenario === "mixed_unrelated_comments" ? "@Worker, investigate a new error" : "QA-2 was delivered",
+      }).returning();
+      commentIds.push(second.id);
+    }
+    let checked = false;
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
+      checked = true;
+      const completed = await ports.transaction.isCompletedDelegationMention({
+        companyId: scenario === "wrong_company" ? otherCompanyId : companyId,
+        issueId, finishingRunId: scenario === "wrong_run" ? otherRunId : runId, wakeAgentId: workerId, commentIds,
+      });
+      expect(completed).toBe(["completed", "multiple_comments", "repeated_reference"].includes(scenario));
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+    expect(checked).toBe(true);
+  });
 
   it.each([false, true])("rechecks disabled chat mode before interrupted queue promotion (conversation=%s)", async (conversation) => {
     const settings = instanceSettingsService(db);

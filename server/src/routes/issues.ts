@@ -3730,6 +3730,9 @@ export function issueRoutes(
       ) return null;
       const decision = await decideIssueAccess(req, child, "issue:comment");
       if (!decision.allowed) return null;
+      // Accepted feedback can need another child turn after this one
+      // finishes, so the author must also be allowed to resume its task.
+      if (!(await decideIssueAccess(req, child, "issue:mutate")).allowed) return null;
       authorizationReason = decision.reason;
     } catch (err) {
       // A failed optimization must not drop an otherwise valid mention.
@@ -14676,7 +14679,9 @@ export function issueRoutes(
               source: "automation",
               triggerDetail: "system",
               reason: "issue_comment_mentioned",
-              payload: { issueId: wakeIssueId, commentId: wakeCommentId },
+              payload: { issueId: wakeIssueId, commentId: wakeCommentId,
+                ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
+              },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
               contextSnapshot: {
@@ -14686,6 +14691,7 @@ export function issueRoutes(
                 wakeCommentId,
                 wakeReason: "issue_comment_mentioned",
                 source: delegation ? "comment.mention.delegation" : "comment.mention",
+                ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
               },
             });
           }
@@ -18086,7 +18092,9 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_comment_mentioned",
-            payload: { issueId: wakeIssueId, commentId: wakeCommentId },
+            payload: { issueId: wakeIssueId, commentId: wakeCommentId,
+              ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
+            },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: {
@@ -18096,6 +18104,7 @@ export function issueRoutes(
               wakeCommentId,
               wakeReason: "issue_comment_mentioned",
               source: delegation ? "comment.mention.delegation" : "comment.mention",
+              ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
             },
           });
         }

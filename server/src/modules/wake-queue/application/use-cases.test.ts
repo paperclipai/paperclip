@@ -114,6 +114,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       releasePolicy: null,
     })),
     getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
     finalizePromotedWake: vi.fn(async (input) => runSummary(input.wakeId)),
@@ -127,11 +128,11 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
   };
 }
 
-function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransaction, issue = ISSUE): IssueLockWriter {
+function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransaction, issue = ISSUE, run = RUN): IssueLockWriter {
   return {
     withIssueExecutionLock: vi.fn(async (_input, fn) => {
-      const result = await fn({ primaryIssue: issue, run: RUN }, { host, transaction });
-      return { ...result, run: RUN };
+      const result = await fn({ primaryIssue: issue, run }, { host, transaction });
+      return { ...result, run };
     }),
   };
 }
@@ -144,6 +145,49 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it.each(["closing", "mixed_comments", "explicit_resume", "interaction", "other_source_task", "parent_open"])(
+    "checks late completed-delegation mentions without dropping independent input (%s)", async (scenario) => {
+      const originalCommentIds = ["closing-comment", "second-comment"];
+      const candidate = wakeCandidate({
+        reason: "issue_comment_mentioned", wakeReason: "issue_comment_mentioned",
+        requestedByActorType: "agent", requestedByActorId: RUN.agentId,
+        queuedCommentIds: [originalCommentIds[0]], deferredCommentIds: originalCommentIds,
+        preservesIndependentContinuation: scenario === "explicit_resume",
+        payload: scenario === "interaction" ? { mutation: "interaction" } : {},
+        deferredContextSeed: scenario === "explicit_resume" ? { resumeIntent: true } : {},
+      });
+      const queue = [candidate];
+      const transaction = createFakeTransaction({
+        findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+        isCompletedDelegationMention: vi.fn(async () => scenario !== "mixed_comments"),
+        getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [originalCommentIds[0]], containedSelfAuthoredComment: false })),
+      });
+      const issue = { ...ISSUE, status: scenario === "parent_open" ? "in_progress" : "done" };
+      const run = { ...RUN, status: "succeeded", contextSnapshot: { issueId: scenario === "other_source_task" ? "other-issue" : ISSUE.id } };
+      const release = createReleaseIssueExecution({
+        issueLock: createFakeIssueLock(createFakeHost(), transaction, issue, run), recovery: createFakeRecovery(),
+      });
+      const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+      if (scenario === "closing" || scenario === "mixed_comments") {
+        expect(transaction.isCompletedDelegationMention).toHaveBeenCalledWith({
+          companyId: RUN.companyId, issueId: ISSUE.id, finishingRunId: RUN.id,
+          wakeAgentId: AGENT.id, commentIds: originalCommentIds,
+        });
+      } else {
+        expect(transaction.isCompletedDelegationMention).not.toHaveBeenCalled();
+      }
+      if (scenario === "closing") {
+        expect(result.outcome.kind).toBe("released");
+        expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
+        expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+        expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+      } else {
+        expect(result.outcome.kind).toBe("promoted");
+        expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("preserves the former owner's queue for handoff adoption while draining the new owner's wake", async () => {
     const stale = wakeCandidate({ agentId: RUN.agentId, queuedCommentIds: ["saved-user-direction"] });
     const current = wakeCandidate({ id: "wake-new-owner", agentId: "new-agent" });
@@ -487,6 +531,46 @@ describe("releaseIssueExecution", () => {
     expect(transaction.reopenIssue).toHaveBeenCalledTimes(1);
     expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
     expect(result.outcome.kind).toBe("promoted");
+  });
+
+  it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
+    const commentIds = ["accepted-agent-feedback"];
+    const queue = [wakeCandidate({
+      agentId: ISSUE.assigneeAgentId!,
+      requestedByActorType: "agent",
+      requestedByActorId: "delegating-agent",
+      queuedCommentIds: scenario === "done_untracked_comment" ? [] : commentIds,
+      deferredCommentIds: commentIds,
+      payload: { resumeIntent: scenario !== "done_no_resume", followUpRequested: true },
+      deferredContextSeed: { resumeIntent: scenario !== "done_no_resume", followUpRequested: true, wakeCommentIds: commentIds },
+    })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      getQueuedCommentLiveness: vi.fn(async () => ({
+        liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
+        containedSelfAuthoredComment: scenario === "done_self",
+      })),
+      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: scenario === "cancelled_live" ? "cancelled" : "done" }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    if (scenario === "done_live") {
+      expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+      expect(transaction.reopenIssue).toHaveBeenCalledTimes(1);
+      expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
+      expect(result.outcome.kind).toBe("promoted");
+    } else {
+      expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
+      expect(transaction.reopenIssue).not.toHaveBeenCalled();
+      expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+      expect(result.outcome.kind).toBe("released");
+    }
   });
 
   it("never reopens the issue when the promotion claim loses the race, and moves on to the next wake", async () => {
