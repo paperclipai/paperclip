@@ -1374,6 +1374,55 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(issue?.executionRunId).toBe(retryRuns[0]?.id);
   });
 
+  it.each(["schedule", "transaction", "promote", "dispatch"] as const)(
+    "suppresses a busy-subscription retry whose task lock was cleared before %s",
+    async (phase) => {
+      const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+      await db.update(heartbeatRuns).set({
+        status: "cancelled", errorCode: "ai_connection_busy",
+        resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, runId));
+      const clearLock = () => db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+      if (phase === "schedule") await clearLock();
+      const transaction = db.transaction.bind(db);
+      let raceApplied = false;
+      const transactionSpy = phase === "transaction"
+        ? vi.spyOn(db, "transaction").mockImplementationOnce(async (callback, config) => {
+            await clearLock();
+            raceApplied = true;
+            return transaction(callback, config);
+          })
+        : null;
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now, retryReason: "ai_connection_busy", wakeReason: "ai_connection_busy_retry",
+        maxAttempts: 1, delayMs: 1_000,
+      }).finally(() => transactionSpy?.mockRestore());
+      if (phase === "transaction") expect(raceApplied).toBe(true);
+      if (phase === "schedule" || phase === "transaction") {
+        expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "issue_execution_lock_changed" });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+        return;
+      }
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+      if (phase === "promote") await clearLock();
+      const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+      if (phase === "promote") {
+        expect(promotion).toEqual({ promoted: 0, runIds: [] });
+      } else {
+        expect(promotion.runIds).toContain(scheduled.run.id);
+        await clearLock();
+        const adapter = createPostgresRunDispatchAdapter(db);
+        expect(await adapter.cancelStaleQueuedRun({
+          companyId, runId: scheduled.run.id, expectedStatus: "queued", now: scheduled.dueAt,
+        })).toMatchObject({ outcome: "cancelled", errorCode: "issue_execution_lock_changed" });
+      }
+      expect(await heartbeat.getRun(scheduled.run.id)).toMatchObject({
+        status: "cancelled", errorCode: "issue_execution_lock_changed",
+      });
+    },
+  );
+
   it("does not promote a duplicate max-turn continuation that does not own the issue lock", async () => {
     const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
 

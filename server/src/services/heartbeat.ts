@@ -15149,6 +15149,7 @@ export function heartbeatService(
 
     const requiresIssueGate =
       hasConversationContinuationPolicy(run.resultJson) ||
+      retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
@@ -15539,6 +15540,20 @@ export function heartbeatService(
                 },
               };
             }
+          }
+        }
+
+        if (retryReason === AI_CONNECTION_BUSY_RETRY_REASON && issueId) {
+          // The issue row is locked above. Recheck after the preflight gate so
+          // cancellation or recovery cannot leave a successor without its lock.
+          const [lockedIssue] = await tx.select({ executionRunId: issues.executionRunId })
+            .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+          if (lockedIssue?.executionRunId !== run.id) {
+            return {
+              outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
+              reason: "Subscription retry suppressed because the task execution lock changed",
+              details: { issueId, expectedExecutionRunId: run.id, currentExecutionRunId: lockedIssue?.executionRunId ?? null },
+            };
           }
         }
 

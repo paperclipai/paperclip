@@ -257,7 +257,8 @@ Authenticated public deployments must configure a trusted runtime host (`PAPERCL
 When a managed agent creates or hires another agent without an explicit AI binding
 or adapter auth setting, the server inherits its compatible managed connection choice.
 Explicit credentials, blank overrides, credential directories, and provider routing
-settings take precedence. Unmanaged parents keep their existing authentication path. The new agent resolves
+settings for the child provider take precedence. Unrelated provider keys do not
+suppress the default. Unmanaged parents keep their existing authentication path. The new agent resolves
 the responsible user's account at execution time; it never copies the parent's
 credentials or identity. Same-provider hires preserve subscription/API-key choice.
 A different provider selects the responsible user's default for that provider.
@@ -274,6 +275,7 @@ Concurrent runs using the same subscription wait through scheduled retries while
 the credential lease is held. They do not request new credentials or consume the
 provider-failure retry allowance. Each retry revalidates the account and existing
 run-dispatch rules still suppress cancelled, reassigned, or otherwise ineligible work.
+Task retries must retain execution-lock ownership at scheduling, promotion, and dispatch.
 
 `server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
 both providers and methods, approval gates, native provider mapping, shared access

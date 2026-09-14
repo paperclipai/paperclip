@@ -137,6 +137,24 @@ describe("agent-created hires use managed AI connections", () => {
     expect(agent.status).toBe("idle");
   });
 
+  for (const endpoint of ["agent-hires", "agents"]) {
+    it.each([
+      ["anthropic", "codex_local", {}, "ANTHROPIC_API_KEY"],
+      ["openai", "claude_local", {}, "OPENAI_API_KEY"],
+      ["anthropic", "paperclip_runner", { provider: "codex" }, "ANTHROPIC_API_KEY"],
+      ["openai", "paperclip_runner", { provider: "acpx", acpxAgent: "claude" }, "OPENAI_API_KEY"],
+    ] as const)(`${endpoint}: ignores the %s auth key for a different provider in %s`, async (provider, adapterType, config, key) => {
+      const f = await fixture(provider);
+      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+        name: "Cross-provider config", role: "engineer", adapterType,
+        adapterConfig: { ...config, env: { [key]: "leftover-parent-setting" } },
+      }));
+      expect(agent.runtimeConfig.aiConnection).toMatchObject({
+        provider: provider === "anthropic" ? "openai" : "anthropic", mode: "responsible_user",
+      });
+    });
+  }
+
   it("accepts an explicit personal default before authentication, including approval-gated hires", async () => {
     const f = await fixture("anthropic");
     await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, f.companyId));

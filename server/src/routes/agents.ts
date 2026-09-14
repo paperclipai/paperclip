@@ -1,5 +1,5 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
-import { AI_AUTH_ENV_KEYS, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -2422,10 +2422,6 @@ export function agentRoutes(
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
     if (req.actor.type !== "agent" || normalized.aiConnection) return normalized;
-    // Explicit credentials, blank overrides, provider homes and routing choices
-    // take precedence over an inherited managed connection.
-    const env = asRecord(adapterConfig.env);
-    if (AI_AUTH_ENV_KEYS.some((key) => env?.[key] !== undefined)) return normalized;
     const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
     const binding = defaultAiConnectionForHire(adapterType, adapterConfig, manager.runtimeConfig?.aiConnection);
