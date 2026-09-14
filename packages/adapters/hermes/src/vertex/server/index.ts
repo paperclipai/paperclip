@@ -4,7 +4,9 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
 } from "@paperclipai/adapter-utils";
-import { access } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 
 import { execute as executeHermes } from "../../server/execute.js";
 import { testEnvironment as testHermesEnvironment } from "../../server/test.js";
@@ -21,7 +23,50 @@ export async function executeGoogleVertex(ctx: AdapterExecutionContext) {
   return executeHermes(withGoogleVertexExecutionConfig(ctx));
 }
 
-async function vertexCredentialCheck(
+const MINIMUM_VERTEX_HERMES_VERSION = [0, 21, 2] as const;
+const MINIMUM_VERTEX_HERMES_VERSION_LABEL = MINIMUM_VERTEX_HERMES_VERSION.join(".");
+
+function parseSemanticVersion(value: string): [number, number, number] | null {
+  const match = value.match(/(?:^|\D)(\d+)\.(\d+)\.(\d+)(?:\D|$)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function vertexHermesMinimumVersionCheck(
+  checks: AdapterEnvironmentCheck[],
+): AdapterEnvironmentCheck | null {
+  if (checks.some((check) => check.code === "hermes_cli_not_found")) return null;
+
+  const versionCheck = checks.find((check) => check.code === "hermes_version");
+  const version = versionCheck ? parseSemanticVersion(versionCheck.message) : null;
+  if (!version) {
+    return {
+      level: "error",
+      message: `Could not verify Hermes Agent ${MINIMUM_VERTEX_HERMES_VERSION_LABEL}+ for Vertex`,
+      hint: `Install or upgrade Hermes Agent to version ${MINIMUM_VERTEX_HERMES_VERSION_LABEL} or newer.`,
+      code: "google_vertex_hermes_version_unknown",
+    };
+  }
+
+  let supported = true;
+  for (let index = 0; index < version.length; index += 1) {
+    if (version[index] > MINIMUM_VERTEX_HERMES_VERSION[index]) break;
+    if (version[index] < MINIMUM_VERTEX_HERMES_VERSION[index]) {
+      supported = false;
+      break;
+    }
+  }
+  if (supported) return null;
+
+  return {
+    level: "error",
+    message: `Hermes Agent ${version.join(".")} does not support the Vertex adapter`,
+    hint: `Upgrade Hermes Agent to version ${MINIMUM_VERTEX_HERMES_VERSION_LABEL} or newer.`,
+    code: "google_vertex_hermes_version_unsupported",
+  };
+}
+
+export async function vertexCredentialCheck(
   config: Record<string, unknown>,
 ): Promise<AdapterEnvironmentCheck> {
   const env = (config.env ?? {}) as Record<string, unknown>;
@@ -32,8 +77,25 @@ async function vertexCredentialCheck(
         ? env.GOOGLE_APPLICATION_CREDENTIALS
         : null;
   if (credentialPath) {
+    if (!isAbsolute(credentialPath)) {
+      return {
+        level: "error",
+        message: "Vertex service-account credential path must be absolute",
+        hint: "Set credentialsPath to an absolute JSON file path on the selected execution host, or leave it blank to use Application Default Credentials.",
+        code: "google_vertex_service_account_path_not_absolute",
+      };
+    }
     try {
-      await access(credentialPath);
+      await access(credentialPath, fsConstants.R_OK);
+      const credentialStat = await stat(credentialPath);
+      if (!credentialStat.isFile()) {
+        return {
+          level: "error",
+          message: "Vertex service-account credential path is not a regular file",
+          hint: "Set credentialsPath to a readable service-account JSON file on the selected execution host.",
+          code: "google_vertex_service_account_not_file",
+        };
+      }
     } catch {
       return {
         level: "error",
@@ -62,7 +124,14 @@ export async function testGoogleVertexEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const vertexCtx = withGoogleVertexTestConfig(ctx);
   const result = await testHermesEnvironment(vertexCtx);
-  const checks = result.checks.filter((check) => check.code !== "hermes_no_api_keys");
+  const checks = result.checks.filter(
+    (check) =>
+      check.code !== "hermes_no_api_keys" &&
+      check.code !== "hermes_version_unknown" &&
+      check.code !== "hermes_version_failed",
+  );
+  const versionCheck = vertexHermesMinimumVersionCheck(result.checks);
+  if (versionCheck) checks.push(versionCheck);
   checks.push(await vertexCredentialCheck(buildGoogleVertexRuntimeConfig(ctx.config ?? {})));
   const hasErrors = checks.some((check) => check.level === "error");
   const hasWarnings = checks.some((check) => check.level === "warn");
