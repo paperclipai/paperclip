@@ -125,3 +125,27 @@ export function storyRepliesConsumed(
     }),
   );
 }
+
+export function storyParentFinishedAfterChildren(
+  runs: StoryRun[],
+  parentId: string,
+  leadId: string,
+  childIds: string[],
+): boolean {
+  const scope = (r: StoryRun) =>
+    r.nativeIssueId ?? r.contextSnapshot?.issueId ?? r.contextSnapshot?.taskId;
+  const completed = runs.filter(
+    (r) => r.status === "succeeded" && !isStoryWorkspaceDeferral(r),
+  );
+  const children = completed.filter((r) => childIds.includes(String(scope(r))));
+  if (!children.length) return false;
+  const lastChildFinish = Math.max(
+    ...children.map((r) => Date.parse(r.finishedAt ?? "")),
+  );
+  return completed.some(
+    (r) =>
+      r.agentId === leadId &&
+      scope(r) === parentId &&
+      Date.parse(r.finishedAt ?? "") >= lastChildFinish,
+  );
+}

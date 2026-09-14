@@ -14,6 +14,7 @@ import {
   isStoryWorkspaceDeferral,
   storyLifecycleChecks,
   storyRepliesConsumed,
+  storyParentFinishedAfterChildren,
   type StoryCheck,
   type StoryIssue,
   type StoryRun,
@@ -747,6 +748,18 @@ export async function runEverydayFlow(input: Input) {
       storyRepliesConsumed(ev.runs, submittedCommentIds),
       "Every submitted user message appears in a successfully completed native execution input.",
     );
+    if (caseId === "delegate-feedback" || caseId === "hire-reuse") {
+      check(
+        "parent-finishes-after-child",
+        storyParentFinishedAfterChildren(
+          ev.runs,
+          parent!.id,
+          fixtures.agent.id,
+          ev.issues.filter((i) => i.parentId === parent!.id).map((i) => i.id),
+        ),
+        "The lead must finish after the final child execution, rather than claim completion while delegated work is still underway.",
+      );
+    }
     const expectedModel = execution.profile.model;
     check(
       "native-model-config",

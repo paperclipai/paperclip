@@ -5,6 +5,7 @@ import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import {
   storyLifecycleChecks,
   storyRepliesConsumed,
+  storyParentFinishedAfterChildren,
   type StoryRun,
 } from "./everyday-observations.js";
 
@@ -172,5 +173,41 @@ describe("reply completion boundary", () => {
       ),
     ).toBe(false);
     expect(storyRepliesConsumed([run, next], ["later-comment"])).toBe(true);
+  });
+});
+
+describe("delegation completion order", () => {
+  it("rejects a parent closed before its worker finishes", () => {
+    const base: StoryRun = {
+      id: "lead-run",
+      companyId: "company",
+      agentId: "lead",
+      status: "succeeded",
+      nativeIssueId: "parent",
+      finishedAt: "2026-09-14T12:00:00Z",
+    };
+    const child = {
+      ...base,
+      id: "worker-run",
+      agentId: "worker",
+      nativeIssueId: "child",
+      finishedAt: "2026-09-14T12:01:00Z",
+    };
+    expect(
+      storyParentFinishedAfterChildren([base, child], "parent", "lead", [
+        "child",
+      ]),
+    ).toBe(false);
+    expect(
+      storyParentFinishedAfterChildren(
+        [{ ...base, finishedAt: "2026-09-14T12:02:00Z" }, child],
+        "parent",
+        "lead",
+        ["child"],
+      ),
+    ).toBe(true);
+    expect(
+      storyParentFinishedAfterChildren([base], "parent", "lead", ["child"]),
+    ).toBe(false);
   });
 });
