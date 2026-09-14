@@ -500,6 +500,10 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db
+      .update(heartbeatRuns)
+      .set({ agentId: otherAgentId })
+      .where(eq(heartbeatRuns.id, currentRunId));
     await db.insert(issues).values({
       id: issueId,
       companyId,
