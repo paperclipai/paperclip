@@ -218,7 +218,10 @@ function isSkillSupportFile(filePath: string): boolean {
   const parts = normalizePortablePath(filePath).split("/").filter(Boolean);
   return parts.length >= 4
     && parts[0] === "skills"
-    && ["references", "scripts", "templates", "assets"].includes(parts[2]!);
+    && parts.some((part, index) =>
+      index >= 2
+      && index < parts.length - 1
+      && ["references", "scripts", "templates", "assets"].includes(part));
 }
 
 function shouldIncludePortableFile(filePath: string): boolean {

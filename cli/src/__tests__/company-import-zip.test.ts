@@ -61,6 +61,11 @@ describe("resolveInlineSourceFromPath", () => {
     await mkdir(path.join(tempDir, "skills", "compliance", "references"), { recursive: true });
     await mkdir(path.join(tempDir, "skills", "compliance", "templates"), { recursive: true });
     await mkdir(path.join(tempDir, "skills", "compliance", "assets"), { recursive: true });
+    await mkdir(path.join(tempDir, "skills", "company", "kli", "compliance", "scripts"), { recursive: true });
+    await mkdir(path.join(tempDir, "skills", "local", "agency", "compliance", "references"), { recursive: true });
+    await mkdir(path.join(tempDir, "skills", "url", "github.com", "compliance", "templates"), { recursive: true });
+    await mkdir(path.join(tempDir, "skills", "paperclipai", "paperclip", "paperclip", "scripts"), { recursive: true });
+    await mkdir(path.join(tempDir, "skills", "scripts"), { recursive: true });
     await mkdir(path.join(tempDir, "vendor", "skills", "nested", "scripts"), { recursive: true });
     await mkdir(path.join(tempDir, "server"), { recursive: true });
     await writeFile(path.join(tempDir, "skills", "compliance", "SKILL.md"), "# Compliance\n");
@@ -68,6 +73,11 @@ describe("resolveInlineSourceFromPath", () => {
     await writeFile(path.join(tempDir, "skills", "compliance", "references", "rules.json"), "{}\n");
     await writeFile(path.join(tempDir, "skills", "compliance", "templates", "report.txt"), "Report\n");
     await writeFile(path.join(tempDir, "skills", "compliance", "assets", "schema.json"), "{}\n");
+    await writeFile(path.join(tempDir, "skills", "company", "kli", "compliance", "scripts", "scan.mjs"), "export {};\n");
+    await writeFile(path.join(tempDir, "skills", "local", "agency", "compliance", "references", "rules.json"), "{}\n");
+    await writeFile(path.join(tempDir, "skills", "url", "github.com", "compliance", "templates", "report.txt"), "Report\n");
+    await writeFile(path.join(tempDir, "skills", "paperclipai", "paperclip", "paperclip", "scripts", "upload.sh"), "exit 0\n");
+    await writeFile(path.join(tempDir, "skills", "scripts", "scan.mjs"), "export {};\n");
     await writeFile(path.join(tempDir, "vendor", "skills", "nested", "scripts", "scan.mjs"), "export {};\n");
     await writeFile(path.join(tempDir, "server", "index.ts"), "export {};\n");
 
@@ -79,7 +89,12 @@ describe("resolveInlineSourceFromPath", () => {
       "skills/compliance/references/rules.json": "{}\n",
       "skills/compliance/templates/report.txt": "Report\n",
       "skills/compliance/assets/schema.json": "{}\n",
+      "skills/company/kli/compliance/scripts/scan.mjs": "export {};\n",
+      "skills/local/agency/compliance/references/rules.json": "{}\n",
+      "skills/url/github.com/compliance/templates/report.txt": "Report\n",
+      "skills/paperclipai/paperclip/paperclip/scripts/upload.sh": "exit 0\n",
     });
+    expect(resolved.files).not.toHaveProperty("skills/scripts/scan.mjs");
     expect(resolved.files).not.toHaveProperty("vendor/skills/nested/scripts/scan.mjs");
     expect(resolved.files).not.toHaveProperty("server/index.ts");
   });
