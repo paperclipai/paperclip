@@ -727,6 +727,8 @@ export async function runEverydayFlow(input: Input) {
               : undefined,
       });
       await openParent();
+      await expect(page.getByTestId("thread-root")).toBeVisible();
+      await expect(page.getByTestId("issue-chat-skeleton")).toHaveCount(0);
       await input.capture(
         "decision-pending",
         "Request before the user decision",
@@ -1124,6 +1126,16 @@ export async function runEverydayFlow(input: Input) {
       ),
       "No completion confirmation or unanswered interaction remains.",
     );
+    await expect(page.getByTestId("thread-root")).toBeVisible();
+    const latestAgentComment = ev.issues
+      .find((i) => i.id === parent!.id)
+      ?.comments.filter((c: Row) => c.authorAgentId)
+      .at(-1);
+    if (latestAgentComment) {
+      const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);
+      await expect(response).toBeVisible();
+      await response.scrollIntoViewIfNeeded();
+    }
     await input.capture(
       "final-state",
       "Finished everyday workflow",

@@ -39,6 +39,7 @@ const ALLOWED_ROOT_FILES = new Set([
   "final-state.png",
   "failure.png",
   "tool-review-pending.png",
+  "decision-pending.png",
   "chat-plan-draft.png",
   "chat-plan-revised.png",
   "server.log",
