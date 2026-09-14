@@ -65,6 +65,7 @@ import {
 import type { Environment, EnvironmentLease, ExecutionWorkspace } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "../services/workspace-runtime.ts";
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.ts";
+import type { RemoteRunnerRecoveryProcess } from "../services/native-runtime/remote-runner-recovery.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -215,6 +216,39 @@ function makeMockRuntime(overrides: Partial<EnvironmentRuntimeService> = {}): En
 
 describe("environmentRunOrchestrator — realizeForRun", () => {
   const mockDb = {} as any;
+
+  function recoveryInput() {
+    const input = makeRealizeInput({ environment: makeEnvironment("sandbox"), lease: makeLease({ provider: "daytona", providerLeaseId: "sandbox-1",
+      metadata: { remoteCwd: "/workspace/project", workspaceRealization: { mode: "copy", authoritativeRoot: "/workspace/project", pathAliases: [], outboundRestorePaths: [] } } }) });
+    input.adapterType = "paperclip_runner";
+    input.recoveryProcess = { processLocation: "remote", pid: 42, processGroupId: null, startedAt: new Date().toISOString(),
+      remoteProcessIdentity: { version: 1, pid: 42, processGroupId: 42, uid: 1000, bootId: "00000000-0000-4000-8000-000000000001", startTicks: "100" },
+      environmentLeaseId: input.lease.id, environmentId: input.environment.id, providerLeaseId: "sandbox-1", workspaceRoot: "/workspace/project",
+      configurationDigest: "a".repeat(64), workspaceConnection: { scopeId: "run-1", fingerprint: "b".repeat(64) } } satisfies RemoteRunnerRecoveryProcess;
+    return input;
+  }
+
+  it("reattaches saved workspace realization without staging, provisioning or metadata replacement", async () => {
+    const runtime = makeMockRuntime(); const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const input = recoveryInput();
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({ kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/workspace/project" });
+    const result = await orchestrator.realizeForRun(input);
+    expect(result.lease).toBe(input.lease); expect(result.workspaceRealization).toEqual(input.lease.metadata!.workspaceRealization);
+    expect(runtime.realizeWorkspace).not.toHaveBeenCalled(); expect(runtime.execute).not.toHaveBeenCalled();
+    expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled(); expect(mockUpdateExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledWith(expect.objectContaining({ lease: input.lease, recoveryProcess: input.recoveryProcess }));
+  });
+
+  it.each(["lease", "allocation", "company", "workspace", "realization"])("refuses changed %s during workspace adoption before staging", async cause => {
+    const runtime = makeMockRuntime(); const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime }); const input = recoveryInput();
+    if (cause === "lease") input.lease.id = "other-lease";
+    if (cause === "allocation") input.lease.providerLeaseId = "other-sandbox";
+    if (cause === "company") input.lease.companyId = "other-company";
+    if (cause === "workspace") input.lease.metadata!.remoteCwd = "/other";
+    if (cause === "realization") delete input.lease.metadata!.workspaceRealization;
+    await expect(orchestrator.realizeForRun(input)).rejects.toThrow(/recovery_/);
+    expect(runtime.realizeWorkspace).not.toHaveBeenCalled(); expect(runtime.execute).not.toHaveBeenCalled(); expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();

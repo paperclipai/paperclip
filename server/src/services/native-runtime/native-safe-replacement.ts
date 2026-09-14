@@ -17,6 +17,8 @@ import { decideNativeReplacement } from "./native-replacement-evidence.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
+import { heartbeatRunRequiresProviderProcessVerification } from "../run-process-metadata.js";
+import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
@@ -200,6 +202,7 @@ export async function reconcileSafeNativeReplacements(
       } catch {
         /* The named operator outcome retains incomplete context. */
       }
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
       const decision = decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
@@ -214,8 +217,8 @@ export async function reconcileSafeNativeReplacements(
         predecessorFenced:
           coordinator.leaseOwner === null && run.status === "failed",
         providerStopped:
-          !processAlive(run.processPid) &&
-          !processAlive(run.processGroupId ? -run.processGroupId : null),
+          remoteProcess ? await remoteExecutionHasStopped(db, run.companyId, run.id)
+            : !processAlive(run.processPid) && !processAlive(run.processGroupId ? -run.processGroupId : null),
         workspacePreserved:
           typeof workspace.cwd === "string" &&
           (await stat(workspace.cwd).then(

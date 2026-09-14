@@ -35,6 +35,7 @@ const {
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
+      runtimeServiceApplication: { start: vi.fn(), stop: vi.fn(async () => {}), attach: vi.fn() },
       toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
       toolActionDeliveries: { sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
     },
@@ -54,6 +55,7 @@ const {
   const heartbeatServiceMock = {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
+      idleRecovery: { results: [] },
       restartKind: "hard",
       dispositions: [],
       claims: [],

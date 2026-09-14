@@ -1,3 +1,4 @@
+import { runtimeServiceStorageUsageSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import {
   experimentalApiPaths,
@@ -5,6 +6,12 @@ import {
 } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { z } from "zod";
+import {
+  createRuntimeServiceSchema, runtimeServiceActivitySchema, runtimeServiceControlSchema, attachRuntimeServiceTaskSchema, detachRuntimeServiceTaskSchema, deleteRuntimeServiceDataSchema,
+  runtimeServiceEnvironmentSchema, runtimeServicePolicySchema, createRuntimeServiceShareSchema,
+  runtimeServiceDataExpirationSchema, registerRuntimeServiceSchema, updateRuntimeServiceEnvironmentSchema, updateRuntimeServicePolicySchema, updateRuntimeServiceCompanyPolicySchema, runtimeServiceCompanyPolicyConfigSchema,
+  RUNTIME_SERVICE_STATES, RUNTIME_SERVICE_TOOL_NAMES, type RuntimeService,
+} from "@paperclipai/shared";
 import {
   createAiConnectionSchema,
   aiConnectionLoginIntentSchema,
@@ -1219,6 +1226,7 @@ function registerCurrentRoute(input: {
 type OpenApiAuthLevel =
   | "public"
   | "agent_run"
+  | "runtime_services"
   | "runtime_tools"
   | "authenticated"
   | "board"
@@ -1229,6 +1237,11 @@ const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
 const AGENT_RUN_AUTH_SCHEME = "AgentRunAuth";
 const RUNTIME_TOOLS_BEARER_AUTH_SCHEME = "RuntimeToolsBearerAuth";
+const RUNTIME_SERVICES_BEARER_AUTH_SCHEME = "RuntimeServicesBearerAuth";
+const RUNTIME_SERVICES_OPERATIONS = new Set([
+  "POST /runtime-tools/services/call", "POST /mcp/runtime-services",
+  "GET /mcp/runtime-services", "DELETE /mcp/runtime-services",
+]);
 
 function securityRequirement(name: string): Record<string, string[]> {
   return { [name]: [] };
@@ -1257,6 +1270,7 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
 ]);
 
 const PUBLIC_OPERATIONS = new Set([
+  "GET /runtime-previews/shared/{serviceId}/{endpoint}/{token}",
   "GET /api/health",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
@@ -1575,6 +1589,8 @@ function operationKey(method: string, path: string) {
 
 function isBoardOnlyOperation(method: string, path: string) {
   const key = operationKey(method, path);
+  if (path === "/api/companies/{companyId}/runtime-service-policy") return true;
+  if (/^\/api\/companies\/\{companyId\}\/runtime-services\/\{serviceId\}\/(environment|shares|attach-task|detach-task|storage|data-deletion)(\/(\{shareId\}|refresh))?$/.test(path)) return true;
   if (BOARD_ONLY_OPERATIONS.has(key)) return true;
   return BOARD_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
@@ -1585,6 +1601,7 @@ function resolveOperationAuthLevel(
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (RUNTIME_SERVICES_OPERATIONS.has(key)) return "runtime_services";
   if (key === "POST /api/mcp/project-tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
@@ -1638,6 +1655,10 @@ function applyDocumentFixups(document: any): any {
       description:
         "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
+    [RUNTIME_SERVICES_BEARER_AUTH_SCHEME]: {
+      type: "http", scheme: "bearer", bearerFormat: "Run-bound service capability",
+      description: "Instance/company/run-bound token with runtime_services scope. Board cookies, agent API keys and other runtime-tool scopes cannot authorize these endpoints. Each call rechecks the active run and current responsible-user membership; browser-originated requests are rejected.",
+    },
     [AGENT_RUN_AUTH_SCHEME]: {
       type: "http",
       scheme: "bearer",
@@ -1658,6 +1679,8 @@ function applyDocumentFixups(document: any): any {
         operation.security = [securityRequirement(AGENT_RUN_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
         operation.security = RUNTIME_TOOLS_SECURITY;
+      } else if (authLevel === "runtime_services") {
+        operation.security = [securityRequirement(RUNTIME_SERVICES_BEARER_AUTH_SCHEME)];
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
       } else {
@@ -1669,6 +1692,8 @@ function applyDocumentFixups(document: any): any {
           ? { actor: "board", instanceAdmin: true }
           : authLevel === "board"
             ? { actor: "board" }
+            : authLevel === "runtime_services"
+              ? { actor: "runtime_tools", heartbeatBound: true, scope: "runtime_services" }
             : authLevel === "agent_run"
               ? { actor: "agent", heartbeatBound: true, taskBound: true }
             : authLevel === "runtime_tools"
@@ -1698,6 +1723,113 @@ function applyDocumentFixups(document: any): any {
 
   return document;
 }
+
+// Managed services have a separate lifetime from their originating run.
+const serviceParams = z.object({ companyId: z.string().guid(), serviceId: z.string().guid() });
+const servicePath = "/api/companies/{companyId}/runtime-services/{serviceId}";
+const dataDeletionSchema = z.object({ reason: z.enum(["operator", "retention"]).optional(), policyRevision: z.number().int().optional(), id: z.string().guid(), state: z.enum(["pending", "deleting", "failed", "deleted"]), attempts: z.number().int(), error: z.string().nullable(),
+  requestedAt: z.string().datetime(), updatedAt: z.string().datetime(), completedAt: z.string().datetime().nullable(), retryAt: z.string().datetime().nullable() });
+const dataDeletionPlanSchema = z.object({ allocationId: z.string().guid(), provider: z.string(), planToken: z.string(), scope: z.enum(["independent_allocation", "task_workspace", "external_workspace"]),
+  workspace: z.object({ id: z.string().guid(), name: z.string(), providerType: z.string(), preservesBranchHistory: z.boolean() }).optional(),
+  remoteSandboxes: z.array(z.object({ provider: z.string(), id: z.string().guid(), name: z.string(), deleted: z.boolean() })).optional(),
+  blockers: z.array(z.string()), services: z.array(z.object({ id: z.string().guid(), name: z.string(), state: z.enum(RUNTIME_SERVICE_STATES) })),
+  tasks: z.array(z.object({ id: z.string().guid(), title: z.string(), identifier: z.string().nullable() })), includesHostMirror: z.boolean(), deletion: dataDeletionSchema.nullable() });
+const serviceViewSchema: z.ZodType<RuntimeService> = z.object({
+  dataDeletion: dataDeletionSchema.nullable().optional(),
+  taskWorkspace: z.object({ issueId: z.string().guid() }).nullable().optional(),
+  canAttachTaskWorkspace: z.boolean().optional(),
+  storageUsage: runtimeServiceStorageUsageSchema.optional(),
+  id: z.string().guid(), companyId: z.string().guid(), name: z.string(), purpose: z.enum(["preview", "worker"]), provider: z.string(),
+  issueId: z.string().guid().nullable(), startedByRunId: z.string().guid().nullable(), createdByAgentId: z.string().guid().nullable(),
+  executionWorkspaceId: z.string().guid().nullable(), allocationId: z.string().guid(),
+  retention: z.object({ expiration: runtimeServiceDataExpirationSchema.optional(), state: z.enum(["pending", "retained", "failed", "deleting", "released"]), error: z.string().nullable(), compute: z.enum(["running", "retained", "stopped", "unknown"]) }),
+  state: z.enum(RUNTIME_SERVICE_STATES), desiredState: z.enum(["running", "sleeping", "stopped", "deleted"]), revision: z.number().int(), policy: runtimeServicePolicySchema,
+  handoff: z.object({ mode: z.literal("relaunch"), phase: z.enum(["pending", "stopped", "complete"]) }).optional(),
+  effectivePolicy: runtimeServicePolicySchema, companyPolicyRevision: z.number().int(), companyMaxRunningSeconds: z.number().int().nullable(),
+  endpoints: z.array(z.object({ name: z.string(), port: z.number().int(), health: z.enum(["ready", "pending"]), url: z.string().nullable(), status: z.enum(["pending", "ready", "failed"]), error: z.string().nullable(), verifiedAt: z.string().datetime().nullable() })),
+  lastActivityAt: z.string().datetime(), startedAt: z.string().datetime().nullable(), stoppedAt: z.string().datetime().nullable(),
+  previewActivity: z.object({ lastSignalAt: z.string().datetime().nullable() }), restartCount: z.number().int(),
+  error: z.string().nullable(), stopReason: z.string().nullable(), detailPath: z.string(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+});
+const serviceErrors = { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable };
+registry.registerPath({ method: "get", path: `${servicePath}/data-deletion`, tags: ["runtime-services"], summary: "Review shared data ownership, deletion dependencies and current progress",
+  description: "Board company access required. Identifies every service allocation on the same physical provider resource, attached tasks, capability limitations and owned host copies. The opaque planToken binds confirmation to the current review. Owned isolated task workspaces include linked tasks, preserved Git branch history, every owned Daytona sandbox and its cleanup progress. Shared project roots, managed instances and unverified provider ownership remain blocked.",
+  request: { params: serviceParams }, responses: { 200: r.ok(dataDeletionPlanSchema), ...serviceErrors } });
+registry.registerPath({ method: "post", path: `${servicePath}/data-deletion`, tags: ["runtime-services"], summary: "Authorize permanent deletion of owned service or task workspace data",
+  description: "Board runtime-management permission required. All services must be stopped, with no run or final sync in progress. Independent provider allocations require task detachment; local task workspace deletion requires every linked task to be complete or cancelled. Requires the reviewed allocation ID, current planToken and explicit confirmation. Persists intent before provider mutation, fences future service/run admission, and continues asynchronously. Reuse exact arguments after an uncertain response. A failed job can be retried with a new reviewed request; completed data cannot be restored. HTTP 202 is acceptance, not proof of deletion. Retained-allocation capacity is released only after the reviewed physical data cleanup is confirmed.",
+  request: { params: serviceParams, body: jsonBody(deleteRuntimeServiceDataSchema) }, responses: { 202: r.ok(dataDeletionPlanSchema), ...serviceErrors } });
+const companyServicePolicySchema = z.object({ companyId: z.string().guid(), revision: z.number().int(), config: runtimeServiceCompanyPolicyConfigSchema,
+  usage: z.object({ runningServices: z.number().int(), serviceAllocations: z.number().int() }), updatedAt: z.string().datetime().nullable() });
+registry.registerPath({ method: "get", path: "/api/companies/{companyId}/runtime-service-policy", tags: ["runtime-services"], summary: "Read company service defaults, limits and reserved capacity",
+  description: "Authorized board actors only. Running reservations include failed services still requested to run and processes awaiting termination. Retained allocations count durable workspace identities, including saved services; sharing one allocation does not consume another slot.",
+  request: { params: z.object({ companyId: z.string().guid() }) }, responses: { 200: r.ok(companyServicePolicySchema), ...serviceErrors } });
+registry.registerPath({ method: "patch", path: "/api/companies/{companyId}/runtime-service-policy", tags: ["runtime-services"], summary: "Update company service defaults and hard limits",
+  description: "Requires board runtime management permission. Reuse requestId and arguments after an uncertain response. Idle defaults apply to new services. The maximum lifetime applies to existing starts, including visible previews and holds. Lowering the running limit stops the newest excess services; files remain retained. Lowering the allocation limit blocks new allocations without deleting data.",
+  request: { params: z.object({ companyId: z.string().guid() }), body: jsonBody(updateRuntimeServiceCompanyPolicySchema) }, responses: { 200: r.ok(companyServicePolicySchema), ...serviceErrors } });
+const storageViewSchema = z.object({ allocationId: z.string().guid(), usage: runtimeServiceStorageUsageSchema, serviceCount: z.number().int(),
+  services: z.array(z.object({ id: z.string().guid(), name: z.string(), state: z.enum(RUNTIME_SERVICE_STATES) })) });
+registry.registerPath({ method: "get", path: `${servicePath}/storage`, tags: ["runtime-services"], summary: "Read the shared workspace's last storage measurement",
+  description: "Board company access required. Sizes are allocated filesystem blocks in the retained workspace, not provider billing. Includes at most ten associated services plus the complete service count. An unavailable measurement preserves the last successful size and timestamp.",
+  request: { params: serviceParams }, responses: { 200: r.ok(storageViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "post", path: `${servicePath}/storage/refresh`, tags: ["runtime-services"], summary: "Check retained workspace storage without starting compute",
+  description: "Board runtime-management permission required. A bounded metadata-only scan runs inside the existing execution boundary. Concurrent checks share the allocation lock; a check already in progress returns the last known measurement. Stopped provider compute stays stopped. This does not change service lifetime or desired state.",
+  request: { params: serviceParams, body: jsonBody(z.object({}).strict()) }, responses: { 200: r.ok(storageViewSchema), ...serviceErrors } });
+const serviceShareSchema = z.object({ id: z.string().guid(), endpointName: z.string(), expiresAt: z.string().datetime(), revokedAt: z.string().datetime().nullable(), createdAt: z.string().datetime(), url: z.string().nullable() });
+registry.registerPath({ method: "get", path: "/api/companies/{companyId}/runtime-services", tags: ["runtime-services"], summary: "List managed services",
+  description: "Company inventory for authorized board actors; agents are restricted to their authorized task unless explicitly granted company-wide service access. Removed services are omitted except when their data deletion is pending or failed, so incomplete cleanup remains discoverable.",
+  request: { params: z.object({ companyId: z.string().guid() }), query: z.object({ issueId: z.string().guid().optional() }) }, responses: { 200: r.ok(z.array(serviceViewSchema)), ...serviceErrors } });
+registry.registerPath({ method: "post", path: "/api/companies/{companyId}/runtime-services", tags: ["runtime-services"], summary: "Create a persistent development service or worker",
+  description: "Reserves a durable service in the authorized workspace. HTTP 202 means accepted; inspect endpoint readiness before using a preview URL. Reuse the original requestId and arguments after a lost response. Task/run provenance is derived from authentication. New secret bindings require an operator.",
+  request: { params: z.object({ companyId: z.string().guid() }), body: jsonBody(createRuntimeServiceSchema) }, responses: { 202: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "post", path: "/api/companies/{companyId}/runtime-services/register", tags: ["runtime-services"], summary: "Move an active run's existing command into service supervision",
+  description: "Active agent run only. The local provider verifies ownership, working directory and an independent command process group before recording a durable managed-relaunch handoff. The source PID names the original command group leader. No original process is stopped before acceptance; no replacement is launched before confirmed termination. Retry the original request after a lost response. Remote providers without a scoped process-ownership receipt reject registration.",
+  request: { params: z.object({ companyId: z.string().guid() }), body: jsonBody(registerRuntimeServiceSchema) }, responses: { 202: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "get", path: servicePath, tags: ["runtime-services"], summary: "Inspect managed service health, retention and endpoints",
+  request: { params: serviceParams }, responses: { 200: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "post", path: `${servicePath}/control`, tags: ["runtime-services"], summary: "Start, stop, restart, sleep or remove a managed service",
+  description: "Uses revision checks and durable request deduplication. Acceptance does not imply readiness. Stop preserves files; delete removes the service from active use without erasing retained storage. Explicitly stopped services do not wake from preview navigation.",
+  request: { params: serviceParams, body: jsonBody(runtimeServiceControlSchema) }, responses: { 202: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "post", path: `${servicePath}/attach-task`, tags: ["runtime-services"], summary: "Use an independent service's files as a task workspace",
+  description: "Board only. Requires an inactive task in the same company and a provisioned independent Daytona allocation. Preserves the service and previous checkout files. Uses revision checks and durable request deduplication; agent runs adopt the retained provider workspace through a dedicated host mirror.",
+  request: { params: serviceParams, body: jsonBody(attachRuntimeServiceTaskSchema) }, responses: { 200: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "post", path: `${servicePath}/detach-task`, tags: ["runtime-services"], summary: "Detach a task from an independent service workspace",
+  description: "Board only. Requires an inactive task and no active writer on the allocation. Restores the previous workspace selection when unchanged, preserves newer task settings, and retains service files and sync identity for later attachment. May detach a deleted service. Retries use the original requestId, issueId and expectedRevision.",
+  request: { params: serviceParams, body: jsonBody(detachRuntimeServiceTaskSchema) }, responses: { 200: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "patch", path: `${servicePath}/policy`, tags: ["runtime-services"], summary: "Update managed service lifetime and bounded crash retries",
+  request: { params: serviceParams, body: jsonBody(updateRuntimeServicePolicySchema) }, responses: { 200: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "get", path: `${servicePath}/logs`, tags: ["runtime-services"], summary: "Read bounded redacted service logs, including after stop",
+  request: { params: serviceParams }, responses: { 200: r.ok(z.object({ text: z.string() })), ...serviceErrors } });
+registry.registerPath({ method: "get", path: `${servicePath}/environment`, tags: ["runtime-services"], summary: "Inspect service environment bindings without resolving secrets",
+  request: { params: serviceParams }, responses: { 200: r.ok(z.object({ revision: z.number().int(), env: runtimeServiceEnvironmentSchema })), ...serviceErrors } });
+registry.registerPath({ method: "patch", path: `${servicePath}/environment`, tags: ["runtime-services"], summary: "Update a stopped service's environment and authorized company-secret bindings",
+  description: "Operator only. Requires the current service revision and a stable requestId. Secret values are never returned. Changes take effect on the next start.",
+  request: { params: serviceParams, body: jsonBody(updateRuntimeServiceEnvironmentSchema) }, responses: { 200: r.ok(serviceViewSchema), ...serviceErrors } });
+registry.registerPath({ method: "post", path: `${servicePath}/activity`, tags: ["runtime-services"], summary: "Report authorized active use of a managed service",
+  description: "Requires service-management authorization. False visibility does not renew use; ordinary status polling and health checks do not renew the idle deadline.",
+  request: { params: serviceParams, body: jsonBody(runtimeServiceActivitySchema) }, responses: { 204: r.noContent, ...serviceErrors } });
+registry.registerPath({ method: "get", path: `${servicePath}/shares`, tags: ["runtime-services"], summary: "List expiring service preview shares",
+  request: { params: serviceParams }, responses: { 200: r.ok(z.array(serviceShareSchema)), ...serviceErrors } });
+registry.registerPath({ method: "post", path: `${servicePath}/shares`, tags: ["runtime-services"], summary: "Explicitly share one preview endpoint until an expiry",
+  description: "Operator only. The capability URL permits preview access, not logs or service management. Reusing the requestId returns the same share. Expiry must be within the next 30 days.",
+  request: { params: serviceParams, body: jsonBody(createRuntimeServiceShareSchema) }, responses: { 201: r.ok(serviceShareSchema), ...serviceErrors } });
+registry.registerPath({ method: "delete", path: `${servicePath}/shares/{shareId}`, tags: ["runtime-services"], summary: "Revoke a preview share and its active access",
+  request: { params: serviceParams.extend({ shareId: z.string().guid() }) }, responses: { 200: r.ok(serviceShareSchema), ...serviceErrors } });
+const previewRedirect = { description: "Redirect to a single-use preview handoff; do not persist or log the Location URL", headers: { Location: { schema: { type: "string", format: "uri" } } } };
+registry.registerPath({ method: "get", path: `${servicePath}/preview-access`, tags: ["runtime-services"], summary: "Open an authenticated preview with an optional deep link",
+  request: { params: serviceParams, query: z.object({ endpoint: z.string(), next: z.string().optional() }) }, responses: { 303: previewRedirect, 401: { description: "HTML sign-in page" }, 403: { description: "HTML access-required page" }, 404: r.notFound } });
+registry.registerPath({ method: "get", path: "/runtime-previews/shared/{serviceId}/{endpoint}/{token}", tags: ["runtime-services"], summary: "Redeem an unexpired preview share",
+  description: "The path token is the access capability. A valid share grants only this endpoint's preview access; expired or revoked links return the same unavailable page. Never log or publish this path unintentionally.",
+  request: { params: z.object({ serviceId: z.string().guid(), endpoint: z.string(), token: z.string() }) }, responses: { 303: previewRedirect, 404: { description: "HTML share-unavailable page" } } });
+registry.registerPath({ method: "post", path: "/runtime-tools/services/call", tags: ["runtime-services"], summary: "Invoke a run-authorized service tool",
+  description: "Uses the distinct runtime_services capability; agent API keys and other runtime-tool scopes are rejected. The tool's arguments and task policy are validated before any operation. Long-lived services do not inherit the run token.",
+  request: { body: jsonBody(z.object({ name: z.enum(RUNTIME_SERVICE_TOOL_NAMES), arguments: z.unknown().optional(), _meta: z.record(z.string(), z.unknown()).optional() }).strict()) }, responses: { 200: r.ok(z.unknown()), ...serviceErrors } });
+registry.registerPath({ method: "post", path: "/mcp/runtime-services", tags: ["runtime-services"], summary: "Use stateless MCP service tools",
+  description: "Supports initialize, ping, tools/list, tools/call and notifications. Available tools follow the run's work mode. Tool-operation errors are JSON-RPC results with isError:true; malformed requests use JSON-RPC errors. No event stream or persistent MCP session is created.",
+  request: { body: jsonBody(z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number(), z.null()]).optional(), method: z.string(), params: z.unknown().optional() }).strict()) }, responses: { 200: r.ok(), 202: r.noContent, ...serviceErrors } });
+registry.registerPath({ method: "get", path: "/mcp/runtime-services", tags: ["runtime-services"], summary: "Service MCP does not support an event stream",
+  responses: { 405: { description: "Method not allowed; Allow: POST" }, 401: r.unauthorized, 403: r.forbidden } });
+registry.registerPath({ method: "delete", path: "/mcp/runtime-services", tags: ["runtime-services"], summary: "Acknowledge stateless MCP session cleanup",
+  responses: { 204: r.noContent, 401: r.unauthorized, 403: r.forbidden } });
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 

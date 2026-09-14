@@ -1,6 +1,8 @@
-import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { heartbeatRunProcessLocations } from "./run-process-metadata.js";
+import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
 
 // These adapters accept a conversation turn. Retrying a process or webhook can
 // replay the action itself, so those adapters retain their recovery contract.
@@ -108,9 +110,16 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       conversationRunPredicate(),
       sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
-      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+  const locations = await heartbeatRunProcessLocations(db, companyId, candidates.map(row => row.run));
   for (const { run, activeLease: leaseHeld } of candidates) {
+    if (locations.get(run.id) === "remote" || (locations.get(run.id) === null && Boolean(run.processPid || run.processGroupId))) {
+      if (!(await remoteExecutionHasStopped(db, companyId, run.id))) return {
+        runId: run.id, agentId: run.agentId, cause: "execution_owner_active",
+        nextAction: "The previous remote execution has not been verified stopped through its environment. Wait for verification before continuing this task.",
+      };
+      continue;
+    }
     let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
     if (pidAlive && run.processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity

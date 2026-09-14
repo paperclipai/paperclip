@@ -1,5 +1,9 @@
+import { runtimeServiceTaskWorkspace, materializeRuntimeServiceTaskMirror } from "./runtime-services/task-workspace.js";
+import { createRuntimeServiceToolAccess } from "./runtime-services/tool-access.js";
+import { bindRuntimeServiceInvocationDirectory } from "./runtime-services/placement.js";
+import { createRuntimeServiceDependencies } from "./runtime-services/application.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
-import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
+import { recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
@@ -220,6 +224,7 @@ import {
   reconcileNativeFinalizations,
   reconcileRetainedNativeSessionCleanup,
   reconcileRetainedNativeSessionCleanups,
+  recoverRetainedRemoteNativeSessions,
   resolveHeartbeatNativeRuntimeMode,
 } from "./native-runtime/index.js";
 import {
@@ -564,6 +569,7 @@ import {
 } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { canDispatchNativeRemoteRestart, nativeRemoteRestartProcess, prepareNativeRemoteDispatch, restoreNativeRemoteDispatchWorkspace } from "./native-runtime/native-remote-dispatch.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
@@ -585,6 +591,8 @@ import {
   type HotRestartIntentRun,
   type HotRestartReportRun,
 } from "./hot-restart.js";
+import { heartbeatRunRequiresProviderProcessVerification, persistHeartbeatRunProcessMetadata } from "./run-process-metadata.js";
+export { persistHeartbeatRunProcessMetadata } from "./run-process-metadata.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
   assertLowTrustWorkspaceIsolation,
@@ -3185,6 +3193,7 @@ const heartbeatRunListColumns = {
   errorCode: heartbeatRuns.errorCode,
   externalRunId: heartbeatRuns.externalRunId,
   processPid: heartbeatRuns.processPid,
+  processLocation: heartbeatRuns.processLocation,
   processGroupId: heartbeatRunProcessGroupIdColumn,
   processStartedAt: heartbeatRuns.processStartedAt,
   lastOutputAt: heartbeatRuns.lastOutputAt,
@@ -8674,38 +8683,6 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
-export async function persistHeartbeatRunProcessMetadata(
-  db: Db,
-  runId: string,
-  meta: { pid: number; processGroupId: number | null; startedAt: string },
-) {
-  const observedStartedAt = await readProcessStartedAt(meta.pid).catch(
-    () => null,
-  );
-  const startedAt = new Date(observedStartedAt ?? meta.startedAt);
-  return db.transaction(async tx => {
-    const run = await tx
-      .update(heartbeatRuns)
-      .set({
-        processPid: meta.pid,
-        processGroupId: meta.processGroupId,
-        processStartedAt: Number.isNaN(startedAt.getTime())
-          ? new Date()
-          : startedAt,
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, runId))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (run?.runtimeMode === "native") await appendHeartbeatRunEvent(tx as unknown as Db, {
-      companyId: run.companyId, runId, agentId: run.agentId,
-      eventType: PROCESS_IDENTITY_RECORDED, stream: "system", level: "info",
-      message: "Process identity recorded; prior stop evidence no longer applies.",
-    });
-    return run;
-  });
-}
-
 async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
@@ -9221,6 +9198,7 @@ export function heartbeatService(
   options: HeartbeatServiceOptions = {},
 ) {
   let shutdownInProgress = false;
+  let retainedNativeRecovery: Promise<Awaited<ReturnType<typeof recoverRetainedRemoteNativeSessions>>> | undefined;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -9292,6 +9270,7 @@ export function heartbeatService(
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
+  const managedRuntimeServiceOperations = createRuntimeServiceDependencies(db, { pluginWorkerManager: options.pluginWorkerManager }).operations;
   const environmentRuntime =
     options.environmentRuntime ??
     environmentRuntimeService(db, {
@@ -13582,9 +13561,10 @@ export function heartbeatService(
 
   async function persistRunProcessMetadata(
     runId: string,
-    meta: { pid: number; processGroupId: number | null; startedAt: string },
+    meta: import("@paperclipai/adapter-utils").AdapterProcessSpawnMetadata,
+    environmentLeaseId?: string,
   ) {
-    return persistHeartbeatRunProcessMetadata(db, runId, meta);
+    return persistHeartbeatRunProcessMetadata(db, runId, meta, environmentLeaseId);
   }
 
   async function clearDetachedRunWarning(runId: string) {
@@ -14509,6 +14489,10 @@ export function heartbeatService(
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
+      if (await heartbeatRunRequiresProviderProcessVerification(db, run)) {
+        classify(candidate, "skipped", "remote_process_verification_required", patch);
+        continue;
+      }
       const processPidAlive = isProcessAlive(processPid);
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
@@ -14644,6 +14628,7 @@ export function heartbeatService(
       onWorkspaceSettled: settleRecoveredNativeWorkspace,
     });
     scheduleRetainedNativeSessionCleanup();
+    const idleRecovery = await recoverRetainedNativeSessions();
     const intent = await readHotRestartIntent().catch((error) => {
       logger.warn(
         { err: error },
@@ -14684,6 +14669,11 @@ export function heartbeatService(
     }
     const dispositions = await claimNativeRestartRecoveries({
       db,
+      inspectRemoteRunner: async input => {
+        const original = await getRun(input.runId);
+        if (!original || original.companyId !== input.companyId || !canDispatchNativeRemoteRestart(original)) return { state: "unverified" };
+        return environmentRuntime.controlRunProcess(input);
+      },
       restartKind,
       recoveryRequestId: intent?.recoveryRequestId ?? null,
       coordinatedPreviousController: intent
@@ -14768,6 +14758,7 @@ export function heartbeatService(
 
     return {
       restartKind,
+      idleRecovery,
       claims,
       dispositions,
       scheduledRetryRunIds: scheduledNativeRetries.map((entry) => entry.runId),
@@ -18201,21 +18192,36 @@ export function heartbeatService(
     return { swept: rows.length, destroyed, capped };
   }
 
+  async function markRemoteProcessRecoveryPending(run: typeof heartbeatRuns.$inferSelect) {
+    const errorCode = "remote_execution_ownership_unverified";
+    if (run.errorCode === errorCode) return;
+    const pendingStatus = run.status === "failed" ? "failed" : "running";
+    const updated = await setRunStatusFromLive(run.id, pendingStatus, [pendingStatus], {
+      errorCode,
+      error: "The previous execution must be verified through its environment before recovery can continue. Retained services and files remain in place.",
+    });
+    if (!updated.updated || !updated.run) return;
+    await appendRunEvent(updated.run, {
+      eventType: "recovery.remote_process_verification_required", stream: "system", level: "warn",
+      message: "Remote execution requires provider verification; no local process was inspected or signalled and no replacement was started.",
+      payload: { processLocation: "remote", ownedProcessHandle: false },
+    });
+  }
+
   async function markNativeOwnershipUnverified(
     run: typeof heartbeatRuns.$inferSelect,
     evidence: {
       reason:
         | "live_process_identifier"
         | "observed_owner_unverified"
-        | "adopted_runner_authentication_timeout"
-        | "native_chat_workspace_scope_mismatch";
+        | NativeRunnerOwnershipUnverifiedError["reason"];
       processPidAlive?: boolean;
       processGroupAlive?: boolean;
     },
   ) {
     const durableOwnershipHold =
-      evidence.reason === "adopted_runner_authentication_timeout" ||
-      evidence.reason === "native_chat_workspace_scope_mismatch";
+      evidence.reason !== "live_process_identifier" &&
+      evidence.reason !== "observed_owner_unverified";
     if (
       run.errorCode === NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE &&
       run.error === NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE &&
@@ -18293,6 +18299,24 @@ export function heartbeatService(
     ).catch(() => undefined);
   }
 
+  function recoverRetainedNativeSessions() {
+    if (retainedNativeRecovery) return retainedNativeRecovery;
+    if (shutdownInProgress) return Promise.resolve({ results: [] });
+    const recovery = recoverRetainedRemoteNativeSessions({ db, environmentRuntime,
+      runtimeServices: managedRuntimeServiceOperations,
+      onLog: async (_stream, message) => { logger.warn({ message: message.trim() }, "retained native runner recovery"); },
+    });
+    retainedNativeRecovery = recovery;
+    // Periodic retries must join startup recovery and remain visible to drain.
+    // A slow provider must not block the orphan reaper for unrelated runs.
+    const completion = recovery.then(() => undefined, () => undefined).finally(() => {
+      if (retainedNativeRecovery === recovery) retainedNativeRecovery = undefined;
+      activeRunExecutionPromises.delete(completion);
+    });
+    activeRunExecutionPromises.add(completion);
+    return recovery;
+  }
+
   function scheduleRetainedNativeSessionCleanup() {
     // The per-database sweep joins startup and periodic callers. One bounded
     // control-only repair must not hold up unrelated provider ingress or the
@@ -18335,6 +18359,9 @@ export function heartbeatService(
       );
     });
     scheduleRetainedNativeSessionCleanup();
+    void recoverRetainedNativeSessions().catch((error) => {
+      logger.warn({ err: error }, "retained native runner recovery discovery failed");
+    });
     await dispatchPendingNativeStatusWakeups().catch((error) => {
       logger.warn(
         { err: error },
@@ -18365,14 +18392,19 @@ export function heartbeatService(
     const claimableNativeRunIds = new Set<string>();
     for (const { run } of retryableNativeProcesses) {
       if (isNativeRunnerOwnershipHeld(run)) continue;
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
+      if (remoteProcess && !(await remoteExecutionHasStopped(db, run.companyId, run.id))) {
+        await markRemoteProcessRecoveryPending(run);
+        continue;
+      }
       if (!run.processPid && !run.processGroupId) {
         claimableNativeRunIds.add(run.id);
         continue;
       }
       const processPidAlive =
-        !!run.processPid && isProcessAlive(run.processPid);
+        !remoteProcess && !!run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive =
-        !!run.processGroupId && isProcessGroupAlive(run.processGroupId);
+        !remoteProcess && !!run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive || processGroupAlive) {
         await markNativeOwnershipUnverified(run, {
           reason: "live_process_identifier",
@@ -18577,10 +18609,12 @@ export function heartbeatService(
       // repeated reattachment or a process-gone guess on subsequent sweeps.
       if (isNativeRunnerOwnershipHeld(run)) continue;
       const nativeRun = run.runtimeMode === "native";
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
       const nativeProcessPidAlive =
-        nativeRun && !!run.processPid && isProcessAlive(run.processPid);
+        nativeRun && !remoteProcess && !!run.processPid && isProcessAlive(run.processPid);
       const nativeProcessGroupAlive =
         nativeRun &&
+        !remoteProcess &&
         !!run.processGroupId &&
         isProcessGroupAlive(run.processGroupId);
       const coordinatorOwnedByCurrentController =
@@ -18614,6 +18648,10 @@ export function heartbeatService(
             run.nativePhase === "observed")) &&
         !resumedRunIds.has(run.id) &&
         !locallyTracked;
+      if (remoteProcess && !locallyTracked && !(await remoteExecutionHasStopped(db, run.companyId, run.id))) {
+        await markRemoteProcessRecoveryPending(run);
+        continue;
+      }
       // Persisted numeric process identifiers prove only that some process is
       // alive, not that Paperclip still owns it. Likewise an observed native
       // coordinator without a live in-process execution has no durable proof
@@ -18650,13 +18688,13 @@ export function heartbeatService(
       const currentAdapterTracksLocalChild =
         isTrackedLocalChildProcessAdapter(adapterType);
       const tracksLegacyLocalChild =
-        run.runtimeMode !== "native" && currentAdapterTracksLocalChild;
+        !remoteProcess && run.runtimeMode !== "native" && currentAdapterTracksLocalChild;
       // Native runner processes also persist child metadata, but they must not
       // inherit legacy retry or termination authority. Use their PID/group only
       // for a read-only liveness check so a lost in-memory handle cannot cause
       // overlapping provider/tool execution while that child is still alive.
       const checksPersistedChildLiveness =
-        currentAdapterTracksLocalChild || run.runtimeMode === "native";
+        !remoteProcess && (currentAdapterTracksLocalChild || run.runtimeMode === "native");
       const processPidAlive =
         checksPersistedChildLiveness &&
         run.processPid &&
@@ -19487,8 +19525,14 @@ export function heartbeatService(
     } = {},
   ) {
     const attemptStartedAtMs = Date.now();
+    const remoteRecoveryProcess = nativeRemoteRestartProcess(runOptions.nativeRestartRecovery);
     let attestedQuestionResponseAtMs: number | null = null;
     if ((await getSchedulingSuppression()).suppressed) {
+      if (remoteRecoveryProcess) {
+        const held = await getRun(runId);
+        if (held) await markNativeOwnershipUnverified(held, { reason: "remote_runner_reattachment_unavailable" });
+        return;
+      }
       try {
         await releaseRunClaimedJustBeforeSuppression(runId);
       } catch (err) {
@@ -19519,6 +19563,11 @@ export function heartbeatService(
       run.runtimeMode === "native" &&
       runOptions.nativeRestartRecovery?.kind !== "reattach_existing_runner"
     ) {
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(db, run);
+      if (remoteProcess && !(await remoteExecutionHasStopped(db, run.companyId, run.id))) {
+        await markRemoteProcessRecoveryPending(run);
+        throw new Error("remote_execution_ownership_unverified");
+      }
       // A numeric PID or process-group ID is a liveness signal, never an
       // ownership capability: the OS may have recycled it after the service
       // restart. A still-active in-memory child handle is also insufficient to
@@ -19536,9 +19585,9 @@ export function heartbeatService(
         ? isProcessGroupAlive(trackedProcessGroupId)
         : false;
       const persistedPidAlive =
-        !!run.processPid && isProcessAlive(run.processPid);
+        !remoteProcess && !!run.processPid && isProcessAlive(run.processPid);
       const persistedProcessGroupAlive =
-        !!run.processGroupId && isProcessGroupAlive(run.processGroupId);
+        !remoteProcess && !!run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
         trackedChildIsActive ||
         trackedPidAlive ||
@@ -19607,7 +19656,10 @@ export function heartbeatService(
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
-    let nativeOwnershipHeld = false;
+    // A restart claim already owns a surviving remote process. Setup failure
+    // cannot authorize releasing that allocation or replacing the execution.
+    let nativeOwnershipHeld = remoteRecoveryProcess !== null;
+    let remoteRecovery: Awaited<ReturnType<typeof prepareNativeRemoteDispatch>> | null = null;
     let nativeDispatchStarted = false;
     let nativeWorkspaceFinalizeScheduled = false;
     let nativeWorkspaceSync: Awaited<
@@ -19631,8 +19683,12 @@ export function heartbeatService(
     let providerTraceFinalized = false;
 
     try {
+      if (remoteRecoveryProcess && runOptions.nativeRestartRecovery) {
+        remoteRecovery = await prepareNativeRemoteDispatch({ db, run, claim: runOptions.nativeRestartRecovery });
+      }
       const agent = await getAgent(run.agentId);
       if (!agent) {
+        if (remoteRecoveryProcess) throw new NativeRunnerOwnershipUnverifiedError("remote_runner_reattachment_unavailable");
         await setRunStatus(runId, "failed", {
           error: "Agent not found",
           errorCode: "agent_not_found",
@@ -19755,6 +19811,7 @@ export function heartbeatService(
             .then((rows) => rows.get(issueId) ?? null)
         : null;
       if (
+        !remoteRecoveryProcess &&
         issueId &&
         issueContext &&
         isResolvedInteractionContinuationWakeContext(context)
@@ -19787,6 +19844,7 @@ export function heartbeatService(
         issueContext = await getIssueExecutionContext(agent.companyId, issueId);
       }
       if (
+        !remoteRecoveryProcess &&
         issueId &&
         issueContext &&
         !isResolvedInteractionContinuationWakeContext(context) &&
@@ -19895,9 +19953,10 @@ export function heartbeatService(
         parseIssueExecutionWorkspaceSettings(
           issueContext?.executionWorkspaceSettings,
         );
-      const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
-        ? parsedIssueExecutionWorkspaceSettings
-        : null;
+      const serviceTaskWorkspace = issueContext ? await runtimeServiceTaskWorkspace(db, agent.companyId, issueContext.id) : null;
+      const issueExecutionWorkspaceSettings = serviceTaskWorkspace
+        ? { ...(parsedIssueExecutionWorkspaceSettings ?? {}), mode: "agent_default" as const, workspaceStrategy: null, workspaceRuntime: null }
+        : isolatedWorkspacesEnabled ? parsedIssueExecutionWorkspaceSettings : null;
       const environmentExecutionWorkspaceSettings =
         selectEnvironmentExecutionWorkspaceSettings(
           parsedIssueExecutionWorkspaceSettings,
@@ -20384,7 +20443,7 @@ export function heartbeatService(
       const requestedExecutionWorkspaceId =
         persistedNativeExecutionWorkspaceId ??
         readNonEmptyString(issueRef?.executionWorkspaceId);
-      const existingExecutionWorkspace = requestedExecutionWorkspaceId
+      const existingExecutionWorkspace = remoteRecovery ? remoteRecovery.workspace : requestedExecutionWorkspaceId
         ? await executionWorkspacesSvc.getById(requestedExecutionWorkspaceId)
         : null;
       const nativeRecoveryExecutionWorkspaceId =
@@ -20402,9 +20461,9 @@ export function heartbeatService(
             existingExecutionWorkspace?.status ?? null,
         });
       const requestedShouldReuseExisting =
-        workspaceReuseRequest.requestedShouldReuseExisting;
+        !serviceTaskWorkspace && workspaceReuseRequest.requestedShouldReuseExisting;
       const reusableExistingExecutionWorkspace =
-        workspaceReuseRequest.existingExecutionWorkspaceAvailable
+        !serviceTaskWorkspace && workspaceReuseRequest.existingExecutionWorkspaceAvailable
           ? existingExecutionWorkspace
           : null;
       const requestedReusableExecutionWorkspaceConfig =
@@ -20447,7 +20506,13 @@ export function heartbeatService(
       };
       const executionForcedToKubernetes =
         isExecutionForcedToKubernetes(executionPolicy);
-      let selectedEnvironmentId = environmentResolution.environmentId;
+      let selectedEnvironmentId = remoteRecoveryProcess?.environmentId ?? serviceTaskWorkspace?.lease.environmentId ?? environmentResolution.environmentId;
+      if (remoteRecoveryProcess && (executionForcedToKubernetes || (managedSandboxOnly && selectedEnvironmentId !== managedSandboxEnvironment?.id))) {
+        throw new NativeRunnerOwnershipUnverifiedError("remote_runner_reattachment_unavailable");
+      }
+      if (serviceTaskWorkspace && managedSandboxOnly && selectedEnvironmentId !== managedSandboxEnvironment?.id) {
+        throw new Error("The attached service environment is outside this instance's managed sandbox policy");
+      }
       if (executionForcedToKubernetes) {
         let kubernetesEnvironment =
           await environmentsSvc.findKubernetesEnvironment(agent.companyId);
@@ -20514,6 +20579,9 @@ export function heartbeatService(
           );
         }
         selectedEnvironmentId = kubernetesEnvironment.id;
+      }
+      if (serviceTaskWorkspace && selectedEnvironmentId !== serviceTaskWorkspace.lease.environmentId) {
+        throw new Error("The instance execution policy cannot attach this service's retained environment");
       }
       const selectedEnvironmentForConfig =
         selectedEnvironmentId === localEnvironment.id
@@ -20652,6 +20720,7 @@ export function heartbeatService(
       const mergedConfig = {
         ...workspaceManagedConfig,
         ...(issueAssigneeOverrides?.adapterConfig ?? {}),
+        ...(serviceTaskWorkspace ? { workspaceStrategy: { type: "adapter_managed" }, workspaceRuntime: undefined } : {}),
       };
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
         mergedConfig,
@@ -20914,6 +20983,17 @@ export function heartbeatService(
           return preflightEnvironment.driver;
         },
         resolveWorkspace: async () => {
+          if (remoteRecovery) {
+            return { cwd: remoteRecovery.realized.cwd, source: "task_session" as const,
+              projectId: remoteRecovery.realized.projectId, workspaceId: remoteRecovery.realized.workspaceId,
+              repoUrl: remoteRecovery.realized.repoUrl, repoRef: remoteRecovery.realized.repoRef,
+              workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
+          }
+          if (serviceTaskWorkspace) {
+            const cwd = await materializeRuntimeServiceTaskMirror(serviceTaskWorkspace.binding);
+            return { cwd, source: "task_session" as const, projectId: null, workspaceId: null, repoUrl: null, repoRef: null,
+              workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
+          }
           if (nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId) {
             const cwd = await materializeNativeChatTaskRoot(
               nativeChatWorkspaceScope,
@@ -20974,7 +21054,7 @@ export function heartbeatService(
         repoRef: resolvedWorkspace.repoRef,
         additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
       } satisfies ExecutionWorkspaceInput;
-      await assertGitWorktreeBaseWorkspaceReady({
+      if (!remoteRecovery) await assertGitWorktreeBaseWorkspaceReady({
         requestedExecutionWorkspaceMode,
         config: hostExecutionWorkspaceConfig,
         issue: issueRef,
@@ -21107,7 +21187,9 @@ export function heartbeatService(
         executionWorkspace,
         reusedExecutionWorkspace,
         policy: resolvedWorkspaceReusePolicy,
-      } = await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
+      } = remoteRecovery ? { executionWorkspace: remoteRecovery.realized, reusedExecutionWorkspace: true,
+        policy: { shouldRestoreExistingWorkspace: true, shouldRefreshWorkspaceConfigSnapshot: false, shouldPersistLatestWorkspaceConfigMetadata: false } }
+        : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
         {
           requestedShouldReuseExisting,
           existingExecutionWorkspaceId:
@@ -21205,7 +21287,7 @@ export function heartbeatService(
             }),
         },
       );
-      const resolvedProjectId =
+      const resolvedProjectId = serviceTaskWorkspace ? null :
         executionWorkspace.projectId ??
         issueRef?.projectId ??
         executionProjectId ??
@@ -21350,7 +21432,7 @@ export function heartbeatService(
         executionWorkspace.branchName;
       try {
         persistedExecutionWorkspace =
-          resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace &&
+          remoteRecovery ? remoteRecovery.workspace : resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace &&
           reusableExistingExecutionWorkspace
             ? await executionWorkspacesSvc.update(
                 reusableExistingExecutionWorkspace.id,
@@ -21415,6 +21497,7 @@ export function heartbeatService(
         if (executionWorkspace.created) {
           try {
             await cleanupExecutionWorkspaceArtifacts({
+              retentionScope: { db, companyId: agent.companyId },
               workspace: {
                 id:
                   reusableExistingExecutionWorkspace?.id ??
@@ -21495,8 +21578,9 @@ export function heartbeatService(
         );
       }
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
-      if (persistedExecutionWorkspace) {
-        context.executionWorkspaceId = persistedExecutionWorkspace.id;
+      if (persistedExecutionWorkspace || serviceTaskWorkspace) {
+        context.executionWorkspaceId = persistedExecutionWorkspace?.id ?? null;
+        if (serviceTaskWorkspace) context.runtimeServiceTaskWorkspaceId = serviceTaskWorkspace.binding.id;
         await db
           .update(heartbeatRuns)
           .set({
@@ -21521,6 +21605,13 @@ export function heartbeatService(
           agentId: agent.id,
           persistedExecutionWorkspace,
           executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
+          runtimeServiceExecutionPolicy: {
+            trustPreset,
+            executionPolicy: retainedTrust.executionPolicy ?? null,
+            networkScope: runtimeConfig.networkScope ?? null,
+            runnerNetworkAccess: process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS ?? null,
+          },
+          recoveryProcess: remoteRecoveryProcess ?? undefined,
         });
         await controllerLease.assertOwned();
         nativeRunnerPreparationSpans.push({
@@ -21608,6 +21699,7 @@ export function heartbeatService(
           effectiveExecutionWorkspaceMode,
           persistedExecutionWorkspace,
           duplexObservabilityRecorder,
+          recoveryProcess: remoteRecoveryProcess ?? undefined,
         });
         nativeRunnerPreparationSpans.push({
           name: "environment.workspace.realize",
@@ -21646,6 +21738,30 @@ export function heartbeatService(
         catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
       }
       const remoteExecution = realizationResult.remoteExecution;
+      if (remoteRecoveryProcess && runOptions.nativeRestartRecovery) {
+        if (executionTarget?.kind !== "remote" || executionTarget.transport !== "sandbox" || !executionTarget.nativeRunnerRecovery) {
+          throw new NativeRunnerOwnershipUnverifiedError("remote_runner_reattachment_unavailable");
+        }
+        executionTarget.nativeRunnerRecovery.bindController({ leaseOwner: runOptions.nativeRestartRecovery.leaseOwner,
+          controllerGeneration: runOptions.nativeRestartRecovery.controllerGeneration });
+        remoteRecovery = await restoreNativeRemoteDispatchWorkspace({ db, run, claim: runOptions.nativeRestartRecovery });
+      }
+      // Service placement reads this server-owned lease record, not mutable
+      // wakeup context supplied by an agent. Stamp it only after realization.
+      const runtimeServiceBoundary = {
+        version: 1,
+        provider: executionTarget?.kind === "remote"
+          ? executionTarget.transport === "sandbox" && executionTarget.providerKey === "daytona" ? "daytona" : "unsupported"
+          : "local",
+        workspaceRoot: executionTarget?.kind === "remote" ? executionTarget.remoteCwd : executionWorkspace.cwd,
+        executionWorkspaceId: persistedExecutionWorkspace?.id ?? null,
+        network: runtimeConfig.networkScope === "allowlist" ? "allowlist"
+          : trustPreset.kind === "standard" && process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled" && runtimeConfig.networkScope !== "deny" ? "enabled" : "disabled",
+      };
+      if (!remoteRecoveryProcess) await db.update(environmentLeases).set({
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runtimeServiceBoundary })}::jsonb`,
+        updatedAt: new Date(),
+      }).where(and(eq(environmentLeases.id, activeEnvironmentLease.lease.id), eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
       if (
         nativeChatWorkspaceScope &&
         (executionTarget?.kind === "remote" ||
@@ -21758,7 +21874,8 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
-      const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
+      const gitExecutionEnv = remoteRecoveryProcess ? Object.fromEntries(Object.entries(parseObject(runtimeConfig.env))
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string")) : await prepareGitHubExecutionEnvironment({
         target: executionTarget,
         cwd: executionWorkspace.cwd,
         env: Object.fromEntries(
@@ -21776,7 +21893,7 @@ export function heartbeatService(
       runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
       context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
-      if (!useHostGitHub) {
+      if (!useHostGitHub && !remoteRecoveryProcess) {
         const githubBrokerToken = createRuntimeToolsToken({
           agentId: agent.id,
           companyId: agent.companyId,
@@ -22142,6 +22259,7 @@ export function heartbeatService(
           .then((rows) => rows[0] ?? null);
 
         if (!runningAgent) {
+          if (remoteRecoveryProcess) throw new NativeRunnerOwnershipUnverifiedError("remote_runner_reattachment_unavailable");
           logger.warn(
             { agentId: agent.id, runId: run.id, previousStatus: agent.status },
             "execution-start aborted: agent not invokable",
@@ -22314,7 +22432,7 @@ export function heartbeatService(
               typeof entry[0] === "string" && typeof entry[1] === "string",
           ),
         );
-        const runtimeServices = await ensureRuntimeServicesForRun({
+        const runtimeServices = remoteRecoveryProcess ? [] : await ensureRuntimeServicesForRun({
           db,
           runId: run.id,
           agent: {
@@ -22368,6 +22486,10 @@ export function heartbeatService(
           }
         }
         const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
+          if (meta.adapterType === agent.adapterType) {
+            await bindRuntimeServiceInvocationDirectory(db, { companyId: run.companyId, runId: run.id,
+              environmentLeaseId: activeEnvironmentLease.lease.id, cwd: meta.cwd });
+          }
           if (meta.env && secretKeys.size > 0) {
             for (const key of secretKeys) {
               if (key in meta.env) meta.env[key] = "***REDACTED***";
@@ -22442,7 +22564,7 @@ export function heartbeatService(
             throw new Error("native_runtime_ineligible: issue is required");
           }
           const nativeExecutionWorkspaceId =
-            persistedExecutionWorkspace?.id ?? run.id;
+            persistedExecutionWorkspace?.id ?? serviceTaskWorkspace?.binding.id ?? run.id;
           const persistedContract = run.completionContractId
             ? await db
                 .select()
@@ -23028,6 +23150,12 @@ export function heartbeatService(
                   (previousNativeRun?.nativeSessionId === nativeSessionId
                     ? previousNativeRun.processPid
                     : null),
+                processLocation:
+                  lockedRun.processPid !== null
+                    ? lockedRun.processLocation
+                    : previousNativeRun?.nativeSessionId === nativeSessionId
+                      ? previousNativeRun.processLocation
+                      : null,
                 processGroupId:
                   lockedRun.processGroupId ??
                   (previousNativeRun?.nativeSessionId === nativeSessionId
@@ -23461,6 +23589,7 @@ export function heartbeatService(
               ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>
             > = null;
             if (
+              !remoteRecoveryProcess &&
               executionTarget?.kind === "remote" &&
               adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN
             ) {
@@ -23493,6 +23622,8 @@ export function heartbeatService(
                   (markDispatchStarted) =>
                     executePaperclipNativeSession({
                       db,
+                      environmentRuntime,
+                      runtimeServices: managedRuntimeServiceOperations,
                       execution: nativeExecution,
                       conversationMode: isConversation(issueContext),
                       turnTimeoutMs: Math.max(0, asNumber(runtimeConfig.timeoutSec, 0)) * 1_000,
@@ -23595,13 +23726,14 @@ export function heartbeatService(
                       enqueueWakeup,
                       onSpawn: async (meta) => {
                         markDispatchStarted();
-                        await persistRunProcessMetadata(run.id, meta);
+                        await persistRunProcessMetadata(run.id, meta, activeEnvironmentLease?.lease.id);
                       },
                     }),
                 );
               if (!guardedDispatch.dispatched) return;
               nativeDispatchStarted = true;
               adapterResult = await guardedDispatch.resultPromise;
+              nativeOwnershipHeld = false;
             } finally {
               await nativeGitHubBridge?.stop();
             }
@@ -23637,6 +23769,10 @@ export function heartbeatService(
                   }
                 : {}),
             };
+            const runtimeServiceTools = createRuntimeServiceToolAccess({
+              agentId: agent.id, companyId: agent.companyId, runId: run.id,
+              responsibleUserId: run.responsibleUserId, baseUrl: configuredPaperclipApiBaseUrl(),
+            });
             const runtimeTools = createAdapterRuntimeToolAccess({
               agentId: agent.id,
               companyId: agent.companyId,
@@ -23667,6 +23803,13 @@ export function heartbeatService(
                 token: runtimeTools.bearerToken,
                 connectionId: "paperclip-runtime-tools",
               });
+            }
+            if (runtimeServiceTools && runtimeToolDelivery === "native_mcp") {
+              runtimeMcpServers.unshift({ name: "Paperclip services", url: runtimeServiceTools.mcpEndpoint,
+                token: runtimeServiceTools.bearerToken, connectionId: "paperclip-runtime-services" });
+            }
+            if (runtimeServiceTools && runtimeToolDelivery === "invocation_context") {
+              adapterContext.paperclipRuntimeServices = runtimeServiceTools;
             }
             if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
               runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
@@ -23711,6 +23854,7 @@ export function heartbeatService(
                       : undefined,
                     runtimeMcp,
                     runtimeTools,
+                    runtimeServices: runtimeServiceTools,
                     onLog,
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
@@ -23754,6 +23898,7 @@ export function heartbeatService(
                     onSpawn: async (meta) => {
                       markDispatchStarted();
                       await persistRunProcessMetadata(run.id, {
+                        ...meta,
                         pid: meta.pid,
                         processGroupId:
                           "processGroupId" in meta &&
@@ -23761,7 +23906,7 @@ export function heartbeatService(
                             ? meta.processGroupId
                             : null,
                         startedAt: meta.startedAt,
-                      });
+                      }, activeEnvironmentLease?.lease.id);
                     },
                     authToken: authToken ?? undefined,
                   });
@@ -24679,12 +24824,12 @@ export function heartbeatService(
           nativeSessionResumeScheduled = true;
           return;
         }
-        if (err instanceof NativeRunnerOwnershipUnverifiedError) {
+        if (nativeOwnershipHeld || err instanceof NativeRunnerOwnershipUnverifiedError) {
           nativeOwnershipHeld = true;
           const heldRun = await getRun(run.id);
           if (heldRun)
             await markNativeOwnershipUnverified(heldRun, {
-              reason: err.reason,
+              reason: err instanceof NativeRunnerOwnershipUnverifiedError ? err.reason : "remote_runner_reattachment_unavailable",
             });
           return;
         }
@@ -25016,7 +25161,7 @@ export function heartbeatService(
             reason:
               outerErr instanceof NativeRunnerOwnershipUnverifiedError
                 ? outerErr.reason
-                : "adopted_runner_authentication_timeout",
+                : remoteRecoveryProcess ? "remote_runner_reattachment_unavailable" : "adopted_runner_authentication_timeout",
           }).catch(() => undefined);
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a

@@ -1,9 +1,12 @@
+import type { RuntimeServiceOperations } from "../runtime-services/operations.js";
+import { RUNTIME_SERVICE_TOOL_DEFINITIONS, isRuntimeServiceTool, executeRuntimeServiceTool, runtimeServiceToolMutates } from "../runtime-services/tools.js";
+import { resolveRuntimeServiceToolActor } from "../runtime-services/tool-actor.js";
 import { callProjectTool } from "../project-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
-import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
+import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE, RUNTIME_SERVICE_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
 import {
@@ -78,6 +81,7 @@ const IMPLEMENTED_OPERATIONS = new Set([
 ]);
 
 type Binding = {
+  runtimeServices?: RuntimeServiceOperations;
   companyId: string;
   issueId: string;
   runId: string;
@@ -188,6 +192,9 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
+    if (this.binding.runtimeServices) definitions.push(...RUNTIME_SERVICE_TOOL_DEFINITIONS.filter(
+      (tool) => workMode === "standard" || !runtimeServiceToolMutates(tool.name),
+    ));
     return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools), ...definitions];
   }
 
@@ -196,6 +203,15 @@ export class PaperclipRunnerToolAuthority {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
+    if (isRuntimeServiceTool(call.tool)) {
+      if (!this.binding.runtimeServices) throw forbidden("Service tools are not available to this run");
+      await this.#boundContext();
+      const actor = await resolveRuntimeServiceToolActor(this.db, this.binding, call.tool);
+      return executeRuntimeServiceTool({
+        operations: this.binding.runtimeServices, ...actor, companyId: this.binding.companyId,
+        name: call.tool, arguments: call.arguments,
+      });
+    }
     if (isConnectorTool(call.tool)) {
       if (!(this.binding.connectorAssignments ?? []).some((assignment) => assignment.tools.some((tool) => tool.name === call.tool))) throw forbidden("Connector tool is not available to this run");
       const { run } = await this.#boundContext();
@@ -331,6 +347,7 @@ export class PaperclipRunnerToolAuthority {
           invocationSource: context.run.invocationSource,
         },
         connectionGuidance: CONNECTION_INTENT_AGENT_GUIDANCE,
+        ...(this.binding.runtimeServices ? { serviceGuidance: RUNTIME_SERVICE_AGENT_GUIDANCE } : {}),
         acceptedPlan: await this.#acceptedPlan(context.run.contextSnapshot),
       };
       case "get_task_history": {

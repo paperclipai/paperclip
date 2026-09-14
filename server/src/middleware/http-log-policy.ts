@@ -38,6 +38,11 @@ function normalizePath(url: string): string {
 }
 
 const SECRET_SENSITIVE_HTTP_PATHS = [
+  // Service launch inputs can include environment bindings or credentials in
+  // arbitrary application commands. Do not attach their bodies to failure logs.
+  /^\/api\/companies\/[^/]+\/runtime-services(?:\/|$)/,
+  /^\/(?:api\/)?mcp\/runtime-services(?:\/|$)/,
+  /^\/(?:api\/)?runtime-tools\/services(?:\/|$)/,
   /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/,
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);

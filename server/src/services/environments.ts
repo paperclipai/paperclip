@@ -33,6 +33,7 @@ import {
 import { conflict, forbidden } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { lockRuntimeServiceEnvironment, runtimeServiceRetentionForEnvironment } from "./runtime-services/retention.js";
 import {
   resourceStatus,
   stockHash,
@@ -1148,53 +1149,61 @@ export function environmentService(db: Db) {
     },
 
     remove: async (id: string): Promise<Environment | null> => {
-      const row = await db
-        .delete(environments)
-        .where(eq(environments.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toEnvironment(row) : null;
+      return db.transaction(async (tx) => {
+        await lockRuntimeServiceEnvironment(tx, id);
+        if ((await runtimeServiceRetentionForEnvironment(tx, id)).length) throw conflict("This environment contains retained service files. Release their data retention before deleting it.");
+        const row = await tx
+          .delete(environments)
+          .where(eq(environments.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return row ? toEnvironment(row) : null;
+      });
     },
 
     removeIfDeletable: async (id: string): Promise<Environment | null> => {
-      const row = await db
-        .delete(environments)
-        .where(
-          and(
-            eq(environments.id, id),
-            ne(environments.driver, "local"),
-            sql`not exists (
-              select 1 from ${instanceSettings}
-              where ${instanceSettings.defaultEnvironmentId} = ${environments.id}
-            )`,
-            // A `pending_cleanup` lease is the durable teardown reference for an
-            // orphan sandbox. The environment foreign key uses
-            // `on delete set null`, so a delete keeps the lease row but drops its
-            // environment reference. This predicate refuses the delete while such
-            // a lease exists, so the operator resolves the cleanup first and the
-            // lease keeps its environment link. It runs in the same statement as
-            // the delete, so it also closes the check-to-delete race.
-            sql`not exists (
-              select 1 from ${environmentLeases}
-              where ${environmentLeases.environmentId} = ${environments.id}
-                and ${environmentLeases.status} = 'pending_cleanup'
-            )`,
-            // A reusable lease keeps a live provider sandbox after a run
-            // releases it. Deleting the environment would set its reference to
-            // null, and both the normal release path and scoped reusable cleanup
-            // require that environment context. Refuse the delete atomically
-            // until the owning issue/workspace destroys the reusable sandbox.
-            sql`not exists (
-              select 1 from ${environmentLeases}
-              where ${environmentLeases.environmentId} = ${environments.id}
-                and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
-                and ${environmentLeases.status} in ('active', 'released', 'retained')
-            )`,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toEnvironment(row) : null;
+      return db.transaction(async (tx) => {
+        await lockRuntimeServiceEnvironment(tx, id);
+        if ((await runtimeServiceRetentionForEnvironment(tx, id)).length) return null;
+        const row = await tx
+          .delete(environments)
+          .where(
+            and(
+              eq(environments.id, id),
+              ne(environments.driver, "local"),
+              sql`not exists (
+                select 1 from ${instanceSettings}
+                where ${instanceSettings.defaultEnvironmentId} = ${environments.id}
+              )`,
+              // A `pending_cleanup` lease is the durable teardown reference for an
+              // orphan sandbox. The environment foreign key uses
+              // `on delete set null`, so a delete keeps the lease row but drops its
+              // environment reference. This predicate refuses the delete while such
+              // a lease exists, so the operator resolves the cleanup first and the
+              // lease keeps its environment link. It runs in the same statement as
+              // the delete, so it also closes the check-to-delete race.
+              sql`not exists (
+                select 1 from ${environmentLeases}
+                where ${environmentLeases.environmentId} = ${environments.id}
+                  and ${environmentLeases.status} = 'pending_cleanup'
+              )`,
+              // A reusable lease keeps a live provider sandbox after a run
+              // releases it. Deleting the environment would set its reference to
+              // null, and both the normal release path and scoped reusable cleanup
+              // require that environment context. Refuse the delete atomically
+              // until the owning issue/workspace destroys the reusable sandbox.
+              sql`not exists (
+                select 1 from ${environmentLeases}
+                where ${environmentLeases.environmentId} = ${environments.id}
+                  and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+                  and ${environmentLeases.status} in ('active', 'released', 'retained')
+              )`,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return row ? toEnvironment(row) : null;
+      });
     },
 
     /**
@@ -1239,6 +1248,7 @@ export function environmentService(db: Db) {
         pendingCleanupLeaseRows,
         reusableSandboxLeaseRows,
         activeSetupRows,
+        retainedServiceAllocations,
       ] = await Promise.all([
         db
           .select({ count: sql<number>`count(*)::int` })
@@ -1315,6 +1325,7 @@ export function environmentService(db: Db) {
               inArray(environmentCustomImageSetupSessions.status, [...ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES]),
             ),
           ),
+        runtimeServiceRetentionForEnvironment(db, id),
       ]);
 
       const isManagedLocal = environment.driver === "local";
@@ -1339,6 +1350,7 @@ export function environmentService(db: Db) {
       // cleanup first and the lease keeps its environment link.
       if (pendingCleanupLeaseCount > 0) deleteBlockedReasons.push("pending_sandbox_cleanup");
       if (reusableSandboxLeaseCount > 0) deleteBlockedReasons.push("reusable_sandbox_lease");
+      if (retainedServiceAllocations.length > 0) deleteBlockedReasons.push("runtime_service_retention");
       const activeLeaseCount = countFromRows(activeLeaseRows);
       const activeCustomImageSetupSessionCount = countFromRows(activeSetupRows);
 
@@ -1348,6 +1360,7 @@ export function environmentService(db: Db) {
         deleteBlockedReasons,
         pendingCleanupLeaseCount,
         reusableSandboxLeaseCount,
+        retainedServiceAllocationCount: retainedServiceAllocations.length,
         reusableSandboxLeaseHolders,
         staticReferences: {
           isManagedLocal,

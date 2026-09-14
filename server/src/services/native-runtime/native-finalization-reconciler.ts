@@ -30,6 +30,8 @@ import {
   NativeStatusRaceError,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { heartbeatRunRequiresProviderProcessVerification } from "../run-process-metadata.js";
+import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
@@ -387,6 +389,9 @@ export async function claimNativeSessionResumptions(input: {
         !["running", "failed"].includes(row.run.status)
       )
         return false;
+
+      if (await heartbeatRunRequiresProviderProcessVerification(tx, row.run)
+        && !(await remoteExecutionHasStopped(tx as unknown as Db, row.run.companyId, row.run.id))) return false;
 
       const profile = row.run.runnerProfileJson ?? {};
       const persistedInput = profile.nativeExecutionInput;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { projectExecution } from "./execution-projection.js";
 
 type Run = Parameters<typeof projectExecution>[0];
@@ -120,10 +120,18 @@ describe("execution truth projection", () => {
     ).toMatchObject({ phase: "reconnecting", label: "Confirming execution" });
     expect(
       project(
-        run({ runtimeMode: "legacy", processPid: process.pid }),
+        run({ runtimeMode: "legacy", processLocation: "local", processPid: process.pid }),
         undefined,
       ).phase,
     ).toBe("working");
+  });
+  it.each(["remote", null] as const)("does not confirm a %s process using a colliding local PID", processLocation => {
+    const kill = vi.spyOn(process, "kill");
+    try {
+      expect(projectExecution(run({ runtimeMode: "legacy", processLocation, processPid: process.pid }), undefined, [], undefined, now))
+        .toMatchObject({ phase: "reconnecting", label: "Confirming execution" });
+      expect(kill).not.toHaveBeenCalled();
+    } finally { kill.mockRestore(); }
   });
   it("distinguishes provider work, finalization and timed retry", () => {
     expect(

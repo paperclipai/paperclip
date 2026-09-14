@@ -216,6 +216,7 @@ export async function findNativeSessionResumeRun(
       status: heartbeatRuns.status,
       createdAt: heartbeatRuns.createdAt,
       processPid: heartbeatRuns.processPid,
+      processLocation: heartbeatRuns.processLocation,
       processGroupId: heartbeatRuns.processGroupId,
       processStartedAt: heartbeatRuns.processStartedAt,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,

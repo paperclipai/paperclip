@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaceRuntimeLeases, heartbeatRuns, issues } from "@paperclipai/db";
 import { conflict } from "../errors.js";
+import { assertTaskWorkspaceDataAvailable, lockTaskWorkspaceDataAdmission, withTaskWorkspaceDataAdmission } from "./runtime-services/workspace-data-fence.js";
 
 type ExecutionWorkspaceRuntimeLeaseRow = typeof executionWorkspaceRuntimeLeases.$inferSelect;
 type LeaseTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -173,6 +174,7 @@ export function workspaceRuntimeLeaseService(db: Db) {
       ttlMs?: number;
     }): Promise<WorkspaceRuntimeLeaseClaim> {
       if (input.owner.actorType !== "agent") {
+        if (input.action !== "stop") await withTaskWorkspaceDataAdmission(db, input.companyId, input.executionWorkspaceId, async () => {});
         return { outcome: "bypassed", ownerKey: null, lease: null, reclaimedFrom: null };
       }
 
@@ -191,6 +193,10 @@ export function workspaceRuntimeLeaseService(db: Db) {
       };
 
       return await db.transaction(async (tx) => {
+        if (input.action !== "stop") {
+          await lockTaskWorkspaceDataAdmission(tx);
+          await assertTaskWorkspaceDataAvailable(tx, input.companyId, input.executionWorkspaceId);
+        }
         const created = await tx
           .insert(executionWorkspaceRuntimeLeases)
           .values({

@@ -15,9 +15,15 @@ afterEach(() => {
 describe("http adapter execute", () => {
   it("delivers the complete runtime connection descriptor and shared guidance", async () => {
     const onDispatch = vi.fn();
+    const services = {
+      version: 1 as const, guidance: "Manage persistent services", mcpEndpoint: "https://paperclip.test/mcp/runtime-services",
+      callEndpoint: "https://paperclip.test/runtime-tools/services/call", bearerToken: "separate-service-capability",
+      expiresAt: "2026-09-26T15:00:00.000Z", tools: ["services_list", "services_start"],
+    };
     guardedFetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
       expect(onDispatch).toHaveBeenCalledOnce();
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.paperclipRuntimeServices).toEqual(services);
       expect(body.paperclipRuntimeTools).toEqual({
         version: 1,
         guidance: CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -50,6 +56,7 @@ describe("http adapter execute", () => {
       },
       config: { url: "https://example.test/webhook" },
       context: {},
+      runtimeServices: services,
       runtimeTools: {
         version: 1,
         guidance: CONNECTION_INTENT_AGENT_GUIDANCE,

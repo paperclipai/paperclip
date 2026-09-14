@@ -1,8 +1,18 @@
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { assertNoNativeRunnerClosing, claimNativeRemoteIdleController, reconcileNativeRemoteIdleClosures, type NativeRemoteIdleControllerClaimInput } from "./native-runtime/remote-runner-recovery.js";
+import type { NativeRemoteWarmRetention } from "./native-runtime/native-remote-warm-retention.js";
+import { withTaskWorkspaceDataAdmission } from "./runtime-services/workspace-data-fence.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions, environmentLeases, heartbeatRuns } from "@paperclipai/db";
+import { companySecrets, companySecretVersions, environmentLeases, heartbeatRuns, runtimeServiceAllocations, runtimeServices } from "@paperclipai/db";
+import type { RuntimeServiceEnvironmentOperation } from "./runtime-services/daytona-provider.js";
+import { operateRemoteRuntimeServiceProcessHandoff, type RuntimeServiceProcessHandoffOperation } from "./runtime-services/remote-process-handoff.js";
+import { adoptRemoteRunnerLease, operateRemoteRunProcess, operateRemoteRunnerRecovery, operateRemoteRunnerRecoveryExecution, type RemoteRunnerRecoveryExecutionInput, type RemoteRunnerRecoveryProcess, type RemoteRunnerRecoveryInput, type RemoteRunProcessControlInput, type RemoteRunProcessControlResult } from "./native-runtime/remote-runner-recovery.js";
+import { assertRuntimeServiceLeaseDataAvailable, runtimeServiceRetentionForLease, withRuntimeServiceLeaseLock } from "./runtime-services/retention.js";
+import { assertRuntimeServiceRunAttachment, retainedRuntimeServiceWorkspaces, runtimeServiceRunConfigurationDigest, runtimeServiceRunScopeSchema, runtimeServiceWorkspaceLeaseHistory, sameRuntimeServiceConfiguration, type RuntimeServiceRunScope } from "./runtime-services/run-attachment.js";
+import { runtimeServiceTaskWorkspace, assertRuntimeServiceTaskRun } from "./runtime-services/task-workspace.js";
+import { runtimeServiceAllocationRequestSchema } from "./runtime-services/provisioning.js";
 import type {
   Environment,
   EnvironmentLease,
@@ -23,6 +33,8 @@ import type {
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentServiceResult,
+  PluginEnvironmentProcessHandoffResult,
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentSyncResult,
@@ -447,6 +459,9 @@ export interface EnvironmentDriverAcquireInput {
    * configured default adapter.
    */
   adapterType: string | null;
+  /** Trusted launch restrictions, supplied by heartbeat after resolving policy. */
+  runtimeServiceExecutionPolicy?: Record<string, unknown>;
+  recoveryProcess?: RemoteRunnerRecoveryProcess;
   /**
    * Force applying the active custom-image template even when issueId and
    * heartbeatRunId are null. Operator-initiated `Test` probes set this so the
@@ -579,6 +594,12 @@ export interface EnvironmentRuntimeDriver {
   destroyRunLease?(input: EnvironmentDriverLeaseInput): Promise<EnvironmentLease | null>;
   realizeWorkspace?(input: EnvironmentDriverRealizeWorkspaceInput): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   execute?(input: EnvironmentDriverExecuteInput): Promise<PluginEnvironmentExecuteResult>;
+  operateRuntimeService?(input: RuntimeServiceEnvironmentOperation): Promise<PluginEnvironmentServiceResult>;
+  operateRuntimeServiceProcessHandoff?(input: RuntimeServiceProcessHandoffOperation): Promise<PluginEnvironmentProcessHandoffResult>;
+  controlRunProcess?(input: RemoteRunProcessControlInput): Promise<RemoteRunProcessControlResult>;
+  claimIdleRunnerController?(input: NativeRemoteIdleControllerClaimInput): Promise<NativeRemoteWarmRetention | null>;
+  recoverRunner?(input: RemoteRunnerRecoveryInput): Promise<import("@paperclipai/plugin-sdk").PluginEnvironmentRunnerRecoveryResult>;
+  executeRecoveringRunner?(input: RemoteRunnerRecoveryExecutionInput): Promise<import("@paperclipai/plugin-sdk").PluginEnvironmentRunnerRecoveryExecuteResult>;
   /**
    * Optional native inbound/outbound file transfer, delegated to the plugin
    * worker's `environmentSyncIn`/`environmentSyncOut` verbs. Only present for
@@ -1748,6 +1769,26 @@ function createSandboxEnvironmentDriver(
     }, resolvePluginSandboxRpcTimeoutMs(sanitizedConfig));
   }
 
+  const callRunProcessControl: Parameters<typeof operateRemoteRunProcess>[2] = async (leaseRow, operation) => {
+    const lease = toEnvironmentLeaseSnapshot(leaseRow);
+    const pluginId = readString(lease.metadata?.pluginId);
+    const provider = readString(lease.metadata?.provider);
+    if (!lease.environmentId || !lease.providerLeaseId || !lease.metadata?.sandboxProviderPlugin || provider !== "daytona" || !pluginId
+      || !pluginWorkerManager?.isRunning(pluginId) || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentRunProcessControl")) return { state: "unverified" };
+    const environment = await environmentsSvc.getById(lease.environmentId);
+    if (!environment) return { state: "unverified" };
+    const config = await resolvePluginSandboxRuntimeConfig({ environment, lease, provider });
+    return pluginWorkerManager.call(pluginId, "environmentRunProcessControl", {
+      driverKey: provider, companyId: lease.companyId, environmentId: environment.id, providerLeaseId: lease.providerLeaseId,
+      config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig), ...operation,
+    }, 20_000);
+  };
+
+  async function assertIdleShutdownResolved(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], lease: Pick<EnvironmentLease, "companyId" | "provider" | "providerLeaseId">) {
+    await reconcileNativeRemoteIdleClosures(tx, lease, callRunProcessControl);
+    await assertNoNativeRunnerClosing(tx, lease);
+  }
+
   return {
     driver: "sandbox",
 
@@ -1760,6 +1801,10 @@ function createSandboxEnvironmentDriver(
       });
       if (parsed.driver !== "sandbox" || storedParsed.driver !== "sandbox") {
         throw new Error(`Expected sandbox environment config for driver "${input.environment.driver}".`);
+      }
+      if (input.recoveryProcess && (parsed.config.provider !== "daytona" || input.adapterType !== "paperclip_runner"
+        || isBuiltinSandboxProvider(parsed.config.provider) || input.recoveryProcess.environmentId !== input.environment.id || !input.heartbeatRunId || !input.agentId || input.requestedExpiresAt)) {
+        throw new Error("native_remote_runner_recovery_lease_mismatch");
       }
 
       // Check if this provider should be handled by a plugin.
@@ -1809,6 +1854,40 @@ function createSandboxEnvironmentDriver(
         );
         const supportsReusableLeases =
           declaredReusableLeases && capabilityIsVerified("reusableLeases", pluginVerifiedMethods);
+        const taskWorkspace = input.heartbeatRunId && input.issueId
+          ? await runtimeServiceTaskWorkspace(db, input.companyId, input.issueId) : null;
+        const retainedWorkspaces = taskWorkspace ? [taskWorkspace] : input.heartbeatRunId && input.executionWorkspaceId
+          ? await retainedRuntimeServiceWorkspaces(db, input.companyId, input.executionWorkspaceId) : [];
+        const retainedWorkspace = retainedWorkspaces[0] ?? null;
+        const configurationDigest = input.runtimeServiceExecutionPolicy
+          ? runtimeServiceRunConfigurationDigest({
+              providerConfig: workerConfig, adapterType: input.adapterType,
+              executionWorkspaceMode: taskWorkspace ? null : input.executionWorkspaceMode,
+              executionWorkspaceSettings: input.executionWorkspaceSettings,
+              executionPolicy: input.runtimeServiceExecutionPolicy,
+              pluginVersion: pluginProvider.resolved.plugin.version,
+            }) : null;
+        if (input.recoveryProcess) {
+          if (!configurationDigest || !pluginVerifiedMethods.has("environmentRunProcessControl") || !pluginVerifiedMethods.has("environmentRunnerRecovery") || !pluginVerifiedMethods.has("environmentRunnerRecoveryExecute")) {
+            throw new Error("native_remote_runner_recovery_unverified");
+          }
+          const lease = await adoptRemoteRunnerLease(db, { companyId: input.companyId, runId: input.heartbeatRunId!, agentId: input.agentId!,
+            issueId: input.issueId, environmentId: input.environment.id, executionWorkspaceId: input.executionWorkspaceId,
+            taskWorkspaceId: taskWorkspace?.binding.id ?? null, configurationDigest, pluginId: pluginProvider.resolved.plugin.id, expectedProcess: input.recoveryProcess },
+          (original, process) => pluginWorkerManager!.call(pluginProvider.resolved.plugin.id, "environmentRunProcessControl", {
+            driverKey: "daytona", companyId: original.companyId, environmentId: input.environment.id, providerLeaseId: original.providerLeaseId!,
+            config: workerConfig, owner: process.remoteProcessIdentity, workspaceConnection: process.workspaceConnection, operation: { action: "inspect" },
+          }, 20_000));
+          if (!lease) throw new Error("native_remote_runner_recovery_lease_mismatch");
+          return toEnvironmentLeaseSnapshot(lease);
+        }
+        if (retainedWorkspace && (
+          !supportsReusableLeases || parsed.config.provider !== "daytona" || !input.agentId || !configurationDigest ||
+          input.requestedExpiresAt || !pluginVerifiedMethods.has("environmentGetServiceConnection") ||
+          retainedWorkspaces.some(({ allocation, lease }) => allocation.provider !== "daytona" ||
+            lease.environmentId !== input.environment.id || !lease.providerLeaseId || lease.expiresAt !== null ||
+            lease.providerLeaseId !== retainedWorkspace.lease.providerLeaseId)
+        )) throw new Error("This task has retained service files in another or incompatible execution environment. Attach their original environment before continuing.");
         const leaseFingerprint =
           supportsReusableLeases &&
           parsed.config.reuseLease &&
@@ -1869,7 +1948,7 @@ function createSandboxEnvironmentDriver(
               lease.heartbeatRunId === input.heartbeatRunId,
           }),
         );
-        if (reusableCandidateLeases.length > reusableExistingLeases.length) {
+        if (!retainedWorkspace && reusableCandidateLeases.length > reusableExistingLeases.length) {
           await cleanupObsoleteReusableSandboxLeases({
             environment: input.environment,
             leases: reusableCandidateLeases,
@@ -1884,282 +1963,414 @@ function createSandboxEnvironmentDriver(
           input.agentId !== null
           ? findReusableSandboxLeaseId({ config: storedConfig, leases: reusableExistingLeases })
           : null;
-        const reusableLease = reusableProviderLeaseId
+        let reusableLease = retainedWorkspace ? toEnvironmentLeaseSnapshot(retainedWorkspace.lease) : reusableProviderLeaseId
           ? reusableExistingLeases.find((lease) => lease.providerLeaseId === reusableProviderLeaseId)
           : null;
+        let serviceRunScope: RuntimeServiceRunScope | null = null;
 
-        let providerLease: PluginEnvironmentLease | null = null;
-        let replacementReason:
-          | "not_found"
-          | "expired"
-          | "identity_mismatch"
-          | "resume_failed"
-          | undefined;
-        if (reusableLease?.providerLeaseId) {
-          // The `supportsReusableLeases` check above reads a snapshot of the
-          // worker methods. The runtime then does asynchronous database work
-          // (list, fingerprint, obsolete-lease cleanup) before this dispatch. A
-          // worker restart in that window can drop `environmentResumeLease`
-          // while the snapshot still marks the method verified. Re-check the
-          // live worker here and fail closed when the method is absent. The
-          // runtime preserves the recorded lease and never dispatches a resume
-          // the live worker cannot serve.
-          const workerVerifiesResume = pluginWorkerVerifiesLifecycleMethod(
-            pluginProvider.resolved.plugin.id,
-            "environmentResumeLease",
-          );
-          if (!workerVerifiesResume) {
-            throw new ReusableSandboxResumeError({
-              provider: parsed.config.provider,
-              providerLeaseId: reusableLease.providerLeaseId,
+        const prepareServiceRunScope = async () => {
+          if (retainedWorkspace) {
+            const scope = runtimeServiceRunScopeSchema.safeParse(reusableLease?.metadata?.runtimeServiceRunScope);
+            if (!scope.success && taskWorkspace && reusableLease?.id === taskWorkspace.lease.id && !reusableLease.heartbeatRunId &&
+                !reusableLease.metadata?.runtimeServiceRunScope) {
+              const request = runtimeServiceAllocationRequestSchema.parse(taskWorkspace.allocation.metadata.allocationRequest);
+              const original = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, { id: request.environmentId, driver: "sandbox", config: request.launchConfig });
+              if (request.pluginId !== pluginProvider.resolved.plugin.id || request.environmentId !== input.environment.id || original.driver !== "sandbox" ||
+                  !sameRuntimeServiceConfiguration(stripSandboxProviderEnvelope(original.config), workerConfig)) {
+                throw new Error("Restore the independent service's original environment configuration before attaching an agent");
+              }
+              serviceRunScope = runtimeServiceRunScopeSchema.parse({
+                version: 2, companyId: input.companyId, environmentId: input.environment.id, allocationId: taskWorkspace.allocation.id,
+                taskWorkspaceId: taskWorkspace.binding.id, hostCwd: taskWorkspace.binding.hostCwd,
+                pluginId: request.pluginId, configurationDigest,
+                connection: { scopeId: taskWorkspace.allocation.id, fingerprint: taskWorkspace.allocation.metadata.serviceConnectionFingerprint },
+              });
+              return;
+            }
+            const matchesSource = scope.success && (taskWorkspace
+              ? scope.data.version === 2 && scope.data.allocationId === taskWorkspace.allocation.id && scope.data.taskWorkspaceId === taskWorkspace.binding.id && scope.data.hostCwd === taskWorkspace.binding.hostCwd
+              : scope.data.version === 1 && scope.data.executionWorkspaceId === input.executionWorkspaceId);
+            if (!scope.success || !matchesSource || scope.data.companyId !== input.companyId || scope.data.environmentId !== input.environment.id ||
+                scope.data.pluginId !== pluginProvider.resolved.plugin.id || scope.data.configurationDigest !== configurationDigest) {
+              throw new Error("The retained service workspace cannot use this run's configuration. Restore its original execution settings before attaching.");
+            }
+            serviceRunScope = scope.data;
+          } else if (parsed.config.provider === "daytona" && configurationDigest && input.heartbeatRunId && input.executionWorkspaceId &&
+                     pluginVerifiedMethods.has("environmentGetServiceConnection")) {
+            const connection = await pluginWorkerManager.call(pluginProvider.resolved.plugin.id, "environmentGetServiceConnection", {
+              driverKey: parsed.config.provider, companyId: input.companyId, environmentId: input.environment.id,
+              config: workerConfig, serviceAllocationId: input.heartbeatRunId,
+            });
+            serviceRunScope = runtimeServiceRunScopeSchema.parse({
+              version: 1, companyId: input.companyId, environmentId: input.environment.id, executionWorkspaceId: input.executionWorkspaceId,
+              pluginId: pluginProvider.resolved.plugin.id, configurationDigest,
+              connection: { scopeId: input.heartbeatRunId, fingerprint: connection.fingerprint },
             });
           }
-          try {
-            const resumeDeadline = Date.now() + 60_000;
-            const configuredResumeTimeoutMs =
-              resolvePluginSandboxRpcTimeoutMs(workerConfig) ?? 60_000;
-            let retryDelayMs = 250;
-            let resumed: PluginEnvironmentLease;
-            while (true) {
-              try {
-                resumed = await pluginWorkerManager.call(
-                  pluginProvider.resolved.plugin.id,
-                  "environmentResumeLease",
-                  {
-                    driverKey: parsed.config.provider,
-                    companyId: input.companyId,
-                    environmentId: input.environment.id,
-                    issueId: input.issueId,
-                    config: workerConfig,
-                    providerLeaseId: reusableLease.providerLeaseId,
-                    leaseMetadata: reusableLease.metadata ?? undefined,
+        };
+
+        const acquirePluginLease = async (retained: boolean): Promise<EnvironmentLease> => {
+          await prepareServiceRunScope();
+          let providerLease: PluginEnvironmentLease | null = null;
+          let replacementReason:
+            | "not_found"
+            | "expired"
+            | "identity_mismatch"
+            | "resume_failed"
+            | undefined;
+          if (reusableLease?.providerLeaseId) {
+            // The `supportsReusableLeases` check above reads a snapshot of the
+            // worker methods. The runtime then does asynchronous database work
+            // (list, fingerprint, obsolete-lease cleanup) before this dispatch. A
+            // worker restart in that window can drop `environmentResumeLease`
+            // while the snapshot still marks the method verified. Re-check the
+            // live worker here and fail closed when the method is absent. The
+            // runtime preserves the recorded lease and never dispatches a resume
+            // the live worker cannot serve.
+            const workerVerifiesResume = pluginWorkerVerifiesLifecycleMethod(
+              pluginProvider.resolved.plugin.id,
+              "environmentResumeLease",
+            );
+            if (!workerVerifiesResume) {
+              throw new ReusableSandboxResumeError({
+                provider: parsed.config.provider,
+                providerLeaseId: reusableLease.providerLeaseId,
+              });
+            }
+            try {
+              const resumeDeadline = Date.now() + 60_000;
+              const configuredResumeTimeoutMs =
+                resolvePluginSandboxRpcTimeoutMs(workerConfig) ?? 60_000;
+              let retryDelayMs = 250;
+              let resumed: PluginEnvironmentLease;
+              while (true) {
+                try {
+                  resumed = await pluginWorkerManager.call(
+                    pluginProvider.resolved.plugin.id,
+                    "environmentResumeLease",
+                    {
+                      driverKey: parsed.config.provider,
+                      companyId: input.companyId,
+                      environmentId: input.environment.id,
+                      issueId: input.issueId,
+                      config: workerConfig,
+                      providerLeaseId: reusableLease.providerLeaseId,
+                      leaseMetadata: reusableLease.metadata ?? undefined,
+                      ...(serviceRunScope ? { workspaceConnection: serviceRunScope.connection } : {}),
+                    },
+                    Math.min(
+                      configuredResumeTimeoutMs,
+                      Math.max(1, resumeDeadline - Date.now()),
+                    ),
+                  );
+                  break;
+                } catch (error) {
+                  if (
+                    !transientSandboxResumeFailure(error) ||
+                    Date.now() + retryDelayMs * 1.25 >= resumeDeadline
+                  ) throw error;
+                  const jitteredDelayMs = Math.max(
+                    1,
+                    Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)),
+                  );
+                  await delay(jitteredDelayMs);
+                  retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+                }
+              }
+              providerLease =
+                typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
+                  ? resumed
+                  : null;
+              if (retainedWorkspace && providerLease && (
+                providerLease.providerLeaseId !== reusableLease.providerLeaseId ||
+                providerLease.metadata?.remoteCwd !== reusableLease.metadata?.remoteCwd ||
+                !isRecord(providerLease.metadata?.workspaceSentinel) || providerLease.metadata.workspaceSentinel.result !== "matched" ||
+                typeof providerLease.metadata.workspaceSentinel.token !== "string" || !providerLease.metadata.workspaceSentinel.token ||
+                providerLease.metadata.workspaceSentinel.path !== (isRecord(reusableLease.metadata?.workspaceSentinel) ? reusableLease.metadata.workspaceSentinel.path : null) ||
+                providerLease.metadata.workspaceSentinel.token !== (isRecord(reusableLease.metadata?.workspaceSentinel) ? reusableLease.metadata.workspaceSentinel.token : null)
+              )) throw new Error("The retained workspace identity changed during resume");
+              if (!providerLease) {
+                const sentinel = isRecord(resumed.metadata?.workspaceSentinel)
+                  ? resumed.metadata.workspaceSentinel
+                  : null;
+                replacementReason = sentinel && sentinel.result !== "matched"
+                  ? "identity_mismatch"
+                  : resumed.metadata?.expired === true
+                    ? "not_found"
+                    : "expired";
+              }
+            } catch (error) {
+              throw new ReusableSandboxResumeError({
+                provider: parsed.config.provider,
+                providerLeaseId: reusableLease.providerLeaseId,
+                cause: error,
+              });
+            }
+            if (!providerLease) {
+              if (retained) throw new Error("The retained service sandbox is unavailable. Recover its files before replacing the environment.");
+              if (
+                input.adapterType === "paperclip_runner" &&
+                !verifyNativeHarnessBackupStamp(
+                  reusableLease.metadata?.nativeHarnessBackup,
+                  reusableLease.providerLeaseId,
+                )
+              ) {
+                throw new RunnerHarnessBackupUnavailableError(
+                  reusableLease.providerLeaseId,
+                );
+              }
+              // The verified, lease-bound backup authorizes destructive
+              // replacement. Keep the existing sandbox intact when validation
+              // fails so the only recoverable provider state is not lost.
+              await destroyUnretainedReusableSandboxLease({
+                environment: input.environment,
+                lease: reusableLease,
+                failureReason: replacementReason ?? "resume_failed",
+              });
+            }
+          }
+          const acquiredLease = providerLease ?? await pluginWorkerManager.call(
+            pluginProvider.resolved.plugin.id,
+            "environmentAcquireLease",
+            {
+              driverKey: parsed.config.provider,
+              companyId: input.companyId,
+              environmentId: input.environment.id,
+              issueId: input.issueId,
+              config: workerConfig,
+              // Plugin SDK requires a string; ad-hoc test leases use a fresh
+              // UUID so providers that validate or persist the runId still see
+              // a well-formed identifier.
+              runId: input.heartbeatRunId ?? randomUUID(),
+              workspaceMode: input.executionWorkspaceMode ?? undefined,
+              agentId: input.agentId ?? undefined,
+              executionWorkspaceId: input.executionWorkspaceId ?? undefined,
+              // The agent's harness for THIS run, so the plugin picks the matching
+              // runtime image (per-run adapter, mixed-harness environments).
+              // NOTE: environment-runtime.ts has TWO drivers calling
+              // environmentAcquireLease; this plugin-sandbox one is the HEARTBEAT
+              // path. Omitting adapterType here silently falls back to the
+              // environment's default adapter image (a pi agent then runs in the
+              // opencode image and the harness binary is missing at exec time).
+              adapterType: input.adapterType ?? undefined,
+              ...(serviceRunScope ? { workspaceConnection: serviceRunScope.connection } : {}),
+              // Forward a caller deadline so the provider configures a provider-side
+              // expiry at or before it and returns the real provider expiry.
+              ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
+                ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
+                : {}),
+            },
+            resolvePluginSandboxRpcTimeoutMs(workerConfig),
+          );
+
+          // Ad-hoc test leases are never publishable for reuse: storing them
+          // as `reuse_by_environment` would let a concurrent heartbeat resume
+          // the test's provider lease and lose its sandbox when the test ends.
+          const resolvedLeasePolicy = retainedWorkspace || (supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null)
+            ? "reuse_by_environment"
+            : "ephemeral";
+          const sanitizedProviderMetadata = { ...stripSecretRefValuesFromPluginLeaseMetadata({
+            metadata: acquiredLease.metadata,
+            schema: pluginProvider.resolved.driver.configSchema as Record<string, unknown> | null | undefined,
+          }) };
+          // These are host-owned, per-run records. A provider echo must not
+          // carry the prior run's retention or close capability into a new lease.
+          delete sanitizedProviderMetadata.nativeWarmRunnerRetention;
+          delete sanitizedProviderMetadata.nativeWarmRunnerClose;
+          const reusableScope = resolvedLeasePolicy === "reuse_by_environment"
+            ? buildReusableSandboxLeaseScope({
+                companyId: input.companyId,
+                environmentId: input.environment.id,
+                executionWorkspaceId: input.executionWorkspaceId,
+                agentId: input.agentId,
+                adapterType: input.adapterType,
+                provider: parsed.config.provider,
+                config: providerConfigForLease,
+                leaseFingerprint,
+                providerMetadata: sanitizedProviderMetadata,
+              })
+            : null;
+
+          const pluginLeaseMetadata = {
+            ...(input.agentId ? { agentId: input.agentId } : {}),
+            driver: input.environment.driver,
+            executionWorkspaceMode: input.executionWorkspaceMode,
+            pluginId: pluginProvider.resolved.plugin.id,
+            pluginKey: pluginProvider.resolved.plugin.pluginKey,
+            sandboxProviderPlugin: true,
+            ...sandboxConfigForLeaseMetadata(storedConfig),
+            ...sanitizedProviderMetadata,
+            sandboxLeaseAcquisition: providerLease
+              ? {
+                  outcome: "resumed",
+                }
+              : reusableLease?.providerLeaseId
+                ? {
+                    outcome: "replacement",
+                    reason: replacementReason ?? "resume_failed",
+                  }
+                : {
+                    outcome: "created",
                   },
-                  Math.min(
-                    configuredResumeTimeoutMs,
-                    Math.max(1, resumeDeadline - Date.now()),
-                  ),
-                );
-                break;
-              } catch (error) {
-                if (
-                  !transientSandboxResumeFailure(error) ||
-                  Date.now() + retryDelayMs * 1.25 >= resumeDeadline
-                ) throw error;
-                const jitteredDelayMs = Math.max(
-                  1,
-                  Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)),
-                );
-                await delay(jitteredDelayMs);
-                retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+            ...(reusableLease?.metadata?.nativeHarnessBackup
+              ? { nativeHarnessBackup: reusableLease.metadata.nativeHarnessBackup }
+              : {}),
+            ...(providerLease && reusableLease?.metadata?.nativeWorkspaceSync
+              ? {
+                  nativeWorkspaceSync: reusableLease.metadata.nativeWorkspaceSync,
+                }
+              : {}),
+            ...(providerLease && reusableLease?.metadata?.runtimeServiceWorkspaceSync
+              ? { runtimeServiceWorkspaceSync: reusableLease.metadata.runtimeServiceWorkspaceSync } : {}),
+            ...(serviceRunScope ? { runtimeServiceRunScope: serviceRunScope } : {}),
+            ...(retainedWorkspace ? { runtimeServiceAttachment: {
+              version: taskWorkspace ? 2 : 1, companyId: input.companyId, executionWorkspaceId: input.executionWorkspaceId,
+              allocationId: retainedWorkspace.allocation.id, providerLeaseId: acquiredLease.providerLeaseId,
+              remoteCwd: acquiredLease.metadata?.remoteCwd,
+              ...(taskWorkspace ? { taskWorkspaceId: taskWorkspace.binding.id, hostCwd: taskWorkspace.binding.hostCwd } : {}),
+            } } : {}),
+            ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+          };
+          try {
+            if (serviceRunScope) {
+              const echoed = acquiredLease.metadata?.workspaceConnection;
+              if (!isRecord(echoed) || echoed.scopeId !== serviceRunScope.connection.scopeId || echoed.fingerprint !== serviceRunScope.connection.fingerprint) {
+                throw new Error("The provider did not verify the retained workspace connection; update the sandbox provider before continuing");
               }
             }
-            providerLease =
-              typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
-                ? resumed
-                : null;
-            if (!providerLease) {
-              const sentinel = isRecord(resumed.metadata?.workspaceSentinel)
-                ? resumed.metadata.workspaceSentinel
-                : null;
-              replacementReason = sentinel && sentinel.result !== "matched"
-                ? "identity_mismatch"
-                : resumed.metadata?.expired === true
-                  ? "not_found"
-                  : "expired";
-            }
-          } catch (error) {
-            throw new ReusableSandboxResumeError({
-              provider: parsed.config.provider,
-              providerLeaseId: reusableLease.providerLeaseId,
-              cause: error,
+            if (taskWorkspace) await assertRuntimeServiceTaskRun(db, {
+              companyId: input.companyId, issueId: input.issueId, runId: input.heartbeatRunId!, agentId: input.agentId!,
+              bindingId: taskWorkspace.binding.id, allocationId: taskWorkspace.allocation.id,
             });
-          }
-          if (!providerLease) {
-            if (
-              input.adapterType === "paperclip_runner" &&
-              !verifyNativeHarnessBackupStamp(
-                reusableLease.metadata?.nativeHarnessBackup,
-                reusableLease.providerLeaseId,
-              )
-            ) {
-              throw new RunnerHarnessBackupUnavailableError(
-                reusableLease.providerLeaseId,
-              );
-            }
-            // The verified, lease-bound backup authorizes destructive
-            // replacement. Keep the existing sandbox intact when validation
-            // fails so the only recoverable provider state is not lost.
-            await destroyReusableSandboxLease({
-              environment: input.environment,
-              lease: reusableLease,
-              failureReason: replacementReason ?? "resume_failed",
+            else if (retainedWorkspace) await assertRuntimeServiceRunAttachment(db, {
+              companyId: input.companyId, runId: input.heartbeatRunId!, agentId: input.agentId!,
+              issueId: input.issueId, workspaceId: input.executionWorkspaceId!,
             });
-          }
-        }
-        const acquiredLease = providerLease ?? await pluginWorkerManager.call(
-          pluginProvider.resolved.plugin.id,
-          "environmentAcquireLease",
-          {
-            driverKey: parsed.config.provider,
-            companyId: input.companyId,
-            environmentId: input.environment.id,
-            issueId: input.issueId,
-            config: workerConfig,
-            // Plugin SDK requires a string; ad-hoc test leases use a fresh
-            // UUID so providers that validate or persist the runId still see
-            // a well-formed identifier.
-            runId: input.heartbeatRunId ?? randomUUID(),
-            workspaceMode: input.executionWorkspaceMode ?? undefined,
-            agentId: input.agentId ?? undefined,
-            executionWorkspaceId: input.executionWorkspaceId ?? undefined,
-            // The agent's harness for THIS run, so the plugin picks the matching
-            // runtime image (per-run adapter, mixed-harness environments).
-            // NOTE: environment-runtime.ts has TWO drivers calling
-            // environmentAcquireLease; this plugin-sandbox one is the HEARTBEAT
-            // path. Omitting adapterType here silently falls back to the
-            // environment's default adapter image (a pi agent then runs in the
-            // opencode image and the harness binary is missing at exec time).
-            adapterType: input.adapterType ?? undefined,
-            // Forward a caller deadline so the provider configures a provider-side
-            // expiry at or before it and returns the real provider expiry.
-            ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
-              ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
-              : {}),
-          },
-          resolvePluginSandboxRpcTimeoutMs(workerConfig),
-        );
-
-        // Ad-hoc test leases are never publishable for reuse: storing them
-        // as `reuse_by_environment` would let a concurrent heartbeat resume
-        // the test's provider lease and lose its sandbox when the test ends.
-        const resolvedLeasePolicy = supportsReusableLeases && parsed.config.reuseLease && input.heartbeatRunId !== null
-          ? "reuse_by_environment"
-          : "ephemeral";
-        const sanitizedProviderMetadata = stripSecretRefValuesFromPluginLeaseMetadata({
-          metadata: acquiredLease.metadata,
-          schema: pluginProvider.resolved.driver.configSchema as Record<string, unknown> | null | undefined,
-        });
-        const reusableScope = resolvedLeasePolicy === "reuse_by_environment"
-          ? buildReusableSandboxLeaseScope({
+            return await environmentsSvc.acquireLease({
               companyId: input.companyId,
               environmentId: input.environment.id,
               executionWorkspaceId: input.executionWorkspaceId,
-              agentId: input.agentId,
-              adapterType: input.adapterType,
+              issueId: input.issueId,
+              heartbeatRunId: input.heartbeatRunId,
+              assertCompanyBinding: input.assertCompanyBinding,
+              leasePolicy: resolvedLeasePolicy,
               provider: parsed.config.provider,
-              config: providerConfigForLease,
-              leaseFingerprint,
-              providerMetadata: sanitizedProviderMetadata,
-            })
-          : null;
-
-        const pluginLeaseMetadata = {
-          ...(input.agentId ? { agentId: input.agentId } : {}),
-          driver: input.environment.driver,
-          executionWorkspaceMode: input.executionWorkspaceMode,
-          pluginId: pluginProvider.resolved.plugin.id,
-          pluginKey: pluginProvider.resolved.plugin.pluginKey,
-          sandboxProviderPlugin: true,
-          ...sandboxConfigForLeaseMetadata(storedConfig),
-          ...sanitizedProviderMetadata,
-          sandboxLeaseAcquisition: providerLease
-            ? {
-                outcome: "resumed",
-              }
-            : reusableLease?.providerLeaseId
-              ? {
-                  outcome: "replacement",
-                  reason: replacementReason ?? "resume_failed",
-                }
-              : {
-                  outcome: "created",
-                },
-          ...(reusableLease?.metadata?.nativeHarnessBackup
-            ? { nativeHarnessBackup: reusableLease.metadata.nativeHarnessBackup }
-            : {}),
-          ...(providerLease && reusableLease?.metadata?.nativeWorkspaceSync
-            ? {
-                nativeWorkspaceSync: reusableLease.metadata.nativeWorkspaceSync,
-              }
-            : {}),
-          ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
-        };
-        try {
-          return await environmentsSvc.acquireLease({
-            companyId: input.companyId,
-            environmentId: input.environment.id,
-            executionWorkspaceId: input.executionWorkspaceId,
-            issueId: input.issueId,
-            heartbeatRunId: input.heartbeatRunId,
-            assertCompanyBinding: input.assertCompanyBinding,
-            leasePolicy: resolvedLeasePolicy,
-            provider: parsed.config.provider,
-            providerLeaseId: acquiredLease.providerLeaseId,
-            expiresAt: providerAttestedLeaseExpiry(
-              input.requestedExpiresAt,
-              acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
-            ),
-            metadata: pluginLeaseMetadata,
-            reusesReusableLeaseId:
-              providerLease &&
-              reusableLease?.heartbeatRunId === input.heartbeatRunId
-                ? reusableLease.id
-                : null,
-            replacesReusableLeaseId:
-              providerLease &&
-              reusableLease?.heartbeatRunId !== input.heartbeatRunId
-                ? reusableLease?.id
-                : null,
-          });
-        } catch (error) {
-          // The conditional lease insert rejected, so no lease row exists. A
-          // managed reconciliation can bind the environment to another company
-          // between the route guard and this insert, so the insert fails closed
-          // with `environment_company_mismatch`. This call already provisioned the
-          // remote plugin sandbox above, so tear it down now. Without this step
-          // the rejected insert leaks a live sandbox that no lease row tracks. The
-          // Claude login runs on a plugin-backed sandbox, so this path is the one
-          // the login uses. Do not tear down a reused sandbox that an earlier
-          // lease still owns.
-          if (!reusableLease || acquiredLease.providerLeaseId !== reusableLease.providerLeaseId) {
-            // Record the durable pending-cleanup row before the teardown, then
-            // tear the sandbox down. On a successful teardown the handler releases
-            // the row. If the durable write and the teardown both fail, the
-            // handler throws a `SandboxOrphanCleanupWriteError` that carries the
-            // original rejection as its cause.
-            await cleanUpRejectedOrphanSandbox({
-              record: {
-                companyId: input.companyId,
-                environmentId: input.environment.id,
-                executionWorkspaceId: input.executionWorkspaceId ?? null,
-                issueId: input.issueId ?? null,
-                heartbeatRunId: input.heartbeatRunId ?? null,
-                provider: parsed.config.provider,
-                providerLeaseId: acquiredLease.providerLeaseId,
-                metadata: pluginLeaseMetadata,
-              },
-              cause: error,
-              canTeardown: pluginWorkerManager.isRunning(pluginProvider.resolved.plugin.id),
-              teardown: async () => {
-                return await pluginWorkerManager.call(
-                  pluginProvider.resolved.plugin.id,
-                  "environmentDestroyLease",
-                  {
-                    driverKey: parsed.config.provider,
-                    companyId: input.companyId,
-                    environmentId: input.environment.id,
-                    issueId: input.issueId,
-                    config: workerConfig,
-                    providerLeaseId: acquiredLease.providerLeaseId,
-                    leaseMetadata: acquiredLease.metadata ?? undefined,
-                  },
-                  resolvePluginSandboxRpcTimeoutMs(workerConfig),
-                );
-              },
+              providerLeaseId: acquiredLease.providerLeaseId,
+              expiresAt: providerAttestedLeaseExpiry(
+                input.requestedExpiresAt,
+                acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
+              ),
+              metadata: pluginLeaseMetadata,
+              reusesReusableLeaseId:
+                providerLease &&
+                reusableLease?.leasePolicy === "reuse_by_environment" &&
+                reusableLease?.heartbeatRunId === input.heartbeatRunId
+                  ? reusableLease.id
+                  : null,
+              replacesReusableLeaseId:
+                !retainedWorkspace && providerLease &&
+                reusableLease?.heartbeatRunId !== input.heartbeatRunId
+                  ? reusableLease?.id
+                  : null,
             });
+          } catch (error) {
+            // The conditional lease insert rejected, so no lease row exists. A
+            // managed reconciliation can bind the environment to another company
+            // between the route guard and this insert, so the insert fails closed
+            // with `environment_company_mismatch`. This call already provisioned the
+            // remote plugin sandbox above, so tear it down now. Without this step
+            // the rejected insert leaks a live sandbox that no lease row tracks. The
+            // Claude login runs on a plugin-backed sandbox, so this path is the one
+            // the login uses. Do not tear down a reused sandbox that an earlier
+            // lease still owns.
+            if (!reusableLease || acquiredLease.providerLeaseId !== reusableLease.providerLeaseId) {
+              // Record the durable pending-cleanup row before the teardown, then
+              // tear the sandbox down. On a successful teardown the handler releases
+              // the row. If the durable write and the teardown both fail, the
+              // handler throws a `SandboxOrphanCleanupWriteError` that carries the
+              // original rejection as its cause.
+              await cleanUpRejectedOrphanSandbox({
+                record: {
+                  companyId: input.companyId,
+                  environmentId: input.environment.id,
+                  executionWorkspaceId: input.executionWorkspaceId ?? null,
+                  issueId: input.issueId ?? null,
+                  heartbeatRunId: input.heartbeatRunId ?? null,
+                  provider: parsed.config.provider,
+                  providerLeaseId: acquiredLease.providerLeaseId,
+                  metadata: pluginLeaseMetadata,
+                },
+                cause: error,
+                canTeardown: pluginWorkerManager.isRunning(pluginProvider.resolved.plugin.id),
+                teardown: async () => {
+                  return await pluginWorkerManager.call(
+                    pluginProvider.resolved.plugin.id,
+                    "environmentDestroyLease",
+                    {
+                      driverKey: parsed.config.provider,
+                      companyId: input.companyId,
+                      environmentId: input.environment.id,
+                      issueId: input.issueId,
+                      config: workerConfig,
+                      providerLeaseId: acquiredLease.providerLeaseId,
+                      leaseMetadata: acquiredLease.metadata ?? undefined,
+                    },
+                    resolvePluginSandboxRpcTimeoutMs(workerConfig),
+                  );
+                },
+              });
+            }
+            throw error;
           }
-          throw error;
+        };
+        if (reusableLease) {
+          await assertRuntimeServiceLeaseDataAvailable(db, reusableLease);
+          const lockedLease = reusableLease;
+          // Commit reconciliation before acquireLease updates the predecessor
+          // through its own transaction. Admission rechecks under the lock.
+          await withRuntimeServiceLeaseLock(db, lockedLease, tx => reconcileNativeRemoteIdleClosures(tx, lockedLease, callRunProcessControl));
+          // Hold the physical sandbox lock from resume through publishing the
+          // new run's lease. Compute release can neither miss this consumer nor
+          // stop the sandbox in the gap between those two operations.
+          return withRuntimeServiceLeaseLock(db, reusableLease, async (tx) => {
+            await assertRuntimeServiceLeaseDataAvailable(tx, lockedLease);
+            await assertNoNativeRunnerClosing(tx, lockedLease);
+            if (retainedWorkspace) {
+              if (taskWorkspace) await assertRuntimeServiceTaskRun(tx, {
+                companyId: input.companyId, issueId: input.issueId, runId: input.heartbeatRunId!, agentId: input.agentId!,
+                bindingId: taskWorkspace.binding.id, allocationId: taskWorkspace.allocation.id,
+              });
+              else await assertRuntimeServiceRunAttachment(tx, {
+                companyId: input.companyId, runId: input.heartbeatRunId!, agentId: input.agentId!,
+                issueId: input.issueId, workspaceId: input.executionWorkspaceId!,
+              });
+              const allocations = taskWorkspace ? [await runtimeServiceTaskWorkspace(tx, input.companyId, input.issueId!)]
+                .filter((value): value is NonNullable<typeof value> => value !== null)
+                : await retainedRuntimeServiceWorkspaces(tx, input.companyId, input.executionWorkspaceId!);
+              if (!allocations.length || allocations.some(({ lease }) => lease.providerLeaseId !== reusableLease!.providerLeaseId || lease.environmentId !== input.environment.id)) {
+                throw new Error("Retained service ownership changed during run admission; retry environment startup");
+              }
+              const history = await runtimeServiceWorkspaceLeaseHistory(tx, {
+                companyId: input.companyId, workspaceId: taskWorkspace ? null : input.executionWorkspaceId!, environmentId: input.environment.id,
+                providerLeaseId: reusableLease!.providerLeaseId!,
+              });
+              const liveOwners = history.filter((lease) => lease.heartbeatRunId && lease.heartbeatRunId !== input.heartbeatRunId);
+              if (liveOwners.length && (await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+                inArray(heartbeatRuns.id, liveOwners.map((lease) => lease.heartbeatRunId!)), inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+              )).limit(1)).length) throw new Error("Another agent run is still using the retained service workspace; retry after it finishes");
+              const latest = history.find((lease) => lease.heartbeatRunId === input.heartbeatRunId) ?? history.find((lease) => lease.heartbeatRunId !== null) ?? history[0];
+              if (!latest) throw new Error("The retained workspace lease is unavailable; recover its files before continuing");
+              reusableLease = toEnvironmentLeaseSnapshot(latest);
+              return acquirePluginLease(true);
+            }
+            const [current] = await tx.select().from(environmentLeases).where(eq(environmentLeases.id, lockedLease.id));
+            if (!current || !reusableLeaseCanBeResumed({ lease: toEnvironmentLeaseSnapshot(current), heartbeatRunId: input.heartbeatRunId })) {
+              throw new Error("The sandbox lease changed during run admission; retry environment startup");
+            }
+            return acquirePluginLease((await runtimeServiceRetentionForLease(tx, lockedLease)).length > 0);
+          });
         }
+        return acquirePluginLease(false);
       }
 
       // Built-in sandbox provider path. Same guard as the plugin-backed path:
@@ -2389,6 +2600,116 @@ function createSandboxEnvironmentDriver(
         }
         throw error;
       }
+    },
+
+    async controlRunProcess(input: RemoteRunProcessControlInput): Promise<RemoteRunProcessControlResult> {
+      return operateRemoteRunProcess(db, input, callRunProcessControl);
+    },
+
+    async claimIdleRunnerController(input: NativeRemoteIdleControllerClaimInput) {
+      return claimNativeRemoteIdleController(db, input, callRunProcessControl);
+    },
+
+    async recoverRunner(input: RemoteRunnerRecoveryInput) {
+      return operateRemoteRunnerRecovery(db, input, async (leaseRow, operation) => {
+        const lease = toEnvironmentLeaseSnapshot(leaseRow);
+        const pluginId = readString(lease.metadata?.pluginId);
+        const provider = readString(lease.metadata?.provider);
+        if (!lease.environmentId || !lease.providerLeaseId || !lease.metadata?.sandboxProviderPlugin || provider !== "daytona" || !pluginId
+          || !pluginWorkerManager?.isRunning(pluginId) || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentRunnerRecovery")) return { state: "unverified" };
+        const environment = await environmentsSvc.getById(lease.environmentId);
+        if (!environment) return { state: "unverified" };
+        const config = await resolvePluginSandboxRuntimeConfig({ environment, lease, provider });
+        return pluginWorkerManager.call(pluginId, "environmentRunnerRecovery", {
+          driverKey: provider, companyId: input.companyId, environmentId: environment.id, providerLeaseId: lease.providerLeaseId,
+          config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig), ...operation,
+        }, 40_000);
+      });
+    },
+
+    async executeRecoveringRunner(input: RemoteRunnerRecoveryExecutionInput) {
+      return operateRemoteRunnerRecoveryExecution(db, input, async (leaseRow, operation) => {
+        const lease = toEnvironmentLeaseSnapshot(leaseRow);
+        const pluginId = readString(lease.metadata?.pluginId);
+        const provider = readString(lease.metadata?.provider);
+        if (!lease.environmentId || !lease.providerLeaseId || !lease.metadata?.sandboxProviderPlugin || provider !== "daytona" || !pluginId
+          || !pluginWorkerManager?.isRunning(pluginId) || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentRunnerRecoveryExecute")) return { state: "unverified" };
+        const environment = await environmentsSvc.getById(lease.environmentId);
+        if (!environment) return { state: "unverified" };
+        const config = await resolvePluginSandboxRuntimeConfig({ environment, lease, provider });
+        return pluginWorkerManager.call(pluginId, "environmentRunnerRecoveryExecute", {
+          driverKey: provider, companyId: input.companyId, environmentId: environment.id, providerLeaseId: lease.providerLeaseId,
+          config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig), ...operation,
+        }, Math.min(operation.execution.timeoutMs ?? 30_000, 120_000) + 40_000);
+      });
+    },
+
+    async operateRuntimeServiceProcessHandoff(input: RuntimeServiceProcessHandoffOperation): Promise<PluginEnvironmentProcessHandoffResult> {
+      return operateRemoteRuntimeServiceProcessHandoff(db, input, async (leaseRow, operation, workspaceConnection) => {
+        const lease = toEnvironmentLeaseSnapshot(leaseRow);
+        const pluginId = readString(lease.metadata?.pluginId);
+        const provider = readString(lease.metadata?.provider);
+        if (!lease.environmentId || !lease.providerLeaseId || !lease.metadata?.sandboxProviderPlugin || provider !== "daytona" || !pluginId
+          || !pluginWorkerManager?.isRunning(pluginId) || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentProcessHandoff")) throw new Error("The environment provider does not support verified process handoff");
+        const environment = await environmentsSvc.getById(lease.environmentId);
+        if (!environment) throw new Error("The service environment is unavailable");
+        const config = await resolvePluginSandboxRuntimeConfig({ environment, lease, provider });
+        return pluginWorkerManager.call(pluginId, "environmentProcessHandoff", {
+          driverKey: provider, companyId: input.companyId, environmentId: environment.id, providerLeaseId: lease.providerLeaseId,
+          config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig), operation, workspaceConnection,
+        }, 45_000);
+      });
+    },
+
+    async operateRuntimeService(input: RuntimeServiceEnvironmentOperation): Promise<PluginEnvironmentServiceResult> {
+      const [leaseRow] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.id, input.environmentLeaseId), eq(environmentLeases.companyId, input.companyId)));
+      if (!leaseRow) throw new Error("Service environment lease is unavailable");
+      await assertRuntimeServiceLeaseDataAvailable(db, leaseRow);
+      const operate = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]): Promise<PluginEnvironmentServiceResult> => {
+        const [binding] = await tx.select({ service: runtimeServices, allocation: runtimeServiceAllocations }).from(runtimeServices)
+          .innerJoin(runtimeServiceAllocations, and(eq(runtimeServiceAllocations.id, runtimeServices.allocationId), eq(runtimeServiceAllocations.companyId, runtimeServices.companyId)))
+          .where(and(eq(runtimeServices.id, input.serviceId), eq(runtimeServices.companyId, input.companyId), eq(runtimeServiceAllocations.environmentLeaseId, input.environmentLeaseId)));
+        if (!binding) throw new Error("Service does not own this execution allocation");
+        if (binding.allocation.dataDeletionId) throw new Error("Service workspace data deletion has been requested");
+        if (!["retain", "release_compute", "storage_usage"].includes(input.action) && binding.service.processRef?.generation !== input.generation) throw new Error("Service generation changed");
+        if (input.action === "release_compute") {
+          await assertIdleShutdownResolved(tx, leaseRow);
+          // All leases on this physical sandbox count, including a newer run's
+          // lease and services created against an older run's lease.
+          const allocations = await runtimeServiceRetentionForLease(tx, leaseRow);
+          const allocationIds = allocations.map((allocation) => allocation.id);
+          const liveServices = allocationIds.length ? await tx.select({ id: runtimeServices.id }).from(runtimeServices).where(and(inArray(runtimeServices.allocationId, allocationIds),
+            sql`(${runtimeServices.desiredState} = 'running' OR (${runtimeServices.processRef} IS NOT NULL AND coalesce(${runtimeServices.processRef}->>'retired', 'false') <> 'true' AND ${runtimeServices.state} NOT IN ('stopped', 'sleeping', 'deleted')))`)).limit(1) : [];
+          const liveRuns = leaseRow.providerLeaseId ? await tx.select({ id: heartbeatRuns.id }).from(environmentLeases).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
+            .where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.providerLeaseId, leaseRow.providerLeaseId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]))).limit(1) : [];
+          if (liveServices.length || liveRuns.length) return { state: "retained" };
+        }
+        const lease = toEnvironmentLeaseSnapshot(leaseRow);
+        if (!lease.environmentId || !lease.providerLeaseId || !lease.metadata?.sandboxProviderPlugin) throw new Error("Service requires a plugin-backed retained environment");
+        const environment = await environmentsSvc.getById(lease.environmentId);
+        const pluginId = readString(lease.metadata.pluginId);
+        const provider = readString(lease.metadata.provider);
+        if (!environment || !pluginId || !provider || !pluginWorkerManager?.isRunning(pluginId) || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentService")) throw new Error("The environment provider does not currently support managed services");
+        const config = await resolvePluginSandboxRuntimeConfig({ environment, lease, provider });
+        const scope = runtimeServiceRunScopeSchema.safeParse(lease.metadata.runtimeServiceRunScope);
+        if (lease.metadata.runtimeServiceRunScope && !scope.success) throw new Error("The service workspace connection receipt is invalid");
+        const storageRoot = (binding.allocation.metadata.executionBoundary as { workspaceRoot?: string } | undefined)?.workspaceRoot;
+        if (input.action === "storage_usage" && (!storageRoot || !storageRoot.startsWith("/") || storageRoot === "/")) throw new Error("The allocation has no verified storage root");
+        const result = await pluginWorkerManager.call(pluginId, "environmentService", {
+          driverKey: provider, companyId: input.companyId, environmentId: environment.id,
+          providerLeaseId: lease.providerLeaseId, config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
+          serviceId: input.serviceId, generation: input.generation, action: input.action,
+          launch: input.action === "storage_usage" ? { cwd: storageRoot!, command: "", env: {}, secretKeys: [], endpoints: [] } : input.launch, processRef: input.processRef, endpointName: input.endpointName, limitBytes: input.limitBytes,
+          ...(scope.success ? { workspaceConnection: scope.data.connection } : {}),
+        }, 45_000);
+        if (scope.success && (result.workspaceConnection?.scopeId !== scope.data.connection.scopeId || result.workspaceConnection.fingerprint !== scope.data.connection.fingerprint)) {
+          throw new Error("The provider did not verify the service workspace connection");
+        }
+        return result;
+      };
+      // A metadata-only measurement may fail if compute stops concurrently;
+      // it must not hold the physical lifecycle lock and delay an operator Stop.
+      return input.action === "storage_usage" ? db.transaction(operate) : withRuntimeServiceLeaseLock(db, leaseRow, operate);
     },
 
     async releaseRunLease(input) {
@@ -3007,6 +3328,17 @@ function createSandboxEnvironmentDriver(
   async function releasePluginBackedSandboxLease(
     input: EnvironmentDriverReleaseInput,
   ): Promise<EnvironmentLease | null> {
+    return withRuntimeServiceLeaseLock(db, input.lease, async (tx) => {
+      if ((await runtimeServiceRetentionForLease(tx, input.lease)).length) {
+        return environmentsSvc.releaseLease(input.lease.id, "retained", { cleanupStatus: "success" });
+      }
+      return releasePluginBackedSandboxLeaseUnretained(input);
+    });
+  }
+
+  async function releasePluginBackedSandboxLeaseUnretained(
+    input: EnvironmentDriverReleaseInput,
+  ): Promise<EnvironmentLease | null> {
     const metadata = input.lease.metadata ?? {};
     const pluginId = readString(metadata.pluginId);
     const providerKey = readString(metadata.provider);
@@ -3072,6 +3404,21 @@ function createSandboxEnvironmentDriver(
   }
 
   async function destroyReusableSandboxLease(input: {
+    environment: Environment;
+    lease: EnvironmentLease;
+    failureReason: string;
+  }): Promise<EnvironmentLease | null> {
+    await withRuntimeServiceLeaseLock(db, input.lease, tx => reconcileNativeRemoteIdleClosures(tx, input.lease, callRunProcessControl));
+    return withRuntimeServiceLeaseLock(db, input.lease, async (tx) => {
+      if ((await runtimeServiceRetentionForLease(tx, input.lease)).length) {
+        return environmentsSvc.releaseLease(input.lease.id, "retained", { cleanupStatus: "success" });
+      }
+      await assertNoNativeRunnerClosing(tx, input.lease);
+      return destroyUnretainedReusableSandboxLease(input);
+    });
+  }
+
+  async function destroyUnretainedReusableSandboxLease(input: {
     environment: Environment;
     lease: EnvironmentLease;
     failureReason: string;
@@ -3213,6 +3560,13 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "sandboxLeaseAcquisition",
   "nativeHarnessBackup",
   "nativeWorkspaceSync",
+  "runtimeServiceRunScope",
+  "runtimeServiceProcessOwner",
+  "runtimeServiceBoundary",
+  "runtimeServiceAttachment",
+  "runtimeServiceWorkspaceSync",
+  "workspaceConnection",
+  "taskWorkspaceOwnership",
 ]);
 
 // Drop the host-internal and per-lease runtime keys from a sandbox config
@@ -3649,6 +4003,8 @@ export function environmentRuntimeService(
       executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
+      runtimeServiceExecutionPolicy?: Record<string, unknown>;
+      recoveryProcess?: RemoteRunnerRecoveryProcess;
       /**
        * Force applying the active custom-image template even for ad-hoc (no
        * issue/run) invocations. Operator `Test` probes set this so the runtime
@@ -3671,12 +4027,26 @@ export function environmentRuntimeService(
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
       }
+      if (input.recoveryProcess && (input.environment.driver !== "sandbox" || input.environment.config?.provider !== "daytona"
+        || input.recoveryProcess.environmentId !== input.environment.id)) throw new Error("native_remote_runner_recovery_lease_mismatch");
 
+      if (input.heartbeatRunId && input.persistedExecutionWorkspace &&
+          (input.environment.driver !== "sandbox" || input.environment.config?.provider !== "daytona")) {
+        const retained = await retainedRuntimeServiceWorkspaces(db, input.companyId, input.persistedExecutionWorkspace.id);
+        if (retained.some(({ allocation }) => allocation.provider === "daytona")) {
+          throw new Error("This task has retained service files in Daytona. Attach their original environment before continuing.");
+        }
+      }
+
+      const taskWorkspace = input.heartbeatRunId && input.issueId ? await runtimeServiceTaskWorkspace(db, input.companyId, input.issueId) : null;
+      if (taskWorkspace && (input.environment.id !== taskWorkspace.lease.environmentId || input.environment.driver !== "sandbox" || input.environment.config?.provider !== "daytona")) {
+        throw new Error("This task uses an independent Daytona service workspace. Restore its original environment before continuing.");
+      }
       const leaseContext = buildEnvironmentLeaseContext({
         persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       });
       const driver = requireDriver(input.environment);
-      const lease = await driver.acquireRunLease({
+      const lease = await withTaskWorkspaceDataAdmission(db, input.companyId, input.persistedExecutionWorkspace?.id, () => driver.acquireRunLease({
         companyId: input.companyId,
         environment: input.environment,
         issueId: input.issueId,
@@ -3686,16 +4056,46 @@ export function environmentRuntimeService(
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         adapterType: input.adapterType ?? null,
+        runtimeServiceExecutionPolicy: input.runtimeServiceExecutionPolicy,
+        recoveryProcess: input.recoveryProcess,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
         requestedExpiresAt: input.requestedExpiresAt ?? null,
         assertCompanyBinding: input.assertCompanyBinding,
-      });
+      }));
 
       return {
         environment: input.environment,
         lease,
         leaseContext,
       };
+    },
+
+    async operateRuntimeService(input: RuntimeServiceEnvironmentOperation): Promise<PluginEnvironmentServiceResult> {
+      const driver = requireDriverKey("sandbox");
+      if (!driver.operateRuntimeService) throw new Error("Sandbox driver does not support managed services");
+      return driver.operateRuntimeService(input);
+    },
+    async controlRunProcess(input: RemoteRunProcessControlInput): Promise<RemoteRunProcessControlResult> {
+      const driver = requireDriverKey("sandbox");
+      return driver.controlRunProcess ? driver.controlRunProcess(input) : { state: "unverified" };
+    },
+    async claimIdleRunnerController(input: NativeRemoteIdleControllerClaimInput): Promise<NativeRemoteWarmRetention | null> {
+      const driver = requireDriverKey("sandbox");
+      return driver.claimIdleRunnerController ? driver.claimIdleRunnerController(input) : null;
+    },
+    async recoverRunner(input: RemoteRunnerRecoveryInput): Promise<import("@paperclipai/plugin-sdk").PluginEnvironmentRunnerRecoveryResult> {
+      const driver = requireDriverKey("sandbox");
+      return driver.recoverRunner ? driver.recoverRunner(input) : { state: "unverified" };
+    },
+    async executeRecoveringRunner(input: RemoteRunnerRecoveryExecutionInput): Promise<import("@paperclipai/plugin-sdk").PluginEnvironmentRunnerRecoveryExecuteResult> {
+      const driver = requireDriverKey("sandbox");
+      return driver.executeRecoveringRunner ? driver.executeRecoveringRunner(input) : { state: "unverified" };
+    },
+
+    async operateRuntimeServiceProcessHandoff(input: RuntimeServiceProcessHandoffOperation): Promise<PluginEnvironmentProcessHandoffResult> {
+      const driver = requireDriverKey("sandbox");
+      if (!driver.operateRuntimeServiceProcessHandoff) throw new Error("Sandbox driver does not support verified process handoff");
+      return driver.operateRuntimeServiceProcessHandoff(input);
     },
 
     async releaseRunLeases(
@@ -3838,7 +4238,10 @@ export function environmentRuntimeService(
           `Environment driver "${driver.driver}" does not support orphan sandbox teardown.`,
         );
       }
-      return await driver.retryPendingSandboxTeardown(input);
+      return withRuntimeServiceLeaseLock(db, input.lease, async (tx) => {
+        if ((await runtimeServiceRetentionForLease(tx, input.lease)).length) throw new Error("Sandbox is retained by runtime services; cleanup is not authorized");
+        return driver.retryPendingSandboxTeardown!(input);
+      });
     },
 
     // Report whether the provider worker can run an orphan teardown now. The
@@ -3850,6 +4253,10 @@ export function environmentRuntimeService(
       environment: Environment | null;
       lease: EnvironmentLease;
     }): Promise<boolean> {
+      if ((await runtimeServiceRetentionForLease(db, input.lease)).length) {
+        await environmentsSvc.releaseLease(input.lease.id, "retained", { cleanupStatus: "success" });
+        return false;
+      }
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
       if (!driver?.isPendingCleanupWorkerReady) return true;
       return driver.isPendingCleanupWorkerReady(input);
@@ -3972,7 +4379,7 @@ export function environmentRuntimeService(
     async destroyReusableSandboxLeasesForEnvironment(input: {
       environmentId: string;
       failureReason?: string;
-    }): Promise<{ destroyed: number; failed: number; skippedLiveRun: number }> {
+    }): Promise<{ destroyed: number; failed: number; skippedLiveRun: number; skippedRetainedService?: number }> {
       const environment = await environmentsSvc.getById(input.environmentId);
       if (!environment) return { destroyed: 0, failed: 0, skippedLiveRun: 0 };
       const leaseRows = await db
@@ -4012,9 +4419,14 @@ export function environmentRuntimeService(
       let destroyed = 0;
       let failed = 0;
       let skippedLiveRun = 0;
+      let skippedRetainedService = 0;
       const failureReason = input.failureReason ?? "environment_delete_requested";
       const now = new Date();
       for (const leaseRow of leaseRows) {
+        if ((await runtimeServiceRetentionForLease(db, leaseRow)).length) {
+          skippedRetainedService += 1;
+          continue;
+        }
         if (leaseRow.heartbeatRunId && liveRunIds.has(leaseRow.heartbeatRunId)) {
           skippedLiveRun += 1;
           continue;
@@ -4029,29 +4441,38 @@ export function environmentRuntimeService(
         // cleanup sweep owns it, so a crash or thrown destroy after this point
         // is recovered by the sweep's idempotent teardown, and a double write
         // failure cannot strand the lease in a reusable status.
-        const claimedRow = await db
-          .update(environmentLeases)
-          .set({
-            status: "pending_cleanup",
-            failureReason,
-            cleanupStatus: "failed",
-            releasedAt: now,
-            lastUsedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(environmentLeases.id, leaseRow.id),
-              inArray(environmentLeases.status, ["active", "released", "retained"]),
-              sql`NOT EXISTS (
-                SELECT 1 FROM ${heartbeatRuns}
-                WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
-                  AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
-              )`,
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        const claim = await withRuntimeServiceLeaseLock(db, leaseRow, async tx => {
+          if ((await runtimeServiceRetentionForLease(tx, leaseRow)).length) return { retained: true as const };
+          const row = await tx
+            .update(environmentLeases)
+            .set({
+              status: "pending_cleanup",
+              failureReason,
+              cleanupStatus: "failed",
+              releasedAt: now,
+              lastUsedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(environmentLeases.id, leaseRow.id),
+                inArray(environmentLeases.status, ["active", "released", "retained"]),
+                sql`NOT EXISTS (
+                  SELECT 1 FROM ${heartbeatRuns}
+                  WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
+                    AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
+                )`,
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return { retained: false as const, row };
+        });
+        if (claim.retained) {
+          skippedRetainedService += 1;
+          continue;
+        }
+        const claimedRow = claim.row;
         if (!claimedRow) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
@@ -4072,7 +4493,8 @@ export function environmentRuntimeService(
             lease: leaseSnapshot,
             failureReason,
           });
-          if (lease && lease.status !== "pending_cleanup") destroyed += 1;
+          if (lease?.status === "retained") skippedRetainedService += 1;
+          else if (lease && lease.status !== "pending_cleanup") destroyed += 1;
           else failed += 1;
         } catch {
           // The claim above already parked the lease in `pending_cleanup`, so
@@ -4081,7 +4503,7 @@ export function environmentRuntimeService(
           failed += 1;
         }
       }
-      return { destroyed, failed, skippedLiveRun };
+      return { destroyed, failed, skippedLiveRun, ...(skippedRetainedService ? { skippedRetainedService } : {}) };
     },
 
     async resumeRunLease(input: EnvironmentDriverLeaseInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {

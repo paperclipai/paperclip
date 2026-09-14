@@ -7,11 +7,14 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
   companies,
+  closeRegisteredClients,
   createDb,
+  environmentLeases,
+  environments,
   heartbeatRuns,
   issueRecoveryActions,
   issues,
@@ -34,13 +37,17 @@ import {
   setupRunnerPrpWebSocketServer,
 } from "../../realtime/runner-prp-ws.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { remoteTerminationReceipt } from "../remote-execution-termination.js";
+import { operateRemoteRunProcess, remoteRunnerRecoveryProcess, type RemoteRunProcessControlInput } from "./remote-runner-recovery.js";
+import { createRemoteRunnerRecoveryControls } from "./remote-runner-recovery-controls.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import {
   claimNativeRestartRecoveries,
   type NativeControllerIdentity,
 } from "./native-restart-recovery.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
@@ -115,9 +122,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   let successor: NativeControllerIdentity;
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
-      "native-runner-restart-recovery-",
-    );
+    temporary = externalTestDatabaseUrl
+      ? { connectionString: externalTestDatabaseUrl, cleanup: () => closeRegisteredClients(externalTestDatabaseUrl) }
+      : await startEmbeddedPostgresTestDatabase("native-runner-restart-recovery-");
     runtimeRoot = await mkdtemp(resolve(tmpdir(), "native-restart-runtime-"));
     paperclipHome = await mkdtemp(resolve(tmpdir(), "native-restart-home-"));
     originalPaperclipHome = process.env.PAPERCLIP_HOME;
@@ -354,8 +361,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       .where(eq(nativeRunFinalizations.runId, input.fixture.runId));
   }
 
-  realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
-    const fixture = await seedRun("LIVE");
+  realProcessIt.each(["local", "remote"] as const)("adopts one active runner across hot and hard controller restarts without duplicating steering (%s)", async location => {
+    const remote = location === "remote" ? await seedOwnedRemoteRun("PRP") : null;
+    const fixture = remote ?? await seedRun("LIVE");
     const stateDirectory = resolve(runtimeRoot, fixture.runId);
     const baseOptions = transportOptions(fixture, stateDirectory);
     const options = {
@@ -394,6 +402,20 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         providerPid: first.evidence().providerPid,
         providerSessionId: String(thread.id),
       });
+      if (remote) {
+        // The real runner and PRP socket are local test fixtures. Only the
+        // provider boundary is simulated; production claim/control code must
+        // treat its persisted PID exclusively as a remote identifier.
+        await fixture.db.update(heartbeatRuns).set({ processGroupId: null }).where(eq(heartbeatRuns.id, fixture.runId));
+        await fixture.db.update(environmentLeases).set({ metadata: { ...remote.lease.metadata,
+          runtimeServiceProcessOwner: { ...(remote.lease.metadata?.runtimeServiceProcessOwner as Record<string, unknown>),
+            process: { ...remote.processReference.remoteProcessIdentity, pid: runnerPid, processGroupId: runnerPid } },
+        } }).where(eq(environmentLeases.id, remote.lease.id));
+        remote.provider.mockImplementation(async (_lease, request) => {
+          if (request.operation.action !== "inspect") throw new Error("Unexpected provider mutation during reattachment");
+          return { state: processAlive(runnerPid) ? "running" : "exited", workspaceConnection: remote.connection };
+        });
+      }
 
       await first.detachControllerForRestart();
       const [claim] = await claimNativeRestartRecoveries({
@@ -403,6 +425,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         recoveryRequestId: "hot-restart-request",
         now: new Date(),
         runIds: [fixture.runId],
+        inspectRemoteRunner: remote?.input.inspectRemoteRunner,
       });
       expect(claim).toMatchObject({
         kind: "reattach_existing_runner",
@@ -414,6 +437,18 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       if (!claim || claim.kind !== "reattach_existing_runner") {
         throw new Error("Expected live-runner recovery claim");
       }
+      if (remote) expect(claim.process).toMatchObject({ environmentLeaseId: fixture.native.environmentLeaseId });
+      const recoveryControlsFor = (next: typeof claim) => {
+        if (next.process.processLocation !== "remote" || !remote) return null;
+        const controls = createRemoteRunnerRecoveryControls({ companyId, runId: fixture.runId, process: next.process, runtime: {
+          controlRunProcess: remote.input.inspectRemoteRunner,
+          recoverRunner: async () => { throw new Error("This local PRP fixture does not use provider ingress"); },
+          executeRecoveringRunner: async () => { throw new Error("This local PRP fixture does not execute recovery commands"); },
+        } }).nativeRunnerRecovery;
+        controls.bindController({ leaseOwner: next.leaseOwner, controllerGeneration: next.controllerGeneration });
+        return controls;
+      };
+      const remoteControls = recoveryControlsFor(claim);
 
       const duplicateLauncher = vi.fn(() => {
         throw new Error("duplicate runner spawn attempted");
@@ -424,7 +459,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         runnerProcessLauncher: duplicateLauncher,
         adoptExistingRunner: {
           ...claim.process,
-          isAlive: () => processAlive(runnerPid),
+          isAlive: remoteControls?.isAlive ?? (() => processAlive(runnerPid)),
         },
       });
       const restored = await adopted.transport.request("thread/read", {});
@@ -433,6 +468,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         turns: [{ id: providerTurnId, status: "inProgress" }],
       });
       expect(adopted.evidence().runnerPid).toBe(runnerPid);
+      if (remote) expect(adopted.transport.processInfo?.()).toMatchObject({ processLocation: "remote", remoteProcessIdentity: claim.process.processLocation === "remote" ? claim.process.remoteProcessIdentity : undefined });
       expect(duplicateLauncher).not.toHaveBeenCalled();
       await adopted.transport.request("turn/steer", {
         input: [{ type: "text", text: "after hot restart" }],
@@ -460,6 +496,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         restartKind: "hard",
         now: new Date(),
         runIds: [fixture.runId],
+        inspectRemoteRunner: remote?.input.inspectRemoteRunner,
       });
       expect(hardClaim).toMatchObject({
         kind: "reattach_existing_runner",
@@ -471,6 +508,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       if (!hardClaim || hardClaim.kind !== "reattach_existing_runner") {
         throw new Error("Expected second live-runner recovery claim");
       }
+      if (remote) expect(hardClaim.process).toEqual(claim.process);
+      if (remoteControls) {
+        await expect(remoteControls.isAlive()).rejects.toThrow("native_remote_runner_recovery_unverified");
+        expect(() => remoteControls.bindController({ leaseOwner: hardClaim.leaseOwner,
+          controllerGeneration: hardClaim.controllerGeneration })).toThrow("native_remote_runner_recovery_unverified");
+      }
+      const hardRestartControls = recoveryControlsFor(hardClaim);
       const secondDuplicateLauncher = vi.fn(() => {
         throw new Error("duplicate runner spawn attempted after hard restart");
       });
@@ -480,7 +524,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         runnerProcessLauncher: secondDuplicateLauncher,
         adoptExistingRunner: {
           ...hardClaim.process,
-          isAlive: () => processAlive(runnerPid),
+          isAlive: hardRestartControls?.isAlive ?? (() => processAlive(runnerPid)),
         },
       });
       await expect(
@@ -867,6 +911,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         .set({
           processPid: pid,
           processGroupId: process.platform === "win32" ? null : pid,
+          processLocation: "local",
           processStartedAt: new Date(
             new Date(observedStart).getTime() - 60_000,
           ),
@@ -992,6 +1037,188 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(run).toMatchObject({ status: "failed", nativePhase: "terminal_failure", errorCode: "native_restart_recovery_blocked" });
     expect(issue).toMatchObject({ assigneeAgentId: agentId, executionRunId: null });
     expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(1);
+  });
+
+  it.each(["explicit", "legacy", "missing_lease", "invalid_termination"] as const)(
+    "preserves remote recovery authority without probing colliding host PIDs (%s)", async (scenario) => {
+      const fixture = await seedRun(`REMOTE-${scenario}`);
+      const birth = await readProcessStartedAt(process.pid);
+      await fixture.db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: process.pid,
+        processLocation: scenario === "legacy" ? null : "remote", processStartedAt: new Date(birth!) })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      if (scenario !== "missing_lease") {
+        const [environment] = await fixture.db.insert(environments).values({ name: randomUUID(), driver: "sandbox", config: { provider: "daytona" } }).returning();
+        await fixture.db.insert(environmentLeases).values({ companyId, environmentId: environment!.id,
+          heartbeatRunId: fixture.runId, provider: "daytona", providerLeaseId: randomUUID(),
+          status: scenario === "invalid_termination" ? "released" : "active",
+          releasedAt: scenario === "invalid_termination" ? new Date() : null,
+          cleanupStatus: scenario === "invalid_termination" ? "success" : null,
+          metadata: scenario === "invalid_termination" ? { remoteExecutionTermination: { state: "stopped", providerLeaseId: randomUUID() } } : {},
+        });
+      }
+      const kill = vi.spyOn(process, "kill");
+      try {
+        const input = { db: fixture.db, controller: successor, restartKind: "hard" as const, runIds: [fixture.runId] };
+        expect(await claimNativeRestartRecoveries(input)).toEqual([{ kind: "awaiting_evidence", runId: fixture.runId, reason: "remote_runner_verification_required" }]);
+        expect(await claimNativeRestartRecoveries(input)).toEqual([{ kind: "awaiting_evidence", runId: fixture.runId, reason: "remote_runner_verification_required" }]);
+        expect(kill.mock.calls.filter(([pid]) => pid === process.pid || pid === -process.pid)).toEqual([]);
+      } finally { kill.mockRestore(); }
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(run).toMatchObject({ status: "running", processPid: process.pid });
+      expect(issue?.executionRunId).toBe(fixture.runId);
+      expect(coordinator).toMatchObject({ phase: "observed", recoveryState: "awaiting_evidence", attempt: 0, controllerGeneration: 0 });
+    });
+
+  async function seedOwnedRemoteRun(label: string) {
+    const fixture = await seedRun(`OWNED-REMOTE-${label}`);
+    const sessionId = fixture.native.normalizedSessionId;
+    const [run] = await fixture.db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: null,
+      processLocation: "remote", processStartedAt: new Date(), nativeSessionId: sessionId,
+    }).where(eq(heartbeatRuns.id, fixture.runId)).returning();
+    const [environment] = await fixture.db.insert(environments).values({ name: randomUUID(), driver: "sandbox", config: { provider: "daytona" } }).returning();
+    const leaseId = randomUUID(), providerLeaseId = randomUUID(), pluginId = randomUUID();
+    const owner = { version: 1, pid: process.pid, processGroupId: process.pid, uid: 1000, bootId: randomUUID(), startTicks: "100" };
+    const connection = { scopeId: randomUUID(), fingerprint: "a".repeat(64) };
+    const [lease] = await fixture.db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId: environment!.id,
+      issueId: fixture.issueId, heartbeatRunId: fixture.runId, provider: "daytona", providerLeaseId, status: "active",
+      metadata: { pluginId,
+        runtimeServiceBoundary: { version: 1, provider: "daytona", workspaceRoot: "/workspace/app" },
+        runtimeServiceProcessOwner: { version: 1, provider: "daytona", runId: fixture.runId, environmentLeaseId: leaseId, providerLeaseId, workspaceRoot: "/workspace/app", process: owner },
+        runtimeServiceRunScope: { version: 1, companyId, environmentId: environment!.id, executionWorkspaceId: randomUUID(), pluginId,
+          configurationDigest: "b".repeat(64), connection },
+      },
+    }).returning();
+    const processReference = remoteRunnerRecoveryProcess(lease!, run!);
+    if (!processReference) throw new Error("Remote fixture has no valid owner");
+    const provider = vi.fn<Parameters<typeof operateRemoteRunProcess>[2]>(async (_lease, request) => ({ state: "running", workspaceConnection: request.workspaceConnection }));
+    const inspectRemoteRunner = vi.fn((request: RemoteRunProcessControlInput) => operateRemoteRunProcess(fixture.db, request, provider));
+    const input = { db: fixture.db, controller: successor, restartKind: "hard" as const, runIds: [fixture.runId], inspectRemoteRunner };
+    return { ...fixture, native: { ...fixture.native, environmentLeaseId: leaseId }, lease: lease!, run: run!, processReference, connection, provider, input };
+  }
+
+  it("claims the original remote runner without probing its colliding host PID or changing its provider attempt", async () => {
+    const f = await seedOwnedRemoteRun("LIVE");
+    const kill = vi.spyOn(process, "kill");
+    try {
+      const [claim] = await claimNativeRestartRecoveries(f.input);
+      expect(claim).toMatchObject({ kind: "reattach_existing_runner", runId: f.runId, providerAttempt: 0, controllerGeneration: 1, process: f.processReference });
+      expect(kill).not.toHaveBeenCalled();
+    } finally { kill.mockRestore(); }
+    expect(f.input.inspectRemoteRunner).toHaveBeenCalledOnce();
+    expect(f.provider).toHaveBeenCalledOnce();
+    expect(await f.db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id))).toEqual([f.lease]);
+    const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(issue?.executionRunId).toBe(f.runId);
+  });
+
+  it("finishes the provider probe before taking task/run row locks", async () => {
+    const f = await seedOwnedRemoteRun("LOCK-ORDER");
+    f.provider.mockImplementationOnce(async () => {
+      await f.db.transaction(async tx => {
+        await tx.execute(sql`select set_config('lock_timeout', '300', true)`);
+        await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)).for("update");
+      });
+      return { state: "running", workspaceConnection: f.connection };
+    });
+    expect((await claimNativeRestartRecoveries(f.input))[0]?.kind).toBe("reattach_existing_runner");
+    expect(f.provider).toHaveBeenCalledOnce();
+  });
+
+  it.each(["exited", "mismatch", "unverified", "throw"] as const)("keeps remote authority when the provider result is %s", async state => {
+    const f = await seedOwnedRemoteRun(state);
+    f.input.inspectRemoteRunner.mockImplementationOnce(() => {
+      if (state === "throw") throw new Error("provider unavailable");
+      return Promise.resolve({ state, process: f.processReference });
+    });
+    expect(await claimNativeRestartRecoveries(f.input)).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "remote_runner_verification_required" }]);
+    const [coordinator] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", controllerGeneration: 0, attempt: 0, leaseOwner: null });
+    const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(issue?.executionRunId).toBe(f.runId);
+  });
+
+  it.each(["lease", "session", "kernel", "deletion", "task_status", "task_owner"] as const)("rechecks %s after a successful provider probe", async change => {
+    const f = await seedOwnedRemoteRun(change);
+    f.input.inspectRemoteRunner.mockImplementationOnce(async request => {
+      const observation = await operateRemoteRunProcess(f.db, request, f.provider);
+      if (change === "lease") await f.db.update(environmentLeases).set({ providerLeaseId: randomUUID() }).where(eq(environmentLeases.id, f.lease.id));
+      if (change === "session") await f.db.update(heartbeatRuns).set({ nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
+      if (change === "kernel") await f.db.update(heartbeatRuns).set({ processStartedAt: new Date(0) }).where(eq(heartbeatRuns.id, f.runId));
+      if (change === "deletion") await f.db.update(environmentLeases).set({ metadata: { ...f.lease.metadata, runtimeServiceDataDeletionId: randomUUID() } }).where(eq(environmentLeases.id, f.lease.id));
+      if (change === "task_status") await f.db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+      if (change === "task_owner") await f.db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+      return observation;
+    });
+    expect(await claimNativeRestartRecoveries(f.input)).toEqual([{ kind: "awaiting_evidence", runId: f.runId, reason: "remote_runner_verification_required" }]);
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(run).toMatchObject({ status: "running", processPid: process.pid });
+    expect(issue?.executionRunId).toBe(f.runId);
+  });
+
+  it("admits only one successor controller for a verified remote runner", async () => {
+    const f = await seedOwnedRemoteRun("CONCURRENT");
+    const results = (await Promise.all([
+      claimNativeRestartRecoveries(f.input),
+      claimNativeRestartRecoveries({ ...f.input, controller: { ...successor, bootId: randomUUID() } }),
+    ])).flat();
+    expect(results.filter(result => result.kind === "reattach_existing_runner")).toHaveLength(1);
+    expect(results.filter(result => result.kind === "awaiting_evidence")).toHaveLength(1);
+    const [coordinator] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(coordinator).toMatchObject({ controllerGeneration: 1, attempt: 0, recoveryState: "awaiting_evidence" });
+  });
+
+  it("does not select one of multiple eligible original leases", async () => {
+    const f = await seedOwnedRemoteRun("AMBIGUOUS");
+    const duplicateId = randomUUID();
+    await f.db.insert(environmentLeases).values({ ...f.lease, id: duplicateId, metadata: { ...f.lease.metadata,
+      runtimeServiceProcessOwner: { ...(f.lease.metadata?.runtimeServiceProcessOwner as Record<string, unknown>), environmentLeaseId: duplicateId },
+    } });
+    expect((await claimNativeRestartRecoveries(f.input))[0]?.kind).toBe("awaiting_evidence");
+    expect(f.input.inspectRemoteRunner).not.toHaveBeenCalled();
+  });
+
+  it("does not contact the sandbox while the original controller still owns the run", async () => {
+    const f = await seedOwnedRemoteRun("LIVE-CONTROLLER");
+    await f.db.update(nativeRunFinalizations).set({ leaseOwner: "live-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerPid: successor.pid, controllerProcessStartedAt: successor.processStartedAt, controllerBootId: successor.bootId,
+    }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect((await claimNativeRestartRecoveries(f.input))[0]?.kind).toBe("awaiting_evidence");
+    expect(f.input.inspectRemoteRunner).not.toHaveBeenCalled();
+  });
+
+  it("uses an exact provider termination receipt instead of host runner or provider PID observations", async () => {
+    const fixture = await seedRun("REMOTE-TERMINATED");
+    const sessionId = randomUUID();
+    const birth = await readProcessStartedAt(process.pid);
+    const providerBirth = await readProcessStartedAt(process.ppid);
+    await fixture.db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: process.pid,
+      processLocation: "remote", processStartedAt: new Date(birth!), nativeSessionId: sessionId,
+      runnerProfileJson: { sessionCheckpoint: {
+        identity: { runId: fixture.runId, companyId, issueId: fixture.issueId, agentId, sessionId },
+        providerSessionId: "remote-provider-checkpoint",
+        process: { providerPid: process.ppid, providerProcessStartedAt: providerBirth },
+      } },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const [environment] = await fixture.db.insert(environments).values({ name: randomUUID(), driver: "sandbox", config: { provider: "daytona" } }).returning();
+    const [lease] = await fixture.db.insert(environmentLeases).values({ companyId, environmentId: environment!.id,
+      heartbeatRunId: fixture.runId, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "released", releasedAt: new Date(), cleanupStatus: "success",
+    }).returning();
+    await fixture.db.update(environmentLeases).set({ metadata: { remoteExecutionTermination:
+      remoteTerminationReceipt(lease!, { providerLeaseId: lease!.providerLeaseId, state: "stopped" }) } })
+      .where(eq(environmentLeases.id, lease!.id));
+    const kill = vi.spyOn(process, "kill");
+    try {
+      const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId] });
+      expect(claim).toMatchObject({ kind: "resume_dead_runner", runId: fixture.runId });
+      expect(kill.mock.calls.filter(([pid]) => [process.pid, -process.pid, process.ppid].includes(pid))).toEqual([]);
+    } finally { kill.mockRestore(); }
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", processPid: null, processGroupId: null, processStartedAt: null });
   });
 
   it("classifies every requested recovery candidate without an implicit 100-run cap", async () => {

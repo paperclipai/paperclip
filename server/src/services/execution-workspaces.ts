@@ -56,6 +56,8 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { assertWorkspaceHasNoRetainedServices, lockRuntimeServiceWorkspace, runtimeServiceRetentionForWorkspace } from "./runtime-services/retention.js";
+import { assertLocalPathDataAvailable, assertTaskWorkspaceDataAvailable, lockTaskWorkspaceDataAdmission, withTaskWorkspaceDataAdmission } from "./runtime-services/workspace-data-fence.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
@@ -1737,6 +1739,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         workspaceCwd: workspace.cwd,
       });
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
+        retentionScope: { db, companyId: workspace.companyId },
         workspace,
         projectWorkspace,
         cleanupCommand: config?.cleanupCommand ?? null,
@@ -2337,6 +2340,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      if ((await runtimeServiceRetentionForWorkspace(db, workspace.companyId, workspace.id)).length) {
+        blockingReasons.push("This workspace contains retained service files. Release their data retention before closing it.");
+      }
       if (!statusInspectionSucceeded) {
         blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
       }
@@ -2543,6 +2549,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedRace: 0,
           skippedReopened: 0,
           skippedCooldown: 0,
+          skippedRetainedServices: 0,
           clearedStaleReopenPending: 0,
         };
       }
@@ -2607,10 +2614,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedRace: 0,
         skippedReopened: 0,
         skippedCooldown: 0,
+        skippedRetainedServices: 0,
         clearedStaleReopenPending: 0,
       };
 
       for (const workspace of candidates) {
+        if ((await runtimeServiceRetentionForWorkspace(db, workspace.companyId, workspace.id)).length) {
+          result.skippedRetainedServices += 1;
+          continue;
+        }
         const executionWorkspace = toExecutionWorkspace(workspace);
         const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
@@ -2739,6 +2751,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // lock, so it never archives a workspace that a reopen just restored.
         const archived = await db.transaction(async (tx) => {
           await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+          await lockRuntimeServiceWorkspace(tx, workspace.companyId, workspace.id);
+          if ((await runtimeServiceRetentionForWorkspace(tx, workspace.companyId, workspace.id)).length) return null;
           return tx
             .update(executionWorkspaces)
             .set({
@@ -2881,21 +2895,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     create: async (data: typeof executionWorkspaces.$inferInsert) => {
-      const row = await db
+      const row = await withTaskWorkspaceDataAdmission(db, data.companyId, data.id, () => db
         .insert(executionWorkspaces)
         .values(data)
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null), data.providerRef ?? data.cwd);
       return row ? toExecutionWorkspace(row) : null;
     },
 
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
-      const row = await db
-        .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date() })
-        .where(eq(executionWorkspaces.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        await lockTaskWorkspaceDataAdmission(tx);
+        await acquireExecutionWorkspaceLifecycleLock(tx, id);
+        const [current] = await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id));
+        if (!current) return null;
+        await assertTaskWorkspaceDataAvailable(tx, current.companyId, id);
+        for (const cwd of [patch.cwd, patch.providerRef]) if (cwd) await assertLocalPathDataAvailable(tx, cwd);
+        return tx.update(executionWorkspaces).set({ ...patch, updatedAt: new Date() }).where(eq(executionWorkspaces.id, id)).returning().then((rows) => rows[0] ?? null);
+      });
       return row ? toExecutionWorkspace(row) : null;
     },
 
@@ -2919,6 +2936,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           : eq(executionWorkspaces.projectId, issue.projectId);
 
       return db.transaction(async (tx): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
+        await lockTaskWorkspaceDataAdmission(tx);
         await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
         const row = await tx
           .select()
@@ -2935,6 +2953,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // disclose no workspace detail.
           return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
         }
+        await assertTaskWorkspaceDataAvailable(tx, issue.companyId, row.id);
         if (!isClosedExecutionWorkspaceStatus(row.status)) {
           // A concurrent reopen already restored the row. Report success without a
           // second rebuild so the caller continues normally. The other request
@@ -3265,6 +3284,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // archive again.
           return null;
         }
+        await lockRuntimeServiceWorkspace(tx, fresh.companyId, fresh.id);
+        await assertWorkspaceHasNoRetainedServices(tx, fresh.companyId, fresh.id);
         if (metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
           // A reopen published this row as active while its source issue is still
           // terminal. A caller will consume the rebuilt worktree. Refuse the

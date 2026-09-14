@@ -398,6 +398,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       canDelete: false,
       deleteBlockedReasons: ["instance_default"],
       pendingCleanupLeaseCount: 0,
+      retainedServiceAllocationCount: 0,
       reusableSandboxLeaseCount: 0,
       reusableSandboxLeaseHolders: [],
       staticReferences: {

@@ -21,6 +21,8 @@ import {
   agents,
   companies,
   createDb,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
@@ -34,6 +36,8 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
+import { getConversationOwnershipBlocker } from "../conversation-continuation.js";
+import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl
   ? { supported: true }
@@ -932,6 +936,39 @@ const support = externalDatabaseUrl
           .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
       ).toHaveLength(0);
     });
+    it.each([process.pid, null])("requires provider verification for remote replacement and operator reconciliation (%s)", async pid => {
+      const source = await seed();
+      await db.update(heartbeatRuns).set({ processLocation: "remote", processPid: pid }).where(eq(heartbeatRuns.id, source.runId));
+      const kill = vi.spyOn(process, "kill");
+      try {
+        await reconcileSafeNativeReplacements(db);
+        await expect(validateExecutionReconciliation({ db, ...source, sourceRunId: source.runId, decision: {
+          runId: source.runId, providerStopped: true, actionOutcome: "not_performed",
+          outcomeEvidence: "Operator inspected the task; no provider termination receipt exists.",
+        } })).rejects.toThrow("remote execution has not been verified stopped");
+        if (pid) expect(kill.mock.calls.filter(([candidate]) => candidate === pid)).toEqual([]);
+      } finally { kill.mockRestore(); }
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+    });
+
+    it("keeps a remote conversation held until its original environment confirms termination", async () => {
+      const source = await seed();
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", processLocation: "remote", processPid: null,
+        resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, source.runId));
+      const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "sandbox", config: { provider: "daytona" } }).returning();
+      const [lease] = await db.insert(environmentLeases).values({ companyId: source.companyId, heartbeatRunId: source.runId,
+        environmentId: environment!.id, provider: "daytona", providerLeaseId: randomUUID(), status: "released", releasedAt: new Date(), cleanupStatus: "success" }).returning();
+      expect(await getConversationOwnershipBlocker(db, source.companyId, source.issueId)).toMatchObject({ runId: source.runId, cause: "execution_owner_active" });
+      await db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: process.pid }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination:
+        remoteTerminationReceipt(lease!, { providerLeaseId: lease!.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, lease!.id));
+      const kill = vi.spyOn(process, "kill");
+      try {
+        expect(await getConversationOwnershipBlocker(db, source.companyId, source.issueId)).toBeNull();
+        expect(kill.mock.calls.filter(([candidate]) => candidate === process.pid || candidate === -process.pid)).toEqual([]);
+      } finally { kill.mockRestore(); }
+    });
+
     it("requires explicit reconciled outcomes and rejects a still-running provider", async () => {
       const source = await seed();
       const input = {
@@ -954,7 +991,7 @@ const support = externalDatabaseUrl
       };
       await db
         .update(heartbeatRuns)
-        .set({ processPid: process.pid })
+        .set({ processPid: process.pid, processLocation: "local" })
         .where(eq(heartbeatRuns.id, source.runId));
       await expect(
         validateExecutionReconciliation({ ...input, decision }),

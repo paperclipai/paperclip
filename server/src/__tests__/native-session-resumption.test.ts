@@ -413,6 +413,7 @@ describe("P6-25 pre-result native session recovery", () => {
     try {
       await db.update(heartbeatRuns).set({
         processPid: unrelatedProcess.pid!,
+        processLocation: "local",
         processStartedAt: new Date("2026-08-09T04:00:00.000Z"),
       }).where(eq(heartbeatRuns.id, observedLivePidRunId));
       const backendFactory = vi.fn((): NativeSessionBackend => ({
@@ -911,6 +912,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         .update(heartbeatRuns)
         .set({
           processPid: staleProviderProcess.pid!,
+          processLocation: "local",
           processStartedAt: new Date("2026-08-09T04:00:00.000Z"),
         })
         .where(eq(heartbeatRuns.id, runId));

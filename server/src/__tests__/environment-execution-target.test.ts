@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import type { RemoteRunnerRecoveryProcess } from "../services/native-runtime/remote-runner-recovery.js";
 
 const { mockResolveEnvironmentDriverConfigForRuntime } = vi.hoisted(() => ({
   mockResolveEnvironmentDriverConfigForRuntime: vi.fn(),
@@ -96,6 +98,61 @@ function recordParentContext() {
 }
 
 describe("resolveEnvironmentExecutionTarget", () => {
+  function recoveryTargetFixture() {
+    const companyId = randomUUID(), runId = randomUUID();
+    const process: RemoteRunnerRecoveryProcess = { processLocation: "remote", pid: 42, processGroupId: null, startedAt: new Date().toISOString(),
+      remoteProcessIdentity: { version: 1, pid: 42, processGroupId: 42, uid: 1000, bootId: randomUUID(), startTicks: "100" },
+      environmentLeaseId: randomUUID(), environmentId: randomUUID(), providerLeaseId: randomUUID(), workspaceRoot: "/workspace/app",
+      configurationDigest: "a".repeat(64), workspaceConnection: { scopeId: randomUUID(), fingerprint: "b".repeat(64) } };
+    const metadata = { remoteCwd: process.workspaceRoot };
+    const lease = { id: process.environmentLeaseId, companyId, environmentId: process.environmentId, providerLeaseId: process.providerLeaseId, heartbeatRunId: runId, metadata };
+    const runtime = { controlRunProcess: vi.fn(async () => ({ state: "running", process })), recoverRunner: vi.fn(async () => ({ state: "ready",
+      workspaceConnection: process.workspaceConnection, endpoint: { kind: "authenticated_websocket", websocketUrl: `wss://43127-test.proxy.daytona.test/api/runner/v1/connect/${runId}`,
+        secretHeaders: [{ name: "X-Daytona-Preview-Token", value: "private" }], generation: "one" } })),
+      supportsSync: vi.fn(() => false),
+      executeRecoveringRunner: vi.fn(async () => ({ state: "executed", workspaceConnection: process.workspaceConnection,
+        result: { exitCode: 0, timedOut: false, stdout: "checkpoint", stderr: "" } })),
+      getRunnerIngressEndpoint: vi.fn(() => { throw new Error("ordinary ingress must not be called"); }), execute: vi.fn(() => { throw new Error("ordinary execute must not be called"); }) };
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({ driver: "sandbox", config: { provider: "daytona", reuseLease: true } });
+    const input = { db: {} as never, companyId, adapterType: "paperclip_runner", environment: { id: process.environmentId, driver: "sandbox", config: { provider: "daytona" } },
+      leaseId: lease.id, lease: lease as never, leaseMetadata: metadata, environmentRuntime: runtime as never, recoveryProcess: process };
+    return { input, lease, runtime, process, runId };
+  }
+
+  it("uses the pinned no-wake recovery capability instead of ordinary ingress for an adopted target", async () => {
+    const f = recoveryTargetFixture(); const target = await resolveEnvironmentExecutionTarget(f.input);
+    if (target?.kind !== "remote" || target.transport !== "sandbox") throw new Error("Expected sandbox target");
+    expect(target.nativeRunnerRecovery?.process).toMatchObject({ pid: 42, processLocation: "remote", remoteProcessIdentity: f.process.remoteProcessIdentity });
+    target.nativeRunnerRecovery!.bindController({ leaseOwner: "recovery-controller", controllerGeneration: 2 });
+    const endpoint = await target.getRunnerIngressEndpoint!({ leaseId: f.lease.id, port: 43127, path: `/api/runner/v1/connect/${f.runId}` });
+    expect(endpoint.kind).toBe("authenticated_websocket"); expect(f.runtime.controlRunProcess).toHaveBeenCalledOnce(); expect(f.runtime.recoverRunner).toHaveBeenCalledOnce();
+    expect(f.runtime.getRunnerIngressEndpoint).not.toHaveBeenCalled(); expect(f.runtime.execute).not.toHaveBeenCalled();
+  });
+
+  it("routes recovery checkpoint commands around wake-capable execute and native sync", async () => {
+    const f = recoveryTargetFixture(); f.runtime.supportsSync.mockReturnValue(true);
+    const target = await resolveEnvironmentExecutionTarget(f.input);
+    if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw new Error("Expected sandbox target");
+    expect(target.runner.syncIn).toBeUndefined(); expect(target.runner.syncOut).toBeUndefined();
+    const expectedController = { leaseOwner: "recovery-controller", controllerGeneration: 2 };
+    target.nativeRunnerRecovery!.bindController(expectedController);
+    expect(await target.runner.execute({ command: "tar", args: ["-czf", "-", "."], timeoutMs: 300_000 })).toMatchObject({ exitCode: 0, stdout: "checkpoint" });
+    expect(f.runtime.executeRecoveringRunner).toHaveBeenCalledWith({ companyId: f.input.companyId, runId: f.runId, expectedProcess: f.process, expectedController,
+      execution: { command: "tar", args: ["-czf", "-", "."], cwd: f.process.workspaceRoot, timeoutMs: 120_000 } });
+    expect(f.runtime.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["workspace", "company", "lease", "allocation", "agent", "local"])("refuses %s drift before exposing a recovery target", async cause => {
+    const f = recoveryTargetFixture();
+    if (cause === "workspace") f.input.leaseMetadata.remoteCwd = "/other";
+    if (cause === "company") f.input.companyId = randomUUID();
+    if (cause === "lease") f.lease.id = randomUUID();
+    if (cause === "allocation") f.lease.providerLeaseId = randomUUID();
+    if (cause === "agent") f.input.adapterType = "codex_local";
+    if (cause === "local") f.input.environment.driver = "local";
+    await expect(resolveEnvironmentExecutionTarget(f.input)).rejects.toThrow("recovery_target_mismatch");
+    expect(f.runtime.controlRunProcess).not.toHaveBeenCalled(); expect(f.runtime.recoverRunner).not.toHaveBeenCalled(); expect(f.runtime.getRunnerIngressEndpoint).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
     delete process.env.PAPERCLIP_API_URL;

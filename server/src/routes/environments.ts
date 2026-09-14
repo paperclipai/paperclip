@@ -583,6 +583,9 @@ export function environmentRoutes(
   }
 
   function environmentDeleteBlockMessage(impact: EnvironmentDeleteBlastRadius): string | null {
+    if (impact.deleteBlockedReasons.includes("runtime_service_retention")) {
+      return "This environment contains retained service files. Release their data retention before deleting it.";
+    }
     if (impact.staticReferences.isManagedLocal) {
       return "Cannot delete the managed local environment.";
     }

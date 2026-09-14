@@ -9,6 +9,7 @@ import {
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { heartbeatRunProcessLocations } from "./run-process-metadata.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -20,6 +21,7 @@ const executionRunColumns = {
   nativeIssueId: heartbeatRuns.nativeIssueId,
   nextAction: heartbeatRuns.nextAction,
   processPid: heartbeatRuns.processPid,
+  processLocation: heartbeatRuns.processLocation,
   retryOfRunId: heartbeatRuns.retryOfRunId,
   runtimeMode: heartbeatRuns.runtimeMode,
   scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -114,6 +116,8 @@ export async function executionProjectionsForRuns(
         .orderBy(desc(issueRecoveryActions.updatedAt))
     : [];
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
+  const processLocations = await heartbeatRunProcessLocations(db, companyId,
+    runs.filter(run => run.status === "running" && run.runtimeMode === "legacy" && run.processPid));
   for (const run of runs) {
     const issueId = run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
     const matching = recovery.filter(
@@ -127,7 +131,7 @@ export async function executionProjectionsForRuns(
     projections.set(
       run.id,
       projectExecution(
-        run,
+        { ...run, processLocation: processLocations.get(run.id) ?? run.processLocation },
         coordinatorByRun.get(run.id),
         pending.filter((row) => row.issueId === issueId),
         action,
@@ -289,7 +293,7 @@ export function projectExecution(
       coordinator.leaseExpiresAt &&
       coordinator.leaseExpiresAt > now;
     let processConfirmed = false;
-    if (run.runtimeMode === "legacy" && run.processPid) {
+    if (run.runtimeMode === "legacy" && run.processLocation === "local" && run.processPid) {
       try {
         process.kill(run.processPid, 0);
         processConfirmed = true;

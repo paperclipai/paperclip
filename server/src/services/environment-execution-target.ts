@@ -1,4 +1,9 @@
-import type { Db } from "@paperclipai/db";
+import { runtimeServiceTaskWorkspace } from "./runtime-services/task-workspace.js";
+import { createRemoteRunnerRecoveryControls } from "./native-runtime/remote-runner-recovery-controls.js";
+import type { RemoteRunnerRecoveryProcess } from "./native-runtime/remote-runner-recovery.js";
+import { environmentLeases, type Db } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { z } from "zod";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import {
@@ -21,6 +26,15 @@ import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 
 export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
+const workspaceServiceSyncSchema = z.object({
+  version: z.literal(1), executionWorkspaceId: z.string().guid(), providerLeaseId: z.string().min(1), remoteCwd: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/), exclude: z.array(z.string()),
+}).strict();
+const serviceWorkspaceSyncSchema = z.discriminatedUnion("version", [workspaceServiceSyncSchema, z.object({
+  version: z.literal(2), allocationId: z.string().guid(), taskWorkspaceId: z.string().guid(), hostCwd: z.string().min(1),
+  providerLeaseId: z.string().min(1), remoteCwd: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/), exclude: z.array(z.string()),
+}).strict()]);
 
 /** The minimal span surface the provider-exec seam calls. A real injected OTel
  * span satisfies it; the no-op tracer's span satisfies it too. */
@@ -233,6 +247,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
   leaseMetadata: Record<string, unknown> | null;
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
+  /** Supplied only by verified restart adoption of this original lease. */
+  recoveryProcess?: RemoteRunnerRecoveryProcess;
   // The startup tracer for the provider-exec span. Defaults to the endpoint-
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
@@ -243,6 +259,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   // bridge, so the surface stays inert until the host injects a real recorder.
   duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
 }): Promise<AdapterExecutionTarget | null> {
+  if (input.recoveryProcess && input.environment.driver !== "sandbox") throw new Error("native_remote_runner_recovery_target_mismatch");
   if (input.environment.driver === "local") {
     return {
       kind: "local",
@@ -359,6 +376,38 @@ export async function resolveEnvironmentExecutionTarget(input: {
       }
     }
 
+    const attachment = parseObject(input.lease?.metadata?.runtimeServiceAttachment);
+    const taskWorkspace = attachment.version === 2 && input.lease?.issueId
+      ? await runtimeServiceTaskWorkspace(input.db, input.companyId, input.lease.issueId) : null;
+    const isTaskAttachment = Boolean(taskWorkspace && attachment.taskWorkspaceId === taskWorkspace.binding.id &&
+      attachment.allocationId === taskWorkspace.allocation.id && attachment.hostCwd === taskWorkspace.binding.hostCwd);
+    const isServiceAttachment = (attachment.version === 1 || (attachment.version === 2 && isTaskAttachment)) && input.lease?.companyId === input.companyId &&
+      attachment.companyId === input.companyId && attachment.executionWorkspaceId === input.lease?.executionWorkspaceId &&
+      attachment.providerLeaseId === input.lease?.providerLeaseId && attachment.remoteCwd === remoteCwd &&
+      parsed.config.provider === "daytona";
+    if (input.lease?.metadata?.runtimeServiceAttachment && !isServiceAttachment) throw new Error("The retained service workspace binding is invalid");
+    const sync = serviceWorkspaceSyncSchema.safeParse(input.lease?.metadata?.runtimeServiceWorkspaceSync);
+    const syncSourceMatches = sync.success && (isTaskAttachment
+      ? sync.data.version === 2 && sync.data.taskWorkspaceId === taskWorkspace!.binding.id && sync.data.allocationId === taskWorkspace!.allocation.id && sync.data.hostCwd === taskWorkspace!.binding.hostCwd
+      : sync.data.version === 1 && sync.data.executionWorkspaceId === input.lease?.executionWorkspaceId);
+    const baseline = sync.success && syncSourceMatches &&
+      sync.data.providerLeaseId === input.lease?.providerLeaseId && sync.data.remoteCwd === remoteCwd
+      ? { sha256: sync.data.sha256, exclude: sync.data.exclude } : null;
+    if (isTaskAttachment && input.lease?.metadata?.runtimeServiceWorkspaceSync && !baseline) {
+      throw new Error("The service's file-sync receipt does not match its attached workspace");
+    }
+
+    const recovered = input.recoveryProcess;
+    if (recovered && (!input.environmentRuntime || !input.lease?.heartbeatRunId || input.adapterType !== "paperclip_runner"
+      || parsed.config.provider !== "daytona" || input.companyId !== input.lease.companyId
+      || recovered.environmentId !== input.environment.id || recovered.environmentLeaseId !== input.lease.id
+      || recovered.providerLeaseId !== input.lease.providerLeaseId || recovered.workspaceRoot !== remoteCwd)) {
+      throw new Error("native_remote_runner_recovery_target_mismatch");
+    }
+    const recoveryControls = recovered ? createRemoteRunnerRecoveryControls({ companyId: input.companyId,
+      runId: input.lease!.heartbeatRunId!, process: recovered, runtime: input.environmentRuntime! }) : null;
+    if (recoveryControls && !(await recoveryControls.nativeRunnerRecovery.isAlive())) throw new Error("native_remote_runner_recovery_unverified");
+
     return {
       kind: "remote",
       transport: "sandbox",
@@ -383,12 +432,28 @@ export async function resolveEnvironmentExecutionTarget(input: {
         input.lease?.metadata?.sandboxLeaseAcquisition,
         input.lease?.providerLeaseId,
       ),
+      ...(isServiceAttachment ? { retainedServiceWorkspace: { hostBaseline: baseline,
+        ...(isTaskAttachment && !baseline ? { initialImport: { hostCwd: taskWorkspace!.binding.hostCwd } } : {}),
+      } } : {}),
+      ...(parsed.config.provider === "daytona" && (input.lease?.executionWorkspaceId || isTaskAttachment) && input.lease?.providerLeaseId ? {
+        recordWorkspaceSync: async (hostBaseline: { sha256: string; exclude: string[] }) => {
+          const receipt = serviceWorkspaceSyncSchema.parse({
+            ...(isTaskAttachment ? { version: 2, allocationId: taskWorkspace!.allocation.id, taskWorkspaceId: taskWorkspace!.binding.id, hostCwd: taskWorkspace!.binding.hostCwd }
+              : { version: 1, executionWorkspaceId: input.lease!.executionWorkspaceId }),
+            providerLeaseId: input.lease!.providerLeaseId, remoteCwd, ...hostBaseline,
+          });
+          await input.db.update(environmentLeases).set({
+            metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runtimeServiceWorkspaceSync: receipt })}::jsonb`,
+            updatedAt: new Date(),
+          }).where(and(eq(environmentLeases.id, input.lease!.id), eq(environmentLeases.companyId, input.companyId)));
+        },
+      } : {}),
       // Attach the host duplex observability recorder next to the runner. The bridge
       // binds it to the fixed observability surface. Absent keeps the no-op
       // default, so the surface stays inert on a run with no injected recorder.
       duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
-      ...(input.environmentRuntime?.getRunnerIngressEndpoint && input.lease
+      ...(recoveryControls ? recoveryControls : input.environmentRuntime?.getRunnerIngressEndpoint && input.lease
         ? {
             getRunnerIngressEndpoint: ({ port, path }) =>
               input.environmentRuntime!.getRunnerIngressEndpoint({
@@ -472,7 +537,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 };
                 let result;
                 try {
-                  result = await input.environmentRuntime!.execute({
+                  result = recoveryControls ? await recoveryControls.execute({
+                    command: commandInput.command, args: commandInput.args, cwd: commandInput.cwd ?? remoteCwd,
+                    env: commandInput.env, stdin: commandInput.stdin, timeoutMs: commandInput.timeoutMs,
+                  }) : await input.environmentRuntime!.execute({
                     environment: input.environment as Environment,
                     lease: input.lease!,
                     command: commandInput.command,
@@ -586,7 +654,9 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // worker advertises BOTH sync verbs AND the effective snapshot still
             // grants native sync; otherwise leave syncIn/syncOut undefined so
             // the orchestrator keeps the byte-identical base64 path.
-            ...(nativeSyncAllowed &&
+            // Ordinary native sync may wake compute. Recovery uses the archive
+            // fallback through its original-allocation command capability.
+            ...(!recoveryControls && nativeSyncAllowed &&
             input.environmentRuntime.supportsSync({
               environment: input.environment as Environment,
               lease: input.lease,

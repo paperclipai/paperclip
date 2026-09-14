@@ -721,6 +721,7 @@ export function setupEnvironmentCustomImageTerminalWebSocketServer(
 
   server.on("upgrade", (req, socket, head) => {
     const reqWithContext = req as IncomingMessageWithTerminalContext;
+    if (reqWithContext.paperclipWebSocketHandled) return;
     if (!req.url) return;
 
     const url = new URL(req.url, "http://localhost");

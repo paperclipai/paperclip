@@ -4,16 +4,22 @@ import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { heartbeatRunRequiresProviderProcessVerification } from "../run-process-metadata.js";
+import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { remoteRunnerRecoveryProcess, type RemoteRunnerRecoveryProcess, type RemoteRunProcessControlInput, type RemoteRunProcessControlResult } from "./remote-runner-recovery.js";
+import { assertRuntimeServiceLeaseDataAvailable, lockRuntimeServiceLease } from "../runtime-services/retention.js";
+import { sameRuntimeServiceConfiguration } from "../runtime-services/run-attachment.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -33,10 +39,11 @@ export type NativeRestartRecoveryClaim =
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
       process: {
+        processLocation?: "local";
         pid: number;
         processGroupId: number | null;
         startedAt: string;
-      };
+      } | RemoteRunnerRecoveryProcess;
     }
   | {
       kind: "resume_dead_runner";
@@ -414,7 +421,7 @@ function appendBoundedRecoveryHistory(entry: Record<string, unknown>) {
 }
 
 /**
- * Claims abandoned local runner executions without changing the provider retry
+ * Claims abandoned runner executions without changing the provider retry
  * attempt. The transaction locks the run, coordinator, and issue execution
  * owner so two successor servers cannot both reconstruct the same authority.
  */
@@ -426,6 +433,8 @@ export async function claimNativeRestartRecoveries(input: {
   runIds?: string[];
   now?: Date;
   limit?: number;
+  /** Host-only capability; remote evidence is gathered before task row locks. */
+  inspectRemoteRunner?: (input: RemoteRunProcessControlInput) => Promise<RemoteRunProcessControlResult>;
   coordinatedPreviousController?: {
     pid: number;
     processStartedAt: Date | null;
@@ -438,6 +447,8 @@ export async function claimNativeRestartRecoveries(input: {
     .select({
       runId: heartbeatRuns.id,
       issueId: nativeRunFinalizations.issueId,
+      run: heartbeatRuns,
+      coordinator: nativeRunFinalizations,
     })
     .from(heartbeatRuns)
     .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
@@ -473,10 +484,38 @@ export async function claimNativeRestartRecoveries(input: {
 
   const dispositions: NativeRestartRecoveryDisposition[] = [];
   for (const candidate of candidates) {
+    let remoteObservation: { process: RemoteRunnerRecoveryProcess; nativeSessionId: string } | null = null;
+    if (input.inspectRemoteRunner && candidate.run.nativeSessionId && !isNativeRunnerOwnershipHeld(candidate.run)
+      && await heartbeatRunRequiresProviderProcessVerification(input.db, candidate.run)
+      && (await evaluateNativeControllerTakeover({ owner: candidate.coordinator, now,
+        coordinatedPreviousController: input.coordinatedPreviousController ?? null })).allowed) {
+      const leases = await input.db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, candidate.run.companyId), eq(environmentLeases.heartbeatRunId, candidate.runId),
+        eq(environmentLeases.status, "active"),
+      ));
+      const owners = leases.map(lease => remoteRunnerRecoveryProcess(lease, candidate.run)).filter((owner): owner is RemoteRunnerRecoveryProcess => owner !== null);
+      // Ambiguous lease history must never pick an arbitrary allocation. The
+      // provider callback takes its own allocation lock and may wait for RPC;
+      // invoke it outside this function's issue/run transaction to avoid a
+      // deletion/recovery lock inversion.
+      if (owners.length === 1) {
+        const expected = owners[0]!;
+        const observed = await Promise.resolve().then(() => input.inspectRemoteRunner!({ companyId: candidate.run.companyId, runId: candidate.runId,
+          environmentLeaseId: expected.environmentLeaseId, expectedOwner: expected.remoteProcessIdentity,
+          operation: { action: "inspect" } })).catch(() => null);
+        if (observed?.state === "running" && sameRuntimeServiceConfiguration(observed.process, expected)) {
+          remoteObservation = { process: expected, nativeSessionId: candidate.run.nativeSessionId };
+        }
+      }
+    }
     const disposition = await input.db.transaction(async (tx) => {
       await tx.execute(
         sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
       );
+      if (remoteObservation) {
+        await lockRuntimeServiceLease(tx, { id: remoteObservation.process.environmentLeaseId,
+          companyId: candidate.run.companyId, provider: "daytona", providerLeaseId: remoteObservation.process.providerLeaseId });
+      }
       await tx
         .select({ id: issues.id })
         .from(issues)
@@ -579,16 +618,47 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
-      const runnerPidAlive = processIsAlive(row.run.processPid);
-      const runnerGroupAlive = processGroupIsAlive(row.run.processGroupId);
+      const remoteProcess = await heartbeatRunRequiresProviderProcessVerification(tx, row.run);
+      let verifiedRemoteProcess: RemoteRunnerRecoveryProcess | null = null;
+      if (remoteProcess && remoteObservation && row.run.nativeSessionId === remoteObservation.nativeSessionId) {
+        const [lease] = await tx.select().from(environmentLeases).where(and(
+          eq(environmentLeases.id, remoteObservation.process.environmentLeaseId), eq(environmentLeases.companyId, row.run.companyId),
+        ));
+        const current = lease ? remoteRunnerRecoveryProcess(lease, row.run) : null;
+        if (lease && current && sameRuntimeServiceConfiguration(current, remoteObservation.process)) {
+          try {
+            await assertRuntimeServiceLeaseDataAvailable(tx, lease);
+            verifiedRemoteProcess = current;
+          } catch { /* A deletion fence revokes admission, never authorizes replacement. */ }
+        }
+      }
+      const remoteTaskOwnershipChanged = remoteProcess && (row.issueAssigneeAgentId !== row.run.agentId || ["done", "cancelled"].includes(row.issueStatus));
+      if (remoteProcess && (remoteTaskOwnershipChanged || !verifiedRemoteProcess)
+        && !(await remoteExecutionHasStopped(tx as unknown as Db, row.run.companyId, row.run.id))) {
+        // Host PID observations cannot establish whether a sandbox runner or
+        // its provider children survived. Preserve its authority until a
+        // provider receipt can prove termination or a verified remote adoption
+        // path is available; never launch a replacement from a host PID miss.
+        const reason = "remote_runner_verification_required";
+        await tx.update(nativeRunFinalizations).set({
+          recoveryState: "awaiting_evidence",
+          recoveryRequestId: input.recoveryRequestId ?? null,
+          failureDetail: { ...row.coordinator.failureDetail, reason,
+            nextAction: "Verify the previous runner through its original environment before reconnecting or starting a replacement. Retained services and files remain in place." },
+          updatedAt: now,
+        }).where(eq(nativeRunFinalizations.runId, row.run.id));
+        return { kind: "awaiting_evidence", runId: row.run.id, reason } as const;
+      }
+      const runnerPidAlive = remoteProcess ? verifiedRemoteProcess !== null : processIsAlive(row.run.processPid);
+      const runnerGroupAlive = !remoteProcess && processGroupIsAlive(row.run.processGroupId);
       const observedRunnerStart =
-        row.run.processPid && runnerPidAlive
+        !remoteProcess && row.run.processPid && runnerPidAlive
           ? await observedProcessStart(row.run.processPid)
           : null;
       const exactRunnerIdentity =
-        runnerPidAlive &&
+        verifiedRemoteProcess !== null || (runnerPidAlive &&
         row.run.processPid !== null &&
-        sameProcessStart(row.run.processStartedAt, observedRunnerStart);
+        sameProcessStart(row.run.processStartedAt, observedRunnerStart));
 
       const profile = row.run.runnerProfileJson ?? {};
       const checkpoint = profile.sessionCheckpoint;
@@ -704,7 +774,7 @@ export async function claimNativeRestartRecoveries(input: {
         }
       }
       const providerProcesses = await evaluateNativeProviderProcesses({
-        identities: providerProcessIdentities.filter(
+        identities: remoteProcess ? [] : providerProcessIdentities.filter(
           (identity) => identity.pid !== row.run.processPid,
         ),
       });
@@ -946,7 +1016,7 @@ export async function claimNativeRestartRecoveries(input: {
         return {
           kind: claimKind,
           ...common,
-          process: {
+          process: verifiedRemoteProcess ?? {
             pid: row.run.processPid!,
             processGroupId: row.run.processGroupId,
             startedAt: row.run.processStartedAt!.toISOString(),

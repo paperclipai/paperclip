@@ -15,12 +15,18 @@ import {
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import {
+  agents,
+  companies,
+  createDb,
   heartbeatRuns,
+  environmentLeases,
   heartbeatRunEvents,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  startEmbeddedPostgresTestDatabase,
   type Db,
 } from "@paperclipai/db";
 import {
@@ -32,10 +38,16 @@ import {
   type NativeExecutionInputV1,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
+import * as warmRetentionModule from "./native-remote-warm-retention.js";
+import * as idleLifecycleModule from "./native-remote-idle-lifecycle.js";
+import * as runnerIngressModule from "../../realtime/runner-prp-outbound.js";
+import * as remoteRunnerProcessModule from "./remote-runner-process.js";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { seedRemoteDispatchFixture } from "./remote-dispatch.test-fixture.js";
 import {
   NativeSessionCleanupQuarantinedError,
   NativeProviderTerminalFailure,
@@ -47,9 +59,15 @@ import {
   verifyNativeHarnessBackupStamp,
 } from "./native-harness-backup-stamp.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { createRemoteRunnerRecoveryControls } from "./remote-runner-recovery-controls.js";
+import type { RemoteRunnerRecoveryProcess } from "./remote-runner-recovery.js";
+import { environmentRuntimeService, type EnvironmentRuntimeService } from "../environment-runtime.js";
+import type { PluginWorkerManager } from "../plugin-worker-manager.js";
+import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { buildNativeHeartbeatPreparationSpans } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
+import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 
 type BackendFactoryOptions = {
@@ -291,6 +309,141 @@ beforeEach(() => {
 });
 
 describe("remote runner process supervision", () => {
+  it.each(["valid", "missing", "wrong_nonce", "wrong_pid", "persistence_failure", "cancel_during_persistence", "signal_failure", "monitor_failure", "launch_failure", "launch_timeout", "launch_timeout_without_receipt"])("verifies Daytona launch receipt and kernel control: %s", async (scenario) => {
+    let nonce = "";
+    const bootId = "1d2c2412-544b-4f04-955e-c41256fe5866";
+    const controls: string[] = [];
+    const execute = vi.fn(async (call: { command?: string; args?: string[]; env?: Record<string, string>; onLog?: unknown }) => {
+      const label = call.args?.[2];
+      let stdout = "";
+      let exitCode = 0;
+      let timedOut = false;
+      if (label === "paperclip-runner-launch") {
+        nonce = call.args![4]!;
+        expect(call.onLog).toBeUndefined();
+        expect(call.args![1]).toContain("3>&1");
+        expect(call.args![6]).toContain("exec 3>&-");
+        stdout = scenario === "missing" || scenario === "launch_timeout_without_receipt" ? "" : `paperclip-process-v1|${scenario === "wrong_nonce" ? bootId : nonce}|${scenario === "wrong_pid" ? 1234 : 4321}|1000|4321|${bootId}|123456\n`;
+        if (scenario === "launch_failure") exitCode = 1;
+        timedOut = scenario.startsWith("launch_timeout");
+      } else if (call.env?.PAPERCLIP_REMOTE_PROCESS_CONTROL) {
+        expect(call.command).toBe("node");
+        const control = JSON.parse(call.env.PAPERCLIP_REMOTE_PROCESS_CONTROL);
+        expect(control.owner).toEqual({ version: 1, pid: 4321, uid: 1000, processGroupId: 4321, bootId, startTicks: "123456" });
+        controls.push(control.operation.action);
+        const state = control.operation.action === "stop_group" ? "stopped"
+          : control.operation.action === "signal" ? scenario === "signal_failure" ? "mismatch" : "signalled"
+          : scenario === "monitor_failure" ? "unverified" : "exited";
+        stdout = JSON.stringify({ state });
+        if (state === "unverified") exitCode = 1;
+      } else if (label === "paperclip-runner-diagnostics") {
+        stdout = "transport closed";
+      } else if (call.args?.[1]?.includes("base64")) {
+        stdout = Buffer.from(JSON.stringify({ lifecycle: "ready" })).toString("base64");
+      } else throw new Error("Daytona must not read or signal through an identity marker");
+      return { exitCode, signal: null, timedOut, stdout, stderr: "" };
+    });
+    let handle: ReturnType<ReturnType<typeof createRemoteRunnerProcessLauncher>>;
+    const onLog = vi.fn(async () => undefined);
+    const onSpawn = vi.fn(async () => {
+      if (scenario === "persistence_failure") throw new Error("database write failed");
+      if (scenario === "cancel_during_persistence" || scenario === "signal_failure") expect(handle.child.kill("SIGTERM")).toBe(true);
+    });
+    const mustUseLaunchOwner = ["missing", "wrong_nonce", "wrong_pid", "persistence_failure", "launch_failure", "launch_timeout", "launch_timeout_without_receipt"].includes(scenario);
+    const processExecute = vi.fn(async () => { throw new Error("Unadopted launch cannot use a later run's process capability"); });
+    const launcher = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId: "environment-remote", leaseId: "lease-remote", remoteCwd: "/workspace" },
+      runner: { execute } as never, remoteBinary: "/runtime/paperclip-runnerd", processIdentityPath: "/runtime/identity", stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote", onSpawn, onLog,
+      ...(mustUseLaunchOwner ? { processRunner: { execute: processExecute } } : {}),
+    });
+    handle = launcher({ command: "/controller/paperclip-runnerd", args: ["--runner-id", "runner-remote"], cwd: "/controller", environment: {} });
+    if (scenario === "valid" || scenario === "cancel_during_persistence") {
+      await expect(handle.completion).resolves.toMatchObject({ code: null });
+      expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 4321, processGroupId: null, startedAt: expect.any(String), processLocation: "remote", remoteProcessIdentity: { version: 1, pid: 4321, uid: 1000, processGroupId: 4321, bootId, startTicks: "123456" } });
+      expect(handle).toMatchObject({ processLocation: "remote", processGroupId: null, startedAt: expect.any(String), remoteProcessIdentity: { version: 1, pid: 4321, uid: 1000, processGroupId: 4321, bootId, startTicks: "123456" } });
+      const mutableCopy = handle.remoteProcessIdentity!; mutableCopy.pid = 999;
+      expect(handle.remoteProcessIdentity?.pid).toBe(4321);
+      expect(controls).toEqual(scenario === "valid" ? ["inspect"] : ["signal", "inspect"]);
+    } else if (scenario === "signal_failure" || scenario === "monitor_failure") {
+      await expect(handle.completion).rejects.toThrow(scenario === "signal_failure" ? "runner_remote_process_signal_unverified" : "runner_remote_process_verification_unavailable");
+      expect(onSpawn).toHaveBeenCalledOnce();
+      if (scenario === "signal_failure") expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("cancellation could not be verified"));
+    } else if (scenario.startsWith("launch_")) {
+      await expect(handle.completion).rejects.toThrow(scenario === "launch_failure" ? "runner_remote_process_launch_failed"
+        : scenario === "launch_timeout" ? "runner_remote_process_launch_timed_out" : "runner_remote_process_launch_timed_out_cleanup_unverified");
+      expect(onSpawn).not.toHaveBeenCalled();
+      expect(controls).toEqual(scenario === "launch_timeout_without_receipt" ? [] : ["stop_group"]);
+    } else {
+      await expect(handle.completion).rejects.toThrow(scenario === "persistence_failure" ? "runner_remote_process_identity_unavailable" : "runner_remote_process_identity_unavailable_cleanup_failed");
+      if (scenario !== "persistence_failure") expect(onSpawn).not.toHaveBeenCalled();
+      expect(controls).toEqual(scenario === "persistence_failure" ? ["stop_group"] : []);
+    }
+    expect(execute.mock.calls.some(([call]) => ["paperclip-runner-process-identity", "paperclip-runner-signal", "paperclip-runner-monitor", "paperclip-runner-identity-failure-cleanup"].includes(call.args?.[2] ?? ""))).toBe(false);
+    expect(processExecute).not.toHaveBeenCalled();
+  });
+
+  it.each(["daytona", "fixture-sandbox"])("uses the current process capability for %s monitoring, signals and exit diagnostics without relaunching", async providerKey => {
+    type Command = Parameters<CommandManagedRuntimeRunner["execute"]>[0];
+    const ok = (stdout = "", exitCode = 0): Awaited<ReturnType<CommandManagedRuntimeRunner["execute"]>> =>
+      ({ stdout, exitCode, timedOut: false, stderr: "", signal: null, pid: null, startedAt: null });
+    let nonce = "", phase = 0;
+    const bootId = "1d2c2412-544b-4f04-955e-c41256fe5866";
+    let releaseInspection!: () => void, reportInspection!: () => void;
+    const inspecting = new Promise<void>(resolve => { reportInspection = resolve; });
+    const inspection = new Promise<void>(resolve => { releaseInspection = resolve; });
+    const launch = vi.fn(async (call: Command) => {
+      if (call.args?.[2] === "paperclip-runner-launch") {
+        nonce = call.args[4]!;
+        return ok(providerKey === "daytona" ? `paperclip-process-v1|${nonce}|4321|1000|4321|${bootId}|123456\n` : "");
+      }
+      if (call.args?.[2] === "paperclip-runner-process-identity") return ok(`${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n`);
+      throw new Error("Original launch owner must not monitor or signal after handoff");
+    });
+    const observed: Array<{ phase: number; operation: string }> = [];
+    const processRunner = { execute: vi.fn(async (call: Command) => {
+      const kernel = call.env?.PAPERCLIP_REMOTE_PROCESS_CONTROL ? JSON.parse(call.env.PAPERCLIP_REMOTE_PROCESS_CONTROL) : null;
+      if (kernel) expect(kernel.owner).toMatchObject({ pid: 4321, processGroupId: 4321, bootId, startTicks: "123456" });
+      const operation = kernel?.operation.action ?? call.args?.[2] ?? "state";
+      observed.push({ phase, operation });
+      if (operation === "inspect" || operation === "paperclip-runner-monitor") {
+        reportInspection();
+        await inspection;
+        return kernel ? ok(JSON.stringify({ state: "exited" })) : ok("", 3);
+      }
+      if (operation === "signal" || operation === "paperclip-runner-signal") return ok(kernel ? JSON.stringify({ state: "signalled" }) : "");
+      if (operation === "paperclip-runner-diagnostics") return ok("current-run diagnostics");
+      if (operation === "state" && call.args?.[1]?.includes("base64")) return ok(Buffer.from(JSON.stringify({ lifecycle: "ready" })).toString("base64"));
+      throw new Error("Process capability must not launch or stage artifacts");
+    }) };
+    const ensureArtifact = vi.fn(async () => undefined);
+    let handle!: ReturnType<ReturnType<typeof createRemoteRunnerProcessLauncher>>;
+    const launcher = createRemoteRunnerProcessLauncher({
+      target: { kind: "remote", transport: "sandbox", providerKey, environmentId: "environment", leaseId: "launch-lease", remoteCwd: "/workspace" },
+      runner: { execute: launch }, processRunner, remoteBinary: "/runtime/paperclip-runnerd", processIdentityPath: "/runtime/identity",
+      stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote", ensureArtifact,
+      onSpawn: async () => { phase = 1; expect(handle.child.kill("SIGTERM")).toBe(true); },
+    });
+    handle = launcher({ command: "/controller/paperclip-runnerd", args: ["--runner-id", "runner-remote"], cwd: "/controller", environment: {} });
+    try {
+      await Promise.race([inspecting, handle.completion.then(() => { throw new Error("Process exited before its first inspection"); })]);
+      phase = 2;
+      expect(handle.child.kill("SIGINT")).toBe(true);
+      releaseInspection();
+      await expect(handle.completion).resolves.toMatchObject({ stderr: "current-run diagnostics" });
+      expect(observed).toEqual([
+        { phase: 1, operation: providerKey === "daytona" ? "signal" : "paperclip-runner-signal" },
+        { phase: 1, operation: providerKey === "daytona" ? "inspect" : "paperclip-runner-monitor" },
+        { phase: 2, operation: providerKey === "daytona" ? "signal" : "paperclip-runner-signal" },
+        { phase: 2, operation: "paperclip-runner-diagnostics" }, { phase: 2, operation: "state" },
+      ]);
+      expect(ensureArtifact).toHaveBeenCalledOnce();
+      expect(launch).toHaveBeenCalledTimes(providerKey === "daytona" ? 1 : 2);
+    } finally {
+      releaseInspection();
+      await handle.completion.catch(() => undefined);
+    }
+  });
+
   it.each(["delivered", "sandbox_missing", "logging_failed"] as const)(
     "detaches runnerd and contains asynchronous signal failures (%s)", async (signalOutcome) => {
     let launchNonce = "";
@@ -417,30 +570,13 @@ describe("remote runner process supervision", () => {
       pid: 4321,
       processGroupId: null,
       startedAt: "2026-09-06T00:00:00.000Z",
+      processLocation: "remote",
     });
     expect(handle.child.pid).toBe(4321);
 
-    expect(handle.child.kill("SIGKILL")).toBe(true);
-    await vi.waitFor(() =>
-      expect(
-        execute.mock.calls.some(
-          ([input]) =>
-            input.args?.[2] === "paperclip-runner-signal" &&
-            input.args?.[1]?.includes('kill -KILL "$expected_pid"'),
-        ),
-      ).toBe(true),
-    );
-    if (signalOutcome !== "delivered") {
-      await vi.waitFor(() => expect(onLog).toHaveBeenCalledWith(
-        "stderr", "Remote runner signal failed; process termination is not confirmed.\n",
-      ));
-      // Let rejected logging callbacks settle too. Neither failure may escape
-      // this fire-and-forget Node child-process-compatible kill boundary.
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    } else {
-      expect(onLog).not.toHaveBeenCalled();
-    }
-    expect(handle.child.exitCode).toBeNull();
+    expect(handle.child.kill("SIGKILL")).toBe(false);
+    expect(execute.mock.calls.some(([input]) => input.args?.[2] === "paperclip-runner-signal")).toBe(false);
+    expect(onLog).not.toHaveBeenCalled();
   });
 
   it("terminates a detached runner when its process identity cannot be adopted", async () => {
@@ -1594,6 +1730,53 @@ describe("remote provider checkpoint snapshots", () => {
         excludeEntries: ["../outside"],
       }),
     ).rejects.toThrow("runner_remote_checkpoint_exclusion_invalid");
+  });
+
+  it.each([false, true])("copies a real archive through the recovery command capability (ownership lost: %s)", async ownershipLost => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-recovery-copy-"));
+    const sourcePath = join(root, "source"), targetPath = join(root, "durable");
+    try {
+      await mkdir(sourcePath); await mkdir(targetPath); await mkdir(join(sourcePath, "tmp"));
+      await writeFile(join(sourcePath, "session.json"), JSON.stringify({ providerSession: "original-session" }));
+      await writeFile(join(sourcePath, "auth.json"), "fixture-private-credentials");
+      await symlink("/outside", join(sourcePath, "tmp", "alias"));
+      await writeFile(join(targetPath, "previous.txt"), "previous verified backup");
+      const companyId = randomUUID(), runId = randomUUID();
+      const process: RemoteRunnerRecoveryProcess = { processLocation: "remote", pid: 40, processGroupId: null, startedAt: new Date().toISOString(),
+        remoteProcessIdentity: { version: 1, pid: 40, processGroupId: 40, uid: 1000, bootId: randomUUID(), startTicks: "100" },
+        environmentLeaseId: randomUUID(), environmentId: randomUUID(), providerLeaseId: randomUUID(), workspaceRoot: root,
+        configurationDigest: "b".repeat(64), workspaceConnection: { scopeId: randomUUID(), fingerprint: "a".repeat(64) } };
+      let commandCount = 0;
+      const executeRecoveringRunner = vi.fn<EnvironmentRuntimeService["executeRecoveringRunner"]>(async input => {
+        expect(input).toMatchObject({ companyId, runId, expectedProcess: process });
+        expect(input.execution.timeoutMs).toBeLessThanOrEqual(120_000);
+        const stdout = execFileSync(input.execution.command, input.execution.args ?? [], {
+          cwd: root, encoding: "utf8", timeout: input.execution.timeoutMs, maxBuffer: 8 * 1024 * 1024,
+        });
+        commandCount++;
+        if (ownershipLost && commandCount === 2) return { state: "unverified" };
+        return { state: "executed", workspaceConnection: process.workspaceConnection, result: { exitCode: 0, timedOut: false, stdout, stderr: "" } };
+      });
+      const controls = createRemoteRunnerRecoveryControls({ companyId, runId, process, runtime: { executeRecoveringRunner,
+        controlRunProcess: async () => { throw new Error("No process control expected during checkpoint copy"); },
+        recoverRunner: async () => { throw new Error("No ingress or raw state read expected during checkpoint copy"); } } });
+      controls.nativeRunnerRecovery.bindController({ leaseOwner: "copy-controller", controllerGeneration: 2 });
+      const copy = syncRemoteRunnerDirectoryOut({ runner: { execute: async command => ({
+        ...await controls.execute(command), pid: null, signal: null, startedAt: new Date().toISOString(),
+      }) }, sourcePath, targetPath, mode: 0o700, excludeEntries: ["tmp", "auth.json"] });
+      if (ownershipLost) {
+        await expect(copy).rejects.toThrow("recovery_unverified");
+        expect(await readFile(join(targetPath, "previous.txt"), "utf8")).toBe("previous verified backup");
+        await expect(access(join(targetPath, "session.json"))).rejects.toThrow();
+      } else {
+        await copy;
+        expect(JSON.parse(await readFile(join(targetPath, "session.json"), "utf8"))).toEqual({ providerSession: "original-session" });
+        await expect(access(join(targetPath, "previous.txt"))).rejects.toThrow();
+      }
+      for (const name of ["tmp", "auth.json"]) await expect(access(join(targetPath, name))).rejects.toThrow();
+      expect(await readFile(join(sourcePath, "auth.json"), "utf8")).toBe("fixture-private-credentials");
+      expect(executeRecoveringRunner).toHaveBeenCalledTimes(2);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("rejects unsafe fallback archives without replacing durable state", async () => {
@@ -4166,6 +4349,9 @@ type LeaseCoordinator = {
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
   resultId: string | null;
+  controllerBootId?: string;
+  controllerPid?: number;
+  controllerGeneration?: number;
 };
 
 function leaseDb(
@@ -4174,6 +4360,7 @@ function leaseDb(
   runResultJson: Record<string, unknown> = {},
   updates: Array<{ table: unknown; values: Record<string, unknown> }> = [],
   runnerProfileJson: Record<string, unknown> = {},
+  runOverrides: Record<string, unknown> = {},
   runStatus = "running",
 ): Db {
   const coordinator: LeaseCoordinator = {
@@ -4204,7 +4391,7 @@ function leaseDb(
       };
     },
   });
-  const select = () => ({
+  const select = (inTransaction = false) => ({
     from: (table: unknown) => {
       const rows =
         table === nativeRunFinalizations
@@ -4219,7 +4406,10 @@ function leaseDb(
                   resultJson: runResultJson,
                   runnerProfileJson,
                   runtimeMode: "native",
-                  status: runStatus,
+                  ...runOverrides,
+                  // The current run is locked during admission. Non-transactional
+                  // reads can model the completed predecessor of a warm session.
+                  status: inTransaction ? runStatus : runOverrides.status ?? runStatus,
                 },
               ]
             : table === issues
@@ -4252,7 +4442,7 @@ function leaseDb(
   const tx = {
     insert,
     execute: async () => [],
-    select,
+    select: () => select(true),
     update,
   };
   return {
@@ -4741,6 +4931,144 @@ describe("native session cancellation", () => {
 });
 
 describe("native session execution lease fencing", () => {
+  async function remoteAdmissionFixture() {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-remote-admission-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const bound = { ...execution, binding: { ...execution.binding, runId: randomUUID(), issueId: randomUUID() },
+      session: { ...execution.session, normalizedSessionId: randomUUID(), lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null } } };
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    await createRunnerdBackend({ db: leaseDb(bound), execution: bound, runnerInstanceId: "runner-original" });
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls[0]![0].stateDirectory!;
+    const identity = { runId: bound.binding.runId, normalizedSessionId: bound.session.normalizedSessionId,
+      runnerInstanceId: "runner-original", environmentLeaseId: "durable-lease", turnId: `turn-${bound.binding.runId}`, itemId: `item-${bound.binding.runId}` };
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    const statePath = join(root, "control-plane", "control-plane-state.json");
+    await writeFile(statePath, JSON.stringify(durableControlPlaneState(identity)));
+    const controller = await currentNativeControllerIdentity();
+    const coordinator = { leaseOwner: "recovery-owner", leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerBootId: controller.bootId, controllerPid: controller.pid, controllerGeneration: 2 };
+    const db = leaseDb(bound, coordinator);
+    const receipt: RemoteRunnerRecoveryProcess = { processLocation: "remote", pid: 40, processGroupId: null, startedAt: new Date().toISOString(),
+      remoteProcessIdentity: { version: 1, pid: 40, processGroupId: 40, uid: 1000, bootId: randomUUID(), startTicks: "100" },
+      environmentLeaseId: "lease", environmentId: "environment", providerLeaseId: "allocation", workspaceRoot: "/workspace/app",
+      configurationDigest: "b".repeat(64), workspaceConnection: { scopeId: randomUUID(), fingerprint: "a".repeat(64) } };
+    const remoteState: Record<string, unknown> = durableRunnerState(identity, "ready");
+    const nativeRunnerRecovery = { process: { ...receipt }, bindController: vi.fn(), isAlive: vi.fn(async () => true), signal: vi.fn(async () => true), readState: vi.fn(async () => remoteState) };
+    const runner = { execute: vi.fn(async () => { throw new Error("Recovery staged a remote command"); }) };
+    const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", remoteCwd: receipt.workspaceRoot,
+      environmentId: receipt.environmentId, leaseId: receipt.environmentLeaseId, runner, nativeRunnerRecovery,
+      getRunnerIngressEndpoint: vi.fn(async () => { throw new Error("Unexpected ingress request"); }) };
+    const claim: NativeRestartRecoveryClaim = { kind: "reattach_existing_runner", runId: bound.binding.runId, leaseOwner: coordinator.leaseOwner,
+      controllerGeneration: coordinator.controllerGeneration, providerAttempt: 0, restartKind: "hard", recoveryRequestId: null, process: receipt };
+    state.createBackend.mockClear(); state.createTransport.mockClear(); state.stageNativeRunnerWakeAttachments.mockClear();
+    const input = { db, execution: bound, runnerInstanceId: "runner-after-restart", leaseOwner: claim.leaseOwner, restartRecovery: claim, runnerExecutionTarget: target };
+    const cleanup = async () => { if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory; await rm(stateBase, { recursive: true, force: true }); };
+    return { input, root, statePath, identity, remoteState, nativeRunnerRecovery, runner, coordinator, cleanup };
+  }
+
+  it("admits an exact per-turn remote owner without staging, local PID probes or a replacement launcher", async () => {
+    const f = await remoteAdmissionFixture(); const before = await readFile(f.statePath, "utf8"); const kill = vi.spyOn(process, "kill");
+    try {
+      await createRunnerdBackend(f.input);
+      expect(f.nativeRunnerRecovery.bindController).toHaveBeenCalledWith({ leaseOwner: f.coordinator.leaseOwner, controllerGeneration: f.coordinator.controllerGeneration });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const options = state.createTransport.mock.calls[0]![0] as NonNullable<Parameters<typeof import("../../vendor/paperclip-runner/index.js").createRunnerdCodexTransport>[0]>;
+      expect(options.prpIdentity).toMatchObject(f.identity);
+      expect(options.runnerProcessLauncher).toBeUndefined(); expect(options.adoptExistingRunner).toMatchObject({ processLocation: "remote", pid: 40, processGroupId: null });
+      await options.prepareExternalRunnerState?.();
+      expect(await options.adoptExistingRunner?.isAlive()).toBe(true);
+      await options.adoptExistingRunner?.signal?.("SIGTERM");
+      expect(await options.readRunnerState?.()).toEqual(f.remoteState);
+      await expect(options.archiveExternalRunnerState?.({ archiveKey: "a".repeat(24), priorIdentity: f.identity })).rejects.toMatchObject({ reason: "remote_runner_reattachment_unavailable" });
+      expect(f.runner.execute).not.toHaveBeenCalled(); expect(kill).not.toHaveBeenCalled();
+      expect(await readFile(f.statePath, "utf8")).toBe(before); await expect(access(join(f.root, "runner"))).rejects.toThrow();
+    } finally { kill.mockRestore(); await f.cleanup(); }
+  });
+
+  it.each([false, true])("dispatches only checkpoint-backed remote recovery without staging or replacement (missing: %s)", async missing => {
+    const f = await remoteAdmissionFixture();
+    state.execute.mockReset().mockResolvedValueOnce({ result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+      turnId: "provider-turn", normalizedSessionId: f.input.execution.session.normalizedSessionId, providerSessionId: "original-provider-session",
+      driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 });
+    try {
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      const checkpoint = { backendKind: "native", sessionId: "driver-session", providerSessionId: "original-provider-session",
+        identity: { ...f.input.execution.binding, sessionId: f.input.execution.session.normalizedSessionId },
+        providerRecoveryPolicy: "allow_replacement_after_resume_failure" };
+      f.input.db = leaseDb(f.input.execution, f.coordinator, {}, updates, missing ? {} : { sessionCheckpoint: checkpoint }, {
+        nativeSessionId: f.input.execution.session.normalizedSessionId, runnerInstanceId: "runner-original",
+        completionContractId: f.input.execution.completionContract.id, completionContractSha256: f.input.execution.completionContract.sha256,
+      });
+      const result = executePaperclipNativeSession({ ...f.input, useRunnerd: true });
+      if (missing) {
+        await expect(result).rejects.toMatchObject({ reason: "remote_runner_reattachment_unavailable" });
+        expect(state.execute).not.toHaveBeenCalled(); expect(state.createBackend).not.toHaveBeenCalled();
+        expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled(); expect(f.runner.execute).not.toHaveBeenCalled();
+        return;
+      }
+      await result;
+      expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
+      expect(state.execute).toHaveBeenCalledOnce(); expect(f.runner.execute).not.toHaveBeenCalled();
+      expect(updates.filter(entry => entry.table === nativeRunFinalizations && entry.values.attempt !== undefined)
+        .map(entry => entry.values.attempt)).toEqual([0]);
+      expect(state.execute.mock.calls[0]![0]).toMatchObject({ runnerInstanceId: "runner-original", requireSessionCloseBeforeReturn: true,
+        persistedSession: { ...checkpoint, providerRecoveryPolicy: "same_session_only" } });
+      expect(checkpoint.providerRecoveryPolicy).toBe("allow_replacement_after_resume_failure");
+    } finally { await f.cleanup(); }
+  });
+
+  it.each(["warm_without_runtime", "lease", "process", "state", "turn", "item", "dead", "controller", "expired", "missing_authority", "controller_binding"])("preserves remote authority when %s blocks admission", async cause => {
+    const f = await remoteAdmissionFixture(); const before = await readFile(f.statePath, "utf8");
+    try {
+      if (cause === "warm_without_runtime") f.input.execution.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 } as never;
+      if (cause === "lease") f.input.runnerExecutionTarget.leaseId = "other";
+      if (cause === "process") f.nativeRunnerRecovery.process.pid = 41;
+      if (cause === "state") f.remoteState.runId = "other";
+      if (cause === "turn") f.remoteState.turnId = "other";
+      if (cause === "item") f.remoteState.itemId = "other";
+      if (cause === "dead") f.nativeRunnerRecovery.isAlive.mockResolvedValue(false);
+      if (cause === "controller") f.input.db = leaseDb(f.input.execution, { ...f.coordinator, controllerGeneration: 3 });
+      if (cause === "expired") f.input.db = leaseDb(f.input.execution, { ...f.coordinator, leaseExpiresAt: new Date(0) });
+      if (cause === "missing_authority") await rm(f.statePath);
+      if (cause === "controller_binding") f.nativeRunnerRecovery.bindController.mockImplementation(() => { throw new Error("Different controller already bound"); });
+      await expect(createRunnerdBackend(f.input)).rejects.toMatchObject({ name: "NativeRunnerOwnershipUnverifiedError", reason: "remote_runner_reattachment_unavailable" });
+      expect(state.createBackend).not.toHaveBeenCalled(); expect(f.runner.execute).not.toHaveBeenCalled();
+      if (cause !== "missing_authority") expect(await readFile(f.statePath, "utf8")).toBe(before);
+      else await expect(access(f.statePath)).rejects.toThrow();
+    } finally { await f.cleanup(); }
+  });
+
+  it("rejects a controller takeover during the remote state read", async () => {
+    const f = await remoteAdmissionFixture();
+    try {
+      f.nativeRunnerRecovery.readState.mockImplementation(async () => {
+        f.input.db.select = leaseDb(f.input.execution, { ...f.coordinator, controllerGeneration: 3 }).select;
+        return f.remoteState;
+      });
+      await expect(createRunnerdBackend(f.input)).rejects.toMatchObject({ reason: "remote_runner_reattachment_unavailable" });
+      expect(state.createBackend).not.toHaveBeenCalled(); expect(f.runner.execute).not.toHaveBeenCalled();
+    } finally { await f.cleanup(); }
+  });
+
+  it("fences adopted process callbacks when another controller takes ownership", async () => {
+    const f = await remoteAdmissionFixture();
+    try {
+      await createRunnerdBackend(f.input); state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const options = state.createTransport.mock.calls[0]![0] as NonNullable<Parameters<typeof import("../../vendor/paperclip-runner/index.js").createRunnerdCodexTransport>[0]>;
+      f.nativeRunnerRecovery.isAlive.mockClear(); f.nativeRunnerRecovery.readState.mockClear();
+      f.input.db.select = leaseDb(f.input.execution, { ...f.coordinator, controllerGeneration: 3 }).select;
+      for (const call of [() => options.adoptExistingRunner!.isAlive(), () => options.adoptExistingRunner!.signal!("SIGTERM"),
+        () => options.readRunnerState!(), () => options.prepareExternalRunnerState!()]) {
+        await expect(call()).rejects.toMatchObject({ reason: "remote_runner_reattachment_unavailable" });
+      }
+      expect(f.nativeRunnerRecovery.isAlive).not.toHaveBeenCalled(); expect(f.nativeRunnerRecovery.readState).not.toHaveBeenCalled();
+      expect(f.nativeRunnerRecovery.signal).not.toHaveBeenCalled(); expect(f.runner.execute).not.toHaveBeenCalled();
+    } finally { await f.cleanup(); }
+  });
+
   it("renews only when the exact fenced owner remains current", async () => {
     const returning = vi
       .fn()
@@ -4766,6 +5094,31 @@ describe("native session execution lease fencing", () => {
       "native_session_lease_lost",
     );
     expect(returning).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["session", "backend"] as const)("preserves remote restart ownership at the %s entry point before any local probe or launch", async entry => {
+    state.execute.mockClear();
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    const restartRecovery: NativeRestartRecoveryClaim = { kind: "reattach_existing_runner", runId: execution.binding.runId,
+      leaseOwner: "owner", controllerGeneration: 1, providerAttempt: 0, restartKind: "hard", recoveryRequestId: null,
+      process: { pid: process.pid, processGroupId: null, processLocation: "remote", startedAt: new Date().toISOString(),
+        remoteProcessIdentity: { version: 1, pid: process.pid, processGroupId: process.pid, uid: 1000, bootId: "fixture", startTicks: "100" },
+        environmentId: "environment", environmentLeaseId: "lease", providerLeaseId: "allocation", workspaceRoot: "/workspace/app",
+        configurationDigest: "a".repeat(64), workspaceConnection: { scopeId: "scope", fingerprint: "b".repeat(64) } },
+    };
+    const kill = vi.spyOn(process, "kill");
+    try {
+      for (const target of [{ kind: "local" as const }, { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", remoteCwd: "/workspace/app" }]) {
+        const input = { db: {} as never, execution, runnerInstanceId: "runner", restartRecovery, runnerExecutionTarget: target };
+        const result = entry === "session" ? executePaperclipNativeSession({ ...input, useRunnerd: true }) : createRunnerdBackend(input);
+        await expect(result).rejects.toMatchObject({ name: "NativeRunnerOwnershipUnverifiedError", reason: "remote_runner_reattachment_unavailable" });
+      }
+      expect(kill).not.toHaveBeenCalled();
+    } finally { kill.mockRestore(); }
+    expect(state.execute).not.toHaveBeenCalled();
+    expect(state.createBackend).not.toHaveBeenCalled();
+    expect(state.createTransport).not.toHaveBeenCalled();
   });
 
   it("does not reacquire a provider after a durable result exists", async () => {
@@ -5384,9 +5737,454 @@ describe("native warm session supervision", () => {
     }
   });
 
+  it.each(["retained", "rejected", "transaction_error", "legacy"])("captures only eligible Daytona warm retention before coordinator release: %s", async (scenario) => {
+    const rejected = scenario === "rejected" || scenario === "transaction_error";
+    const root = await mkdtemp(join(tmpdir(), "paperclip-warm-retention-executor-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    process.env.PAPERCLIP_HOME = root;
+    const bound = structuredClone(execution);
+    bound.binding.companyId = randomUUID();
+    bound.binding.executionWorkspaceId = randomUUID();
+    bound.binding.runId = `warm-retention-${randomUUID()}`;
+    bound.session.normalizedSessionId = bound.binding.runId;
+    bound.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+    const runnerInstanceId = "runner-warm-retention";
+    const environmentId = randomUUID();
+    const wireIdentity = { runId: bound.binding.runId, normalizedSessionId: bound.session.normalizedSessionId,
+      runnerInstanceId, environmentLeaseId: "original-wire-lease", turnId: "retained-turn", itemId: "retained-item" };
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const baseDb = leaseDb(bound, { controllerGeneration: 0 }, {}, updates);
+    const pluginId = randomUUID();
+    const db = { ...baseDb, select: () => ({ from: (table: unknown) => {
+      if (table !== environmentLeases) return baseDb.select().from(table as never);
+      const rows = [{ provider: "daytona", providerLeaseId: randomUUID(), environmentId,
+        metadata: scenario === "legacy" ? {} : { pluginId, runtimeServiceRunScope: { version: 1,
+          companyId: bound.binding.companyId, environmentId, executionWorkspaceId: bound.binding.executionWorkspaceId,
+          pluginId, configurationDigest: "b".repeat(64), connection: { scopeId: randomUUID(), fingerprint: "a".repeat(64) } } } }];
+      const query = { where: () => query, then: Promise.resolve(rows).then.bind(Promise.resolve(rows)) };
+      return query;
+    } }) } as unknown as Db;
+    const close = vi.fn(async () => undefined);
+    let onSession: ((session: null) => void) | undefined;
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      const [directory] = (await readdir(root, { withFileTypes: true })).filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+      expect(directory).toBeDefined();
+      const controlPlane = join(root, directory!.name, "control-plane");
+      await mkdir(controlPlane, { recursive: true });
+      await writeFile(join(controlPlane, "control-plane-state.json"), JSON.stringify(durableControlPlaneState(wireIdentity)));
+      onSession = options.onSession;
+      options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: "retained-turn", normalizedSessionId: bound.session.normalizedSessionId,
+        providerSessionId: "retained-provider", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const releaseWrites = () => updates.filter(update => update.table === nativeRunFinalizations && update.values.leaseOwner === null);
+    const retain = vi.spyOn(warmRetentionModule, "withNativeRemoteWarmRetention").mockImplementation(async (_database, input, release) => {
+      expect(releaseWrites()).toHaveLength(0);
+      expect(input).toMatchObject({ execution: bound, environmentLeaseId: "current-database-lease", runnerIdentity: wireIdentity,
+        runnerInstanceId, sessionConfigDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        leaseOwner: expect.any(String), attempt: 1, controllerGeneration: 1,
+        controller: { bootId: expect.any(String), pid: process.pid, processStartedAt: expect.any(Date) } });
+      if (scenario === "transaction_error") throw new Error("commit response lost");
+      if (rejected) throw new NativeRunnerOwnershipUnverifiedError("remote_runner_reattachment_unavailable");
+      return release(db as never, undefined as never);
+    });
+    try {
+      const operation = executePaperclipNativeSession({ db, execution: bound, runnerInstanceId, useRunnerd: true,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId,
+          leaseId: "current-database-lease", remoteCwd: "/home/daytona/paperclip-workspace", runner: { execute: vi.fn() } } as never });
+      if (rejected) {
+        await expect(operation).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        expect(releaseWrites()).toHaveLength(0);
+        expect(close).not.toHaveBeenCalled();
+      } else {
+        await expect(operation).resolves.toBeDefined();
+        expect(releaseWrites()).toHaveLength(1);
+        expect(releaseWrites()[0]!.values).toMatchObject({ leaseExpiresAt: null });
+        await expect(closeWarmNativeSessionsForEnvironment({ environmentId, reason: "test cleanup" })).resolves.toEqual({ closed: 1, busy: 0, failed: 0 });
+      }
+      expect(retain).toHaveBeenCalledTimes(scenario === "legacy" ? 0 : 1);
+    } finally {
+      // Release the fixture's session registration without pretending to have
+      // terminated a retained remote process after an ownership rejection.
+      onSession?.(null);
+      retain.mockRestore();
+      if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([...["operator", "timer", "superseded"].map(mode => [mode, false] as const), ...["operator", "timer", "superseded"].map(mode => [mode, true] as const)])("switches the real executor to retained controls and fences %s shutdown (recovered: %s)", async (mode, recovered) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-warm-executor-db-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    process.env.PAPERCLIP_HOME = root;
+    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+    let onSession: ((session: null) => void) | undefined;
+    let pendingInspection: Promise<unknown> | undefined;
+    let finishInspection: ((alive: boolean) => void) | undefined;
+    const launchers = vi.spyOn(remoteRunnerProcessModule, "createRemoteRunnerProcessLauncher");
+    try {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-warm-executor-db-");
+      const db = createDb(database.connectionString);
+      const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Warm executor", issuePrefix: "W" + companyId.slice(0, 6) });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Developer" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Keep the preview", status: "in_progress", assigneeAgentId: agentId, executionRunId: runId });
+      const f = await seedRemoteDispatchFixture(db, { companyId, agentId, runId, issueId, hostCwd: join(root, "workspace") });
+      const bound = structuredClone(f.execution);
+      bound.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: mode === "operator" ? 60_000 : 100 };
+      const runnerInstanceId = randomUUID();
+      await db.update(heartbeatRuns).set({ runnerInstanceId, runnerProfileJson: { ...f.run.runnerProfileJson, nativeExecutionInput: bound } }).where(eq(heartbeatRuns.id, runId));
+      await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, runId));
+      const wireIdentity = { runId, runnerInstanceId, normalizedSessionId: bound.session.normalizedSessionId,
+        environmentLeaseId: randomUUID(), turnId: f.native.turnId, itemId: f.native.itemId };
+      if (recovered) {
+        const controller = await currentNativeControllerIdentity();
+        await db.update(nativeRunFinalizations).set({ leaseOwner: f.claim.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000),
+          controllerBootId: controller.bootId, controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+        }).where(eq(nativeRunFinalizations.runId, runId));
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.run.runnerProfileJson, nativeExecutionInput: bound,
+          sessionCheckpoint: { backendKind: "native", sessionId: "driver-session", providerSessionId: "retained-provider",
+            identity: { ...bound.binding, sessionId: bound.session.normalizedSessionId } },
+        } }).where(eq(heartbeatRuns.id, runId));
+        const controlPlane = join(root, nativeSha256({ schema: "paperclip.native-session-scope.v2", companyId, agentId,
+          workspace: { kind: "managed", executionWorkspaceId: bound.binding.executionWorkspaceId },
+          provider: { driverKind: bound.session.driverKind, identity: { kind: "codex" } }, normalizedSessionId: bound.session.normalizedSessionId,
+        }), "control-plane");
+        await mkdir(controlPlane, { recursive: true });
+        await writeFile(join(controlPlane, "control-plane-state.json"), JSON.stringify(durableControlPlaneState(wireIdentity)));
+      }
+      expect(f.claim.kind).toBe("reattach_existing_runner");
+      if (f.claim.kind !== "reattach_existing_runner") throw new Error("Expected retained process fixture");
+      const process = f.claim.process;
+      if (process.processLocation !== "remote") throw new Error("Expected remote fixture process");
+      const recoveryControls = { process, bindController: vi.fn(), isAlive: vi.fn(async () => true), signal: vi.fn(async () => true),
+        readState: vi.fn(async () => durableRunnerState(wireIdentity, "ready")) };
+      let rootExited = false;
+      const provider = vi.fn(async (_id: string, method: string, params: Record<string, unknown>) => {
+        expect(params).toMatchObject({ owner: process.remoteProcessIdentity, workspaceConnection: process.workspaceConnection });
+        if (method === "environmentRunProcessControl") return { state: rootExited ? "exited" : "running", workspaceConnection: process.workspaceConnection };
+        expect(method).toBe("environmentRunnerRecovery");
+        return { state: "ready", workspaceConnection: process.workspaceConnection, runnerState: { ...wireIdentity, lifecycle: "ready" } };
+      });
+      const runtime = environmentRuntimeService(db, { pluginWorkerManager: { isRunning: () => true,
+        getWorker: () => ({ supportedMethods: ["environmentRunProcessControl", "environmentRunnerRecovery", "environmentRunnerRecoveryExecute"] }),
+        call: provider } as unknown as PluginWorkerManager });
+      let transport!: NonNullable<Parameters<typeof import("../../vendor/paperclip-runner/index.js").createRunnerdCodexTransport>[0]>;
+      const close = vi.fn(async () => {
+        expect(await transport.readRunnerState!()).toMatchObject({ runId });
+        rootExited = true;
+      });
+      const command = vi.fn<CommandManagedRuntimeRunner["execute"]>(async () => { throw new Error("Idle work must not use ordinary commands"); });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await state.createBackend.mock.calls.at(-1)![1].codexTransportFactory?.();
+        transport = state.createTransport.mock.calls.at(-1)![0] as typeof transport;
+        if (recovered) {
+          expect(transport.runnerProcessLauncher).toBeUndefined();
+          expect(await transport.adoptExistingRunner!.isAlive()).toBe(true);
+          expect(await transport.adoptExistingRunner!.inspect!()).toBe("running");
+          expect(await transport.readRunnerState!()).toMatchObject(wireIdentity);
+          recoveryControls.isAlive.mockClear(); recoveryControls.readState.mockClear();
+          expect(options.persistedSession).toMatchObject({ providerSessionId: "retained-provider", providerRecoveryPolicy: "same_session_only" });
+        }
+        const [directory] = (await readdir(root, { withFileTypes: true })).filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+        expect(directory).toBeDefined();
+        const controlPlane = join(root, directory!.name, "control-plane");
+        await mkdir(controlPlane, { recursive: true });
+        await writeFile(join(controlPlane, "control-plane-state.json"), JSON.stringify(durableControlPlaneState(wireIdentity)));
+        onSession = options.onSession;
+        options.onSession?.({ close });
+        if (recovered) {
+          recoveryControls.isAlive.mockImplementationOnce(() => new Promise(resolve => { finishInspection = resolve; }));
+          pendingInspection = transport.adoptExistingRunner!.inspect!();
+          await vi.waitFor(() => expect(finishInspection).toBeDefined());
+        }
+        return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+          turnId: f.native.turnId, normalizedSessionId: bound.session.normalizedSessionId,
+          providerSessionId: "retained-provider", driverKind: "test", driverVersion: "1",
+          nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+      });
+      await expect(executePaperclipNativeSession({ db, environmentRuntime: runtime, execution: bound, runnerInstanceId, useRunnerd: true,
+        ...(recovered ? { restartRecovery: f.claim, leaseOwner: f.claim.leaseOwner } : {}),
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId: f.environment.id,
+          ...(recovered ? { nativeRunnerRecovery: recoveryControls, getRunnerIngressEndpoint: vi.fn(async () => { throw new Error("Unexpected fixture ingress"); }) } : {}),
+          leaseId: f.lease.id, remoteCwd: "/workspace/app", runner: { execute: command } } as never })).resolves.toBeDefined();
+      if (recovered) {
+        finishInspection!(true);
+        await expect(pendingInspection).resolves.toBe("pending");
+        recoveryControls.isAlive.mockClear();
+      }
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(owner).toMatchObject({ leaseOwner: null, leaseExpiresAt: null, attempt: recovered ? 0 : 1, controllerGeneration: recovered ? 1 : 2 });
+      expect(lease!.metadata?.nativeWarmRunnerRetention).toMatchObject({ runId, companyId, agentId, issueId,
+        runnerInstanceId, runnerIdentity: wireIdentity, process: f.claim.kind === "reattach_existing_runner" ? f.claim.process : null,
+        controller: { attempt: owner!.attempt, generation: owner!.controllerGeneration, bootId: owner!.controllerBootId,
+          pid: owner!.controllerPid, processStartedAt: owner!.controllerProcessStartedAt!.toISOString() } });
+      const controls = recovered ? { inspect: () => transport.adoptExistingRunner!.inspect!() } : launchers.mock.calls.at(-1)![0].processControls!;
+      expect(controls).toBeDefined();
+      if (recovered) {
+        await expect(transport.adoptExistingRunner!.isAlive()).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        expect(recoveryControls.isAlive).not.toHaveBeenCalled(); expect(recoveryControls.readState).not.toHaveBeenCalled();
+      }
+      expect(await controls.inspect(process.remoteProcessIdentity)).toBe("pending");
+      if (mode !== "superseded") expect(await closeWarmNativeSessionsForEnvironment({ environmentId: f.environment.id, reason: "finalization pending" })).toEqual({ closed: 0, busy: 1, failed: 0 });
+      if (mode !== "operator") await new Promise(resolve => setTimeout(resolve, 200));
+      expect(close).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
+      await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, runId));
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+      expect(await controls.inspect(process.remoteProcessIdentity)).toBe("running");
+      if (recovered) {
+        expect(await transport.adoptExistingRunner!.isAlive()).toBe(true);
+        expect(recoveryControls.isAlive).not.toHaveBeenCalled(); expect(recoveryControls.readState).not.toHaveBeenCalled();
+      }
+      if (mode === "superseded") {
+        const nextRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, status: "running" });
+        await db.insert(environmentLeases).values({ companyId, environmentId: f.environment.id, provider: "daytona",
+          providerLeaseId: f.lease.providerLeaseId, heartbeatRunId: nextRunId, status: "active" });
+        await new Promise(resolve => setTimeout(resolve, 1_100));
+        expect(await controls.inspect(process.remoteProcessIdentity)).toBe("pending");
+        expect(close).not.toHaveBeenCalled(); expect(command).not.toHaveBeenCalled();
+        const [held] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        expect(held!.metadata).not.toHaveProperty("nativeWarmRunnerClose");
+        return;
+      }
+      if (mode === "operator") expect(await closeWarmNativeSessionsForEnvironment({ environmentId: f.environment.id, reason: "verified idle close" })).toEqual({ closed: 1, busy: 0, failed: 0 });
+      else await vi.waitFor(async () => {
+        const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        expect(current!.metadata?.nativeWarmRunnerClose).toMatchObject({ state: "closed" });
+      }, { timeout: 3_000, interval: 20 });
+      expect(close).toHaveBeenCalledOnce(); expect(command).not.toHaveBeenCalled();
+      const [closedLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      expect(closedLease!.metadata?.nativeWarmRunnerClose).toMatchObject({ state: "closed" });
+    } finally {
+      finishInspection?.(true);
+      await pendingInspection?.catch(() => undefined);
+      onSession?.(null);
+      launchers.mockRestore();
+      await database?.cleanup();
+      if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it.each(["fixture-sandbox", "daytona", "daytona-recovered"])("uses each %s warm run's ingress, state, process and checkpoint callbacks without reusing launch authority", async scenario => {
+    const recovered = scenario === "daytona-recovered", providerKey = scenario === "fixture-sandbox" ? scenario : "daytona";
+    const root = await mkdtemp(join(tmpdir(), "paperclip-warm-host-callbacks-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    process.env.PAPERCLIP_HOME = root;
+    const first = structuredClone(execution);
+    first.binding.companyId = randomUUID();
+    first.binding.runId = randomUUID();
+    first.binding.executionWorkspaceId = randomUUID();
+    first.session.normalizedSessionId = randomUUID();
+    first.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+    const runs = [first, ...Array.from({ length: 3 }, () => ({ ...structuredClone(first), binding: { ...first.binding, runId: randomUUID() } }))];
+    const environmentId = randomUUID(), physicalId = randomUUID(), replacementId = randomUUID();
+    const pluginId = randomUUID(), connection = { scopeId: randomUUID(), fingerprint: "a".repeat(64) };
+    const runnerInstanceId = randomUUID(), wireLeaseId = randomUUID();
+    const sessions = [{ close: vi.fn(async () => undefined) }, { close: vi.fn(async () => undefined) }];
+    const commandResult = (stdout = "", exitCode = 1): Awaited<ReturnType<CommandManagedRuntimeRunner["execute"]>> =>
+      ({ stdout, exitCode, timedOut: false, stderr: "", signal: null, pid: null, startedAt: null });
+    const commands = runs.map((run) => vi.fn(async (call: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) =>
+      call.env?.PAPERCLIP_REMOTE_PROCESS_CONTROL
+        ? commandResult(JSON.stringify({ state: JSON.parse(call.env.PAPERCLIP_REMOTE_PROCESS_CONTROL).operation.action === "inspect" ? "running" : "signalled" }), 0)
+        : call.args?.[1]?.startsWith("test -f '") && call.args[1].includes("runner-state.json' && base64 <")
+        ? commandResult(Buffer.from(JSON.stringify({ runId: run.binding.runId })).toString("base64"), 0)
+        : commandResult()));
+    const launchers = vi.spyOn(remoteRunnerProcessModule, "createRemoteRunnerProcessLauncher");
+    const idleInspections: string[] = [];
+    const retain = providerKey === "daytona" ? vi.spyOn(warmRetentionModule, "withNativeRemoteWarmRetention")
+      .mockImplementation(async (db, input, release) => release(db as never, { runId: input.execution.binding.runId } as never)) : null;
+    const idle = providerKey === "daytona" ? vi.spyOn(idleLifecycleModule, "createNativeRemoteIdleLifecycle")
+      .mockImplementation(async input => ({
+        controls: { inspect: async () => { idleInspections.push(input.retention.runId); return "running" as const; }, signal: async () => "signalled" as const,
+          readState: async () => ({ runId: input.retention.runId }) },
+        readState: async () => ({ runId: input.retention.runId }),
+        execute: async () => { throw new Error("No generic commands during idle"); }, status: async () => "ready" as const,
+        checkpoint: async () => { throw new Error("Unexpected checkpoint in this callback fixture"); },
+        close: async work => { await work(); return true; },
+      })) : null;
+    const endpointClose = vi.fn(async () => undefined), outboundClose = vi.fn(async () => undefined);
+    const endpoints = runs.map((run, index) => vi.fn(async () => ({ kind: "authenticated_websocket" as const,
+      websocketUrl: `wss://runner-${index}.example.test/api/runner/v1/connect/${run.binding.runId}`,
+      secretHeaders: [], generation: `run-${index}`, close: endpointClose })));
+    const connect = vi.spyOn(runnerIngressModule, "connectRunnerPrpIngress").mockReturnValue({
+      ready: Promise.resolve(), failure: new Promise<never>(() => {}), close: outboundClose,
+    } as never);
+    type Registration = NonNullable<NonNullable<Parameters<typeof import("../../vendor/paperclip-runner/index.js").createRunnerdCodexTransport>[0]>["controlPlaneRegistration"]>;
+    let firstRegistration: Registration | undefined;
+    type TransportOptions = NonNullable<Parameters<typeof import("../../vendor/paperclip-runner/index.js").createRunnerdCodexTransport>[0]>;
+    let firstTransport: TransportOptions;
+    let processRunner!: Pick<CommandManagedRuntimeRunner, "execute">;
+    let pendingRead: Promise<Record<string, unknown>> | undefined;
+    let finishPendingRead: ((result: Awaited<ReturnType<CommandManagedRuntimeRunner["execute"]>>) => void) | undefined;
+    const probe = { command: "node", args: ["process-probe"] };
+    let onSession: ((session: null) => void) | undefined;
+    let executing = 0;
+    const identity = (index: number) => ({ runId: runs[index]!.binding.runId, runnerInstanceId, environmentLeaseId: wireLeaseId,
+      normalizedSessionId: first.session.normalizedSessionId!, turnId: `turn-${index}`, itemId: `item-${index}` });
+    const controller = await currentNativeControllerIdentity();
+    const recoveryCoordinator = { leaseOwner: "recovered-warm-owner", leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerBootId: controller.bootId, controllerPid: controller.pid, controllerGeneration: 2 };
+    const recoveryProcess = { processLocation: "remote" as const, pid: 42, processGroupId: null, startedAt: new Date().toISOString(),
+      remoteProcessIdentity: { version: 1 as const, pid: 42, processGroupId: 42, uid: 1000, bootId: randomUUID(), startTicks: "100" },
+      environmentId, environmentLeaseId: "database-lease-0", providerLeaseId: physicalId, workspaceRoot: "/workspace/app",
+      configurationDigest: "b".repeat(64), workspaceConnection: connection };
+    const recoveryControls = { process: recoveryProcess, bindController: vi.fn(), isAlive: vi.fn(async () => true), signal: vi.fn(async () => true),
+      readState: vi.fn(async () => durableRunnerState(identity(0), "ready")) };
+    state.execute.mockReset().mockImplementation(async options => {
+      const index = executing++;
+      onSession = options.onSession;
+      if (index === 0) {
+        await state.createBackend.mock.calls.at(-1)![1].codexTransportFactory?.();
+        firstTransport = state.createTransport.mock.calls.at(-1)![0] as TransportOptions;
+        firstRegistration = firstTransport.controlPlaneRegistration;
+        if (!recovered) processRunner = launchers.mock.calls[0]![0].processRunner!;
+        expect(await firstTransport.readRunnerState!()).toMatchObject({ runId: first.binding.runId });
+        if (recovered) {
+          expect(firstTransport.runnerProcessLauncher).toBeUndefined();
+          expect(await firstTransport.adoptExistingRunner!.inspect!()).toBe("running");
+          recoveryControls.isAlive.mockRejectedValue(new Error("Retired recovery capability"));
+          recoveryControls.readState.mockRejectedValue(new Error("Retired recovery capability"));
+          recoveryControls.signal.mockRejectedValue(new Error("Retired recovery capability"));
+        }
+        commands[0]!.mockClear();
+      } else if (index < 3) {
+        expect(options.existingSession).toBe(sessions[0]);
+        const registration = await firstRegistration!({} as never, identity(index));
+        expect(registration.connection).toMatchObject({ mode: "listen", listenPath: `/api/runner/v1/connect/${runs[index]!.binding.runId}` });
+        expect(endpoints[index]).toHaveBeenCalledExactlyOnceWith({ leaseId: `database-lease-${index}`, port: 43127,
+          path: `/api/runner/v1/connect/${runs[index]!.binding.runId}` });
+        await registration.activate?.();
+        await registration.ready?.();
+        expect(commands[index]).not.toHaveBeenCalled();
+        expect(await firstTransport.readRunnerState!()).toEqual({ runId: runs[index]!.binding.runId });
+        if (recovered) {
+          expect(await firstTransport.adoptExistingRunner!.inspect!()).toBe("running");
+          expect(await firstTransport.adoptExistingRunner!.isAlive()).toBe(true);
+          expect(await firstTransport.adoptExistingRunner!.signal!("SIGTERM")).toBe(true);
+          expect(commands[index]!.mock.calls.at(-1)![0].env?.PAPERCLIP_REMOTE_PROCESS_CONTROL).toContain('"action":"signal"');
+        } else {
+          await processRunner.execute(probe);
+          expect(commands[index]).toHaveBeenLastCalledWith(probe);
+        }
+        await expect(firstTransport.prepareExternalRunnerState!()).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        await expect(firstTransport.archiveExternalRunnerState!({ archiveKey: "a".repeat(24), priorIdentity: identity(0) })).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        if (!recovered) expect(() => firstTransport.runnerProcessLauncher!({ command: "runner", args: [], cwd: "/workspace/app", environment: {} }))
+          .toThrow(NativeRunnerOwnershipUnverifiedError);
+        await registration.checkpoint?.("unsettled");
+        expect(commands[index]).toHaveBeenCalled();
+        expect(commands[0]).not.toHaveBeenCalled();
+        expect(endpoints[0]).not.toHaveBeenCalled();
+        await registration.release();
+        await expect(firstRegistration!({} as never)).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        await expect(firstRegistration!({} as never, identity(0))).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        if (index === 2) {
+          commands[index]!.mockImplementationOnce(() => new Promise(resolve => { finishPendingRead = resolve; }));
+          pendingRead = firstTransport.readRunnerState!();
+          void pendingRead.catch(() => undefined);
+        }
+      } else {
+        expect(options.existingSession).toBeUndefined();
+        // A replacement cannot receive callbacks from a retired process,
+        // even when a stale caller names the current run.
+        await expect(firstRegistration!({} as never, identity(index))).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        await expect(firstTransport.readRunnerState!()).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        if (recovered) {
+          await expect(firstTransport.adoptExistingRunner!.inspect!()).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+          await expect(firstTransport.adoptExistingRunner!.isAlive()).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+          await expect(firstTransport.adoptExistingRunner!.signal!("SIGTERM")).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        } else await expect(processRunner.execute(probe)).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+        finishPendingRead!(commandResult(Buffer.from(JSON.stringify({ runId: runs[2]!.binding.runId })).toString("base64"), 0));
+        await expect(pendingRead).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+      }
+      const [directory] = (await readdir(root, { withFileTypes: true })).filter(entry => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name));
+      const scopedRoot = join(root, directory!.name);
+      await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+      await mkdir(join(scopedRoot, "runner"), { recursive: true });
+      await writeFile(join(scopedRoot, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity(index))));
+      await writeFile(join(scopedRoot, "runner", "runner-state.json"), JSON.stringify(durableRunnerState(identity(index), "ready")));
+      options.onSession?.(sessions[index < 3 ? 0 : 1]);
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: `turn-${index}`, normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "same-provider",
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    try {
+      if (recovered) {
+        const controlPlane = join(root, nativeSha256({ schema: "paperclip.native-session-scope.v2", companyId: first.binding.companyId,
+          agentId: first.binding.agentId, workspace: { kind: "managed", executionWorkspaceId: first.binding.executionWorkspaceId },
+          provider: { driverKind: first.session.driverKind, identity: { kind: "codex" } }, normalizedSessionId: first.session.normalizedSessionId,
+        }), "control-plane");
+        await mkdir(controlPlane, { recursive: true });
+        await writeFile(join(controlPlane, "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity(0))));
+      }
+      for (const [index, run] of runs.entries()) {
+        const recovering = recovered && index === 0;
+        const base = leaseDb(run, recovering ? recoveryCoordinator : { controllerGeneration: 0 }, {}, [], {
+          nativeExecutionInput: runs[Math.max(0, index - 1)],
+          ...(recovering ? { sessionCheckpoint: { backendKind: "native", sessionId: "driver-session", providerSessionId: "same-provider",
+            identity: { ...run.binding, sessionId: run.session.normalizedSessionId } } } : {}),
+        }, { status: recovering ? "running" : "succeeded", nativeSessionId: run.session.normalizedSessionId, runnerInstanceId,
+          completionContractId: run.completionContract.id, completionContractSha256: run.completionContract.sha256 });
+        const db = { ...base, select: () => ({ from: (table: unknown) => {
+          if (table !== environmentLeases) return base.select().from(table as never);
+          const rows = [{ provider: providerKey, providerLeaseId: index < 3 ? physicalId : replacementId, environmentId, metadata: {
+            pluginId, runtimeServiceRunScope: { version: 1, companyId: first.binding.companyId, environmentId,
+              executionWorkspaceId: first.binding.executionWorkspaceId, pluginId, configurationDigest: "b".repeat(64), connection },
+          } }];
+          const query = { where: () => query, then: Promise.resolve(rows).then.bind(Promise.resolve(rows)) };
+          return query;
+        } }) } as unknown as Db;
+        await executePaperclipNativeSession({ db, execution: run, runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
+          ...(recovering ? { leaseOwner: recoveryCoordinator.leaseOwner, restartRecovery: { kind: "reattach_existing_runner" as const,
+            runId: run.binding.runId, leaseOwner: recoveryCoordinator.leaseOwner, controllerGeneration: recoveryCoordinator.controllerGeneration,
+            providerAttempt: 0, restartKind: "hard" as const, recoveryRequestId: null, process: recoveryProcess } } : {}),
+          ...(providerKey === "daytona" ? { environmentRuntime: {} as idleLifecycleModule.NativeRemoteIdleRuntime } : {}),
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey, environmentId,
+            leaseId: `database-lease-${index}`, remoteCwd: "/workspace/app", effectiveCapabilities: { runnerWebSocketIngress: true },
+            ...(recovering ? { nativeRunnerRecovery: recoveryControls } : {}),
+            getRunnerIngressEndpoint: endpoints[index], runner: { execute: commands[index] } } as never });
+        if (providerKey === "daytona" && index < 3) {
+          const controls = recovered ? { inspect: () => firstTransport.adoptExistingRunner!.inspect!() } : launchers.mock.calls[0]![0].processControls!;
+          expect(await controls.inspect({ version: 1, pid: 42, uid: 1000, processGroupId: 42, bootId: randomUUID(), startTicks: "100" })).toBe("running");
+          expect(idleInspections.at(-1)).toBe(run.binding.runId);
+          if (!recovered) await expect(processRunner.execute(probe)).rejects.toThrow("No generic commands during idle");
+        }
+      }
+      expect(connect).toHaveBeenCalledTimes(2);
+      expect(outboundClose).toHaveBeenCalledTimes(2);
+      expect(sessions[0]!.close).toHaveBeenCalledExactlyOnceWith({ reason: "warm native session configuration changed" });
+      expect(commands[3]).not.toHaveBeenCalled();
+    } finally {
+      onSession?.(null);
+      finishPendingRead?.(commandResult());
+      await pendingRead?.catch(() => undefined);
+      launchers.mockRestore();
+      retain?.mockRestore(); idle?.mockRestore();
+      connect.mockRestore();
+      if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reuses one session across distinct governed runs and closes it after idle expiry", async () => {
     const close = vi.fn(async () => undefined);
     const sharedSession = { close };
+    const firstSpawn = vi.fn(async () => {}), secondSpawn = vi.fn(async () => {});
+    let reportProcess: BackendFactoryOptions["onSpawn"];
     const base = {
       ...execution,
       binding: {
@@ -5426,24 +6224,33 @@ describe("native warm session supervision", () => {
       .mockReset()
       .mockImplementationOnce(async (options) => {
         expect(options.existingSession).toBeUndefined();
+        reportProcess = options.backend.onSpawn;
+        await reportProcess!({ pid: process.pid, processGroupId: null, startedAt: new Date().toISOString() });
         options.onSession?.(sharedSession);
         return result;
       })
       .mockImplementationOnce(async (options) => {
         expect(options.existingSession).toBe(sharedSession);
+        expect(secondSpawn).toHaveBeenCalledOnce();
+        await reportProcess!({ pid: process.pid, processGroupId: null, startedAt: new Date().toISOString() });
         return result;
       });
+    state.createBackend.mockImplementationOnce((_input, options) => ({ kind: "test", onSpawn: options.onSpawn }))
+      .mockImplementationOnce((_input, options) => ({ kind: "test", onSpawn: options.onSpawn }));
 
     await executePaperclipNativeSession({
       db: leaseDb(base),
       execution: base,
       runnerInstanceId: "runner",
+      onSpawn: firstSpawn,
     });
     await executePaperclipNativeSession({
       db: leaseDb(second),
       execution: second,
       runnerInstanceId: "runner",
+      onSpawn: secondSpawn,
     });
+    expect(firstSpawn).toHaveBeenCalledOnce(); expect(secondSpawn).toHaveBeenCalledTimes(2);
     expect(close).not.toHaveBeenCalled();
     await vi.waitFor(
       () =>
@@ -5517,6 +6324,7 @@ describe("native warm session supervision", () => {
 
   it.each(
     [
+      ...["changed", "missing"].map((physicalScope) => ({ firstBroker: false, secondBroker: false, projectless: false, local: false, firstMode: "host", secondMode: "host", physicalScope })),
       ...[
         { firstBroker: false, secondBroker: false },
         { firstBroker: false, secondBroker: true },
@@ -5577,13 +6385,14 @@ describe("native warm session supervision", () => {
         })),
       ),
     ].map((scenario) => ({
+      physicalScope: "same",
       firstNetwork: "disabled",
       secondNetwork: "disabled",
       checkpointContract: "valid",
       ...scenario,
     })),
   )(
-    "verifies a live warm owner before refreshing run authority (broker: $firstBroker -> $secondBroker, projectless: $projectless, local: $local, auth: $firstMode -> $secondMode, network: $firstNetwork -> $secondNetwork, checkpoint: $checkpointContract)",
+    "verifies a live warm owner before refreshing run authority (broker: $firstBroker -> $secondBroker, projectless: $projectless, local: $local, auth: $firstMode -> $secondMode, network: $firstNetwork -> $secondNetwork, checkpoint: $checkpointContract, physical: $physicalScope)",
     async ({
       firstBroker,
       secondBroker,
@@ -5594,12 +6403,13 @@ describe("native warm session supervision", () => {
       firstNetwork,
       secondNetwork,
       checkpointContract,
+      physicalScope,
     }) => {
       const replacesProvider =
         firstBroker ||
         secondBroker ||
         firstMode !== secondMode ||
-        firstNetwork !== secondNetwork;
+        firstNetwork !== secondNetwork || physicalScope !== "same";
       const stateBase = await mkdtemp(
         join(tmpdir(), "paperclip-runnerd-warm-authority-"),
       );
@@ -5651,10 +6461,18 @@ describe("native warm session supervision", () => {
               kind: "remote" as const,
               transport: "sandbox" as const,
               environmentId: "environment-runnerd-warm-authority",
+              providerKey: "fixture-sandbox",
+              leaseId: "lease-runnerd-warm-authority",
               remoteCwd: "/home/daytona/paperclip-workspace",
               runner: { execute: vi.fn() },
             }
       ) as never;
+      const withPhysicalLease = (base: Db, next = false): Db => local ? base : ({ ...base, select: () => ({ from: (table: unknown) => {
+        if (table !== environmentLeases) return base.select().from(table as never);
+        const rows = next && physicalScope === "missing" ? [] : [{ provider: "fixture-sandbox", providerLeaseId: next && physicalScope === "changed" ? "new-physical-sandbox" : "ef9b539c-4c7c-4d3d-ac9e-2f7f83b4e9c4", environmentId: "environment-runnerd-warm-authority", metadata: {} }];
+        const query = { then: Promise.resolve(rows).then.bind(Promise.resolve(rows)), where: () => query, limit: () => Promise.resolve(rows) };
+        return query;
+      } }) } as unknown as Db);
       const result = {
         result: { summary: "completed" },
         terminal: { runTerminalState: "succeeded" },
@@ -5713,7 +6531,7 @@ describe("native warm session supervision", () => {
 
       try {
         await executePaperclipNativeSession({
-          db: leaseDb(first),
+          db: withPhysicalLease(leaseDb(first)),
           execution: first,
           runnerEnvironment: {
             PAPERCLIP_GITHUB_AUTH_MODE: firstMode,
@@ -5807,7 +6625,7 @@ describe("native warm session supervision", () => {
           }),
         } as unknown as Db;
         await executePaperclipNativeSession({
-          db: continuationDb,
+          db: withPhysicalLease(continuationDb, true),
           execution: second,
           runnerEnvironment: {
             PAPERCLIP_GITHUB_AUTH_MODE: secondMode,
@@ -6285,9 +7103,10 @@ describe("native session bounded recovery", () => {
     }
   });
 
-  it.each(["persisted", "logging_failure", "recovery_write_failure"])(
-    "signals an ownership hold instead of terminal teardown after authentication timeout (%s)",
-    async (failureMode) => {
+  it.each(["authentication", "remote_capability", "typed_remote"].flatMap(errorKind =>
+    ["persisted", "logging_failure", "recovery_write_failure"].map(failureMode => ({ errorKind, failureMode }))))(
+    "signals an ownership hold instead of teardown after $errorKind ($failureMode)",
+    async ({ errorKind, failureMode }) => {
       const updates: Array<{
         table: unknown;
         values: Record<string, unknown>;
@@ -6295,7 +7114,9 @@ describe("native session bounded recovery", () => {
       state.execute
         .mockReset()
         .mockRejectedValueOnce(
-          new Error(
+          errorKind === "typed_remote" ? new NativeRunnerOwnershipUnverifiedError("remote_runner_reattachment_unavailable")
+          : errorKind === "remote_capability" ? new Error("native_session_recovery_failed: native_remote_runner_recovery_unverified")
+          : new Error(
             "native_adopted_runner_authentication_timeout: retained runner did not authenticate",
           ),
         );
@@ -6318,7 +7139,8 @@ describe("native session bounded recovery", () => {
               }
             : {}),
         }),
-      ).rejects.toBeInstanceOf(NativeRunnerOwnershipUnverifiedError);
+      ).rejects.toMatchObject({ name: "NativeRunnerOwnershipUnverifiedError", reason: errorKind === "authentication"
+        ? "adopted_runner_authentication_timeout" : "remote_runner_reattachment_unavailable" });
       expect(updates.filter((entry) => entry.table === issues)).toEqual([]);
       if (failureMode !== "logging_failure") {
         expect(
@@ -6376,6 +7198,15 @@ describe("native session bounded recovery", () => {
       recoveryActionCause: "native_adopted_runner_authentication_timeout",
     });
   });
+
+  it.each(["native_execution_ownership_unverified", "native_remote_runner_recovery_unverified", "native_adopted_runner_requires_resume", "native_adopted_runner_identity_unverifiable"])(
+    "preserves ownership and task status for wrapped %s failures", message => {
+      const code = nativeSessionFailureSourceCode(new Error(`native_session_recovery_failed: ${message}`));
+      expect(code).toBe("native_execution_ownership_unverified");
+      const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+      expect(disposition).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
+      expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({ issueStatus: null, recoveryOwner: { kind: "board" } });
+    });
 
   it("preserves stable provider and runner failure causes", () => {
     expect(
@@ -6660,7 +7491,7 @@ describe("native process ownership", () => {
       const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
       state.createBackend.mockClear();
       await expect(executePaperclipNativeSession({
-        db: leaseDb(execution, {}, {}, updates, {}, status), execution, runnerInstanceId: "late-startup",
+        db: leaseDb(execution, {}, {}, updates, {}, {}, status), execution, runnerInstanceId: "late-startup",
       })).rejects.toThrow();
       expect(state.createBackend).not.toHaveBeenCalled();
       expect(updates.some(update => update.table === nativeRunFinalizations)).toBe(false);

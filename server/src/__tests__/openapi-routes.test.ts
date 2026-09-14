@@ -61,6 +61,9 @@ const apiPrefixes: Record<string, string> = {
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
+  "runtime-services.ts": "/api",
+  "runtime-service-tools.ts": "/api",
+  "../services/runtime-services/preview-gateway.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
@@ -73,7 +76,7 @@ const apiPrefixes: Record<string, string> = {
 };
 
 const ROUTE_LITERAL_PATTERN =
-  /router\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
+  /(?:router|routes|publicRoutes)\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
 const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
 const HTTP_METHODS = new Set([
   "get",
@@ -128,6 +131,7 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "runtime-service-tools.ts" || routePath.startsWith("/runtime-previews/shared/")) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
@@ -160,9 +164,9 @@ function loadActualRoutes() {
   const excludedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
 
-  for (const file of fs
+  for (const file of [...fs
     .readdirSync(ROUTES_DIR)
-    .filter((entry) => entry.endsWith(".ts"))) {
+    .filter((entry) => entry.endsWith(".ts")), "../services/runtime-services/preview-gateway.ts"]) {
     if (explicitOpenApiCoverageExclusions.has(file)) continue;
     const prefix = apiPrefixes[file];
     const source = fs.readFileSync(path.join(ROUTES_DIR, file), "utf8");
@@ -676,6 +680,31 @@ describe("openapi routes", () => {
     ).toBeUndefined();
   });
 
+  it("describes service acceptance, private DTOs and separate preview/tool authority", () => {
+    const spec = buildOpenApiSpec() as any;
+    const base = "/api/companies/{companyId}/runtime-services";
+    const detail = `${base}/{serviceId}`;
+    for (const path of [base, `${detail}/control`]) {
+      expect(spec.paths[path].post.responses["202"]).toBeDefined();
+      expect(spec.paths[path].post.responses["200"]).toBeUndefined();
+    }
+    const service = spec.paths[detail].get.responses["200"].content["application/json"].schema;
+    expect(service.required).toEqual(expect.arrayContaining(["id", "revision", "state", "desiredState", "retention", "endpoints"]));
+    for (const privateField of ["spec", "processRef", "env", "metadata"]) expect(service.properties[privateField]).toBeUndefined();
+    for (const path of [`${detail}/environment`, `${detail}/shares`, `${detail}/shares/{shareId}`]) {
+      for (const operation of Object.values(spec.paths[path]) as any[]) {
+        expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      }
+    }
+    for (const path of ["/runtime-tools/services/call", "/mcp/runtime-services"]) {
+      expect(spec.paths[path].post.security).toEqual([{ RuntimeServicesBearerAuth: [] }]);
+      expect(spec.paths[path].post["x-paperclip-authorization"]).toEqual({ actor: "runtime_tools", heartbeatBound: true, scope: "runtime_services" });
+    }
+    expect(spec.paths["/mcp/runtime-services"].get.responses["405"]).toBeDefined();
+    expect(spec.paths["/runtime-previews/shared/{serviceId}/{endpoint}/{token}"].get.security).toEqual([]);
+    expect(spec.paths[`${detail}/preview-access`].get.responses["303"]).toBeDefined();
+  });
+
   it("covers the mounted server routes exactly", () => {
     const {
       routes: actualRoutes,
@@ -717,6 +746,16 @@ describe("openapi routes", () => {
     }
     expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
     expect(replacement.responses["422"]).toBeDefined();
+  });
+
+  it.each(["attach-task", "detach-task"])("documents %s as a board-only, revision-checked operation", (action) => {
+    const { spec } = loadSpecRoutes();
+    const attachment = spec.paths[`/api/companies/{companyId}/runtime-services/{serviceId}/${action}`].post;
+    expect(attachment.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(attachment["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(attachment.requestBody.content["application/json"].schema.required).toEqual(expect.arrayContaining(["issueId", "requestId", "expectedRevision"]));
+    expect(attachment.responses["200"]).toBeDefined();
+    expect(attachment.responses["409"]).toBeDefined();
   });
 
   it("documents auth and reviewed response-code invariants", () => {

@@ -52,6 +52,7 @@ import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { RemoteRunnerRecoveryProcess } from "./native-runtime/remote-runner-recovery.js";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -210,6 +211,8 @@ export function environmentRunOrchestrator(
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     adapterType: string | null;
+    runtimeServiceExecutionPolicy?: Record<string, unknown>;
+    recoveryProcess?: RemoteRunnerRecoveryProcess;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -270,6 +273,8 @@ export function environmentRunOrchestrator(
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+    runtimeServiceExecutionPolicy?: Record<string, unknown>;
+    recoveryProcess?: RemoteRunnerRecoveryProcess;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const environment = await resolveEnvironment({
@@ -288,6 +293,8 @@ export function environmentRunOrchestrator(
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       adapterType: input.adapterType ?? null,
+      runtimeServiceExecutionPolicy: input.runtimeServiceExecutionPolicy,
+      recoveryProcess: input.recoveryProcess,
     });
 
     // Step 3: Log lease acquisition activity
@@ -297,7 +304,7 @@ export function environmentRunOrchestrator(
       actorId: input.agentId,
       agentId: input.agentId,
       runId: input.heartbeatRunId,
-      action: "environment.lease_acquired",
+      action: input.recoveryProcess ? "environment.lease_reattached" : "environment.lease_acquired",
       entityType: "environment_lease",
       entityId: leaseRecord.lease.id,
       issueId: input.issueId,
@@ -350,6 +357,7 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    recoveryProcess?: RemoteRunnerRecoveryProcess;
     /**
      * The host duplex observability recorder for this run. The orchestrator threads
      * it to `resolveEnvironmentExecutionTarget`, which stamps it on the sandbox
@@ -384,7 +392,15 @@ export function environmentRunOrchestrator(
     // Step 2: Realize workspace in the environment via the runtime driver
     let workspaceRealization: Record<string, unknown> = {};
     let realizedWorkspaceCwd: string | null = null;
-    if (ENVIRONMENT_DRIVER_TRAITS[environment.driver].realizesWorkspace) {
+    if (input.recoveryProcess) {
+      if (environment.driver !== "sandbox" || input.recoveryProcess.environmentLeaseId !== lease.id
+        || input.recoveryProcess.environmentId !== environment.id || input.recoveryProcess.providerLeaseId !== lease.providerLeaseId
+        || lease.companyId !== companyId || lease.heartbeatRunId !== heartbeatRunId
+        || lease.metadata?.remoteCwd !== input.recoveryProcess.workspaceRoot) throw new Error("native_remote_runner_recovery_lease_mismatch");
+      workspaceRealization = parseObject(lease.metadata?.workspaceRealization);
+      if (workspaceRealization.mode !== "in_place" && workspaceRealization.mode !== "copy") throw new Error("native_remote_runner_recovery_workspace_unverified");
+      realizedWorkspaceCwd = input.recoveryProcess.workspaceRoot;
+    } else if (ENVIRONMENT_DRIVER_TRAITS[environment.driver].realizesWorkspace) {
       try {
         const remoteCwd =
           typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
@@ -485,7 +501,7 @@ export function environmentRunOrchestrator(
     }
 
     // Step 3: Persist realization metadata on lease and execution workspace
-    if (Object.keys(workspaceRealization).length > 0) {
+    if (!input.recoveryProcess && Object.keys(workspaceRealization).length > 0) {
       const nextLeaseMetadata = {
         ...(lease.metadata ?? {}),
         workspaceRealization,
@@ -520,6 +536,7 @@ export function environmentRunOrchestrator(
         leaseMetadata: (lease.metadata as Record<string, unknown> | null) ?? null,
         lease,
         environmentRuntime,
+        recoveryProcess: input.recoveryProcess,
         duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       });
       const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";

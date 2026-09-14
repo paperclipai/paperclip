@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,8 +11,10 @@ import {
   classifyNativeWorkspaceInbound,
   nativeWorkspaceSyncInternals,
   readNativeWorkspaceSyncReference,
+  prepareNativeWorkspaceSync,
   resumeNativeWorkspaceSync,
 } from "../services/native-runtime/native-workspace-sync.js";
+import { captureNativeHostWorkspaceReceipt } from "../services/native-runtime/native-host-workspace-receipt.js";
 
 const digest = "a".repeat(64);
 
@@ -32,6 +34,27 @@ describe("native workspace sync durable metadata", () => {
         .splice(0)
         .map((directory) => rm(directory, { recursive: true, force: true })),
     );
+  });
+
+  it.each(["missing_reference", "allocation", "lease", "workspace"])("never stages a retained runner when %s invalidates its sync binding", async cause => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-sync-adoption-")); cleanupDirs.push(root); process.env.PAPERCLIP_HOME = root;
+    const reference = { schema: "paperclip.native-workspace-sync/v1", state: "prepared", descriptorSha256: digest, baselineSha256: digest,
+      finalHostSha256: null, workspaceId: "workspace", leaseId: "lease", providerLeaseId: "allocation", remoteCwd: "/workspace", resourceDisposition: null };
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ runnerProfileJson: {
+      nativeWorkspaceSync: cause === "missing_reference" ? null : reference,
+    } }] }) }) }) } as unknown as Parameters<typeof prepareNativeWorkspaceSync>[0]["db"];
+    const execute = vi.fn(async () => { throw new Error("Unexpected staging command"); });
+    await expect(prepareNativeWorkspaceSync({ db, runId: "run", companyId: "company", workspaceId: "workspace", workspaceLocalDir: root,
+      target: { kind: "remote", transport: "sandbox", providerKey: "daytona", leaseId: cause === "lease" ? "replacement" : "lease",
+        remoteCwd: cause === "workspace" ? "/replacement" : "/workspace", runner: { execute } },
+      lease: { id: "lease", providerLeaseId: cause === "allocation" ? "replacement" : "allocation" } as Parameters<typeof prepareNativeWorkspaceSync>[0]["lease"],
+      restartRecovery: { kind: "reattach_existing_runner", runId: "run", leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 0,
+        restartKind: "hard", recoveryRequestId: null, process: { processLocation: "remote", pid: 40, processGroupId: null, startedAt: new Date().toISOString(),
+          remoteProcessIdentity: { version: 1, pid: 40, processGroupId: 40, uid: 1000, bootId: "boot", startTicks: "100" }, environmentLeaseId: "lease",
+          providerLeaseId: "allocation", environmentId: "environment", workspaceRoot: "/workspace", configurationDigest: digest,
+          workspaceConnection: { scopeId: "run", fingerprint: digest } } },
+    })).rejects.toThrow("native_remote_runner_recovery_workspace_unverified");
+    expect(execute).not.toHaveBeenCalled(); expect(await readdir(root)).toEqual([]);
   });
 
   it("classifies fresh, warm, replacement, and same-run recovery inputs", () => {
@@ -63,6 +86,7 @@ describe("native workspace sync durable metadata", () => {
         hasPriorStamp: true,
       }),
     ).toBe("host_current");
+    expect(classifyNativeWorkspaceInbound({ kind: "new_run", acquisition: "resumed", hasPriorStamp: false, retainedServiceWorkspace: true })).toBe("adopt_remote");
     expect(
       classifyNativeWorkspaceInbound({
         kind: "existing_run",
@@ -195,6 +219,18 @@ describe("native workspace sync durable metadata", () => {
         reference: first,
       }),
     ).resolves.toMatchObject({ descriptor });
+
+    await mkdir(descriptor.binding.localCwd);
+    const hostWorkspace = await captureNativeHostWorkspaceReceipt(descriptor.binding.localCwd);
+    const withReceipt = await nativeWorkspaceSyncInternals.writeDescriptor({ ...descriptor, hostWorkspace });
+    expect(withReceipt.descriptorSha256).not.toBe(first.descriptorSha256);
+    expect(JSON.stringify(withReceipt)).not.toContain(descriptor.binding.localCwd);
+    await expect(nativeWorkspaceSyncInternals.readDescriptor({ runId: descriptor.binding.runId, reference: withReceipt }))
+      .resolves.toMatchObject({ descriptor: { ...descriptor, hostWorkspace } });
+    const misbound = await nativeWorkspaceSyncInternals.writeDescriptor({ ...descriptor,
+      hostWorkspace: { ...hostWorkspace, cwd: path.join(paperclipHome, "different-workspace") } });
+    await expect(nativeWorkspaceSyncInternals.readDescriptor({ runId: descriptor.binding.runId, reference: misbound }))
+      .rejects.toThrow("native_workspace_sync_descriptor_binding_mismatch");
   });
 
   it("repairs finalized remote and lease stamps after an interrupted commit", async () => {

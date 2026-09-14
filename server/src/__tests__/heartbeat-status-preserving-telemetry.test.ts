@@ -101,6 +101,7 @@ describeEmbeddedPostgres(
         runtimeMode: "native",
         nativeIssueId: issueId,
         processPid: process.pid,
+        processLocation: "local",
         contextSnapshot: { issueId },
       });
       await db.insert(nativeRunFinalizations).values({

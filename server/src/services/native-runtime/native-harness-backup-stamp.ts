@@ -145,6 +145,7 @@ export function createNativeHarnessBackupStamp(input: {
 export function verifyNativeHarnessBackupStamp(
   value: unknown,
   expectedProviderLeaseId: string,
+  suspendedRunnerIdentity?: Record<string, unknown>,
 ): boolean {
   if (!expectedProviderLeaseId) return false;
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -218,6 +219,15 @@ export function verifyNativeHarnessBackupStamp(
           valid = false;
           break;
         }
+      }
+      if (valid && suspendedRunnerIdentity) {
+        const runnerPath = resolve(candidate, "runner", "runner-state.json");
+        if (!isRealFile(runnerPath)) continue;
+        const runner = JSON.parse(readFileSync(runnerPath, "utf8")) as Record<string, unknown>;
+        valid = runner.schema === "paperclip.runner.durable.state.v1" && runner.lifecycle === "suspended"
+          && ["runId", "runnerInstanceId", "normalizedSessionId", "environmentLeaseId", "turnId", "itemId"]
+            .every(key => typeof suspendedRunnerIdentity[key] === "string" && suspendedRunnerIdentity[key] !== ""
+              && runner[key] === suspendedRunnerIdentity[key]);
       }
       if (valid) return true;
     } catch {

@@ -1,6 +1,9 @@
+import { runtimeServiceToolRoutes } from "./routes/runtime-service-tools.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
+import { createRuntimeServiceApplication } from "./services/runtime-services/application.js";
+import { runtimeServiceRoutes } from "./routes/runtime-services.js";
 import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
 import express, { Router, type Request as ExpressRequest } from "express";
@@ -497,6 +500,20 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
+  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const runtimeServiceApplication = createRuntimeServiceApplication(db, {
+    pluginWorkerManager: workerManager,
+    onError: () => logger.error("Runtime service reconciliation failed; the controller will retry"),
+    allowLocalBoard: opts.deploymentMode === "local_trusted",
+    boardBaseURL: () => opts.authPublicBaseUrl || process.env.PAPERCLIP_API_URL || "",
+  });
+  app.locals.runtimeServiceApplication = runtimeServiceApplication;
+  // Untrusted apps own every path on their preview host, including /api.
+  // Route before body parsing, logging, auth and all control-plane handlers.
+  if (runtimeServiceApplication.preview) {
+    app.use(runtimeServiceApplication.preview.middleware);
+    app.use(runtimeServiceApplication.preview.publicRoutes);
+  }
   const captureRawBody = (
     req: express.Request,
     _res: express.Response,
@@ -552,6 +569,7 @@ export async function createApp(
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
+  app.use(runtimeServiceToolRoutes(db, runtimeServiceApplication.operations));
   app.use(runtimeConnectionIntentRoutes(db));
   app.use(
     actorMiddleware(db, {
@@ -570,7 +588,6 @@ export async function createApp(
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
@@ -746,6 +763,8 @@ export async function createApp(
     }),
   );
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(runtimeServiceRoutes(db, runtimeServiceApplication));
+  if (runtimeServiceApplication.preview) api.use(runtimeServiceApplication.preview.routes);
   api.use(emailRoutes(db, emailChannels));
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
@@ -1306,6 +1325,7 @@ export async function createApp(
       hostServiceCleanup.disposeAll();
       hostServiceCleanup.teardown();
       await emailChannels.shutdown();
+      await runtimeServiceApplication.stop();
       await chatChannels.shutdown();
       // Cancel every live setup-token login session and AWAIT the cancellation,
       // so each direct child stops and the server releases each lease before the

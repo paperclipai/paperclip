@@ -953,6 +953,7 @@ async function startServerWithDatabaseTeardown(
 
   let startupListenerBound = false;
   try {
+  app.locals.runtimeServiceApplication?.preview?.attach(server);
   setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
@@ -1173,6 +1174,7 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
+  app.locals.runtimeServiceApplication.start();
   executionControlInterval.unref?.();
   sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
@@ -1443,10 +1445,11 @@ async function startServerWithDatabaseTeardown(
         try {
           const nativeRecovery =
             await heartbeat.recoverNativeRunsAfterRestart();
-          if (nativeRecovery.dispositions.length > 0) {
+          if (nativeRecovery.dispositions.length > 0 || nativeRecovery.idleRecovery.results.length > 0) {
             logger.info(
               {
                 restartKind: nativeRecovery.restartKind,
+                idleRecovery: nativeRecovery.idleRecovery.results,
                 claims: nativeRecovery.claims.map((claim) => ({
                   runId: claim.runId,
                   disposition: claim.kind,

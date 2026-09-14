@@ -86,6 +86,8 @@ import {
   resolvePaperclipInstanceRoot,
 } from "../home-paths.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
+import { seedRemoteDispatchFixture } from "../services/native-runtime/remote-dispatch.test-fixture.js";
+import { buildEnvironmentLeaseContext, type EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../services/native-runtime/native-runner-ownership.js";
 import {
@@ -119,6 +121,9 @@ const mockRetainedNativeCleanup = vi.hoisted(() =>
     typeof import("../services/native-runtime/native-session-executor.js").reconcileRetainedNativeSessionCleanup
   >(),
 );
+const mockRetainedNativeRecovery = vi.hoisted(() =>
+  vi.fn<typeof import("../services/native-runtime/native-session-executor.js").recoverRetainedRemoteNativeSessions>(),
+);
 const mockExecutePaperclipNativeSession = vi.hoisted(() =>
   vi.fn<
     typeof import("../services/native-runtime/native-session-executor.js").executePaperclipNativeSession
@@ -147,6 +152,7 @@ vi.mock("../services/native-runtime/native-session-executor.js", async () => {
   mockRetainedNativeCleanup.mockImplementation(
     actual.reconcileRetainedNativeSessionCleanup,
   );
+  mockRetainedNativeRecovery.mockImplementation(actual.recoverRetainedRemoteNativeSessions);
   mockExecutePaperclipNativeSession.mockImplementation(
     actual.executePaperclipNativeSession,
   );
@@ -155,6 +161,7 @@ vi.mock("../services/native-runtime/native-session-executor.js", async () => {
   return {
     ...actual,
     reconcileRetainedNativeSessionCleanup: mockRetainedNativeCleanup,
+    recoverRetainedRemoteNativeSessions: mockRetainedNativeRecovery,
     executePaperclipNativeSession: mockExecutePaperclipNativeSession,
     detachNativeSessionsForRestart: mockDetachNativeSessionsForRestart,
     closeIdleWarmNativeSessionsForRestart: mockCloseIdleWarmNativeSessionsForRestart,
@@ -476,6 +483,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockRetainedNativeCleanup
       .mockReset()
       .mockImplementation(nativeExecutor.reconcileRetainedNativeSessionCleanup);
+    mockRetainedNativeRecovery.mockReset().mockImplementation(nativeExecutor.recoverRetainedRemoteNativeSessions);
     const localServiceSupervisor = await vi.importActual<
       typeof import("../services/local-service-supervisor.js")
     >("../services/local-service-supervisor.js");
@@ -662,6 +670,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus?: "running" | "queued" | "failed" | "interrupted";
     processPid?: number | null;
     processGroupId?: number | null;
+    processLocation?: "local" | "remote" | null;
     processLossRetryCount?: number;
     runtimeMode?: "legacy" | "native";
     includeIssue?: boolean;
@@ -724,6 +733,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           : { ...(input?.contextSnapshot ?? {}), issueId },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
+      // This fixture launches host processes; legacy location uncertainty must be explicit.
+      processLocation: input?.processLocation === undefined ? "local" : input.processLocation,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       errorCode: input?.runErrorCode ?? null,
@@ -1663,6 +1674,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
   });
 
+  it("joins retained session startup recovery, retries on reaping, and keeps drain waiting for the provider", async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const retainedRunId = randomUUID();
+    mockRetainedNativeRecovery.mockImplementationOnce(async input => {
+      expect(input.db).toBe(db);
+      await held;
+      return { results: [{ runId: retainedRunId, state: "unavailable" }] };
+    });
+    const heartbeat = heartbeatService(db);
+    const startup = heartbeat.recoverNativeRunsAfterRestart();
+    let drain: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(mockRetainedNativeRecovery).toHaveBeenCalledTimes(1));
+      expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+      expect(mockRetainedNativeRecovery).toHaveBeenCalledTimes(1);
+      let drained = false;
+      drain = heartbeat.drainActiveRunExecutions().then(() => { drained = true; });
+      await heartbeat.getRun(retainedRunId);
+      expect(drained).toBe(false);
+      expect(heartbeat.getTaskDrainStatus().quiescent).toBe(false);
+      release();
+      expect((await startup).idleRecovery.results).toEqual([{ runId: retainedRunId, state: "unavailable" }]);
+      await drain;
+      mockRetainedNativeRecovery.mockResolvedValueOnce({ results: [{ runId: retainedRunId, state: "recovered" }] });
+      expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+      await heartbeat.drainActiveRunExecutions();
+      expect(mockRetainedNativeRecovery).toHaveBeenCalledTimes(2);
+      expect(mockExecutePaperclipNativeSession).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await startup;
+      await drain;
+      await heartbeat.drainActiveRunExecutions();
+    }
+  });
+
   it("waits for a terminal predecessor's environment lease to be released", async () => {
     const { companyId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "interrupted" });
     await db.update(heartbeatRuns).set({ resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
@@ -2355,6 +2403,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it.each([
+    { name: "reported remote PID collides with a host process", pid: process.pid, legacy: false },
+    { name: "reported remote PID is absent on the host", pid: 999_999_999, legacy: false },
+    { name: "older sandbox row has no process namespace", pid: process.pid, legacy: true, hasLease: true },
+    { name: "older row has no remaining environment history", pid: process.pid, legacy: true },
+  ])("keeps orphan recovery pending when $name", async ({ pid, legacy, hasLease }) => {
+    const fixture = await seedRunFixture({ agentStatus: "idle", processPid: pid, processGroupId: pid, processLocation: null });
+    if (hasLease) await seedEnvironmentLeaseFixture({ ...fixture, provider: "daytona", driver: "sandbox" });
+    if (!legacy) await db.update(heartbeatRuns).set({ processLocation: "remote" }).where(eq(heartbeatRuns.id, fixture.runId));
+    const heartbeat = heartbeatService(db);
+    const kill = vi.spyOn(process, "kill");
+    try {
+      expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+      expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+      expect(kill.mock.calls.filter(([candidate]) => candidate === pid || candidate === -pid)).toEqual([]);
+    } finally { kill.mockRestore(); }
+    const run = await heartbeat.getRun(fixture.runId);
+    expect(run).toMatchObject({ status: "running", processPid: pid, errorCode: "remote_execution_ownership_unverified" });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(1); expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, fixture.runId),
+      eq(heartbeatRunEvents.eventType, "recovery.remote_process_verification_required")));
+    expect(events).toHaveLength(1);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(issue?.executionRunId).toBe(fixture.runId);
+  });
+
+  it.each([process.pid, null])("does not dispatch a retryable remote native run from host PID evidence (%s)", async pid => {
+    const fixture = await seedRunFixture({ adapterType: "paperclip_runner", runtimeMode: "native", agentStatus: "idle", processPid: pid });
+    await db.update(heartbeatRuns).set({ processLocation: "remote", nativeIssueId: fixture.issueId }).where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(nativeRunFinalizations).values({ runId: fixture.runId, companyId: fixture.companyId,
+      issueId: fixture.issueId, phase: "retryable_failure", attempt: 1 });
+    const kill = vi.spyOn(process, "kill");
+    try {
+      expect(await heartbeatService(db).reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+      expect(kill.mock.calls.filter(([candidate]) => pid !== null && candidate === pid)).toEqual([]);
+    } finally { kill.mockRestore(); }
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(run).toMatchObject({ status: "running", processPid: pid, errorCode: "remote_execution_ownership_unverified" });
+    expect(coordinator).toMatchObject({ phase: "retryable_failure", attempt: 1, leaseOwner: null });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("recovers legacy startup before adapter.invoke using the claimed adapter identity", async () => {
     const f = await seedRunFixture({ agentStatus: "idle", adapterType: "claude_local" });
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
@@ -2607,7 +2699,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("dispatches local native external chat inside the server-selected task root", async () => {
+  it.each(["dispatch", "restore_mirror", "acquire_failure", "missing_mirror", "warm", "inactive_environment", "paused_agent", "lost_reference"] as const)("automatically dispatches remote native recovery on its original allocation (%s)", async scenario => {
+    await withTempPaperclipHome(async home => {
+      const ids = await seedQueuedIssueRunFixture();
+      const f = await seedRemoteDispatchFixture(db, { ...ids, hostCwd: path.join(home, "original-workspace"), durableSeed: scenario === "restore_mirror" });
+      if (scenario === "warm") {
+        f.execution.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 };
+        const profile = { ...f.run.runnerProfileJson, nativeExecutionInput: f.execution };
+        await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+        [f.environment] = await db.update(environments).set({ config: { ...f.environment.config, runnerLifecycleMode: "warm", reuseLease: true } })
+          .where(eq(environments.id, f.environment.id)).returning();
+      }
+      if (scenario === "missing_mirror" || scenario === "restore_mirror") await fs.rm(f.hostCwd, { recursive: true });
+      else await fs.writeFile(path.join(f.hostCwd, "operator-note.txt"), "uncommitted host note");
+      if (scenario === "inactive_environment") await db.update(environments).set({ status: "inactive" }).where(eq(environments.id, f.environment.id));
+      if (scenario === "paused_agent") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+      if (scenario === "lost_reference") {
+        const profile = { ...f.run.runnerProfileJson }; delete profile.nativeWorkspaceSync;
+        await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+      }
+      const forbidden = vi.fn(async () => { throw new Error("Recovery attempted ordinary provider work"); });
+      const acquireRunLease = vi.fn(async (input: Parameters<EnvironmentRuntimeService["acquireRunLease"]>[0]) => {
+        expect(input.recoveryProcess).toEqual(f.claim.kind === "reattach_existing_runner" ? f.claim.process : null);
+        expect(input.environment.id).toBe(f.environment.id);
+        if (scenario === "acquire_failure") throw new Error("Original connection unavailable");
+        return { environment: f.environment, lease: f.lease, leaseContext: buildEnvironmentLeaseContext(f.lease) };
+      });
+      const controlRunProcess = vi.fn<EnvironmentRuntimeService["controlRunProcess"]>(async () => ({ state: "running", process: f.claim.kind === "reattach_existing_runner" ? f.claim.process : undefined }));
+      const environmentRuntime = { acquireRunLease, controlRunProcess, supportsSync: () => false, execute: forbidden, realizeWorkspace: forbidden,
+        resolveCapabilities: async () => ({ reusableLeases: scenario === "warm", syncIn: false, syncOut: false }),
+        recoverRunner: forbidden, executeRecoveringRunner: forbidden, releaseRunLeases: forbidden } as unknown as EnvironmentRuntimeService;
+      const dispatchBoundary = vi.fn<typeof import("../services/native-runtime/native-session-executor.js").executePaperclipNativeSession>(async input => {
+        expect(input.execution).toEqual(f.execution);
+        expect(input.environmentRuntime).toBe(environmentRuntime);
+        expect(input.restartRecovery).toMatchObject({ kind: "reattach_existing_runner", runId: f.runId, controllerGeneration: 2, process: f.claim.kind === "reattach_existing_runner" ? f.claim.process : null });
+        expect(input.runnerExecutionTarget).toMatchObject({ kind: "remote", transport: "sandbox", providerKey: "daytona", leaseId: f.lease.id, remoteCwd: "/workspace/app" });
+        if (scenario === "restore_mirror") expect(await fs.readFile(path.join(f.hostCwd, "App.jsx"), "utf8")).toContain("original app");
+        throw new NativeRunnerOwnershipUnverifiedError("remote_runner_reattachment_unavailable");
+      });
+      const originalExecute = mockExecutePaperclipNativeSession.getMockImplementation()!;
+      if (scenario === "dispatch" || scenario === "restore_mirror" || scenario === "warm") mockExecutePaperclipNativeSession.mockImplementationOnce(dispatchBoundary);
+      const heartbeat = heartbeatService(db, { environmentRuntime });
+      try {
+      const result = await heartbeat.recoverNativeRunsAfterRestart();
+      expect(result.claims).toContainEqual(expect.objectContaining({ runId: f.runId, kind: "reattach_existing_runner", controllerGeneration: 2 }));
+      await waitForValue(async () => (await heartbeat.getRun(f.runId))?.errorCode, 8_000);
+      await heartbeat.waitForRunExecutionDrain(f.runId);
+      expect(await heartbeat.getRun(f.runId)).toMatchObject({ status: "running", errorCode: "native_execution_ownership_unverified", nativePhase: "terminal_failure" });
+      expect(dispatchBoundary).toHaveBeenCalledTimes(scenario === "dispatch" || scenario === "restore_mirror" || scenario === "warm" ? 1 : 0);
+      expect(acquireRunLease).toHaveBeenCalledTimes(["dispatch", "restore_mirror", "warm", "acquire_failure", "paused_agent"].includes(scenario) ? 1 : 0);
+      expect(forbidden).not.toHaveBeenCalled(); expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
+      expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspace.id)))[0]).toEqual(f.workspace);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]?.executionRunId).toBe(f.runId);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toHaveLength(0);
+      if (scenario === "missing_mirror") await expect(fs.access(f.hostCwd)).rejects.toThrow();
+      else {
+        expect(await fs.readFile(path.join(f.hostCwd, "App.jsx"), "utf8")).toContain("original app");
+        if (scenario !== "restore_mirror") expect(await fs.readFile(path.join(f.hostCwd, "operator-note.txt"), "utf8")).toBe("uncommitted host note");
+      }
+      } finally {
+        await heartbeat.waitForRunExecutionDrain(f.runId);
+        mockExecutePaperclipNativeSession.mockImplementation(originalExecute);
+      }
+    });
+  });
+
+  it.each(["adopted_runner_authentication_timeout", "remote_runner_reattachment_unavailable"] as const)("dispatches local native external chat inside the server-selected task root and holds ownership for %s", async reason => {
     await withTempPaperclipHome(async () => {
       const { companyId, agentId, issueId, runId } =
         await seedQueuedIssueRunFixture();
@@ -2631,10 +2789,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           nativeIssueId: issueId,
         })
         .where(eq(heartbeatRuns.id, runId));
+      const { leaseId } = await seedEnvironmentLeaseFixture({ companyId, runId, issueId, driver: "ownership-test" });
       const nativeSessionBackendFactory = vi.fn(
         (_execution: { workspace: { cwd: string } }) => {
           // Stop at the real provider boundary, without spawning a provider.
-          throw new NativeRunnerOwnershipUnverifiedError();
+          throw new NativeRunnerOwnershipUnverifiedError(reason);
         },
       );
       const heartbeat = heartbeatService(db, { nativeSessionBackendFactory });
@@ -2660,7 +2819,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(input.workspace.cwd).not.toBe(
         resolveDefaultAgentWorkspaceDir(agentId),
       );
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "running", nativePhase: "terminal_failure", errorCode: "native_execution_ownership_unverified" });
+      await heartbeat.reapOrphanedRuns();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "running", nativePhase: "terminal_failure", errorCode: "native_execution_ownership_unverified" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.executionRunId).toBe(runId);
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]?.releasedAt).toBeNull();
+      expect(await heartbeat.listEvents(runId)).toContainEqual(expect.objectContaining({ payload: expect.objectContaining({ reason }) }));
       expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(mockTerminateLocalService).not.toHaveBeenCalled();
     });
   });
 

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { assertLocalPathDataAvailable, withTaskWorkspaceDataAdmission } from "./runtime-services/workspace-data-fence.js";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -3211,6 +3212,11 @@ export async function realizeExecutionWorkspace(input: {
   recorder?: WorkspaceOperationRecorder | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<RealizedExecutionWorkspace> {
+  return input.db ? withTaskWorkspaceDataAdmission(input.db, input.agent.companyId, null,
+    () => realizeExecutionWorkspaceAdmitted(input), input.base.baseCwd) : realizeExecutionWorkspaceAdmitted(input);
+}
+
+async function realizeExecutionWorkspaceAdmitted(input: Parameters<typeof realizeExecutionWorkspace>[0]): Promise<RealizedExecutionWorkspace> {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   const requestedExistingBranch = asString(rawStrategy.existingBranch, "").trim();
@@ -3291,6 +3297,7 @@ export async function realizeExecutionWorkspace(input: {
       },
     );
   }
+  if (input.db) await assertLocalPathDataAvailable(input.db, worktreePath);
   let pendingForwardBranchReconcile: PendingForwardBranchReconcile | null = null;
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
@@ -3313,6 +3320,7 @@ export async function realizeExecutionWorkspace(input: {
   await fs.mkdir(worktreeParentDir, { recursive: true });
 
   async function reuseExistingWorktree(reusablePath: string, effectiveBranchName = branchName, extraWarnings: string[] = []) {
+    if (input.db) await assertLocalPathDataAvailable(input.db, reusablePath);
     // An exact-branch attach must never move the requested branch, so skip
     // the unstarted-worktree fast-forward that template-derived reuse gets.
     const refresh = currentBaseRefSha && !requestedExistingBranch
@@ -3630,7 +3638,12 @@ export async function realizeExecutionWorkspace(input: {
   };
 }
 
-export async function ensurePersistedExecutionWorkspaceAvailable(input: {
+export async function ensurePersistedExecutionWorkspaceAvailable(input: Parameters<typeof ensurePersistedExecutionWorkspaceAvailableUnfenced>[0]): Promise<RealizedExecutionWorkspace | null> {
+  return input.db ? withTaskWorkspaceDataAdmission(input.db, input.agent.companyId, input.workspace.id,
+    () => ensurePersistedExecutionWorkspaceAvailableUnfenced(input), input.workspace.cwd ?? input.workspace.providerRef) : ensurePersistedExecutionWorkspaceAvailableUnfenced(input);
+}
+
+async function ensurePersistedExecutionWorkspaceAvailableUnfenced(input: {
   db?: Db | null;
   base: ExecutionWorkspaceInput;
   workspace: {
@@ -4007,7 +4020,16 @@ async function deleteGitBranchAtVerifiedTip(input: {
   }
 }
 
-export async function cleanupExecutionWorkspaceArtifacts(input: {
+export async function cleanupExecutionWorkspaceArtifacts(input: Parameters<typeof cleanupExecutionWorkspaceArtifactsUnretained>[0]) {
+  if (input.retentionScope && /^[a-f0-9-]{36}$/i.test(input.workspace.id)) {
+    const { withRuntimeServiceWorkspaceCleanup } = await import("./runtime-services/retention.js");
+    return withRuntimeServiceWorkspaceCleanup(input.retentionScope.db, input.retentionScope.companyId, input.workspace.id, () => cleanupExecutionWorkspaceArtifactsUnretained(input));
+  }
+  return cleanupExecutionWorkspaceArtifactsUnretained(input);
+}
+
+async function cleanupExecutionWorkspaceArtifactsUnretained(input: {
+  retentionScope?: { db: Db; companyId: string };
   workspace: {
     id: string;
     cwd: string | null;
@@ -7469,6 +7491,11 @@ async function withRuntimeStartMutexes<T>(
 export async function ensureRuntimeServicesForRun(
   input: EnsureRuntimeServicesForRunInput,
 ): Promise<RuntimeServiceRef[]> {
+  return input.db ? withTaskWorkspaceDataAdmission(input.db, input.agent.companyId, input.executionWorkspaceId,
+    () => ensureRuntimeServicesForRunAdmitted(input), input.workspace.cwd) : ensureRuntimeServicesForRunAdmitted(input);
+}
+
+async function ensureRuntimeServicesForRunAdmitted(input: EnsureRuntimeServicesForRunInput): Promise<RuntimeServiceRef[]> {
   const services = selectRuntimeServiceEntries({
     config: input.config,
     respectDesiredStates: true,
@@ -7915,6 +7942,11 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
 export async function startRuntimeServicesForWorkspaceControl(
   input: StartRuntimeServicesForWorkspaceControlInput,
 ): Promise<RuntimeServiceRef[]> {
+  return input.db ? withTaskWorkspaceDataAdmission(input.db, input.actor.companyId, input.executionWorkspaceId,
+    () => startRuntimeServicesForWorkspaceControlAdmitted(input), input.workspace.cwd) : startRuntimeServicesForWorkspaceControlAdmitted(input);
+}
+
+async function startRuntimeServicesForWorkspaceControlAdmitted(input: StartRuntimeServicesForWorkspaceControlInput): Promise<RuntimeServiceRef[]> {
   const services = selectRuntimeServiceEntries({
     config: input.config,
     serviceIndex: input.serviceIndex,

@@ -26,6 +26,8 @@ import type {
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { parseObject } from "../../adapters/utils.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
+import { captureNativeHostWorkspaceReceipt, nativeHostWorkspaceReceiptSchema, type NativeHostWorkspaceReceipt } from "./native-host-workspace-receipt.js";
+import { inspectNativeHostWorkspaceRestoration, restoreNativeHostWorkspace } from "./native-host-workspace-restore.js";
 
 const DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v1";
 const STAMP_SCHEMA = "paperclip.native-workspace-stamp/v1";
@@ -56,6 +58,7 @@ interface NativeWorkspaceSyncDescriptor {
   baselineSha256: string;
   baseline: SerializedDirectorySnapshot;
   gitSnapshot: GitWorkspaceSnapshot | null;
+  hostWorkspace?: NativeHostWorkspaceReceipt;
   seed: {
     workspaceArchiveSha256: string;
     gitArchiveSha256: string | null;
@@ -97,6 +100,7 @@ export type NativeWorkspaceInboundEvidence =
       kind: "new_run";
       acquisition: "created" | "resumed" | "replacement" | null;
       hasPriorStamp: boolean;
+      retainedServiceWorkspace?: boolean;
     };
 
 export function classifyNativeWorkspaceInbound(
@@ -108,7 +112,7 @@ export function classifyNativeWorkspaceInbound(
     }
     return evidence.sameProviderLease ? "adopt_remote" : "durable_seed";
   }
-  return evidence.acquisition === "resumed" && evidence.hasPriorStamp
+  return evidence.retainedServiceWorkspace || (evidence.acquisition === "resumed" && evidence.hasPriorStamp)
     ? "adopt_remote"
     : "host_current";
 }
@@ -400,6 +404,7 @@ async function readDescriptor(input: {
   const binding = parseObject(candidate.binding);
   const baseline = parseDirectorySnapshot(candidate.baseline);
   const gitSnapshot = parseGitSnapshot(candidate.gitSnapshot);
+  const hostWorkspace = candidate.hostWorkspace === undefined ? undefined : nativeHostWorkspaceReceiptSchema.safeParse(candidate.hostWorkspace);
   const rawSeed =
     candidate.seed === null || candidate.seed === undefined
       ? null
@@ -437,6 +442,7 @@ async function readDescriptor(input: {
     (candidate.state !== "prepared" && candidate.state !== "finalized") ||
     !baseline ||
     gitSnapshot === undefined ||
+    (hostWorkspace !== undefined && (!hostWorkspace.success || hostWorkspace.data.cwd !== binding.localCwd)) ||
     seed === undefined ||
     binding.runId !== input.runId ||
     binding.workspaceId !== input.reference.workspaceId ||
@@ -483,6 +489,7 @@ async function readDescriptor(input: {
       baselineSha256: candidate.baselineSha256,
       baseline: candidate.baseline as SerializedDirectorySnapshot,
       gitSnapshot,
+      ...(hostWorkspace?.success ? { hostWorkspace: hostWorkspace.data } : {}),
       seed,
       createdAt: candidate.createdAt,
       finalizedAt:
@@ -494,6 +501,50 @@ async function readDescriptor(input: {
     },
     baseline,
   };
+}
+
+export const readNativeWorkspaceSyncDescriptor = readDescriptor;
+
+function hostRestorationBinding(runId: string, reference: NativeWorkspaceSyncReference, receipt: NativeHostWorkspaceReceipt) {
+  // descriptorPath validates both the run ID and digest before constructing a
+  // private, run-scoped journal filename.
+  return { receipt, descriptorSha256: reference.descriptorSha256,
+    journalPath: descriptorPath(runId, reference.descriptorSha256) + ".host-restore.json" };
+}
+
+export async function inspectNativeWorkspaceSyncHost(input: { runId: string; reference: NativeWorkspaceSyncReference }) {
+  const existing = await readDescriptor(input);
+  const receipt = existing.descriptor.hostWorkspace;
+  if (!receipt) {
+    // Legacy descriptors can continue using an existing mirror, but cannot
+    // prove ownership of a missing one.
+    const stat = await fs.lstat(existing.descriptor.binding.localCwd);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("native_host_workspace_identity_unverified");
+    return { ...existing, hostState: "present" as const };
+  }
+  const hostState = await inspectNativeHostWorkspaceRestoration(hostRestorationBinding(input.runId, input.reference, receipt));
+  if (hostState !== "present" && (existing.descriptor.state !== "prepared" || !existing.descriptor.seed)) {
+    throw new Error("native_host_workspace_restore_unverified");
+  }
+  return { ...existing, hostState };
+}
+
+/** Returns an immutable replacement reference. The caller must publish it with
+ * the original run/controller fenced; writing the descriptor alone admits no run. */
+export async function restoreNativeWorkspaceSyncHost(input: {
+  runId: string; reference: NativeWorkspaceSyncReference; assertAuthorized: () => Promise<void>;
+}): Promise<NativeWorkspaceSyncReference> {
+  const { descriptor, baseline, hostState } = await inspectNativeWorkspaceSyncHost(input);
+  if (hostState === "present") return input.reference;
+  if (!descriptor.hostWorkspace || !descriptor.seed) throw new Error("native_host_workspace_restore_unverified");
+  const hostWorkspace = await restoreNativeHostWorkspace({
+    ...hostRestorationBinding(input.runId, input.reference, descriptor.hostWorkspace),
+    baseline, gitSnapshot: descriptor.gitSnapshot,
+    seed: await verifiedDurableSeed({ runId: input.runId, seed: descriptor.seed, gitSnapshot: descriptor.gitSnapshot }),
+    assertAuthorized: input.assertAuthorized,
+  });
+  await input.assertAuthorized();
+  return writeDescriptor({ ...descriptor, hostWorkspace });
 }
 
 async function persistRunReference(
@@ -753,6 +804,14 @@ export async function prepareNativeWorkspaceSync(input: {
   const existingReference = readNativeWorkspaceSyncReference(
     parseObject(run.runnerProfileJson).nativeWorkspaceSync,
   );
+  const remoteAdoption = input.restartRecovery?.kind === "reattach_existing_runner"
+    && input.restartRecovery.process.processLocation === "remote" ? input.restartRecovery.process : null;
+  if (remoteAdoption && (!existingReference || input.restartRecovery?.runId !== input.runId
+    || input.lease.id !== remoteAdoption.environmentLeaseId || target.leaseId !== remoteAdoption.environmentLeaseId
+    || providerLeaseId !== remoteAdoption.providerLeaseId || target.remoteCwd !== remoteAdoption.workspaceRoot
+    || existingReference.leaseId !== remoteAdoption.environmentLeaseId || existingReference.providerLeaseId !== providerLeaseId)) {
+    throw new Error("native_remote_runner_recovery_workspace_unverified");
+  }
 
   let runtime: PreparedAdapterExecutionTargetRuntime;
   let descriptor: NativeWorkspaceSyncDescriptor;
@@ -761,10 +820,11 @@ export async function prepareNativeWorkspaceSync(input: {
   await ensurePrivateDirectory(descriptorDirectory(input.runId));
 
   if (existingReference) {
-    const existing = await readDescriptor({
+    const existing = await inspectNativeWorkspaceSyncHost({
       runId: input.runId,
       reference: existingReference,
     });
+    if (existing.hostState !== "present") throw new Error("native_host_workspace_restore_unverified");
     if (
       existing.descriptor.binding.companyId !== input.companyId ||
       existing.descriptor.binding.workspaceId !== input.workspaceId ||
@@ -823,6 +883,7 @@ export async function prepareNativeWorkspaceSync(input: {
       kind: "new_run",
       acquisition,
       hasPriorStamp: priorStamp !== null,
+      retainedServiceWorkspace: Boolean(target.retainedServiceWorkspace),
     });
     runtime = await prepareRuntime({
       runId: input.runId,
@@ -838,7 +899,7 @@ export async function prepareNativeWorkspaceSync(input: {
     if (!currentSnapshot) {
       throw new Error("native_workspace_sync_snapshot_missing");
     }
-    if (acquisition === "resumed" && priorStamp) {
+    if (acquisition === "resumed" && priorStamp && !target.retainedServiceWorkspace) {
       const currentHostSha256 = directorySnapshotSha256(
         currentSnapshot.baseline,
       );
@@ -872,6 +933,9 @@ export async function prepareNativeWorkspaceSync(input: {
     const gitArchiveSha256 = snapshot.gitSnapshot
       ? await sha256File(seedPaths.gitArchivePath)
       : null;
+    // This read-only receipt is a prerequisite for repairing a missing mirror.
+    // Unsupported host metadata does not change normal workspace sync behavior.
+    const hostWorkspace = await captureNativeHostWorkspaceReceipt(input.workspaceLocalDir).catch(() => undefined);
     descriptor = {
       schema: DESCRIPTOR_SCHEMA,
       binding: {
@@ -887,6 +951,7 @@ export async function prepareNativeWorkspaceSync(input: {
       baselineSha256: directorySnapshotSha256(snapshot.baseline),
       baseline: serializeDirectorySnapshot(snapshot.baseline),
       gitSnapshot: snapshot.gitSnapshot,
+      ...(hostWorkspace ? { hostWorkspace } : {}),
       seed: { workspaceArchiveSha256, gitArchiveSha256 },
       createdAt: now,
       finalizedAt: null,
@@ -973,6 +1038,11 @@ export async function resumeNativeWorkspaceSync(input: {
       stamp,
     });
     return true;
+  }
+  // A completed file-sync receipt may only need its remote stamp repaired;
+  // restoring source, unlike stamp repair, requires the attested host mirror.
+  if ((await inspectNativeWorkspaceSyncHost({ runId: input.runId, reference })).hostState !== "present") {
+    throw new Error("native_host_workspace_restore_unverified");
   }
   const runtime = await prepareRuntime({
     runId: input.runId,

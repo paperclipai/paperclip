@@ -55,6 +55,13 @@ describe("isPrivateChatWebhookHttpRequest", () => {
 });
 
 describe("isSecretSensitiveHttpRequest", () => {
+  it("protects managed service launch bodies through every HTTP delivery path", () => {
+    for (const route of ["/api/companies/company/runtime-services", "/mcp/runtime-services", "/api/mcp/runtime-services", "/runtime-tools/services/call", "/api/runtime-tools/services/call"]) {
+      expect(isSecretSensitiveHttpRequest("POST", route)).toBe(true);
+      expect(isSecretSensitiveHttpRequest("POST", route + "?debug=true")).toBe(true);
+    }
+    expect(isSecretSensitiveHttpRequest("POST", "/runtime-tools/services-other/call")).toBe(false);
+  });
   it("identifies credential-bearing chat setup mutations", () => {
     expect(
       isSecretSensitiveHttpRequest(

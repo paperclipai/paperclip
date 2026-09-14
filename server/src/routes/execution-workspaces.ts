@@ -1285,6 +1285,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               workspaceCwd: existing.cwd,
             });
             return cleanupExecutionWorkspaceArtifacts({
+              retentionScope: { db, companyId: existing.companyId },
               workspace: existing,
               projectWorkspace,
               teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,

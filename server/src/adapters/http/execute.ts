@@ -17,6 +17,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runId,
     context,
     ...(ctx.runtimeTools ? { paperclipRuntimeTools: ctx.runtimeTools } : {}),
+    ...(ctx.runtimeServices ? { paperclipRuntimeServices: ctx.runtimeServices } : {}),
   };
 
   const controller = new AbortController();
