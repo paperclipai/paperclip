@@ -170,7 +170,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   }
 
   it.each([
-    "completed", "multiple_comments", "repeated_reference", "no_comments", "missing_comment",
+    "completed", "multiple_comments", "repeated_reference", "parent_reference", "mixed_issue_references", "mixed_foreign_references", "mixed_unknown_references", "no_comments", "missing_comment",
     "human_comment", "other_run_comment", "foreign_comment", "other_issue_comment", "deleted_comment",
     "mixed_human_comments", "mixed_other_run_comments", "mixed_unrelated_comments",
     "no_reference", "code_reference", "ambiguous_children", "child_open", "child_cancelled",
@@ -182,9 +182,9 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const leadId = await seedAgent({ companyId, name: "Lead" });
     const workerId = await seedAgent({ companyId, name: "Worker" });
     const foreignAgentId = await seedAgent({ companyId: otherCompanyId });
-    const issueId = await seedIssue({ companyId, assigneeAgentId: leadId, status: scenario === "parent_open" ? "in_progress" : "done" });
-    const otherIssueId = await seedIssue({ companyId });
-    const foreignIssueId = await seedIssue({ companyId: otherCompanyId });
+    const issueId = await seedIssue({ companyId, identifier: "QA-1", assigneeAgentId: leadId, status: scenario === "parent_open" ? "in_progress" : "done" });
+    const otherIssueId = await seedIssue({ companyId, identifier: "QA-99" });
+    const foreignIssueId = await seedIssue({ companyId: otherCompanyId, identifier: "QA-98" });
     const runId = await seedRun({ companyId, agentId: scenario === "source_other_agent" ? workerId : leadId,
       status: "succeeded", contextSnapshot: { issueId: scenario === "source_other_task" ? otherIssueId : issueId } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
@@ -198,7 +198,11 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     if (scenario === "ambiguous_children") {
       await seedIssue({ companyId, identifier: "QA-3", parentId: issueId, assigneeAgentId: workerId, status: "done" });
     }
-    const body = scenario === "no_reference" ? "Thanks @Worker" : scenario === "code_reference" ? "Example `QA-2`"
+    const body = scenario === "parent_reference" ? "QA-1 is done thanks to @Worker completing QA-2"
+      : scenario === "mixed_issue_references" ? "@Worker completed QA-2; now investigate QA-99"
+      : scenario === "mixed_foreign_references" ? "@Worker completed QA-2; also check QA-98"
+      : scenario === "mixed_unknown_references" ? "@Worker completed QA-2; also check QA-999"
+      : scenario === "no_reference" ? "Thanks @Worker" : scenario === "code_reference" ? "Example `QA-2`"
       : scenario === "ambiguous_children" ? "@Worker completed QA-2 and QA-3"
       : scenario === "repeated_reference" ? "@Worker completed [QA-2](/issues/QA-2); QA-2 is done"
       : "@Worker completed QA-2";
@@ -229,7 +233,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         companyId: scenario === "wrong_company" ? otherCompanyId : companyId,
         issueId, finishingRunId: scenario === "wrong_run" ? otherRunId : runId, wakeAgentId: workerId, commentIds,
       });
-      expect(completed).toBe(["completed", "multiple_comments", "repeated_reference"].includes(scenario));
+      expect(completed).toBe(["completed", "multiple_comments", "repeated_reference", "parent_reference"].includes(scenario));
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
     expect(checked).toBe(true);

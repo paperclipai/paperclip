@@ -381,7 +381,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       ) return false;
       const uniqueCommentIds = [...new Set(commentIds)];
       if (uniqueCommentIds.length === 0) return false;
-      const parent = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      const parent = await tx.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, identifier: issues.identifier })
         .from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
         .then((rows) => rows[0]);
       if (parent?.status !== "done" || parent.assigneeAgentId !== run.agentId) return false;
@@ -395,8 +395,11 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       if (comments.length !== uniqueCommentIds.length || comments.some((comment) =>
         comment.createdByRunId !== run.id || (comment.authorAgentId !== null && comment.authorAgentId !== run.agentId)
       )) return false;
-      const referencesByComment = comments.map((comment) => extractIssueReferenceIdentifiers(comment.body));
-      if (referencesByComment.some((references) => references.length === 0)) return false;
+      const referencesByComment = comments.map((comment) => extractIssueReferenceIdentifiers(comment.body)
+        .filter((identifier) => identifier !== parent.identifier));
+      // A parent link is context; every other reference must identify the
+      // single completed child. Never discard unrelated follow-up work.
+      if (referencesByComment.some((references) => references.length !== 1)) return false;
       const identifiers = [...new Set(referencesByComment.flat())];
       const children = await tx.select({ identifier: issues.identifier, status: issues.status })
         .from(issues).where(and(

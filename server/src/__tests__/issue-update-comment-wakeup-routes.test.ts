@@ -682,7 +682,7 @@ describe("issue update comment wakeups", () => {
     "active_delegation", "completed_delegation", "human_comment", "completed_human_comment", "unrelated_comment", "completed_child",
     "active_feedback", "ambiguous_delegation", "child_access_denied", "child_mutation_denied", "forwarding_failure",
     "source_run_other_issue", "completed_source_run_other_issue",
-    "completed_explicit_resume",
+    "completed_explicit_resume", "completed_parent_reference", "completed_mixed_reference",
     "completed_delegation_without_blocker", "completed_foreign_company", "completed_unrelated_child", "completed_other_assignee", "completed_lookup_failure",
     "unrelated_child", "foreign_company", "stopped_run", "foreign_run", "unrelated_run", "lookup_failure",
   ].map((scenario) => ({ method, scenario }))))("routes $method mentions correctly for $scenario", async ({ method, scenario }) => {
@@ -693,7 +693,11 @@ describe("issue update comment wakeups", () => {
       status: "in_progress", executionRunId: "55555555-5555-4555-8555-555555555555",
     });
     const secondChild = { ...child, id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", identifier: "PAP-1001", executionRunId: "66666666-6666-4666-8666-666666666666" };
-    const delegationBody = scenario === "active_feedback"
+    const delegationBody = scenario === "completed_parent_reference"
+      ? `${existing.identifier} is done thanks to [@QA](agent://${MENTIONED_AGENT_ID}) completing ${child.identifier}.`
+      : scenario === "completed_mixed_reference"
+      ? `[@QA](agent://${MENTIONED_AGENT_ID}) completed ${child.identifier}; now investigate PAP-9999.`
+      : scenario === "active_feedback"
       ? `${child.identifier} is still failing; [@QA](agent://${MENTIONED_AGENT_ID}) please investigate the new error.`
       : scenario === "unrelated_comment"
       ? `[@QA](agent://${MENTIONED_AGENT_ID}) please review the parent task separately.`
@@ -766,7 +770,7 @@ describe("issue update comment wakeups", () => {
         contextSnapshot: expect.objectContaining({ issueId: child.id, taskId: child.id, commentId: "forwarded-note", wakeCommentId: "forwarded-note", source: "comment.mention.delegation", resumeIntent: true, followUpRequested: true }),
       }));
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(MENTIONED_AGENT_ID, expect.objectContaining({ payload: expect.objectContaining({ issueId: existing.id }) }));
-    } else if (["completed_delegation", "completed_delegation_without_blocker"].includes(scenario)) {
+    } else if (["completed_delegation", "completed_delegation_without_blocker", "completed_parent_reference"].includes(scenario)) {
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(MENTIONED_AGENT_ID, expect.objectContaining({ reason: "issue_comment_mentioned" }));
     } else {
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(MENTIONED_AGENT_ID, expect.objectContaining({ reason: "issue_comment_mentioned", payload: expect.objectContaining({ issueId: existing.id }) }));
