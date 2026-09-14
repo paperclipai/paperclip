@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
+  heartbeatRuns,
   companies,
   createDb,
   environmentLeases,
@@ -67,7 +69,9 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
   });
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(environmentLeases);
+    await db.delete(heartbeatRuns);
     await db.delete(environments);
     await db.delete(agents);
     await db.delete(companies);
@@ -336,6 +340,37 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
       expect(saved.metadata?.pendingCleanupInFlight).toBe(true);
     } finally { finish(); await running; }
+  });
+
+  it.each([false, true])("explicit Retry bypasses cooldown but preserves in-flight ownership (%s)", async inFlight => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const agentId = randomUUID(), runId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Cleanup owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "failed" });
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0),
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP, pendingCleanupInFlight: inFlight,
+        pendingCleanupAttemptId: "previous-attempt", pendingCleanupRetryAfterMs: Date.now() + 15 * 60_000 },
+    });
+    await db.update(environmentLeases).set({ heartbeatRunId: runId }).where(eq(environmentLeases.id, leaseId));
+    const unrelatedLease = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0) });
+    const teardown = vi.fn(async () => {});
+    const service = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
+    const result = await service.sweepPendingCleanupLeases({ explicitRetry: {
+      companyId, runId, actorId: "cleanup-reviewer",
+    } });
+    expect(result.destroyed).toBe(inFlight ? 0 : 1);
+    expect(teardown).toHaveBeenCalledTimes(inFlight ? 0 : 1);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, unrelatedLease)))[0].status).toBe("pending_cleanup");
+    const metadata = await readMetadata(leaseId);
+    if (inFlight) expect(metadata?.pendingCleanupAttemptId).toBe("previous-attempt");
+    else {
+      expect(metadata?.pendingCleanupManualAttemptId).toEqual(expect.any(String));
+      expect(metadata?.pendingCleanupAttemptId).not.toBe("previous-attempt");
+      const events = await db.select().from(activityLog).where(eq(activityLog.runId, runId));
+      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ action: "environment_lease.cleanup_retried" })]));
+    }
   });
 
   it("renews cleanup ownership while the provider remains blocked", async () => {

@@ -1324,8 +1324,8 @@ later run, or prevent an explicit board reassignment.
 
 ### Persistent sandbox cleanup
 
-A lost bridge cannot indefinitely prevent Daytona termination. Lease release and
-destruction wait briefly for bridge activity, then call the provider for the exact
+A lost bridge cannot indefinitely prevent Daytona termination. Ordinary lease release
+and destruction wait briefly for bridge activity, then call the provider for the exact
 recorded sandbox. Drain timeout is not a stop receipt. Reusable sandboxes prefer
 stop; failed stop falls back to deletion. Stop/delete transport hangs are bounded
 and leave cleanup pending unless the provider confirms termination.
@@ -1335,5 +1335,7 @@ in-flight deadline. It retries after restart, waits at least 30 seconds between
 failed attempts, and slows to 30 minutes after five failures. It reports that
 operator attention is needed at that threshold, while automatic cleanup continues.
 Provider outages never convert a live sandbox into an abandoned manual task.
+Explicit Retry can skip the cooldown after a failed cleanup, but cannot take over
+a live cleanup attempt. Active startup cancellation still stops the sandbox first.
 
 A live cleanup attempt renews its durable claim every 30 seconds. Another sweep in the same controller cannot overlap it, even if the deadline passes. Completion writes require the current attempt identity. After controller loss, cleanup can repeat destruction of the exact quarantined provider resource; providers must make that operation idempotent. A timeout or claim expiry does not prove termination.
