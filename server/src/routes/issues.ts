@@ -3677,52 +3677,115 @@ export function issueRoutes(
     return memoizeIssueRead(req, id, () => svc.getById(id));
   }
 
-  async function isRedundantDelegationMention(
-    parent: { id: string; companyId: string; status: string },
+  async function routeDelegationMention(
+    req: Request,
+    parent: { id: string; identifier?: string | null; companyId: string; status: string },
     mentionedAgentId: string,
-    body: string,
-  ): Promise<boolean> {
-    if (parent.status !== "blocked" && parent.status !== "done") return false;
-    const references = new Set(extractIssueReferenceIdentifiers(body));
-    if (references.size === 0) return false;
+    comment: IssueComment,
+  ): Promise<{ kind: "completed" } | { kind: "forwarded"; issueId: string; commentId: string } | null> {
+    if (parent.status !== "blocked" && parent.status !== "done") return null;
+    const references = new Set(extractIssueReferenceIdentifiers(comment.body));
+    if (references.size === 0) return null;
+    let child: Awaited<ReturnType<typeof svc.getById>> = null;
+    let authorizationReason: string | undefined;
     try {
-      const { blockedBy } = await svc.getRelationSummaries(parent.id);
-      for (const blocker of blockedBy) {
+      // A fast child can finish before the lead records a blocking relation.
+      // Completion notes use the direct parent-child relationship instead.
+      const blockers = parent.status === "blocked"
+        ? (await svc.getRelationSummaries(parent.id)).blockedBy
+        : [];
+      for (const identifier of references) {
+        const blocker = blockers.find((candidate) =>
+          candidate.assigneeAgentId === mentionedAgentId && candidate.identifier === identifier);
+        const candidate = parent.status === "done"
+          ? await svc.getByIdentifier(identifier)
+          : blocker ? await svc.getById(blocker.id) : null;
         if (
-          blocker.assigneeAgentId !== mentionedAgentId ||
-          !blocker.identifier ||
-          !references.has(blocker.identifier)
+          !candidate || candidate.companyId !== parent.companyId ||
+          candidate.parentId !== parent.id || candidate.assigneeAgentId !== mentionedAgentId
         ) continue;
-        const child = await svc.getById(blocker.id);
-        if (
-          !child || child.companyId !== parent.companyId ||
-          child.parentId !== parent.id || child.assigneeAgentId !== mentionedAgentId
-        ) continue;
-        const completedDelegation = parent.status === "done" && child.status === "done";
-        let runId: string | null = null;
-        if (!completedDelegation) {
-          if (parent.status !== "blocked" || child.status !== "in_progress") continue;
-          runId = child.executionRunId ?? child.checkoutRunId;
-          if (!runId) continue;
-          const run = await heartbeat.getRun(runId);
-          if (
-            !run || run.companyId !== parent.companyId || run.agentId !== mentionedAgentId ||
-            run.status !== "running" || run.contextSnapshot?.issueId !== child.id
-          ) continue;
-        }
-        // The lead's linked delegation update remains on the parent. The
-        // worker either has the active child assignment or has finished it.
-        // A completion note must not start the same worker again. Human and
-        // unrelated mentions still wake.
-        logger.info({ issueId: parent.id, childIssueId: child.id, agentId: mentionedAgentId, runId, completedDelegation },
-          "skipped redundant parent delegation mention wake");
-        return true;
+        // Do not choose an arbitrary task when the comment names several.
+        if (child && child.id !== candidate.id) return null;
+        child = candidate;
       }
+      if (!child) return null;
+      if (parent.status === "done" && child.status === "done") {
+        logger.info({ issueId: parent.id, childIssueId: child.id, agentId: mentionedAgentId },
+          "skipped completed delegation mention wake");
+        return { kind: "completed" };
+      }
+      if (parent.status !== "blocked" || child.status !== "in_progress") return null;
+      const runId = child.executionRunId ?? child.checkoutRunId;
+      if (!runId) return null;
+      const run = await heartbeat.getRun(runId);
+      if (
+        !run || run.companyId !== parent.companyId || run.agentId !== mentionedAgentId ||
+        run.status !== "running" || run.contextSnapshot?.issueId !== child.id
+      ) return null;
+      const decision = await decideIssueAccess(req, child, "issue:comment");
+      if (!decision.allowed) return null;
+      authorizationReason = decision.reason;
     } catch (err) {
       // A failed optimization must not drop an otherwise valid mention.
       logger.warn({ err, issueId: parent.id }, "could not check delegation for mention");
+      return null;
     }
-    return false;
+
+    let forwarded: IssueComment;
+    try {
+      const parentRef = parent.identifier ?? parent.id;
+      forwarded = await svc.addComment(
+        child.id,
+        `Forwarded from [${parentRef}](/issues/${parentRef}#comment-${comment.id}):\n\n${comment.body}`,
+        {
+          agentId: comment.authorAgentId ?? undefined,
+          userId: comment.authorUserId ?? undefined,
+          runId: comment.createdByRunId,
+          onBehalfOfUserId: comment.onBehalfOfUserId,
+        },
+        { authorType: comment.authorType, sourceTrust: comment.sourceTrust, authorizationReason },
+      );
+    } catch (err) {
+      logger.warn({ err, issueId: parent.id, childIssueId: child.id }, "could not forward delegation mention");
+      return null;
+    }
+    // Heartbeat reads wake comments within the target issue. A linked copy
+    // preserves the full feedback and its trust/author provenance in that
+    // scope. Do not parse its mentions again: the child wake below is the
+    // only dispatch, and the existing issue queue serializes its delivery.
+    try {
+      await issueReferencesSvc.syncComment(forwarded.id);
+    } catch (err) {
+      logger.warn({ err, issueId: child.id, commentId: forwarded.id }, "could not index forwarded delegation comment");
+    }
+    try {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: parent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: child.id,
+        details: {
+          commentId: forwarded.id,
+          identifier: child.identifier,
+          issueTitle: child.title,
+          source: "comment.mention.delegation",
+          sourceIssueId: parent.id,
+          sourceCommentId: comment.id,
+          authorizationReason,
+        },
+      });
+    } catch (err) {
+      // The copy is already durable. Keep its child-scoped wake even if
+      // reference indexing or the activity publication needs recovery.
+      logger.warn({ err, issueId: child.id, commentId: forwarded.id }, "could not publish forwarded delegation comment activity");
+    }
+    return { kind: "forwarded", issueId: child.id, commentId: forwarded.id };
   }
 
   const issueDetailEtag = privateJsonEtag();
@@ -14597,21 +14660,26 @@ export function issueRoutes(
               (commentIsFromAssigneeRun && mentionedId === assigneeId)
             )
               continue;
-            if (commentIsFromAssigneeRun && await isRedundantDelegationMention(issue, mentionedId, commentBody)) continue;
+            const delegation = commentIsFromAssigneeRun
+              ? await routeDelegationMention(req, issue, mentionedId, comment)
+              : null;
+            if (delegation?.kind === "completed") continue;
+            const wakeIssueId = delegation?.issueId ?? id;
+            const wakeCommentId = delegation?.commentId ?? comment.id;
             addWakeup(mentionedId, {
               source: "automation",
               triggerDetail: "system",
               reason: "issue_comment_mentioned",
-              payload: { issueId: id, commentId: comment.id },
+              payload: { issueId: wakeIssueId, commentId: wakeCommentId },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
               contextSnapshot: {
-                issueId: id,
-                taskId: id,
-                commentId: comment.id,
-                wakeCommentId: comment.id,
+                issueId: wakeIssueId,
+                taskId: wakeIssueId,
+                commentId: wakeCommentId,
+                wakeCommentId,
                 wakeReason: "issue_comment_mentioned",
-                source: "comment.mention",
+                source: delegation ? "comment.mention.delegation" : "comment.mention",
               },
             });
           }
@@ -18002,21 +18070,26 @@ export function issueRoutes(
             (commentIsFromAssigneeRun && mentionedId === assigneeId)
           )
             continue;
-          if (commentIsFromAssigneeRun && await isRedundantDelegationMention(currentIssue, mentionedId, req.body.body)) continue;
+          const delegation = commentIsFromAssigneeRun
+            ? await routeDelegationMention(req, currentIssue, mentionedId, comment)
+            : null;
+          if (delegation?.kind === "completed") continue;
+          const wakeIssueId = delegation?.issueId ?? id;
+          const wakeCommentId = delegation?.commentId ?? comment.id;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
+            payload: { issueId: wakeIssueId, commentId: wakeCommentId },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: {
-              issueId: id,
-              taskId: id,
-              commentId: comment.id,
-              wakeCommentId: comment.id,
+              issueId: wakeIssueId,
+              taskId: wakeIssueId,
+              commentId: wakeCommentId,
+              wakeCommentId,
               wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
+              source: delegation ? "comment.mention.delegation" : "comment.mention",
             },
           });
         }
