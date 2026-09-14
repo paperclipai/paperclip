@@ -11722,6 +11722,26 @@ export function issueService(db: Db) {
           }
         }
 
+        if (
+          actorAgentId &&
+          existing.status === "in_progress" &&
+          existing.assigneeAgentId === actorAgentId &&
+          existing.executionRunId &&
+          !sameRunLock(existing.executionRunId, actorRunId ?? null)
+        ) {
+          await tx.execute(
+            sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${existing.executionRunId} for update`,
+          );
+          if (!(await isTerminalOrMissingHeartbeatRun(existing.executionRunId, tx))) {
+            throw conflict("Only execution run can release issue", {
+              issueId: existing.id,
+              assigneeAgentId: existing.assigneeAgentId,
+              executionRunId: existing.executionRunId,
+              actorRunId: actorRunId ?? null,
+            });
+          }
+        }
+
         // Release clears checkout/assignee locks; only in_progress work re-queues to todo.
         const releaseStatus =
           existing.status === "in_progress" ? "todo" : existing.status;

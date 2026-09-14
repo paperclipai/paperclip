@@ -383,6 +383,48 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(res.body?.error).toBe("Only checkout run can release issue");
   });
 
+  it.each(["running", "queued"])("rejects release of another %s execution-only holder without changing the issue", async (status) => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const holderRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: holderRunId, companyId, agentId, status,
+      invocationSource: "assignment",
+    });
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Execution-only holder",
+      status: "in_progress", assigneeAgentId: agentId,
+      checkoutRunId: null, executionRunId: holderRunId,
+    });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/release`).send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(after).toEqual(before);
+  });
+
+  it.each(["own", "finished"])("allows release of an %s execution-only holder", async (holder) => {
+    const { companyId, agentId, currentRunId, failedRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Releasable execution-only holder",
+      status: "in_progress", assigneeAgentId: agentId,
+      checkoutRunId: null, executionRunId: holder === "own" ? currentRunId : failedRunId,
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/release`).send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(row).toMatchObject({
+      status: "todo", assigneeAgentId: null, checkoutRunId: null, executionRunId: null,
+    });
+  });
+
   it("lets the current assignee recover a timed_out stale checkout owner during PATCH", async () => {
     const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
     const timedOutRunId = randomUUID();
