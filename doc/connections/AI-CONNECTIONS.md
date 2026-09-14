@@ -251,3 +251,31 @@ revoking credentials or submitting work. Delete the disposable instance and revo
 its provider key after the test; failed tests may leave a paused task for inspection.
 
 Authenticated public deployments must configure a trusted runtime host (`PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` or `PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST`) before offering server-host subscription login, matching the local stdio runtime boundary. Health reports this capability so setup can offer a supported environment or API key instead of an unusable terminal command. Private authenticated self-hosted instances support isolated local login without that extra setting. Isolated Claude credential files must be private, owned by the server user, bounded, and free of symlinks.
+
+### Hiring and delegated work
+
+When an agent creates or hires another agent without an explicit AI binding, the
+server inherits its compatible managed connection choice. The new agent resolves
+the responsible user's account at execution time; it never copies the parent's
+credentials or identity. Same-provider hires preserve subscription/API-key choice.
+A different provider selects the responsible user's default for that provider.
+Native Codex and ACPX/Claude provider selections follow the same compatibility rules.
+
+Hiring may succeed before that personal account exists or while it needs repair,
+including hires awaiting board approval. The first assigned task then shows an AI
+connection card. First-time setup presents the provider's subscription/API controls
+inside the task. Connecting installs access for that agent and resumes the pending
+work automatically. Explicit incompatible bindings and shared-account permission
+denials still fail; hiring never expands a restricted shared account's audience.
+
+Concurrent runs using the same subscription wait through scheduled retries while
+the credential lease is held. They do not request new credentials or consume the
+provider-failure retry allowance. Each retry revalidates the account and existing
+run-dispatch rules still suppress cancelled, reassigned, or otherwise ineligible work.
+
+`server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
+both providers and methods, approval gates, native provider mapping, shared access
+boundaries, and subscription contention. The opt-in
+[`tests/hiring-ai-connections/README.md`](../../tests/hiring-ai-connections/README.md)
+describes real browser hiring, subtask, connection, and automatic-resume checks on
+local and Daytona environments, plus the production component Storybook checks.

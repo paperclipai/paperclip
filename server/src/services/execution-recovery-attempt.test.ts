@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 
 describe("failure attempts across resource waits", () => {
+  it("preserves prior failures through repeated AI subscription waits", () => {
+    expect(executionFailureRetryCount({ scheduledRetryReason: "ai_connection_busy", scheduledRetryAttempt: 12,
+      contextSnapshot: { failureRetriesBeforeAiConnectionWait: 1 } })).toBe(1);
+    expect(executionFailureRetryCount({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2,
+      contextSnapshot: { failureRetriesBeforeAiConnectionWait: 0 } })).toBe(2);
+  });
   it("preserves prior failures through repeated workspace waits", () => {
     expect(executionFailureRetryCount({ scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 12,
       contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } })).toBe(1);

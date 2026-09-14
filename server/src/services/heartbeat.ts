@@ -842,6 +842,10 @@ const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
 export { WORKSPACE_BUSY_RETRY_REASON };
 export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
+const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
+function isAiConnectionBusy(error: unknown): error is HttpError {
+  return error instanceof HttpError && parseObject(error.details).code === AI_CONNECTION_BUSY_RETRY_REASON;
+}
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
 // A running run stops counting as a shared-workspace holder once it has been
@@ -15018,6 +15022,7 @@ export function heartbeatService(
     );
     const nextAttempt =
       (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
+      retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
         ? (run.scheduledRetryAttempt ?? 0)
         : executionFailureRetryCount(run)) + 1;
@@ -15211,6 +15216,9 @@ export function heartbeatService(
               failureRetriesBeforeWorkspaceWait:
                 executionFailureRetryCount(run),
             }
+          : {}),
+        ...(retryReason === AI_CONNECTION_BUSY_RETRY_REASON
+          ? { failureRetriesBeforeAiConnectionWait: executionFailureRetryCount(run) }
           : {}),
         ...(shouldQuarantineWorkspaceForRetry
           ? {
@@ -15914,6 +15922,41 @@ export function heartbeatService(
       .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  // Subscription homes are serialized so refresh tokens cannot be overwritten
+  // by another run. Contention is a resource wait, not broken authentication.
+  // The database lease is released on completion/disconnect; retrying remains
+  // safe across processes and each attempt revalidates the selected account.
+  async function finalizeAiConnectionBusyDeferral(run: typeof heartbeatRuns.$inferSelect, error: HttpError) {
+    const now = new Date();
+    const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
+      error: error.message, errorCode: AI_CONNECTION_BUSY_RETRY_REASON, finishedAt: now,
+      resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+    });
+    if (!cancelled.updated) return;
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: error.message }).catch(() => undefined);
+    const cancelledRun = cancelled.run ?? await getRun(run.id);
+    const agent = await getAgent(run.agentId);
+    let scheduled = false;
+    try {
+      if (cancelledRun && agent) {
+        const retry = await scheduleBoundedRetryForRun(cancelledRun, agent, {
+          now, retryReason: AI_CONNECTION_BUSY_RETRY_REASON, wakeReason: "ai_connection_busy_retry",
+          maxAttempts: (cancelledRun.scheduledRetryAttempt ?? 0) + 1,
+          delayMs: computeWorkspaceBusyRetryDelayMs(),
+        });
+        scheduled = retry.outcome === "scheduled";
+        await appendRunEvent(cancelledRun, {
+          eventType: "lifecycle", stream: "system", level: "info",
+          message: scheduled ? "Waiting for the shared AI subscription. This task will retry automatically." : "The AI subscription is busy; this task can no longer retry automatically.",
+          payload: { retryScheduled: scheduled },
+        });
+      }
+    } finally {
+      if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
+      await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+    }
   }
 
   // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
@@ -20711,6 +20754,7 @@ export function heartbeatService(
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
         } catch (error) {
+          if (isAiConnectionBusy(error)) throw error;
           if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
             await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
               logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
@@ -25018,6 +25062,10 @@ export function heartbeatService(
                 ? outerErr.reason
                 : "adopted_runner_authentication_timeout",
           }).catch(() => undefined);
+      } else if (isAiConnectionBusy(outerErr)) {
+        await finalizeAiConnectionBusyDeferral(run, outerErr).catch((error) => {
+          logger.error({ err: error, runId }, "failed to schedule a retry for the busy AI subscription");
+        });
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the

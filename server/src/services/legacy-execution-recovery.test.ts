@@ -38,3 +38,11 @@ it("retains the hold until the provider actually acknowledges cancellation", () 
     })).toBe(false);
   }
 });
+
+it("retries a busy AI subscription only when no provider work started", () => {
+   const waiting = { runtimeMode: "legacy", status: "cancelled", errorCode: "ai_connection_busy", scheduledRetryAttempt: 10,
+     resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } } };
+   expect(legacyExecutionNeedsReconciliation(waiting)).toBe(false);
+   expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: {} })).toBe(true);
+   expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: true } } })).toBe(true);
+ });
