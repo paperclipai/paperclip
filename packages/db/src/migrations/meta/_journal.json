@@ -561,6 +561,20 @@
       "when": 1789000000000,
       "tag": "0079_irwin_export_queue",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1789100000000,
+      "tag": "0080_cad_webhook",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1789200000000,
+      "tag": "0081_cad_webhook_dlq",
+      "breakpoints": true
     }
   ]
 }
