@@ -727,18 +727,30 @@ export async function runEverydayFlow(input: Input) {
               : undefined,
       });
       await openParent();
-      await expect(page.getByTestId("thread-root")).toBeVisible();
+      await expect(
+        page
+          .locator(
+            '[data-testid="task-chat-thread"], [data-testid="thread-root"]',
+          )
+          .first(),
+      ).toBeVisible();
       await expect(page.getByTestId("issue-chat-skeleton")).toHaveCount(0);
-      await input.capture(
-        "decision-pending",
-        "Request before the user decision",
-        "decision-pending.png",
-      );
       const pendingInteraction = pendingStoryDecision(
         interactions.interactions,
         review
           ? { kind: "tool", connectionId: review.connectionId }
           : { kind: "connection", serviceSlug: "notion" },
+      );
+      await expect(
+        page.getByRole("button", {
+          name: decliningConnection ? "Not now" : "Review request",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await input.capture(
+        "decision-pending",
+        "Request before the user decision",
+        "decision-pending.png",
       );
       decisionId = pendingInteraction.id;
       check(
@@ -1126,7 +1138,13 @@ export async function runEverydayFlow(input: Input) {
       ),
       "No completion confirmation or unanswered interaction remains.",
     );
-    await expect(page.getByTestId("thread-root")).toBeVisible();
+    await expect(
+      page
+        .locator(
+          '[data-testid="task-chat-thread"], [data-testid="thread-root"]',
+        )
+        .first(),
+    ).toBeVisible();
     const latestAgentComment = ev.issues
       .find((i) => i.id === parent!.id)
       ?.comments.filter((c: Row) => c.authorAgentId)
