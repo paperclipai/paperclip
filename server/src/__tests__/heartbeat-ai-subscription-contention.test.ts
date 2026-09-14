@@ -24,6 +24,19 @@ vi.mock("../adapters/index.js", async () => ({
   getServerAdapter: () => ({ supportsLocalAgentJwt: false, execute }),
 }));
 
+const afterCheckout = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../services/issues.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/issues.js")>("../services/issues.js");
+  return { ...actual, issueService: (...args: Parameters<typeof actual.issueService>) => {
+    const service = actual.issueService(...args);
+    return { ...service, checkout: async (...checkoutArgs: Parameters<typeof service.checkout>) => {
+      const result = await service.checkout(...checkoutArgs);
+      await afterCheckout();
+      return result;
+    } };
+  } };
+});
+
 describe("heartbeat AI subscription contention", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -175,17 +188,42 @@ describe("heartbeat AI subscription contention", () => {
     }
   });
 
+  it("does not turn an assignee wake into a non-assignee retry after reassignment during preflight", async () => {
+    const f = await fixture();
+    try {
+      afterCheckout.mockImplementationOnce(async () => {
+        await db.update(issues).set({
+          assigneeAgentId: null, assigneeUserId: f.userId, executionRunId: null,
+        }).where(eq(issues.id, f.issueId));
+      });
+      const run = await heartbeat.invoke(f.agentId, "assignment", {
+        issueId: f.issueId, wakeReason: "issue_assigned", aiConnectionBusyDeferredWhileAssignee: false,
+      }, "system");
+      await heartbeat.drainActiveRunExecutions();
+      expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: "ai_connection_busy" });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toHaveLength(0);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      afterCheckout.mockReset();
+      await f.release();
+    }
+  });
+
   it("resumes an authorized comment wake without stealing the assignee's task lock", async () => {
     const f = await fixture();
     try {
       await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: f.userId }).where(eq(issues.id, f.issueId));
       const retry = await defer(f, { wakeReason: "issue_comment_mentioned", commentId: randomUUID() });
       expect(retry.contextSnapshot?.aiConnectionBusyDeferredWhileAssignee).toBe(false);
+      await dispatch(retry);
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, retry.id));
+      expect(successor).toMatchObject({ status: "scheduled_retry" });
+      expect(successor.contextSnapshot?.aiConnectionBusyDeferredWhileAssignee).toBe(false);
       const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
       expect(issue.executionRunId).toBeNull();
       await f.release();
-      await dispatch(retry);
-      expect(await heartbeat.getRun(retry.id)).toMatchObject({ status: "succeeded" });
+      await dispatch(successor);
+      expect(await heartbeat.getRun(successor.id)).toMatchObject({ status: "succeeded" });
       expect(execute).toHaveBeenCalledTimes(1);
     } finally {
       await f.release();

@@ -20783,7 +20783,15 @@ export function heartbeatService(
           // Only fresh executions can receive a pre-provider wait receipt. A
           // persisted native input may already have provider effects to recover.
           if (isAiConnectionBusy(error) && !persistedNativeExecutionInput) {
-            await finalizeAiConnectionBusyDeferral(run, error, issueContext?.assigneeAgentId === agent.id);
+            // A changed assignee is not permission to bypass ownership. Only
+            // an authorized comment wake (or its server-created subscription
+            // retry) can continue without holding the assignee's task lock.
+            const authorizedNonAssigneeWake = issueContext?.assigneeAgentId !== agent.id && (
+              allowsIssueInteractionWake(run.contextSnapshot, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS) ||
+              (run.scheduledRetryReason === AI_CONNECTION_BUSY_RETRY_REASON &&
+                isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, parseObject(run.contextSnapshot)))
+            );
+            await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
             return;
           }
           if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
