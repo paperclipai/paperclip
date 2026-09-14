@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -158,6 +158,15 @@ function peerActor(): Express.Request["actor"] {
 }
 
 describe("external object routes", () => {
+  // Load the real route and middleware modules once before the tests run. The
+  // first import transforms a large module graph. Under the loaded serial shard
+  // (maxWorkers=1) that cold cost crossed the 5s testTimeout of the first test.
+  // The hook has a 30s budget, so it absorbs the transform cost and every later
+  // createApp() call hits the cached modules.
+  beforeAll(async () => {
+    await createApp(boardActor());
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
@@ -273,7 +282,7 @@ describe("external object routes", () => {
       .send({});
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
     expect(mockExternalObjectsService.refreshIssueObjects).not.toHaveBeenCalled();
   });
 

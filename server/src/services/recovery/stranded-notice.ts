@@ -1,0 +1,225 @@
+import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import {
+  agentLinkRow,
+  keyValueRow,
+  runLinkRow,
+  systemNoticePresentation,
+  type NoticeMetadataRow,
+  type NoticeMetadataSection,
+} from "./notice-format.js";
+
+// Short human-readable body plus the presentation header for one recovery
+// family. The escalation path merges in the metadata rows only it knows
+// (recovery action, owner, source run) via buildStrandedRecoveryEscalationNotice.
+export type StrandedRecoveryNoticeSeed = {
+  body: string;
+  title: string;
+  tone: IssueCommentPresentation["tone"];
+  nextAction?: string;
+};
+
+export type StrandedRecoveryEscalationNotice = {
+  body: string;
+  presentation: IssueCommentPresentation;
+  metadata: IssueCommentMetadata;
+};
+
+export const DEFAULT_STRANDED_RECOVERY_NOTICE_BODY =
+  "Paperclip could not restore a live execution path for this issue automatically. " +
+  "Moving it to `blocked` so it is visible for intervention.";
+
+const DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE = "Automatic recovery blocked";
+
+const STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE: Record<string, string> = {
+  workspace_validation_failed: "Workspace validation failed",
+  configuration_incomplete: "Configuration incomplete",
+  execution_review_participant_recovery: "Review recovery stalled",
+};
+
+// Titles keyed by the source run's classified error code. The raw failure text
+// never reaches the issue thread (summarizeRunFailureForIssueComment withholds
+// it), so the classified code is the only safe, specific cause the collapsed
+// notice row can lead with. A mapped code outranks the seed titles because the
+// seeds describe the recovery family ("No live execution path"), not the cause.
+const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> = {
+  provider_quota: "Error: usage limit reached",
+  claude_auth_required: "Error: not logged in to Claude",
+  acpx_auth_required: "Error: agent login required",
+};
+
+export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
+  status: "todo" | "in_progress";
+}): StrandedRecoveryNoticeSeed {
+  const retryDescription = input.status === "todo"
+    ? "Paperclip automatically retried dispatch for this assigned `todo` issue during terminal run recovery"
+    : "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run recovery";
+  return {
+    body:
+      `${retryDescription}, but it still has no live execution path. ` +
+      "Moving it to `blocked` so it is visible for intervention.",
+    title: "No live execution path",
+    tone: "danger",
+  };
+}
+
+export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
+  return {
+    body:
+      "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
+      "Moving it to `blocked` so the workspace link, cwd, or git checkout can be repaired before resuming.",
+    title: "Workspace validation failed",
+    tone: "danger",
+  };
+}
+
+export const SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON = "sandbox_provider_plugin_not_ready";
+
+function readNonEmptyStringField(payload: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * What the operator must do to bring a sandbox provider plugin back to
+ * `ready`, by the status the run observed. Enabling an `upgrade_pending`
+ * plugin also approves the capabilities the upgrade added, so that case asks
+ * for a review first.
+ */
+export function sandboxProviderPluginRemedy(pluginStatus: string): string {
+  switch (pluginStatus) {
+    case "upgrade_pending":
+      return "review and approve the upgraded plugin's capabilities, then enable it (Plugins → Enable)";
+    case "disabled":
+      return "enable the plugin again (Plugins → Enable); an operator disabled it";
+    default:
+      return "enable the plugin (Plugins → Enable); a server restart also re-activates a bundled plugin";
+  }
+}
+
+/**
+ * Seed for a `configuration_incomplete` escalation. `configurationIncomplete`
+ * is the structured payload the failed run recorded in `resultJson`; the body
+ * names the specific gap for the reasons this notice knows, and falls back to
+ * the secret/env-binding wording (the original and most common reason).
+ */
+export function buildConfigurationIncompleteRecoveryNoticeSeed(
+  configurationIncomplete?: Record<string, unknown> | null,
+): StrandedRecoveryNoticeSeed {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
+    return {
+      title: "AI connection needs attention",
+      body: "This task paused because its selected AI account is unavailable. Reconnect the account or choose an available connection to continue.",
+      nextAction: "Reconnect the selected AI account or choose an available connection, then continue the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
+    const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
+    const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";
+    return {
+      body:
+        `Paperclip stopped before dispatching the adapter because the sandbox provider plugin \`${pluginKey}\` ` +
+        `is in status \`${pluginStatus}\` and cannot lease a sandbox. Runs will keep failing the same way until the ` +
+        `plugin is \`ready\` again. Moving it to \`blocked\` so an operator can ${sandboxProviderPluginRemedy(pluginStatus)} ` +
+        "before resuming.",
+      title: "Configuration incomplete",
+      tone: "danger",
+    };
+  }
+  return {
+    body:
+      "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
+      "Moving it to `blocked` so an operator can bind the missing secret(s) before resuming.",
+    title: "Configuration incomplete",
+    tone: "danger",
+  };
+}
+
+export function buildExecutionReviewParticipantRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
+  return {
+    body:
+      "Paperclip retried the pending execution-review participant once, but the review stage still has no " +
+      "completed decision or live reviewer run. Moving it to `blocked` so the board can inspect the evidence, repair the " +
+      "reviewer runtime, restore the review stage, or record an intentional manual resolution.",
+    title: "Review recovery stalled",
+    tone: "danger",
+  };
+}
+
+export function buildExecutionReviewParticipantUnavailableNoticeSeed(): StrandedRecoveryNoticeSeed {
+  return {
+    body:
+      "Paperclip cannot continue the pending execution-review participant because the participant is not " +
+      "invokable and the review stage has no completed decision or live reviewer run. Moving it to `blocked` " +
+      "so the board can inspect the evidence, repair the reviewer runtime, restore the review stage, or record an " +
+      "intentional manual resolution.",
+    title: "Review recovery stalled",
+    tone: "danger",
+  };
+}
+
+// Escalation dedupe matches the `Recovery action` key_value row via
+// noticeMetadataReferencesRecoveryAction, so this builder must always emit
+// that row with the raw action id.
+export function buildStrandedRecoveryEscalationNotice(input: {
+  seed?: StrandedRecoveryNoticeSeed | null;
+  fallbackBody?: string | null;
+  recoveryCause?: string | null;
+  recoveryActionId: string;
+  recoveryOwner: { id: string; name: string | null } | null | undefined;
+  sourceRun: {
+    id: string;
+    agentId?: string | null;
+    status: string;
+    errorCode?: string | null;
+    errorSummary?: string | null;
+  } | null | undefined;
+}): StrandedRecoveryEscalationNotice {
+  const fallbackBody = input.fallbackBody?.trim();
+  const body = input.seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
+  const title =
+    STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
+    input.seed?.title ??
+    STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE[input.recoveryCause ?? ""] ??
+    DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE;
+
+  const recoveryRows: NoticeMetadataRow[] = [
+    keyValueRow("Recovery action", input.recoveryActionId),
+    input.recoveryOwner
+      ? agentLinkRow("Recovery owner", input.recoveryOwner)
+      : keyValueRow(
+          "Recovery owner",
+          "Board decision required",
+        ),
+    keyValueRow(
+      "Next action",
+      input.seed?.nextAction ?? (input.recoveryOwner
+        ? "The recovery owner should either restore a live execution path or record the manual resolution on the source issue"
+        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution"),
+    ),
+  ];
+
+  const runRows: NoticeMetadataRow[] = [];
+  if (input.sourceRun) {
+    runRows.push(runLinkRow("Source run", input.sourceRun));
+    const failureCode = input.sourceRun.errorCode?.trim();
+    if (failureCode) runRows.push(keyValueRow("Failure code", failureCode));
+    const failureSummary = input.sourceRun.errorSummary?.trim();
+    if (failureSummary) runRows.push(keyValueRow("Failure summary", failureSummary));
+  }
+
+  const sections: NoticeMetadataSection[] = [
+    { title: "Recovery", rows: recoveryRows },
+    ...(runRows.length > 0 ? [{ title: "Run evidence", rows: runRows }] : []),
+  ];
+
+  return {
+    body,
+    presentation: systemNoticePresentation({ tone: input.seed?.tone ?? "danger", title }),
+    metadata: {
+      version: 1,
+      sourceRunId: input.sourceRun?.id ?? null,
+      sections,
+    },
+  };
+}

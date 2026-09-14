@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/shared";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "@/lib/ui-flags";
 import { SearchFilterMenu, type FilterMenuOption } from "./SearchFilterMenu";
 import { SearchSortMenu } from "./SearchSortMenu";
 import {
@@ -197,6 +198,8 @@ export function SearchFilterBar({
         searchPlaceholder="Search labels…"
         emptyMessage="No labels"
       />
+      {/* PAP-411: Priority filter menu hidden behind SHOW_TASK_PRIORITY_UI (search DSL stays intact). */}
+      {SHOW_TASK_PRIORITY_UI && (
       <SearchFilterMenu
         label="Priority"
         multi
@@ -205,6 +208,7 @@ export function SearchFilterBar({
         onToggle={(value) => toggleMulti("priority", value)}
         onClear={() => onChange({ ...filters, priority: [] })}
       />
+      )}
       <SearchFilterMenu
         label="Updated"
         options={options.updated}

@@ -48,12 +48,18 @@ type TranscriptBlock =
       type: "message";
       role: "assistant" | "user";
       ts: string;
+      // Timestamp of the first entry that opened this block. `ts` tracks the
+      // latest merged delta and mutates every chunk; `startTs` stays fixed so
+      // the React key is stable and the streaming block does not remount (and
+      // restart its fade) on each delta.
+      startTs: string;
       text: string;
       streaming: boolean;
     }
   | {
       type: "thinking";
       ts: string;
+      startTs: string;
       text: string;
       streaming: boolean;
     }
@@ -73,6 +79,7 @@ type TranscriptBlock =
   | {
       type: "activity";
       ts: string;
+      startTs: string;
       activityId?: string;
       name: string;
       status: "running" | "completed";
@@ -125,6 +132,7 @@ type TranscriptBlock =
   | {
       type: "stdout";
       ts: string;
+      startTs: string;
       text: string;
     }
   | {
@@ -134,6 +142,16 @@ type TranscriptBlock =
       tone: "info" | "warn" | "error" | "neutral";
       text: string;
       detail?: string;
+    }
+  | {
+      type: "provider_activity";
+      ts: string;
+      family: Extract<TranscriptEntry, { kind: "provider_activity" }>["family"];
+      eventType: string;
+      status: Extract<TranscriptEntry, { kind: "provider_activity" }>["status"];
+      title: string;
+      summary: string;
+      payload: Record<string, unknown>;
     }
   | {
       type: "diff_group";
@@ -550,6 +568,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
           type: "message",
           role: entry.kind,
           ts: entry.ts,
+          startTs: entry.ts,
           text: entry.text,
           streaming: isStreaming,
         });
@@ -567,10 +586,48 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
         blocks.push({
           type: "thinking",
           ts: entry.ts,
+          startTs: entry.ts,
           text: entry.text,
           streaming: isStreaming,
         });
       }
+      continue;
+    }
+
+    if (entry.kind === "provider_activity") {
+      blocks.push({ type: "provider_activity", ts: entry.ts, family: entry.family, eventType: entry.eventType, status: entry.status, title: entry.title, summary: entry.summary, payload: entry.payload });
+      continue;
+    }
+
+    if (entry.kind === "workspace_change") {
+      blocks.push({
+        type: "event",
+        ts: entry.ts,
+        label: entry.complete ? "workspace diff" : "workspace changes",
+        tone: "info",
+        text: `${entry.totals.files} changed ${entry.totals.files === 1 ? "file" : "files"}`,
+        detail: entry.source === "runner_verified" ? "Verified from workspace" : "Reported by harness",
+      });
+      continue;
+    }
+
+    if (entry.kind === "workspace_file_reference") {
+      blocks.push({ type: "event", ts: entry.ts, label: "file reference", tone: "info", text: entry.displayName, detail: entry.path });
+      continue;
+    }
+
+    if (entry.kind === "runtime_request") {
+      blocks.push({ type: "event", ts: entry.ts, label: `runtime ${entry.requestType}`, tone: entry.status === "pending" ? "warn" : "info", text: entry.prompt, detail: entry.status });
+      continue;
+    }
+
+    if (entry.kind === "run_result") {
+      blocks.push({ type: "event", ts: entry.ts, label: `result · ${entry.disposition}`, tone: entry.disposition === "blocked" ? "warn" : "info", text: entry.summary });
+      continue;
+    }
+
+    if (entry.kind === "run_terminal") {
+      blocks.push({ type: "event", ts: entry.ts, label: "terminal", tone: entry.runState === "failed" ? "error" : "info", text: `${entry.runState} · ${entry.disposition}`, detail: entry.stopReason });
       continue;
     }
 
@@ -691,6 +748,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
           const block: Extract<TranscriptBlock, { type: "activity" }> = {
             type: "activity",
             ts: entry.ts,
+            startTs: entry.ts,
             activityId: activity.activityId,
             name: activity.name,
             status: activity.status,
@@ -758,12 +816,87 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       blocks.push({
         type: "stdout",
         ts: entry.ts,
+        startTs: entry.ts,
         text: entry.text,
       });
     }
   }
 
   return groupToolBlocks(groupCommandBlocks(blocks));
+}
+
+/**
+ * Stable identity for a block's React key. Anchored to the block's opening
+ * timestamp (`startTs`) or a durable id (`toolUseId`, `activityId`) rather than
+ * its latest `ts`, which mutates on every streamed delta. A mutating key
+ * remounts the block, restarting its 300ms fade-in so the text visibly blinks
+ * out and back each chunk; a stable one keeps the streaming tail mounted.
+ */
+function transcriptBlockIdentity(block: TranscriptBlock): string {
+  switch (block.type) {
+    case "message":
+      return `message:${block.role}:${block.startTs}`;
+    case "thinking":
+      return `thinking:${block.startTs}`;
+    case "stdout":
+      return `stdout:${block.startTs}`;
+    case "activity":
+      return `activity:${block.activityId ?? block.startTs}`;
+    case "tool":
+      return `tool:${block.toolUseId ?? block.ts}`;
+    case "command_group":
+      return `command_group:${block.ts}`;
+    case "tool_group":
+      return `tool_group:${block.ts}`;
+    case "stderr_group":
+      return `stderr_group:${block.ts}`;
+    case "system_group":
+      return `system_group:${block.ts}`;
+    case "diff_group":
+      return `diff_group:${block.ts}`;
+    case "event":
+      return `event:${block.label}:${block.ts}`;
+    case "provider_activity":
+      return `provider_activity:${block.eventType}:${block.ts}`;
+  }
+}
+
+function TranscriptProviderActivity({ block, density }: { block: Extract<TranscriptBlock, { type: "provider_activity" }>; density: TranscriptDensity }) {
+  const [open, setOpen] = useState(block.status === "running");
+  const steps = Array.isArray(block.payload.steps) ? block.payload.steps.map(asRecord).filter((value): value is Record<string, unknown> => value !== null) : [];
+  const children = Array.isArray(block.payload.children) ? block.payload.children.map(asRecord).filter((value): value is Record<string, unknown> => value !== null) : [];
+  const sources = Array.isArray(block.payload.sources) ? block.payload.sources.map(asRecord).filter((value): value is Record<string, unknown> => value !== null) : [];
+  const output = typeof block.payload.output === "string" ? block.payload.output.slice(-(8 * 1024)) : "";
+  return <div className={cn("rounded-xl border p-2", block.status === "failed" ? "border-red-500/30 bg-red-500/[0.05]" : "border-border/70 bg-muted/20")} data-provider-family={block.family}>
+    <button type="button" className="flex min-h-8 w-full items-center gap-2 text-left" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+      <span aria-hidden="true">{block.status === "running" ? "⏳" : block.status === "failed" ? "✕" : block.status === "interrupted" ? "■" : "✓"}</span>
+      <strong className={cn("font-mono", density === "compact" ? "text-(length:--text-micro)" : "text-xs")}>{block.title}</strong>
+      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{block.summary}</span>
+      {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+    </button>
+    {open ? <div className="mt-2 space-y-2 border-l border-border pl-5 text-xs">
+      {steps.length > 0 ? <ol className="space-y-1">{steps.map((step, index) => <li key={String(step.stepId ?? index)}><span className="mr-2" aria-hidden="true">{step.status === "completed" ? "✓" : step.status === "blocked" ? "!" : "○"}</span>{String(step.body ?? "")}</li>)}</ol> : null}
+      {children.length > 0 ? <ul className="space-y-1">{children.map((child, index) => <li key={String(child.childId ?? index)}><strong>{String(child.role ?? "Child agent")}</strong> · {String(child.status ?? "unknown")}<div className="text-muted-foreground">{String(child.summary ?? "")}</div></li>)}</ul> : null}
+      {sources.length > 0 ? <ul className="space-y-1">{sources.map((source, index) => { const url = typeof source.url === "string" && /^https?:\/\//.test(source.url) ? source.url : null; return <li key={String(source.sourceId ?? index)}>{url ? <a className="underline" href={url} target="_blank" rel="noreferrer">{String(source.title ?? url)}</a> : String(source.title ?? "Unavailable source")} <span className="text-muted-foreground">Provider-reported</span></li>; })}</ul> : null}
+      {output ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono">{output}</pre> : null}
+      {block.family === "model_identity" ? <div><span className="text-muted-foreground">Requested</span> {String(block.payload.requestedModel ?? "—")} · <span className="text-muted-foreground">Effective</span> {String(block.payload.effectiveModel ?? "—")}</div> : null}
+    </div> : null}
+  </div>;
+}
+
+/**
+ * Assign each block a stable, unique React key. Identity is position-independent
+ * so earlier blocks collapsing (truncation) does not remount the survivors; a
+ * per-render occurrence counter disambiguates the rare identity collision.
+ */
+export function keyTranscriptBlocks(blocks: TranscriptBlock[]): Array<{ block: TranscriptBlock; key: string }> {
+  const seen = new Map<string, number>();
+  return blocks.map((block) => {
+    const identity = transcriptBlockIdentity(block);
+    const occurrence = seen.get(identity) ?? 0;
+    seen.set(identity, occurrence + 1);
+    return { block, key: occurrence === 0 ? identity : `${identity}#${occurrence}` };
+  });
 }
 
 function TranscriptMessageBlock({
@@ -789,7 +922,9 @@ function TranscriptMessageBlock({
       <MarkdownBody
         className={cn(
           "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-          compact ? "text-xs leading-5 text-foreground/85" : "text-sm",
+          // Match the default view's chat message body (IssueChatThread:
+          // `text-sm leading-6`) so streamed text reads identically (PAP-461, A2).
+          compact ? "text-xs leading-5 text-foreground/85" : "text-sm leading-6",
         )}
         externalReferences={externalReferences}
       >
@@ -798,7 +933,7 @@ function TranscriptMessageBlock({
       {block.streaming && (
         <div className="mt-2 inline-flex items-center gap-1 text-(length:--text-nano) font-medium italic text-muted-foreground">
           <span className="relative flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
+            <span className="tc-live-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-70" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
           </span>
           Streaming
@@ -822,8 +957,11 @@ function TranscriptThinkingBlock({
   return (
     <MarkdownBody
       className={cn(
-        "italic text-foreground/70 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        density === "compact" ? "text-(length:--text-micro) leading-5" : "text-sm leading-6",
+        // Match the default view's chain-of-thought text (IssueChatThread:
+        // `text-(length:--text-compact) italic leading-5 text-muted-foreground/70`)
+        // so streamed thinking reads identically across both views (PAP-461, A2).
+        "italic text-muted-foreground/70 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        density === "compact" ? "text-(length:--text-micro) leading-5" : "text-(length:--text-compact) leading-5",
         className,
       )}
       externalReferences={externalReferences}
@@ -1304,7 +1442,7 @@ function TranscriptActivityRow({
         <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" />
       ) : (
         <span className="relative mt-1 flex h-2.5 w-2.5 shrink-0">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70" />
+          <span className="tc-live-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-70" />
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
         </span>
       )}
@@ -1599,6 +1737,9 @@ function findScrollParent(element: HTMLElement): HTMLElement | Window {
 }
 
 function rawEntryContent(entry: TranscriptEntry): string {
+  if (entry.kind === "provider_activity") {
+    return `${entry.eventType}\n${entry.title}: ${entry.summary}`;
+  }
   if (entry.kind === "tool_call") {
     return `${entry.name}\n${formatToolPayload(entry.input)}`;
   }
@@ -1611,6 +1752,11 @@ function rawEntryContent(entry: TranscriptEntry): string {
   if (entry.kind === "init") {
     return `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`;
   }
+  if (entry.kind === "workspace_change") return `${entry.totals.files} files · ${entry.source} · revision ${entry.revision}`;
+  if (entry.kind === "workspace_file_reference") return `${entry.displayName}\n${entry.path}`;
+  if (entry.kind === "runtime_request") return `${entry.requestType} · ${entry.status}\n${entry.prompt}`;
+  if (entry.kind === "run_result") return `${entry.disposition}\n${entry.summary}`;
+  if (entry.kind === "run_terminal") return `${entry.runState} · ${entry.turnState} · ${entry.disposition}${entry.stopReason ? `\n${entry.stopReason}` : ""}`;
   return entry.text;
 }
 
@@ -1716,6 +1862,7 @@ export function RunTranscriptView({
     [entries, mode, streaming],
   );
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
+  const keyedBlocks = useMemo(() => keyTranscriptBlocks(visibleBlocks), [visibleBlocks]);
   const visibleEntries = limit ? entries.slice(-limit) : entries;
 
   if (entries.length === 0) {
@@ -1736,10 +1883,10 @@ export function RunTranscriptView({
 
   return (
     <div className={cn("space-y-3", className)}>
-      {visibleBlocks.map((block, index) => (
+      {keyedBlocks.map(({ block, key }, index) => (
         <div
-          key={`${block.type}-${block.ts}-${index}`}
-          className={cn(index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300")}
+          key={key}
+          className={cn(index === keyedBlocks.length - 1 && streaming && "tc-stream-block-enter")}
         >
           {block.type === "message" && (
             <TranscriptMessageBlock
@@ -1783,6 +1930,7 @@ export function RunTranscriptView({
               externalReferences={externalReferences}
             />
           )}
+          {block.type === "provider_activity" && <TranscriptProviderActivity block={block} density={density} />}
         </div>
       ))}
     </div>

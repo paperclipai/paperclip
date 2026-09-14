@@ -11,19 +11,16 @@ import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 function TestHarness({
   onNewIssue,
   onSearch,
-  onToggleCollapse,
   onGoToInbox,
 }: {
   onNewIssue: () => void;
   onSearch?: () => void;
-  onToggleCollapse?: () => void;
   onGoToInbox?: () => void;
 }) {
   useKeyboardShortcuts({
     enabled: true,
     onNewIssue,
     onSearch,
-    onToggleCollapse,
     onGoToInbox,
   });
 
@@ -113,29 +110,30 @@ describe("useKeyboardShortcuts", () => {
     });
   });
 
-  it("fires onToggleCollapse on Cmd/Ctrl+B", () => {
+  it("does not intercept the retired Cmd/Ctrl+B collapse shortcut", () => {
     const root = createRoot(container);
-    const onToggleCollapse = vi.fn();
 
     act(() => {
-      root.render(<TestHarness onNewIssue={vi.fn()} onToggleCollapse={onToggleCollapse} />);
+      root.render(<TestHarness onNewIssue={vi.fn()} />);
     });
 
-    document.dispatchEvent(new KeyboardEvent("keydown", {
+    const metaEvent = new KeyboardEvent("keydown", {
       key: "b",
       metaKey: true,
       bubbles: true,
       cancelable: true,
-    }));
-    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+    });
+    document.dispatchEvent(metaEvent);
+    expect(metaEvent.defaultPrevented).toBe(false);
 
-    document.dispatchEvent(new KeyboardEvent("keydown", {
+    const ctrlEvent = new KeyboardEvent("keydown", {
       key: "b",
       ctrlKey: true,
       bubbles: true,
       cancelable: true,
-    }));
-    expect(onToggleCollapse).toHaveBeenCalledTimes(2);
+    });
+    document.dispatchEvent(ctrlEvent);
+    expect(ctrlEvent.defaultPrevented).toBe(false);
 
     act(() => {
       root.unmount();
@@ -201,23 +199,4 @@ describe("useKeyboardShortcuts", () => {
     });
   });
 
-  it("does not fire onToggleCollapse for a bare 'b' keypress", () => {
-    const root = createRoot(container);
-    const onToggleCollapse = vi.fn();
-
-    act(() => {
-      root.render(<TestHarness onNewIssue={vi.fn()} onToggleCollapse={onToggleCollapse} />);
-    });
-
-    document.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "b",
-      bubbles: true,
-      cancelable: true,
-    }));
-    expect(onToggleCollapse).not.toHaveBeenCalled();
-
-    act(() => {
-      root.unmount();
-    });
-  });
 });

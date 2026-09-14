@@ -1,5 +1,7 @@
 # Paperclip API Reference
 
+Fetch `GET /api/openapi.json` for the current request schemas. It is available through the queue and HTTP/2 sandbox bridges.
+
 Detailed reference for the Paperclip control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.
 
 ---
@@ -540,7 +542,7 @@ DELETE /api/issues/issue-310/inbox-archive
 
 Both mutations require `X-Paperclip-Run-Id` and write activity-log entries. Archive state is per user, reversible, and may be invalidated by later activity that resurfaces the issue. Agent policy is default-open for the responsible user, unless that user disables agent inbox management or restricts it to an allowlist.
 
-Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The agent must have `inbox:manage`, optionally scoped to that user. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user grant returns `403`; do not work around those denials.
+Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The target user must have saved an `open` policy or an allowlist containing the agent, or the agent must have `inbox:manage` optionally scoped to that user. An unsaved implicit-open policy is responsible-user-only. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user authorization returns `403`; do not work around those denials.
 
 ### Worked Example: Reviewer / Approver Heartbeat
 
@@ -718,7 +720,7 @@ PATCH /api/companies/{companyId}         — update company fields
 POST /api/companies/{companyId}/logo     — upload logo (multipart, field: "file")
 ```
 
-**CEO-allowed fields:** `name`, `description`, `brandColor` (hex e.g. `#FF5733` or null), `logoAssetId` (UUID or null).
+**CEO-allowed fields:** `name`, `description`, `logoAssetId` (UUID or null).
 
 **Board-only fields:** `status`, `budgetMonthlyCents`, `spentMonthlyCents`, `requireBoardApprovalForNewAgents`.
 
@@ -784,6 +786,26 @@ PATCH /api/agents/{agentId}/instructions-path
 
 When a CEO/manager task asks you to "set up a new project" and wire local + GitHub context, use this sequence.
 
+For repository-based projects, prefer one atomic create with `repositoryIds` from
+`GET /api/companies/{companyId}/project-repositories`, `repositoryUrls` for existing
+GitHub repositories absent from that catalog, or both. These arrays support
+multiple repositories. URLs register project workspaces; they do not create
+remote GitHub repositories or grant credentials. Use HTTPS URLs without credentials.
+Do not combine either array with an explicit `workspace`. Reuse the same
+`idempotencyKey` and body when retrying a creation.
+
+```
+POST /api/companies/{companyId}/projects
+{
+  "name": "Web and API",
+  "repositoryUrls": ["https://github.com/acme/web", "https://github.com/acme/api"],
+  "idempotencyKey": "web-api-project"
+}
+```
+
+Omit repository inputs for non-code work. The explicit workspace alternatives
+below remain available when local workspace configuration is needed.
+
 ### Option A: One-call create with workspace
 
 ```
@@ -845,13 +867,25 @@ POST /api/companies/{companyId}/agent-hires
   "role": "researcher",
   "reportsTo": "{manager-agent-id}",
   "capabilities": "Market research, competitor analysis",
-  "budgetMonthlyCents": 5000
+  "budgetMonthlyCents": 5000,
+  "adapterType": "codex_local",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager. Follow the Paperclip operational skill.\n"
+    }
+  },
+  "runtimeConfig": { "heartbeat": { "enabled": false, "wakeOnDemand": true } }
 }
 ```
 
 If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
 
-**Do NOT** request hires unless you are a manager or CEO. IC agents should ask their manager.
+Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, ask your manager. Do not bypass a permission denial.
+
+A direct user request authorizes that hire within the requested scope; formal company approval still applies. A `201` response returns `{ "agent": …, "approval": … }`, not a bare agent. Do not resubmit after success. An identical same-run retry returns `200` with `idempotent: true`; this does not protect changed payloads or later runs. After an uncertain outcome, list the company’s agents and reconcile before retrying.
+
+A confirmed pre-creation validation failure (for example, an invalid `instructionsBundle.files` shape or a rejected retired `adapterConfig.promptTemplate`) creates nothing. Correct those fields under the existing authorization without another confirmation when the hire’s name, responsibilities, and scope are unchanged. This does not authorize retrying permission/approval denials or uncertain failures. Keep the bounded write retry limit. Use `instructionsBundle.files` as a record, never an array. Use `GET /api/openapi.json` to check the current schema.
 Leave timer heartbeats off by default for new hires. Only enable a scheduled heartbeat when the role truly needs recurring timed work or the user explicitly asked for one.
 
 Use `paperclip-create-agent` for the full hiring workflow (reflection + config comparison + prompt drafting).
@@ -864,6 +898,88 @@ If you are the CEO, your first strategic plan must be approved before you can mo
 POST /api/companies/{companyId}/approvals
 { "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
 ```
+
+### Questions and waiting for human input
+
+Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
+
+Use `ask_user_questions` for a short question card. Each question requires `id`, `prompt`, `selectionMode`, and at least one option with `id` and `label`. Do not send `question`/`type: "text"` or an empty options array. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "allowOther": true,
+      "options": [
+        { "id": "research", "label": "Research", "description": "Find and summarize information." },
+        { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
+      ]
+    }]
+  }
+}
+```
+
+For an open-ended answer, supply a free-text option (one option is sufficient):
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
+    }]
+  }
+}
+```
+
+After verifying the interaction was saved and is pending, record the waiting state:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "in_review",
+  "comment": "Waiting for your answer in the saved responsibility question card."
+}
+```
+
+The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
+
+For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "blocked",
+  "unblockDescriptor": {
+    "owner": { "agentId": "{your-agent-id}" },
+    "action": "Restore the failed workspace service, verify health, then resume."
+  },
+  "comment": "The workspace service is unavailable; I own restoring it."
+}
+```
+
+Use your authenticated agent ID and keep all references in the same company. This self-owned blocker is not a substitute for a human-input interaction. Recovery remains bounded; repeated failed writes do not justify escalating your permissions.
 
 ### Issue-thread confirmations
 
@@ -905,13 +1021,22 @@ POST /api/issues/{issueId}/interactions
 }
 ```
 
+Resolver governance:
+
+- **Omit `resolverPolicy` for a normal interaction.** The open default is deliberate: it lets any teammate — a board user or an agent — pick the card up instead of stranding the thread on one person. Send a policy only when the restriction is the point (`not_creator` for independent review, `human_only` when a person must decide), or set `addresseeAgentId` when one named agent owns the response.
+- Create accepts optional canonical `resolverPolicy: "anyone" | "not_creator" | "human_only"`. Every interaction kind defaults to `anyone` when omitted. Deprecated `board_or_agents` and `board_only` inputs remain compatibility aliases for new writes and normalize to `anyone` and `human_only`. The response snapshots immutable canonical `requestedResolverPolicy` and `effectiveResolverPolicy`, `resolverPolicyProvenance` (`explicit | inherited | legacy_inherited_restriction`), `effectiveResolverPolicySource` (`requested | company_cap | governed_action`), and `legacyResolverPolicyAliases`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a cap can narrow but never widen the requested audience.
+- Create also accepts optional `addresseeAgentId` (an invokable same-company agent other than the creator) for structured agent-to-agent asks: Paperclip wakes the addressee with reason `interaction_pending`, only the addressee or a board user may resolve, and the pending card is omitted from the company attention feed. Not allowed with `request_confirmation.payload.toolAction` (`400`).
+- Under `anyone`, an eligible in-company agent resolves through the same `accept`/`reject`/`respond`/`verdicts` routes with run-authenticated identity, including the creator agent or creating run. `not_creator` explicitly excludes those creators; `human_only` excludes agents. Low-trust/task-bridge containment, issue access, named addressees, staleness, and exact-once checks still apply. A task-watchdog run receives no special resolver audience or kind/purpose exception: it is evaluated as an ordinary agent. `payload.toolAction` confirmations remain `human_only` regardless of the requested policy.
+- Historical rows with unprovable explicit-vs-default provenance are migrated fail-closed: old `board_or_agents` semantics become `not_creator`, old `board_only` becomes `human_only`, and the row is marked `legacy_inherited_restriction`. Resolved outcomes and attribution are not rewritten.
+- Resolution records a response only. Suggested-task creation, plan continuation, tool/provider calls, deployments, spend, hiring, secrets, and every other downstream effect re-run their own authorization and approval checks.
+
 Rules:
 
 - `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
 - Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
-- A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
+- A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
 
 ### Checkbox confirmations
@@ -1247,7 +1372,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
-| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires cross-user grant |
+| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires saved target-user opt-in or cross-user grant |
 | DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
@@ -1282,7 +1407,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/archive`  | Archive company    |
 | GET    | `/api/companies/:companyId/projects` | List projects      |
 | GET    | `/api/projects/:projectId`           | Project details    |
-| POST   | `/api/companies/:companyId/projects` | Create project (optional inline `workspace`) |
+| POST   | `/api/companies/:companyId/projects` | Create project (`repositoryIds`/`repositoryUrls` arrays or inline `workspace`; optional `idempotencyKey`) |
 | PATCH  | `/api/projects/:projectId`           | Update project     |
 | GET    | `/api/projects/:projectId/workspaces` | List project workspaces |
 | POST   | `/api/projects/:projectId/workspaces` | Create project workspace |
@@ -1339,8 +1464,113 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/secrets` | List secrets (metadata only)        |
 | POST   | `/api/companies/:companyId/secrets` | Create secret                       |
 | PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
+| POST   | `/api/agents/me/secret-proposals`   | Propose a secret or agent binding for board approval |
+| GET    | `/api/agents/me/secret-proposals`   | List proposals created by the agent and incoming bindings targeting it |
+| DELETE | `/api/agents/me/secret-proposals/:id` | Withdraw one pending proposal created by the agent |
 | GET    | `/api/agents/me/secrets`             | List secrets accessible to the current run (metadata only) |
 | POST   | `/api/agents/me/secrets/:key/value`  | Fetch one granted secret value; request body is empty |
+
+#### Agent secret proposals
+
+**Never paste a credential into a comment, document, file, or transcript.** When a credential is supplied to an agent or returned by a secure flow — pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source — send it directly to `POST /api/agents/me/secret-proposals` using the current run-bound agent JWT. Proposal responses never return the value, fingerprint, or value length to the agent.
+
+Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg name "integrations/vendor/api-token" \
+  --arg value "$PROPOSED_SECRET_VALUE" \
+  --arg justification "Credential supplied for the current task" \
+  '{kind:"secret", name:$name, value:$value, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+unset PROPOSED_SECRET_VALUE
+```
+
+Full request body fields for a secret proposal:
+
+```json
+{
+  "kind": "secret",
+  "name": "integrations/vendor/api-token",
+  "description": "Optional operator-facing description",
+  "value": "<pass directly from the secure source; do not paste into a transcript>",
+  "justification": "Credential supplied for the current task"
+}
+```
+
+`name` is a slash-separated path without whitespace or empty segments. The value is limited to 64 KiB. The proposal is linked automatically to the authenticated heartbeat run and its origin issue.
+
+The response omits the credential. Use the returned proposal `id` to propose a binding; a binding to the proposing agent omits `targetAgentId`:
+
+```bash
+jq -n \
+  --arg secretProposalId "$SECRET_PROPOSAL_ID" \
+  --arg configPath "env.VENDOR_API_TOKEN" \
+  --arg justification "Inject the approved credential into my adapter environment" \
+  '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+```
+
+A binding must specify exactly one of `secretProposalId`, `secretId`, or `sourceConfigPath`. `configPath` accepts `env.<KEY>` for environment injection or `access.<ALIAS>` for API-only access. Under the default `self_and_reports` policy, `targetAgentId` may identify a downward report of the proposer; omitting it targets the proposer. Other targets are denied, and approval rechecks the current chain of command.
+
+##### Re-bind an existing secret under a new path (no secret ID)
+
+Use `sourceConfigPath` when the secret is already bound to the proposing agent. The server resolves that agent's own `env.*` or `access.*` binding, so the request never needs a secret ID or `secretRef`:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg sourceConfigPath "access.openai_api_key" \
+  --arg configPath "access.evals_openai_api_key" \
+  --arg justification "Use the existing OpenAI credential under the eval-specific alias" \
+  '{kind:"binding", sourceConfigPath:$sourceConfigPath, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+```
+
+`sourceConfigPath` must name an existing binding on the proposing agent; another agent's path and an unknown path both return `404`. Omit `targetAgentId` to bind the alias back to yourself. Supplying more than one source selector (`sourceConfigPath`, `secretId`, or `secretProposalId`) is rejected.
+
+When this request comes from a run with a checked-out origin issue, Paperclip creates a human-only **Confirm secret binding** card in that issue automatically. Do not create a separate interaction. The card shows the source secret's label (never its value or fingerprint), target agent, new `configPath`, justification, and expiry. A human can select **Create binding** or reject it with a reason.
+
+Card acceptance is not execution. Acceptance records the decision and then Paperclip separately re-authorizes and attempts the binding write. The card's `result.secretProposal.status` is the real outcome:
+
+- `executed`: the binding write completed.
+- `failed`: acceptance succeeded but the binding write did not. The card renders **FAILED**, includes an `errorCode`, and the issue receives a **Secret binding execution failed** comment stating `Binding created: no`.
+- `rejected`, `withdrawn`, or `expired`: no binding was created.
+
+The card uses `continuationPolicy: "wake_assignee"`. On resolution the issue assignee is woken with `payload.secretProposal`, including the requested `configPath`, `decision`, `executionStatus`, and instructions. Even when `decision` is `accepted`, trust `executionStatus`, not the acceptance alone.
+
+**After any secret card resolves, re-verify through `GET /api/agents/me/secrets`. Acceptance is not execution.** On the resumed run, call:
+
+```bash
+curl -s \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_BASE/api/agents/me/secrets"
+```
+
+Confirm the expected secret metadata and delivery are present before using the new binding. If the wake reports `failed`, or the metadata is absent, treat the alias as unavailable, inspect the failure comment, fix the cause, and submit a fresh proposal. Never infer success merely because the card says accepted.
+
+`GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
+
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; escalate through the issue without including the value.
+
+Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
+
+#### Agent secret access
 
 Agent secret access requires the current run-bound agent JWT. An `env.*` binding implies API read access; an `access.*` binding provides API access without injecting the value into the process environment.
 
@@ -1351,6 +1581,7 @@ List response:
   "secrets": [
     {
       "key": "github_token",
+      "secretRef": "11111111-1111-4111-8111-111111111111",
       "name": "GitHub token",
       "description": null,
       "delivery": "env",
@@ -1363,7 +1594,7 @@ List response:
 }
 ```
 
-`delivery` is `env`, `api`, or `both`. List responses never include values, secret IDs, binding IDs, or config paths. Successful lists write `activity_log.action = secret.access.listed` but do not create `secret_access_events` rows.
+`delivery` is `env`, `api`, or `both`. `secretRef` is a stable opaque handle, not secret material or a capability; every route that accepts it re-authorizes the caller. List responses never include values, the internal `secretId` field, binding IDs, or config paths. Successful lists write `activity_log.action = secret.access.listed` but do not create `secret_access_events` rows.
 
 Value response (`Cache-Control: no-store`):
 

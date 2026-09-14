@@ -4,9 +4,10 @@
 **Scenario source of truth:** [`tests/e2e/smoke-lab.catalog.ts`](../../tests/e2e/smoke-lab.catalog.ts) — **do not fork the step list.**
 
 This is the manual/agent counterpart to the deterministic Playwright CI mirror
-(`tests/e2e/smoke-lab.spec.ts`, S4). Where the CI mirror runs headless in a
-throwaway instance for a red/green gate, this runbook has a **QA agent drive a
-real browser** through the same P1–P7 lifecycle against a live instance,
+(`tests/e2e/smoke-lab.shared.ts`, split between the P1–P4 and P5–P7 specs).
+Where the CI mirror runs headless in a throwaway instance for a red/green gate,
+this runbook has a **QA agent drive a real browser** through the same P1–P7
+lifecycle against a live instance,
 **typing demo credentials into the fake OAuth provider's real consent page**, and
 records every step + a viewable screenshot to the Smoke Lab results API so the run
 shows up in the **Smoke Lab tab** and the **dashboard "Integration smoke" card**.

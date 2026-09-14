@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json",
+  "title": "Paperclip question set",
+  "type": "object",
+  "required": ["schema", "questions"],
+  "properties": {
+    "schema": { "const": "paperclip.question_set.v1" },
+    "title": { "type": "string", "maxLength": 1000 },
+    "description": { "type": "string", "maxLength": 4000 },
+    "submitLabel": { "type": "string", "maxLength": 200 },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/question" }
+    }
+  },
+  "$defs": {
+    "option": {
+      "type": "object",
+      "required": ["id", "label"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "recommended": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "customAnswer": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "const": true },
+        "label": { "type": "string", "maxLength": 1000 },
+        "placeholder": { "type": "string", "maxLength": 1000 }
+      },
+      "additionalProperties": false
+    },
+    "textValidation": {
+      "type": "object",
+      "properties": {
+        "minLength": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "maxLength": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "pattern": { "type": "string", "maxLength": 1000 },
+        "inputType": { "enum": ["text", "number", "integer"] },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "question": {
+      "type": "object",
+      "required": ["id", "prompt", "required", "answerMode"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "header": { "type": "string", "maxLength": 1000 },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "helpText": { "type": "string", "maxLength": 4000 },
+        "required": { "type": "boolean" },
+        "answerMode": { "enum": ["single_select", "multi_select", "text"] },
+        "options": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/option" }
+        },
+        "customAnswer": { "$ref": "#/$defs/customAnswer" },
+        "textValidation": { "$ref": "#/$defs/textValidation" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "answerMode": { "const": "text" } }, "required": ["answerMode"] },
+          "then": {
+            "properties": { "options": { "type": "array", "maxItems": 0 } },
+            "not": { "required": ["customAnswer"] }
+          }
+        },
+        {
+          "if": { "properties": { "answerMode": { "enum": ["single_select", "multi_select"] } }, "required": ["answerMode"] },
+          "then": {
+            "required": ["options"],
+            "properties": { "options": { "type": "array", "minItems": 1 } }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

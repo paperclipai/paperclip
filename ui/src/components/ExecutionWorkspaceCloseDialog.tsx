@@ -236,8 +236,14 @@ export function ExecutionWorkspaceCloseDialog({
                         <span className="font-medium">{service.serviceName}</span>
                         <span className="text-xs text-muted-foreground">{service.status} · {service.lifecycle}</span>
                       </div>
+                      {/*
+                        The last fallback used to print the service working
+                        directory, a path on the execution host. The dialog has
+                        no instance-policy context of its own, so it drops the
+                        path outright and falls back to a neutral line.
+                      */}
                       <div className="mt-1 break-words text-xs text-muted-foreground">
-                        {service.url ?? service.command ?? service.cwd ?? "No additional details"}
+                        {service.url ?? service.command ?? "No additional details"}
                       </div>
                     </div>
                   ))}

@@ -182,6 +182,14 @@ export interface HostServices {
     log(params: WorkerToHostMethods["log"][0]): Promise<void>;
   };
 
+  /** Provides `span.record`. The context carries the host-minted `traceparent`. */
+  tracer: {
+    record(
+      params: WorkerToHostMethods["span.record"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<void>;
+  };
+
   /** Provides `companies.list`, `companies.get`. */
   companies: {
     list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
@@ -415,6 +423,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Logger — always allowed
   "log": null,
+
+  // Provider span sink — only a plugin that registers environment drivers may
+  // emit a provider span. The gate rejects a span from any other plugin.
+  "span.record": "environment.drivers.register",
 
   // Companies
   "companies.list": "companies.read",
@@ -786,6 +798,11 @@ export function createHostClientHandlers(
     // Logger
     "log": gated("log", async (params) => {
       return services.logger.log(params);
+    }),
+
+    // Provider span sink. The context carries the host-minted `traceparent`.
+    "span.record": gated("span.record", async (params, context) => {
+      return services.tracer.record(params, context);
     }),
 
     // Companies

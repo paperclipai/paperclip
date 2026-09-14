@@ -31,8 +31,12 @@ describe("formatReleaseDate", () => {
   });
 
   it("collapses a full timestamp to its calendar day", () => {
-    // Anchored to noon UTC so it stays on the 15th regardless of local offset.
-    expect(formatReleaseDate("2026-07-15T12:00:00Z" as never)).toBe("2026-07-15");
+    // Anchored to local noon. `formatReleaseDate` reads the *local* calendar
+    // fields (getFullYear/getMonth/getDate), so a UTC anchor does not hold the
+    // day regardless of offset as it once claimed here — noon UTC is 02:00 on
+    // the 16th at UTC+14, and the assertion failed there.
+    const localNoon = new Date(2026, 6, 15, 12, 0, 0, 0);
+    expect(formatReleaseDate(localNoon.toISOString() as never)).toBe("2026-07-15");
   });
 
   it("returns null for missing or unparseable input", () => {

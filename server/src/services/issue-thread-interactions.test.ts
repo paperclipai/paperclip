@@ -14,7 +14,10 @@ type SelectRow = Record<string, unknown>;
 function createSelectChain(rows: SelectRow[]) {
   return {
     from() {
-      return {
+      const query = {
+        innerJoin() {
+          return query;
+        },
         where() {
           return {
             then(callback: (rows: SelectRow[]) => unknown) {
@@ -23,6 +26,7 @@ function createSelectChain(rows: SelectRow[]) {
           };
         },
       };
+      return query;
     },
   };
 }
@@ -35,6 +39,7 @@ function createFakeDb(args: {
   const issueTouches: Array<Record<string, unknown>> = [];
   const interactionUpdates: Array<Record<string, unknown>> = [];
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
+  const inserts: Array<{ table: string; values: Record<string, unknown> }> = [];
   let selectCallCount = 0;
 
   const db: any = {
@@ -66,7 +71,11 @@ function createFakeDb(args: {
         };
       },
     })),
-    insert: vi.fn(),
+    insert: vi.fn((table: unknown) => ({
+      values: async (values: Record<string, unknown>) => {
+        inserts.push({ table: getTableName(table as never), values });
+      },
+    })),
     transaction: async (callback: (tx: typeof db) => Promise<void>) => callback(db),
   };
 
@@ -76,6 +85,7 @@ function createFakeDb(args: {
     issueTouches,
     interactionUpdates,
     toolActionRequestUpdates,
+    inserts,
   };
 }
 
@@ -83,6 +93,46 @@ describe("issueThreadInteractionService", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+  });
+
+  it.each([
+    ["ask_user_questions", undefined, {}, "anyone", "anyone", "inherited", "requested"],
+    ["suggest_tasks", undefined, {}, "anyone", "anyone", "inherited", "requested"],
+    ["request_confirmation", "board_or_agents", {}, "anyone", "anyone", "explicit", "requested"],
+    ["request_confirmation", "board_only", {}, "human_only", "human_only", "explicit", "requested"],
+    ["request_checkbox_confirmation", undefined, { request_checkbox_confirmation: { defaultPolicy: "not_creator" } }, "not_creator", "not_creator", "inherited", "requested"],
+    ["request_item_verdicts", "anyone", { request_item_verdicts: { cap: "not_creator" } }, "anyone", "not_creator", "explicit", "company_cap"],
+  ] as const)(
+    "resolves %s requested/default/cap policy snapshots",
+    async (kind, requested, governance, expectedRequested, expectedEffective, expectedProvenance, expectedSource) => {
+      const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+      expect(resolveInteractionPolicy({
+        kind,
+        requested,
+        governance,
+        hasToolAction: false,
+      })).toEqual({
+        requestedResolverPolicy: expectedRequested,
+        effectiveResolverPolicy: expectedEffective,
+        resolverPolicyProvenance: expectedProvenance,
+        effectiveResolverPolicySource: expectedSource,
+      });
+    },
+  );
+
+  it("always clamps tool-action confirmations to human-only", async () => {
+    const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+    expect(resolveInteractionPolicy({
+      kind: "request_confirmation",
+      requested: "board_or_agents",
+      governance: { request_confirmation: { defaultPolicy: "board_or_agents", cap: "board_or_agents" } },
+      hasToolAction: true,
+    })).toEqual({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "governed_action",
+    });
   });
 
   it("create reuses an existing interaction for the same idempotency key", async () => {
@@ -95,6 +145,10 @@ describe("issueThreadInteractionService", () => {
       kind: "suggest_tasks",
       status: "pending",
       continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "requested",
       idempotencyKey: "run-1:suggest",
       sourceCommentId: null,
       sourceRunId: "22222222-2222-4222-8222-222222222222",
@@ -114,8 +168,12 @@ describe("issueThreadInteractionService", () => {
       updatedAt: new Date("2026-04-20T10:00:00.000Z"),
     };
 
+    let selectCallCount = 0;
     const db: any = {
-      select: vi.fn(() => createSelectChain([existingRow])),
+      select: vi.fn(() => {
+        selectCallCount += 1;
+        return createSelectChain(selectCallCount <= 2 ? [existingRow] : []);
+      }),
       insert: vi.fn(),
       update: vi.fn(),
     };
@@ -218,6 +276,16 @@ describe("issueThreadInteractionService", () => {
     });
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);
+    expect(state.inserts).toEqual([
+      expect.objectContaining({
+        table: "issue_question_response_deliveries",
+        values: expect.objectContaining({
+          interactionId: "interaction-2",
+          correlationId: "question-response:interaction-2",
+          payloadSha256: expect.any(String),
+        }),
+      }),
+    ]);
   });
 
   it("withdraws a pending interaction with attribution and rejects repeats", async () => {

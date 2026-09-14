@@ -862,7 +862,14 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       contextSnapshot: {},
     });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
     const comment = await services.issues.createComment({
       issueId,
       companyId,
@@ -894,6 +901,57 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, wakeupRequest!.runId!));
     expect(run).toMatchObject({ agentId, companyId, status: "queued" });
+  });
+
+  it("skips the assignee wakeup when the issue is cancelled concurrently with the comment being written", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: humanUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs human input",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    // Hold a row lock on the issue so createComment's own `UPDATE issues SET
+    // updated_at` (inside addComment) blocks until this transaction commits a
+    // concurrent cancellation. That deterministically reproduces "another
+    // request closes the issue while the comment is being written" — the
+    // race Greptile flagged on the pre-insert `issue` snapshot — without
+    // relying on timing luck for the outcome, only for scheduling.
+    const lockAndCancelPromise = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await tx.update(issues).set({ status: "cancelled" }).where(eq(issues.id, issueId));
+    });
+
+    const commentPromise = services.issues.createComment({
+      issueId,
+      companyId,
+      body: "Here's my answer",
+      actorUserId: humanUserId,
+    });
+
+    const [comment] = await Promise.all([commentPromise, lockAndCancelPromise]);
+
+    expect(comment).toMatchObject({
+      authorType: "user",
+      authorUserId: humanUserId,
+      body: "Here's my answer",
+    });
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
   });
 
   // ---------------------------------------------------------------------------
@@ -1000,6 +1058,45 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
     expect(row?.status).toBe("accepted");
   });
+
+  it.each(["accept", "reject"] as const)(
+    "respondInteraction rejects %s after the issue closes",
+    async (action) => {
+      const { companyId } = await seedCompanyAndAgent();
+      const operatorUserId = randomUUID();
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: operatorUserId,
+        status: "active",
+        membershipRole: "operator",
+      });
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Closed decision",
+        status: "done",
+        priority: "medium",
+      });
+      const interactionId = await seedInteraction(companyId, issueId);
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+      await expect(services.issues.respondInteraction({
+        issueId,
+        interactionId,
+        companyId,
+        action,
+        actorUserId: operatorUserId,
+      })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
+
+      const [row] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      expect(row?.status).toBe("pending");
+    },
+  );
 
   it("respondInteraction converges (applied:false) when the interaction is already resolved", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();

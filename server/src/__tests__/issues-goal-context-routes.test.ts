@@ -12,7 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
-  listProductivityReviews: vi.fn(),
+  listReviewAttention: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   getActiveInboxArchiveFields: vi.fn(),
   listAttachments: vi.fn(),
@@ -101,7 +101,7 @@ const mockDb = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
@@ -136,6 +136,7 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
+  STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
 }));
 
 function createApp() {
@@ -209,7 +210,7 @@ describe.sequential("issue goal context routes", () => {
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
-    mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.getActiveInboxArchiveFields.mockResolvedValue({});
     mockIssueService.listAttachments.mockResolvedValue([]);
@@ -219,6 +220,7 @@ describe.sequential("issue goal context routes", () => {
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
+    emptyQuery.leftJoin = vi.fn(() => emptyQuery);
     emptyQuery.where = vi.fn(() => emptyQuery);
     emptyQuery.orderBy = vi.fn(() => emptyQuery);
     emptyQuery.limit = vi.fn(async () => []);
@@ -264,6 +266,24 @@ describe.sequential("issue goal context routes", () => {
       id === projectGoal.id ? projectGoal : null,
     );
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
+  });
+
+  it.each(["", "/heartbeat-context"])("reads historical review tasks without computed productivity fields: %s", async (suffix) => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      originKind: "issue_productivity_review",
+      originId: "historical-source",
+    });
+    const res = await request(createApp()).get(`/api/issues/${legacyProjectLinkedIssue.id}${suffix}`);
+    expect(res.status).toBe(200);
+    const issue = suffix ? res.body.issue : res.body;
+    expect(issue).toMatchObject({
+      originKind: "issue_productivity_review",
+      originId: "historical-source",
+      assigneeAgentId: legacyProjectLinkedIssue.assigneeAgentId,
+      status: legacyProjectLinkedIssue.status,
+    });
+    expect(issue).not.toHaveProperty("productivityReview");
   });
 
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {

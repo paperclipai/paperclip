@@ -1,0 +1,130 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Duplicate event",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_replay",
+    "issueId": "issue_replay_duplicate",
+    "runId": "run_replay_duplicate",
+    "environmentLeaseId": "lease_replay_duplicate",
+    "runnerInstanceId": "runner_replay",
+    "normalizedSessionId": "session_replay_duplicate",
+    "driverSessionId": "driver_replay_duplicate"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "fake",
+      "version": "1.0.0"
+    },
+    "steer": false,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": false,
+    "structuredResult": true,
+    "typedEvents": true
+  },
+  "runPhase": "terminal",
+  "sessionState": "running",
+  "turnState": "completed",
+  "activeTurnId": null,
+  "items": [
+    {
+      "itemId": "item_replay_duplicate",
+      "kind": "assistant_message",
+      "status": "completed",
+      "text": "Exactly one projection."
+    }
+  ],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "done",
+    "summary": "Duplicate delivery was idempotent.",
+    "completionClaim": {
+      "contractRevision": "replay-contract-v1",
+      "objectiveSatisfied": true,
+      "criteria": [],
+      "remainingWork": []
+    },
+    "evidence": [],
+    "verification": [],
+    "attentionRequests": [],
+    "artifacts": []
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "done"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "event_duplicate_01",
+      "sourceSeq": 1,
+      "eventType": "session.started",
+      "emittedAt": "2026-08-07T12:30:00.010Z",
+      "summary": "session started"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "event_duplicate_02",
+      "sourceSeq": 2,
+      "eventType": "turn.started",
+      "emittedAt": "2026-08-07T12:30:00.020Z",
+      "summary": "turn started"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "event_duplicate_03",
+      "sourceSeq": 3,
+      "eventType": "item.completed",
+      "emittedAt": "2026-08-07T12:30:00.030Z",
+      "itemId": "item_replay_duplicate",
+      "summary": "Completed assistant_message"
+    },
+    {
+      "position": 4,
+      "sourceEventId": "event_duplicate_04",
+      "sourceSeq": 4,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-07T12:30:00.040Z",
+      "summary": "Duplicate delivery was idempotent."
+    },
+    {
+      "position": 5,
+      "sourceEventId": "event_duplicate_05",
+      "sourceSeq": 5,
+      "eventType": "turn.completed",
+      "emittedAt": "2026-08-07T12:30:00.050Z",
+      "summary": "turn completed"
+    },
+    {
+      "position": 6,
+      "sourceEventId": "event_duplicate_06",
+      "sourceSeq": 6,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-07T12:30:00.060Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_replay": 6
+  },
+  "processedEventIds": [
+    "event_duplicate_01",
+    "event_duplicate_02",
+    "event_duplicate_03",
+    "event_duplicate_04",
+    "event_duplicate_05",
+    "event_duplicate_06"
+  ],
+  "duplicateEventIds": [
+    "event_duplicate_03"
+  ],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

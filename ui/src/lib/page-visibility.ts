@@ -89,6 +89,11 @@ export function subscribePageVisibility(listener: () => void): () => void {
 
 /** Snapshot for `useSyncExternalStore` — returns a referentially-stable object between changes. */
 export function getPageVisibilitySnapshot(): PageVisibility {
+  // Browser visibility can change before the first subscriber attaches (for
+  // example when a restored tab mounts while already hidden). Reconcile on
+  // every snapshot read so the initial render cannot briefly enable polling.
+  const next = getPageVisibility();
+  if (!sameState(next, cached)) cached = next;
   return cached;
 }
 

@@ -1,9 +1,17 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
+  DEFAULT_DATABASE_APPLICATION_NAME,
   applyPendingMigrations,
+  closeRegisteredClients,
+  createDb,
+  ensurePostgresDatabase,
   inspectMigrations,
   resetPostgresDatabase,
 } from "./client.js";
@@ -89,6 +97,48 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+describeEmbeddedPostgres("createDb pool defaults", () => {
+  it("names its backends and closes them once idle", async () => {
+    const url = await createTempDatabase();
+    const observer = postgres(url, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => {
+      await observer.end({ timeout: 1 });
+    });
+
+    const backendsNamed = async (name: string) => {
+      const rows = await observer`
+        select count(*)::int as count from pg_stat_activity where application_name = ${name}
+      `;
+      return rows[0]?.count ?? 0;
+    };
+
+    const db = createDb(url);
+    cleanups.push(async () => {
+      await db.$client.end({ timeout: 1 });
+    });
+    const [self] = await db.$client`select application_name from pg_stat_activity where pid = pg_backend_pid()`;
+    expect(self?.application_name).toBe(DEFAULT_DATABASE_APPLICATION_NAME);
+
+    const shortLived = createDb(url, { applicationName: "paperclip-idle-test", idleTimeoutSeconds: 1 });
+    cleanups.push(async () => {
+      await shortLived.$client.end({ timeout: 1 });
+    });
+    await shortLived.$client`select 1`;
+    expect(await backendsNamed("paperclip-idle-test")).toBe(1);
+
+    // The driver closes the idle connection after `idle_timeout`; without the
+    // option (the driver default) the backend would stay until the process
+    // exits. Wait past the timeout, then poll PostgreSQL's own view.
+    const deadline = Date.now() + 10_000;
+    let remaining = await backendsNamed("paperclip-idle-test");
+    while (remaining > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      remaining = await backendsNamed("paperclip-idle-test");
+    }
+    expect(remaining).toBe(0);
+  }, 30_000);
+});
+
 describeEmbeddedPostgres("resetPostgresDatabase", () => {
   it("recreates an existing database so stale tables are removed", async () => {
     const connectionString = await createTempDatabase();
@@ -118,6 +168,44 @@ describeEmbeddedPostgres("resetPostgresDatabase", () => {
 });
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("upgrades renumbered recovery migrations and replays their schema idempotently", async () => {
+    const connectionString = await createTempDatabase();
+    await applyPendingMigrations(connectionString);
+    const recoveryFiles = [
+      "0250_exotic_dakota_north.sql", "0251_narrow_mastermind.sql",
+      "0252_friendly_kate_bishop.sql", "0253_real_firebrand.sql",
+      "0254_military_calypso.sql",
+    ];
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      // An instance may have applied this identical SQL under the pre-rebase
+      // numbers, before the new session-goal and tool-action migrations existed.
+      for (const file of recoveryFiles) {
+        const hash = await migrationHash(file);
+        await sql`UPDATE "drizzle"."__drizzle_migrations" SET created_at = 1788825600000 WHERE hash = ${hash}`;
+        const source = await fs.promises.readFile(new URL(`./migrations/${file}`, import.meta.url), "utf8");
+        for (const statement of source.split("--> statement-breakpoint")) {
+          if (statement.trim()) await sql.unsafe(statement);
+        }
+      }
+      for (const file of ["0248_small_manta.sql", "0249_fast_silverclaw.sql"]) {
+        const hash = await migrationHash(file);
+        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}`;
+      }
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      for (const file of recoveryFiles) {
+        const hash = await migrationHash(file);
+        const rows = await sql`SELECT id FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}`;
+        expect(rows).toHaveLength(1);
+      }
+      const indexes = await sql`SELECT indexname FROM pg_indexes WHERE indexname = 'heartbeat_runs_native_replacement_predecessor_uq'`;
+      expect(indexes).toHaveLength(1);
+    } finally {
+      await sql.end();
+    }
+  }, 30_000);
+
   it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
     const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
       withFileTypes: true,
@@ -1404,5 +1492,580 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       }
     },
     20_000,
+  );
+
+  it(
+    "preserves legacy runs while adding native persistence and replay-safe status versioning",
+    async () => {
+      const clusterUrl = await createTempDatabase();
+      await ensurePostgresDatabase(clusterUrl, "native_legacy");
+      const legacyUrl = new URL(clusterUrl);
+      legacyUrl.pathname = "/native_legacy";
+      const connectionString = legacyUrl.href;
+      cleanups.push(() => closeRegisteredClients(connectionString));
+      const directory = await fs.promises.mkdtemp(join(tmpdir(), "paperclip-native-prior-migrations-"));
+      cleanups.push(() => fs.promises.rm(directory, { recursive: true, force: true }));
+      const migrationsRoot = new URL("./migrations/", import.meta.url);
+      const journal = JSON.parse(await fs.promises.readFile(new URL("meta/_journal.json", migrationsRoot), "utf8"));
+      const priorEntries = journal.entries.filter((entry: { idx: number }) => entry.idx < 227);
+      await fs.promises.mkdir(join(directory, "meta"));
+      for (const entry of priorEntries) {
+        await fs.promises.copyFile(new URL(`${entry.tag}.sql`, migrationsRoot), join(directory, `${entry.tag}.sql`));
+      }
+      await fs.promises.writeFile(join(directory, "meta/_journal.json"), JSON.stringify({ ...journal, entries: priorEntries }));
+
+      const nativePersistenceHash = await migrationHash("0227_modern_pandemic.sql");
+      const eventSequenceUniquenessHash = await migrationHash(
+        "0235_heartbeat_run_event_sequence_uniqueness.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      const companyId = "10000000-0000-4000-8000-000000000227";
+      const agentId = "20000000-0000-4000-8000-000000000227";
+      const runId = "30000000-0000-4000-8000-000000000227";
+      const issueId = "40000000-0000-4000-8000-000000000227";
+      const contractId = "50000000-0000-4000-8000-000000000227";
+      const resultId = "60000000-0000-4000-8000-000000000227";
+      const assessmentId = "70000000-0000-4000-8000-000000000227";
+      const decisionId = "80000000-0000-4000-8000-000000000227";
+      const otherCompanyId = "11000000-0000-4000-8000-000000000227";
+      const otherAgentId = "21000000-0000-4000-8000-000000000227";
+      const otherRunId = "31000000-0000-4000-8000-000000000227";
+      const otherIssueId = "41000000-0000-4000-8000-000000000227";
+      const otherContractId = "51000000-0000-4000-8000-000000000227";
+      const otherResultId = "61000000-0000-4000-8000-000000000227";
+      const otherAssessmentId = "71000000-0000-4000-8000-000000000227";
+      const otherDecisionId = "81000000-0000-4000-8000-000000000227";
+
+      try {
+        // Build the real pre-native schema. Downgrading the latest schema by
+        // dropping its unique index is invalid once later tenant FKs use it.
+        await migrate(drizzle(sql), { migrationsFolder: directory });
+        expect(await sql`SELECT to_regclass('public.native_run_results') AS native_results`).toEqual([{ native_results: null }]);
+        await sql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${companyId}, 'Native persistence fixture', 'NPF')
+        `;
+        await sql`
+          INSERT INTO agents (id, company_id, name)
+          VALUES (${agentId}, ${companyId}, 'Legacy migration agent')
+        `;
+        await sql`
+          INSERT INTO heartbeat_runs (id, company_id, agent_id, status)
+          VALUES (${runId}, ${companyId}, ${agentId}, 'succeeded')
+        `;
+        await sql`
+          INSERT INTO issues (id, company_id, title, status)
+          VALUES (${issueId}, ${companyId}, 'Legacy migration issue', 'in_progress')
+        `;
+        await sql.unsafe(`
+          INSERT INTO heartbeat_run_events
+            (company_id, run_id, agent_id, seq, event_type, stream, level, message, payload, created_at)
+          VALUES
+            ('${companyId}', '${runId}', '${agentId}', 1, 'legacy.start', 'system', 'info', 'one', '{"bytes":"alpha-1"}'::jsonb, '2026-08-01T00:00:01.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 5, 'legacy.log', 'stdout', 'info', 'first-five', '{"bytes":"beta-5a"}'::jsonb, '2026-08-01T00:00:02.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 5, 'legacy.log', 'stderr', 'warn', 'duplicate-five', '{"bytes":"gamma-5b"}'::jsonb, '2026-08-01T00:00:03.000Z'),
+            ('${companyId}', '${runId}', '${agentId}', 9, 'legacy.end', 'system', 'info', 'nine', '{"bytes":"delta-9"}'::jsonb, '2026-08-01T00:00:04.000Z')
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const events = await verifySql.unsafe<{
+          seq: string;
+          event_type: string;
+          stream: string;
+          level: string;
+          message: string;
+          payload: { bytes: string };
+          created_at: Date;
+        }[]>(`
+          SELECT seq, event_type, stream, level, message, payload, created_at
+          FROM heartbeat_run_events
+          WHERE run_id = '${runId}'
+          ORDER BY id
+        `);
+        // 0235 preserves every legacy event while moving only duplicate
+        // sequence values above the old run maximum before installing the
+        // durable (run_id, seq) uniqueness invariant.
+        expect(events.map((event) => Number(event.seq))).toEqual([1, 5, 10, 9]);
+        expect(events.map(({ seq: _seq, ...event }) => ({
+          ...event,
+          created_at: event.created_at.toISOString(),
+        }))).toEqual([
+          {
+            event_type: "legacy.start",
+            stream: "system",
+            level: "info",
+            message: "one",
+            payload: { bytes: "alpha-1" },
+            created_at: "2026-08-01T00:00:01.000Z",
+          },
+          {
+            event_type: "legacy.log",
+            stream: "stdout",
+            level: "info",
+            message: "first-five",
+            payload: { bytes: "beta-5a" },
+            created_at: "2026-08-01T00:00:02.000Z",
+          },
+          {
+            event_type: "legacy.log",
+            stream: "stderr",
+            level: "warn",
+            message: "duplicate-five",
+            payload: { bytes: "gamma-5b" },
+            created_at: "2026-08-01T00:00:03.000Z",
+          },
+          {
+            event_type: "legacy.end",
+            stream: "system",
+            level: "info",
+            message: "nine",
+            payload: { bytes: "delta-9" },
+            created_at: "2026-08-01T00:00:04.000Z",
+          },
+        ]);
+
+        const runs = await verifySql.unsafe<{ runtime_mode: string; next_event_seq: string }[]>(`
+          SELECT runtime_mode, next_event_seq
+          FROM heartbeat_runs
+          WHERE id = '${runId}'
+        `);
+        expect(runs.map((run) => ({
+          runtimeMode: run.runtime_mode,
+          nextEventSeq: Number(run.next_event_seq),
+        }))).toEqual([{ runtimeMode: "legacy", nextEventSeq: 11 }]);
+
+        const nativeRowsBefore = await verifySql.unsafe<{ table_name: string; row_count: number }[]>(`
+          SELECT 'completion_contracts' AS table_name, count(*)::int AS row_count FROM completion_contracts
+          UNION ALL SELECT 'native_run_results', count(*)::int FROM native_run_results
+          UNION ALL SELECT 'native_run_finalizations', count(*)::int FROM native_run_finalizations
+          UNION ALL SELECT 'work_assessments', count(*)::int FROM work_assessments
+          UNION ALL SELECT 'status_decisions', count(*)::int FROM status_decisions
+          UNION ALL SELECT 'status_decision_effects', count(*)::int FROM status_decision_effects
+          ORDER BY table_name
+        `);
+        expect(nativeRowsBefore.every((row) => row.row_count === 0)).toBe(true);
+
+        await verifySql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${otherCompanyId}, 'Other native persistence fixture', 'ONP')
+        `;
+        await verifySql`
+          INSERT INTO agents (id, company_id, name)
+          VALUES (${otherAgentId}, ${otherCompanyId}, 'Other native migration agent')
+        `;
+        await verifySql`
+          INSERT INTO heartbeat_runs (
+            id, company_id, agent_id, status, native_issue_id, completion_contract_id
+          ) VALUES (
+            ${otherRunId}, ${otherCompanyId}, ${otherAgentId}, 'succeeded',
+            ${otherIssueId}, ${otherContractId}
+          )
+        `;
+        await verifySql`
+          INSERT INTO issues (id, company_id, title, status)
+          VALUES (${otherIssueId}, ${otherCompanyId}, 'Other native issue', 'in_progress')
+        `;
+        await verifySql`
+          UPDATE heartbeat_runs
+          SET native_issue_id = ${issueId}, completion_contract_id = ${contractId}
+          WHERE id = ${runId}
+        `;
+
+        await expect(verifySql`
+          INSERT INTO completion_contracts (
+            company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${companyId}, ${otherIssueId}, 1, 'paperclip.completion-contract.v1',
+            'policy-v1', 'low', 'server', 'review', ${JSON.stringify({ criteria: [] })}::jsonb,
+            'cross-company-contract-sha', 'system', 'migration-test'
+          )
+        `).rejects.toThrow(/completion_contracts_issue_company_fk/);
+
+        await verifySql`
+          INSERT INTO completion_contracts (
+            id, company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${contractId}, ${companyId}, ${issueId}, 1, 'paperclip.completion-contract.v1',
+            'policy-v1', 'low', 'server', 'review', ${JSON.stringify({ criteria: [] })}::jsonb,
+            'contract-sha', 'system', 'migration-test'
+          )
+        `;
+        await verifySql`
+          INSERT INTO completion_contracts (
+            id, company_id, issue_id, revision, schema_version, policy_version,
+            risk, completion_authority, incomplete_criteria_policy, contract_json,
+            canonical_sha256, created_by_actor_type, created_by_actor_id
+          ) VALUES (
+            ${otherContractId}, ${otherCompanyId}, ${otherIssueId}, 1,
+            'paperclip.completion-contract.v1', 'policy-v1', 'low', 'server', 'review',
+            ${JSON.stringify({ criteria: [] })}::jsonb, 'other-contract-sha',
+            'system', 'migration-test'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO native_run_results (
+            company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${companyId}, ${issueId}, ${otherRunId}, ${contractId},
+            'cross-company-run', 'valid', ${JSON.stringify({ summary: "invalid" })}::jsonb,
+            'cross-company-run-sha'
+          )
+        `).rejects.toThrow(/native_run_results_run_contract_owner_fk/);
+
+        await expect(verifySql`
+          INSERT INTO native_run_results (
+            company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${otherContractId},
+            'cross-company-contract', 'valid', ${JSON.stringify({ summary: "invalid" })}::jsonb,
+            'cross-company-contract-sha'
+          )
+        `).rejects.toThrow(/native_run_results_run_contract_owner_fk/);
+
+        await verifySql`
+          INSERT INTO native_run_results (
+            id, company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${resultId}, ${companyId}, ${issueId}, ${runId}, ${contractId},
+            'result-fingerprint', 'valid', ${JSON.stringify({ summary: "done" })}::jsonb, 'result-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO native_run_results (
+            id, company_id, issue_id, run_id, completion_contract_id,
+            server_fingerprint, schema_status, result_json, canonical_sha256
+          ) VALUES (
+            ${otherResultId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherContractId}, 'other-result-fingerprint', 'valid',
+            ${JSON.stringify({ summary: "other" })}::jsonb, 'other-result-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO work_assessments (
+            company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${contractId}, ${otherResultId},
+            'run_terminal', ${companyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "invalid" })}::jsonb,
+            'cross-company-assessment-input-sha'
+          )
+        `).rejects.toThrow(/work_assessments_result_owner_fk/);
+
+        await expect(verifySql`
+          INSERT INTO work_assessments (
+            company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${contractId}, ${resultId},
+            'run_terminal', ${otherCompanyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "invalid" })}::jsonb,
+            'cross-company-trigger-input-sha'
+          )
+        `).rejects.toThrow(/work_assessments_trigger_actor_company_check/);
+
+        await verifySql`
+          INSERT INTO work_assessments (
+            id, company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${assessmentId}, ${companyId}, ${issueId}, ${runId}, ${contractId}, ${resultId},
+            'run_terminal', ${companyId}, 'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "done" })}::jsonb, 'assessment-input-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO work_assessments (
+            id, company_id, issue_id, run_id, contract_id, result_id,
+            trigger_kind, trigger_actor_company_id, prior_issue_status,
+            prior_status_version, policy_version, assessment_json, input_digest
+          ) VALUES (
+            ${otherAssessmentId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherContractId}, ${otherResultId}, 'run_terminal', ${otherCompanyId},
+            'in_progress', 0, 'policy-v1',
+            ${JSON.stringify({ disposition: "done" })}::jsonb, 'other-assessment-input-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO status_decisions (
+            company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${companyId}, ${issueId}, ${runId}, ${otherAssessmentId}, 1,
+            'policy-v1', 'in_progress', 'done', 'native_result_accepted',
+            ${JSON.stringify({ toStatus: "done" })}::jsonb, 'cross-company-decision-sha'
+          )
+        `).rejects.toThrow(/status_decisions_assessment_owner_fk/);
+
+        await verifySql`
+          INSERT INTO status_decisions (
+            id, company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${decisionId}, ${companyId}, ${issueId}, ${runId}, ${assessmentId}, 1,
+            'policy-v1', 'in_progress', 'done', 'native_result_accepted',
+            ${JSON.stringify({ toStatus: "done" })}::jsonb, 'decision-sha'
+          )
+        `;
+        await verifySql`
+          INSERT INTO status_decisions (
+            id, company_id, issue_id, run_id, assessment_id, decision_version,
+            policy_version, from_status, to_status, reason_code,
+            decision_json, decision_digest
+          ) VALUES (
+            ${otherDecisionId}, ${otherCompanyId}, ${otherIssueId}, ${otherRunId},
+            ${otherAssessmentId}, 1, 'policy-v1', 'in_progress', 'done',
+            'native_result_accepted', ${JSON.stringify({ toStatus: "done" })}::jsonb,
+            'other-decision-sha'
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO status_decision_effects (
+            company_id, issue_id, decision_id, ordinal, effect_kind,
+            target_type, idempotency_key, payload
+          ) VALUES (
+            ${companyId}, ${issueId}, ${otherDecisionId}, 0, 'update_issue_status',
+            'issue', 'cross-company-decision-effect', ${JSON.stringify({ status: "done" })}::jsonb
+          )
+        `).rejects.toThrow(/status_decision_effects_decision_owner_fk/);
+
+        await verifySql`
+          INSERT INTO status_decision_effects (
+            company_id, issue_id, decision_id, ordinal, effect_kind,
+            target_type, idempotency_key, payload
+          ) VALUES (
+            ${companyId}, ${issueId}, ${decisionId}, 0, 'update_issue_status',
+            'issue', 'decision-effect-1', ${JSON.stringify({ status: "done" })}::jsonb
+          )
+        `;
+
+        await expect(verifySql`
+          INSERT INTO native_run_finalizations (
+            run_id, company_id, issue_id, phase, result_id, assessment_id, decision_id
+          ) VALUES (
+            ${runId}, ${companyId}, ${issueId}, 'committed', ${resultId},
+            ${assessmentId}, ${otherDecisionId}
+          )
+        `).rejects.toThrow(/native_run_finalizations_decision_owner_fk/);
+
+        await verifySql`
+          INSERT INTO native_run_finalizations (
+            run_id, company_id, issue_id, phase, result_id, assessment_id, decision_id
+          ) VALUES (
+            ${runId}, ${companyId}, ${issueId}, 'committed', ${resultId}, ${assessmentId}, ${decisionId}
+          )
+        `;
+
+        await verifySql`UPDATE issues SET title = 'Renamed legacy issue' WHERE id = ${issueId}`;
+        await verifySql`UPDATE issues SET status = 'done' WHERE id = ${issueId}`;
+        const issues = await verifySql.unsafe<{ status: string; status_version: string }[]>(`
+          SELECT status, status_version
+          FROM issues
+          WHERE id = '${issueId}'
+        `);
+        expect(issues.map((issue) => ({
+          status: issue.status,
+          statusVersion: Number(issue.status_version),
+        }))).toEqual([{ status: "done", statusVersion: 1 }]);
+
+        await verifySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
+        await verifySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${eventSequenceUniquenessHash}`;
+      } finally {
+        await verifySql.end();
+      }
+
+      await expect(applyPendingMigrations(connectionString)).resolves.toBeUndefined();
+      await expect(inspectMigrations(connectionString)).resolves.toMatchObject({
+        status: "upToDate",
+      });
+
+      const replaySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const replayed = await replaySql.unsafe<{
+          status_version: string;
+          next_event_seq: string;
+          trigger_count: number;
+          finalization_count: number;
+        }[]>(`
+          SELECT
+            issue.status_version,
+            run.next_event_seq,
+            (
+              SELECT count(*)::int
+              FROM pg_trigger
+              WHERE tgname = 'paperclip_issue_status_version_trigger'
+                AND NOT tgisinternal
+            ) AS trigger_count,
+            (
+              SELECT count(*)::int
+              FROM native_run_finalizations
+              WHERE run_id = '${runId}'
+            ) AS finalization_count
+          FROM issues issue
+          CROSS JOIN heartbeat_runs run
+          WHERE issue.id = '${issueId}' AND run.id = '${runId}'
+        `);
+        expect(replayed.map((row) => ({
+          statusVersion: Number(row.status_version),
+          nextEventSeq: Number(row.next_event_seq),
+          triggerCount: row.trigger_count,
+          finalizationCount: row.finalization_count,
+        }))).toEqual([{
+          statusVersion: 1,
+          nextEventSeq: 11,
+          triggerCount: 1,
+          finalizationCount: 1,
+        }]);
+      } finally {
+        await replaySql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "replays the idempotent provider trace migration",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+      const hash = await migrationHash(
+        "0234_provider_trace_records.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "hash" = ${hash}
+        `;
+      } finally {
+        await sql.end();
+      }
+
+      await expect(
+        applyPendingMigrations(connectionString),
+      ).resolves.toBeUndefined();
+      await expect(inspectMigrations(connectionString)).resolves.toMatchObject({
+        status: "upToDate",
+      });
+    },
+    30_000,
+  );
+
+  it(
+    "removes retired model profiles from live records and configuration revisions",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+      const hash = await migrationHash("0236_remove_cheap_model_profiles.sql");
+      const companyId = "10000000-0000-4000-8000-000000000236";
+      const agentId = "20000000-0000-4000-8000-000000000236";
+      const issueId = "30000000-0000-4000-8000-000000000236";
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${companyId}, 'Model profile migration fixture', 'MPF')
+        `;
+        await sql`
+          INSERT INTO agents (id, company_id, name, runtime_config)
+          VALUES (
+            ${agentId},
+            ${companyId},
+            'Legacy model profile agent',
+            '{"heartbeat":{"enabled":true},"modelProfiles":{"cheap":{"model":"legacy"}}}'::jsonb
+          )
+        `;
+        await sql`
+          INSERT INTO issues (id, company_id, title, assignee_adapter_overrides)
+          VALUES (
+            ${issueId},
+            ${companyId},
+            'Legacy model profile issue',
+            '{"modelProfile":"cheap","workingDirectory":"/workspace"}'::jsonb
+          )
+        `;
+        await sql`
+          INSERT INTO agent_config_revisions (
+            company_id,
+            agent_id,
+            changed_keys,
+            before_config,
+            after_config
+          )
+          VALUES (
+            ${companyId},
+            ${agentId},
+            '["runtimeConfig"]'::jsonb,
+            '{"name":"Legacy model profile agent","runtimeConfig":{"modelProfiles":{"cheap":{"model":"legacy-before"}},"heartbeat":{"enabled":true}}}'::jsonb,
+            '{"name":"Legacy model profile agent","runtimeConfig":{"modelProfiles":{"cheap":{"model":"legacy-after"}},"heartbeat":{"enabled":false}}}'::jsonb
+          )
+        `;
+        await sql`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "hash" = ${hash}
+        `;
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const [result] = await verifySql.unsafe<{
+          runtime_config: Record<string, unknown>;
+          assignee_adapter_overrides: Record<string, unknown> | null;
+          before_config: Record<string, unknown>;
+          after_config: Record<string, unknown>;
+        }[]>(`
+          SELECT
+            agent.runtime_config,
+            issue.assignee_adapter_overrides,
+            revision.before_config,
+            revision.after_config
+          FROM agents agent
+          JOIN issues issue ON issue.company_id = agent.company_id
+          JOIN agent_config_revisions revision ON revision.agent_id = agent.id
+          WHERE agent.id = '${agentId}' AND issue.id = '${issueId}'
+        `);
+
+        expect(result.runtime_config).toEqual({ heartbeat: { enabled: true } });
+        expect(result.assignee_adapter_overrides).toEqual({ workingDirectory: "/workspace" });
+        expect(result.before_config).toEqual({
+          name: "Legacy model profile agent",
+          runtimeConfig: { heartbeat: { enabled: true } },
+        });
+        expect(result.after_config).toEqual({
+          name: "Legacy model profile agent",
+          runtimeConfig: { heartbeat: { enabled: false } },
+        });
+      } finally {
+        await verifySql.end();
+      }
+    },
+    30_000,
   );
 });

@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  toolConnectionInstalls,
   agentConfigRevisions,
   agentApiKeys,
   agentRuntimeState,
@@ -18,6 +19,7 @@ import {
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  agentRuntimeConfigSchema,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
@@ -25,15 +27,33 @@ import {
   type AgentEligibilityAgent,
   type AgentApiKeyScope,
 } from "@paperclipai/shared";
+import {
+  normalizePaperclipRunnerAdapterConfig,
+} from "@paperclipai/adapter-utils/server-utils";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
+import {
+  collectSecretRefs,
+  collectUserSecretRefs,
+  syncAgentAdapterEnvBindings,
+} from "./agent-secret-bindings.js";
+import { logActivity } from "./activity-log.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
-import { secretService } from "./secrets.js";
+import {
+  assertClaudeOAuthBindingInvariant,
+  claudeOAuthBindingsMatchExactly,
+  claudeOAuthClaimRejectedError,
+  CLAUDE_LOCAL_ADAPTER_TYPE,
+  readClaudeOAuthBinding,
+  secretService,
+  type ClaudeOAuthBindingInvariantDecision,
+} from "./secrets.js";
+import { createDbSetupTokenCleanupStore } from "./setup-token-session.js";
 import {
   builtInAgentMarkersEqual,
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -68,14 +88,45 @@ interface RevisionMetadata {
   rolledBackFromRevisionId?: string | null;
 }
 
+/**
+ * The Claude login context for an agent write. The route derives the owner user
+ * from the authenticated actor, not from the request body, and forwards the
+ * non-secret `storedSessionId` claim from a completed Claude login session. A
+ * controlled internal override permits a migration or an administrator repair to
+ * bind or unbind the fixed OAuth token without a claim.
+ *
+ * The `applyExistingWithoutClaim` field is the user-actor apply-existing path.
+ * The route sets it only for an authenticated user actor and derives the owner
+ * from that actor. The path binds the fixed reference to the owner stored value
+ * with no login round trip. It is distinct from `allowInternalBindingOverride`,
+ * which does no ownership check.
+ *
+ * The `inheritedFromAgentId` field is the hire-inheritance path. The route
+ * sets it only for an authenticated agent actor whose hire request inherited
+ * the fixed reference from that named parent. The service re-reads the parent
+ * agent inside the write transaction and binds the fixed reference only when
+ * the parent exists, is in the same company, is a `claude_local` agent, and
+ * already holds the exact fixed binding.
+ */
+interface ClaudeLoginContext {
+  storedSessionId?: string | null;
+  ownerUserId?: string | null;
+  allowInternalBindingOverride?: boolean;
+  applyExistingWithoutClaim?: boolean;
+  inheritedFromAgentId?: string | null;
+}
+
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
+  claudeLogin?: ClaudeLoginContext;
 }
 
 interface CreateAgentOptions {
+  aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
+  claudeLogin?: ClaudeLoginContext;
 }
 
 interface AgentShortnameRow {
@@ -223,6 +274,12 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   if (typeof snapshot.budgetMonthlyCents !== "number" || !Number.isFinite(snapshot.budgetMonthlyCents)) {
     throw unprocessable("Invalid revision snapshot: budgetMonthlyCents");
   }
+  const runtimeConfig = agentRuntimeConfigSchema.safeParse(
+    isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+  );
+  if (!runtimeConfig.success) {
+    throw unprocessable("Invalid revision snapshot: runtimeConfig");
+  }
 
   return {
     name: snapshot.name,
@@ -236,7 +293,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
         : null,
     adapterType: snapshot.adapterType,
     adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
-    runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+    runtimeConfig: runtimeConfig.data,
     defaultEnvironmentId:
       typeof snapshot.defaultEnvironmentId === "string" || snapshot.defaultEnvironmentId === null
         ? snapshot.defaultEnvironmentId
@@ -299,7 +356,7 @@ export function agentService(db: Db) {
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
-      permissions: normalizeAgentPermissions(row.permissions, row.role),
+      permissions: normalizeAgentPermissions(row.permissions),
     });
   }
 
@@ -436,6 +493,8 @@ export function agentService(db: Db) {
   async function syncAgentSecretBindings(
     agent: { id: string; companyId: string; adapterConfig: unknown },
     dbClient: Db = db,
+    previousAdapterConfig: unknown = null,
+    actor: RevisionMetadata = {},
   ) {
     const scopedSecretsSvc = dbClient === db ? secretsSvc : secretService(dbClient);
     await syncAgentAdapterEnvBindings({
@@ -444,6 +503,175 @@ export function agentService(db: Db) {
       agentId: agent.id,
       adapterConfig: agent.adapterConfig,
     });
+    const previousRefs = new Set([
+      ...collectSecretRefs(previousAdapterConfig).map((ref) => `secret:${ref.secretId}:${ref.configPath}`),
+      ...collectUserSecretRefs(previousAdapterConfig).map((ref) => `user:${ref.definitionKey}:${ref.configPath}`),
+    ]);
+    const createdRefs = [
+      ...collectSecretRefs(agent.adapterConfig).map((ref) => ({
+        key: `secret:${ref.secretId}:${ref.configPath}`,
+        configPath: ref.configPath,
+        bindingType: "secret_ref",
+        secretId: ref.secretId,
+        definitionKey: null,
+      })),
+      ...collectUserSecretRefs(agent.adapterConfig).map((ref) => ({
+        key: `user:${ref.definitionKey}:${ref.configPath}`,
+        configPath: ref.configPath,
+        bindingType: "user_secret_ref",
+        secretId: null,
+        definitionKey: ref.definitionKey,
+      })),
+    ].filter((ref) => !previousRefs.has(ref.key));
+    const actorType = actor.createdByUserId ? "user" as const : actor.createdByAgentId ? "agent" as const : "system" as const;
+    const actorId = actor.createdByUserId ?? actor.createdByAgentId ?? "system";
+    for (const ref of createdRefs) {
+      await logActivity(dbClient, {
+        companyId: agent.companyId,
+        actorType,
+        actorId,
+        agentId: actor.createdByAgentId ?? null,
+        action: "secret.binding.created",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          targetType: "agent",
+          targetId: agent.id,
+          configPath: ref.configPath,
+          bindingType: ref.bindingType,
+          secretId: ref.secretId,
+          definitionKey: ref.definitionKey,
+        },
+      });
+    }
+  }
+
+  /**
+   * Enforces the Claude OAuth binding claim inside a write transaction. It runs
+   * after {@link assertClaudeOAuthBindingInvariant} decided that the write
+   * introduces or keeps the fixed binding.
+   *
+   * When the write introduces the fixed binding:
+   *   * A create or hire path (`consume: true`) consumes a stored-session claim
+   *     with one conditional write. It builds the claim scope from the company,
+   *     the owner user, the fixed adapter, the environment, and the
+   *     `storedSessionId`. It inserts the binding only when the write returns one
+   *     row; otherwise it raises the fixed claim error, which rolls back the
+   *     whole transaction and inserts no binding.
+   *   * An update, approval, or rollback path (`consume: false`) carries no
+   *     claim, so it raises the same fixed claim error at once.
+   *
+   * The user-actor apply-existing path (`applyExistingWithoutClaim`) binds the
+   * fixed reference with no login round trip. The route sets the flag only for
+   * an authenticated user actor and derives the owner from that actor. The gate
+   * permits the no-claim bind only when the owner already has a stored value for
+   * the company. It reads the owner value status; it reads no token. A missing
+   * owner or a missing stored value raises the same fixed claim error, so the
+   * caller cannot tell the reasons apart.
+   *
+   * The hire-inheritance path (`inheritedFromAgentId`) binds the fixed
+   * reference with no login round trip and no stored owner value, because the
+   * owning user resolves per run, not from a value stored against this agent.
+   * The route copies the parent's reference onto the child before this
+   * transaction starts, so a concurrent version change on the parent can
+   * leave the child holding a stale version. The gate re-reads the named
+   * parent agent inside this transaction and permits the bind only when the
+   * parent exists, is in the same company, is a `claude_local` agent, and its
+   * current reference matches the child's copied reference exactly, including
+   * the version selector. The gate locks the parent row with `SELECT ...
+   * FOR UPDATE` before it reads the reference. The lock blocks a concurrent
+   * credential rotation on the same parent row until this transaction
+   * commits or rolls back, so the compare-and-bind check stays atomic with
+   * the parent's current state. The route derives the parent identifier
+   * from the authenticated agent actor, never from the request body, so the
+   * gate treats it as a claim to verify, not a trusted value.
+   *
+   * A controlled internal override skips the claim for a migration or an
+   * administrator repair. The function creates the fixed user-secret definition
+   * before the caller runs the declaration synchronization, so the synchronized
+   * declaration always references an existing definition.
+   */
+  async function enforceClaudeOAuthBindingClaim(
+    txDb: Db,
+    input: {
+      companyId: string;
+      decision: ClaudeOAuthBindingInvariantDecision;
+      consume: boolean;
+      environmentId: string | null;
+      claudeLogin?: ClaudeLoginContext;
+      /**
+       * The adapter config the write is about to persist. The
+       * `inheritedFromAgentId` path reads the child's copied
+       * `CLAUDE_CODE_OAUTH_TOKEN` reference from it, to compare against the
+       * parent's current reference.
+       */
+      childAdapterConfig?: unknown;
+    },
+  ): Promise<void> {
+    const ownerUserId = input.claudeLogin?.ownerUserId ?? null;
+    if (input.decision.introducesBinding && !input.claudeLogin?.allowInternalBindingOverride) {
+      if (input.claudeLogin?.applyExistingWithoutClaim) {
+        // The user-actor apply-existing path. The route derived the owner from
+        // the authenticated user actor. The gate binds the fixed reference only
+        // when that owner already has a stored value. It reads no token.
+        if (!ownerUserId) {
+          throw claudeOAuthClaimRejectedError();
+        }
+        const stored = await secretService(txDb).readClaudeOAuthUserSecretStatus(
+          input.companyId,
+          ownerUserId,
+        );
+        if (!stored) {
+          throw claudeOAuthClaimRejectedError();
+        }
+      } else if (input.claudeLogin?.inheritedFromAgentId) {
+        // The hire-inheritance path. Re-read the named parent inside this
+        // transaction; a caller-supplied identifier never binds on its own.
+        // Compare the parent's current reference against the reference
+        // already copied onto the child, including the version selector, so
+        // a concurrent version change on the parent cannot leave the child
+        // bound to a stale version.
+        const parentId = input.claudeLogin.inheritedFromAgentId;
+        const parent = await txDb
+          .select({
+            companyId: agents.companyId,
+            adapterType: agents.adapterType,
+            adapterConfig: agents.adapterConfig,
+          })
+          .from(agents)
+          .where(eq(agents.id, parentId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        const parentBinding = readClaudeOAuthBinding(parent?.adapterConfig ?? null);
+        const childBinding = readClaudeOAuthBinding(input.childAdapterConfig ?? null);
+        if (
+          !parent ||
+          parent.companyId !== input.companyId ||
+          parent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE ||
+          !claudeOAuthBindingsMatchExactly(parentBinding, childBinding)
+        ) {
+          throw claudeOAuthClaimRejectedError();
+        }
+      } else if (!input.consume) {
+        throw claudeOAuthClaimRejectedError();
+      } else {
+        const consumed = await createDbSetupTokenCleanupStore(txDb).consumeStoredClaim({
+          sessionId: input.claudeLogin?.storedSessionId ?? "",
+          companyId: input.companyId,
+          ownerUserId: ownerUserId ?? "",
+          adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
+        });
+        if (!consumed) {
+          throw claudeOAuthClaimRejectedError();
+        }
+      }
+    }
+    if (input.decision.introducesBinding || input.decision.keepsBinding) {
+      // Create the fixed definition before declaration synchronization.
+      await secretService(txDb).ensureClaudeOAuthUserSecretDefinition(input.companyId, {
+        userId: ownerUserId,
+      });
+    }
   }
 
   function assertBuiltInAgentMetadataMutationAllowed(
@@ -512,26 +740,48 @@ export function agentService(db: Db) {
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
     if (
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
       isPlainRecord(normalizedPatch.adapterConfig)
     ) {
-      normalizedPatch.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
         normalizedPatch.adapterConfig,
         { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
       );
+      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+        (normalizedPatch.adapterType ?? existing.adapterType) as string,
+        normalizedAdapterConfig,
+      );
+    } else if (
+      Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterType")
+      && isPlainRecord(existing.adapterConfig)
+    ) {
+      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+        normalizedPatch.adapterType as string,
+        existing.adapterConfig,
+      );
     }
+    // Run the server-enforced binding invariant when the patch touches the
+    // adapter config. The update, approval, and rollback paths keep an existing
+    // fixed binding but reject a newly introduced binding, because they carry no
+    // stored-session claim.
+    const bindingDecision = Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")
+      ? assertClaudeOAuthBindingInvariant({
+          adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string,
+          nextConfig: normalizedPatch.adapterConfig,
+          priorConfig: existing.adapterConfig,
+        })
+      : null;
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
-    return db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const updated = await tx
+    type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
+    const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+      const updated = await txDb
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
         .where(eq(agents.id, id))
@@ -539,8 +789,34 @@ export function agentService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
 
+      const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+      const afterConfig = isPlainRecord(updated.adapterConfig) ? updated.adapterConfig : {};
+      const changedExecution = updated.adapterType !== existing.adapterType
+        || (updated.adapterType === "paperclip_runner" && ["provider", "acpxAgent", "model"].some(
+          (key) => priorAdapterConfig[key] !== afterConfig[key],
+        ));
+      if (changedExecution) {
+        await txDb.delete(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, existing.companyId), eq(agentTaskSessions.agentId, id)));
+        await txDb.update(agentRuntimeState).set({ adapterType: updated.adapterType, sessionId: null, stateJson: {}, updatedAt: new Date() })
+          .where(and(eq(agentRuntimeState.companyId, existing.companyId), eq(agentRuntimeState.agentId, id)));
+      }
+
       if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
-        await syncAgentSecretBindings(updated, txDb);
+        if (bindingDecision) {
+          await enforceClaudeOAuthBindingClaim(txDb, {
+            companyId: existing.companyId,
+            decision: bindingDecision,
+            consume: false,
+            environmentId: null,
+            claudeLogin: options?.claudeLogin,
+          });
+        }
+        await syncAgentSecretBindings(
+          updated,
+          txDb,
+          existing.adapterConfig,
+          options?.recordRevision,
+        );
       }
 
       const normalizedUpdated = await agentService(txDb).getById(updated.id);
@@ -552,7 +828,7 @@ export function agentService(db: Db) {
         const afterConfig = buildConfigSnapshot(normalizedUpdated);
         const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
         if (changedKeys.length > 0) {
-          await tx.insert(agentConfigRevisions).values({
+          await txDb.insert(agentConfigRevisions).values({
             companyId: normalizedUpdated.companyId,
             agentId: normalizedUpdated.id,
             createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
@@ -567,7 +843,13 @@ export function agentService(db: Db) {
       }
 
       return normalizedUpdated;
-    });
+    };
+
+    const transaction = (db as unknown as {
+      transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
+    }).transaction;
+    if (typeof transaction !== "function") return applyUpdate(db);
+    return transaction.call(db, async (tx) => applyUpdate(tx as unknown as Db));
   }
 
   return {
@@ -599,14 +881,33 @@ export function agentService(db: Db) {
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
       const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const adapterType = data.adapterType ?? "process";
-      const adapterConfig = isPlainRecord(data.adapterConfig)
+      const rawAdapterConfig = isPlainRecord(data.adapterConfig)
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
+      const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+      // Run the server-enforced binding invariant after generic normalization
+      // and before any database write. A create has no prior config.
+      const bindingDecision = assertClaudeOAuthBindingInvariant({
+        adapterType,
+        nextConfig: adapterConfig,
+        priorConfig: null,
+      });
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        // Consume the stored-session claim and create the fixed definition inside
+        // the same transaction that inserts the binding. A rejected claim rolls
+        // back the whole transaction and inserts no binding.
+        await enforceClaudeOAuthBindingClaim(txDb, {
+          companyId,
+          decision: bindingDecision,
+          consume: true,
+          environmentId: (data.defaultEnvironmentId as string | null | undefined) ?? null,
+          claudeLogin: options?.claudeLogin,
+          childAdapterConfig: adapterConfig,
+        });
         const created = await tx
           .insert(agents)
           .values({
@@ -621,6 +922,13 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        if (options?.aiConnectionInstall) {
+          await tx.insert(toolConnectionInstalls).values({
+            companyId, connectionId: options.aiConnectionInstall.connectionId,
+            targetType: "agent", targetId: created.id,
+            createdByUserId: options.aiConnectionInstall.createdByUserId,
+          }).onConflictDoNothing();
+        }
         await syncAgentSecretBindings(created, txDb);
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
@@ -741,6 +1049,13 @@ export function agentService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(eq(agents.id, id))
+          .for("update");
+        await issueThreadInteractionService(tx as unknown as Db)
+          .cancelPendingForDeletedAddressee(existing.companyId, id);
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
         await tx
           .update(issues)
@@ -776,21 +1091,40 @@ export function agentService(db: Db) {
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
+        let approvalBindingDecision: ClaudeOAuthBindingInvariantDecision | null = null;
         if (
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
           isPlainRecord(patch.adapterConfig)
         ) {
-          patch.adapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
+          const normalizedAdapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
             existing.companyId,
             patch.adapterConfig,
             { adapterType: (patch.adapterType ?? existing.adapterType) as string },
           );
+          patch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+            (patch.adapterType ?? existing.adapterType) as string,
+            normalizedAdapterConfig,
+          );
+          // The approval activation keeps an existing fixed binding but rejects a
+          // newly introduced binding, because it carries no stored-session claim.
+          approvalBindingDecision = assertClaudeOAuthBindingInvariant({
+            adapterType: (patch.adapterType ?? existing.adapterType) as string,
+            nextConfig: patch.adapterConfig,
+            priorConfig: existing.adapterConfig,
+          });
+        } else if (
+          Object.prototype.hasOwnProperty.call(patch, "adapterType")
+          && isPlainRecord(existing.adapterConfig)
+        ) {
+          patch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+            patch.adapterType as string,
+            existing.adapterConfig,
+          );
         }
         if (patch.permissions !== undefined) {
-          patch.permissions = normalizeAgentPermissions(
-            patch.permissions,
-            (patch.role ?? existing.role) as string,
-          );
+          // The pending-approval activation replays the original hire
+          // request, so the new-agent creation default applies.
+          patch.permissions = normalizeAgentPermissions(patch.permissions, { context: "create" });
         }
         const updated = await tx
           .update(agents)
@@ -799,7 +1133,15 @@ export function agentService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
-        await syncAgentSecretBindings(updated, txDb);
+        if (approvalBindingDecision) {
+          await enforceClaudeOAuthBindingClaim(txDb, {
+            companyId: existing.companyId,
+            decision: approvalBindingDecision,
+            consume: false,
+            environmentId: null,
+          });
+        }
+        await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");
@@ -829,7 +1171,7 @@ export function agentService(db: Db) {
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

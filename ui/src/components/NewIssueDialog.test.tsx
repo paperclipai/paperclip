@@ -27,7 +27,6 @@ const companyState = vi.hoisted(() => ({
       id: "company-1",
       name: "Paperclip",
       status: "active",
-      brandColor: "#123456",
       issuePrefix: "PAP",
     },
   ],
@@ -36,7 +35,6 @@ const companyState = vi.hoisted(() => ({
     id: "company-1",
     name: "Paperclip",
     status: "active",
-    brandColor: "#123456",
     issuePrefix: "PAP",
   },
 }));
@@ -188,11 +186,13 @@ vi.mock("./InlineEntitySelector", async () => {
       {
         value: string;
         placeholder?: string;
+        className?: string;
+        triggerDataSlot?: string;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, renderTriggerValue }, ref) {
+    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, renderTriggerValue }, ref) {
       return (
-        <button ref={ref} type="button">
+        <button ref={ref} type="button" className={className} data-slot={triggerDataSlot}>
           {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
         </button>
       );
@@ -318,10 +318,14 @@ function renderDialog(container: HTMLDivElement) {
 describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
   let originalResizeObserver: typeof ResizeObserver | undefined;
+  let originalVisualViewportDescriptor: PropertyDescriptor | undefined;
+  let originalInnerHeightDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     vi.useRealTimers();
     originalResizeObserver = globalThis.ResizeObserver;
+    originalVisualViewportDescriptor = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    originalInnerHeightDescriptor = Object.getOwnPropertyDescriptor(window, "innerHeight");
     globalThis.ResizeObserver = class ResizeObserver {
       observe() {}
       unobserve() {}
@@ -366,6 +370,16 @@ describe("NewIssueDialog", () => {
 
   afterEach(() => {
     globalThis.ResizeObserver = originalResizeObserver!;
+    if (originalVisualViewportDescriptor) {
+      Object.defineProperty(window, "visualViewport", originalVisualViewportDescriptor);
+    } else {
+      Reflect.deleteProperty(window, "visualViewport");
+    }
+    if (originalInnerHeightDescriptor) {
+      Object.defineProperty(window, "innerHeight", originalInnerHeightDescriptor);
+    } else {
+      Reflect.deleteProperty(window, "innerHeight");
+    }
     document.body.innerHTML = "";
   });
 
@@ -398,6 +412,31 @@ describe("NewIssueDialog", () => {
     expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
+  });
+
+  it("uses the compact composer control proportions for mobile task fields", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const compactControls = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="new-issue-compact-control"]'),
+    );
+    const prefix = compactControls.find((control) => control.textContent === "PAP");
+    const assignee = compactControls.find((control) => control.textContent === "Assignee");
+    const project = compactControls.find((control) => control.textContent === "Project");
+    const status = compactControls.find((control) => control.textContent?.trim() === "Todo");
+    const upload = compactControls.find((control) => control.textContent?.trim() === "Upload");
+    const mode = compactControls.find((control) => control.hasAttribute("data-issue-work-mode-chip"));
+    const more = container.querySelector<HTMLElement>('[data-testid="new-issue-more-menu-trigger"]');
+
+    expect(prefix?.className).toContain("p-1.5");
+    for (const control of [assignee, project, status, upload, mode]) {
+      expect(control?.className).toContain("h-8");
+      expect(control?.className).toContain("px-2.5");
+    }
+    expect(more?.className).toContain("size-8");
+
+    act(() => root.unmount());
   });
 
   it("submits parent and goal context for sub-issues", async () => {
@@ -530,6 +569,76 @@ describe("NewIssueDialog", () => {
     });
 
     expect(container.textContent).toContain("agent_token,project_token");
+
+    act(() => root.unmount());
+  });
+
+  it("shows Astra-only efforts when a task inherits the agent model", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Use inherited Astra",
+      assigneeAgentId: "agent-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CodexCoder",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-6-astra" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Codex options");
+    });
+
+    const codexOptionsButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Codex options"));
+    expect(codexOptionsButton).not.toBeUndefined();
+    await act(async () => {
+      codexOptionsButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const customLane = Array.from(container.querySelectorAll('button[role="radio"]'))
+      .find((button) => button.textContent?.trim() === "Custom");
+    expect(customLane).not.toBeUndefined();
+    await act(async () => {
+      customLane!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Ultra");
+    expect(container.textContent).toContain("Max");
+    expect(container.textContent).not.toContain("Minimal");
+
+    act(() => root.unmount());
+  });
+
+  it("warns when the selected assignee is a paused imported agent", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Compare onboarding flows",
+      assigneeAgentId: "agent-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CEO",
+        status: "paused",
+        pauseReason: "import",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="new-issue-paused-assignee-note"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("arrived paused from an organization import");
 
     act(() => root.unmount());
   });
@@ -797,6 +906,29 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("shows the create-task loading state only in the submit button", async () => {
+    mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
+    dialogState.newIssueDefaults = { title: "Pending task" };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(submitButton?.textContent).toContain("Creating...");
+    expect(submitButton?.getAttribute("aria-busy")).toBe("true");
+    expect(container.textContent).not.toContain("Creating issue");
+
+    act(() => root.unmount());
+  });
+
   it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
     const title = "验证中文任务";
     const description = [
@@ -922,6 +1054,7 @@ describe("NewIssueDialog", () => {
 
     const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(modeChip()?.textContent).toContain("Auto mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -932,6 +1065,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.textContent).toContain("Plan mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -942,6 +1076,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+    expect(modeChip()?.textContent).toContain("Ask mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -1072,8 +1207,6 @@ describe("NewIssueDialog", () => {
     );
     expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
-    expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-top)");
-    expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-bottom)");
 
     const titleInput = container.querySelector('textarea[placeholder="Task title"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
@@ -1088,24 +1221,108 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("keeps priority under the mobile overflow menu", async () => {
+  it("tracks the mobile visual viewport and keeps the focused editor visible above the keyboard", async () => {
+    const visualViewport = new EventTarget() as EventTarget & {
+      height: number;
+      offsetTop: number;
+    };
+    visualViewport.height = 844;
+    visualViewport.offsetTop = 0;
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: visualViewport,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 844,
+    });
+
     const { root } = renderDialog(container);
     await flush();
 
+    const dialogContent = Array.from(container.querySelectorAll<HTMLDivElement>("div")).find((element) =>
+      element.className.includes("max-h-(--new-issue-dialog-height)"),
+    );
+    const descriptionInput = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Add description..."]',
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(descriptionInput!, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    descriptionInput?.focus();
+
+    expect(dialogContent?.style.top).toBe("");
+    expect(dialogContent?.style.height).toBe("");
+    expect(dialogContent?.style.translate).toBe("");
+
+    visualViewport.height = 420;
+    visualViewport.offsetTop = 24;
+    await act(async () => {
+      visualViewport.dispatchEvent(new Event("resize"));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
+    expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
+    expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-top")).toBe(
+      "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+    );
+    expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-height")).toBe(
+      "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
+    );
+    expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
+    expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
+    expect(dialogContent?.style.translate).toBe("var(--pct-neg-50)");
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+
+    act(() => root.unmount());
+  });
+
+  it("hides the priority chip and mobile priority option (PAP-411)", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off). Neither the
+    // desktop priority chip nor the mobile overflow priority option should render.
     const priorityChip = container.querySelector('[data-testid="new-issue-priority-chip"]');
-    expect(priorityChip?.className).toContain("hidden");
-    expect(priorityChip?.className).toContain("sm:inline-flex");
+    expect(priorityChip).toBeNull();
 
     const highPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(highPriorityOption?.textContent).toContain("High");
+    expect(highPriorityOption).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("still submits the default priority when the priority UI is hidden (PAP-411)", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Priority default persists",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
 
     await act(async () => {
-      highPriorityOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
-    const selectedHighPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(selectedHighPriorityOption?.className).toContain("bg-accent");
+    // PAP-411: the priority control is hidden, but the data-model default must survive.
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Priority default persists",
+        priority: "medium",
+      }),
+    );
 
     act(() => root.unmount());
   });
@@ -1204,7 +1421,6 @@ describe("NewIssueDialog", () => {
   it("reveals the watchdog editor from the overflow menu", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableTaskWatchdogs: true,
     });
 
     const { root } = renderDialog(container);
@@ -1231,7 +1447,6 @@ describe("NewIssueDialog", () => {
   it("submits the configured watchdog from a restored draft", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableTaskWatchdogs: true,
     });
     localStorage.setItem(
       "paperclip:issue-draft",
@@ -1298,18 +1513,47 @@ describe("NewIssueDialog", () => {
       return button?.querySelector("svg")?.getAttribute("class") ?? "";
     }
 
-    it("uses agent-mode labels and brand status hues by default", async () => {
+    it("uses auto-mode labels and brand status hues by default", async () => {
       const { root } = renderDialog(container);
       await waitForAssertion(() => {
-        expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+        expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       });
 
-      expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
 
       expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
+
+      act(() => root.unmount());
+    });
+  });
+
+  describe("PAP-8501: company badge shows issuePrefix", () => {
+    it("displays issuePrefix instead of name-derived prefix", async () => {
+      // Override company data to have mismatched name/prefix
+      companyState.companies = [
+        {
+          id: "company-1",
+          name: "Acme Labs",
+          status: "active",
+          issuePrefix: "OPS",
+        },
+      ];
+      companyState.selectedCompany = {
+        id: "company-1",
+        name: "Acme Labs",
+        status: "active",
+        issuePrefix: "OPS",
+      };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        const text = container.textContent ?? "";
+        // Should show OPS (issuePrefix), not ACM (name.slice(0,3))
+        expect(text).toContain("OPS");
+      });
 
       act(() => root.unmount());
     });

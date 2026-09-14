@@ -1,0 +1,133 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Semantic tool unknown optional envelope fields",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_semantic_future",
+    "issueId": "issue_semantic_future",
+    "runId": "run_semantic_future",
+    "environmentLeaseId": "lease_semantic_future",
+    "runnerInstanceId": "runner_semantic_future",
+    "normalizedSessionId": "session_semantic_future",
+    "driverSessionId": "driver_semantic_future"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "provider-neutral",
+      "version": "1.0.0"
+    },
+    "steer": false,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": false,
+    "structuredResult": true,
+    "typedEvents": true,
+    "semanticTools": {
+      "schema": "paperclip.prp.semantic_tools.v1",
+      "schemaVersion": 1,
+      "operations": [
+        {
+          "operationId": "get_task_context",
+          "version": 1,
+          "availability": "available",
+          "redactionDisposition": "digest_only",
+          "requiredClaims": [],
+          "futureAvailabilityHint": "optional"
+        }
+      ],
+      "futureNegotiationHint": {
+        "safe": true
+      }
+    },
+    "unsupported": []
+  },
+  "runPhase": "terminal",
+  "sessionState": "not_started",
+  "turnState": "not_started",
+  "activeTurnId": null,
+  "items": [],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "done",
+    "summary": "Unknown optional receipt fields were ignored by the v1 projection.",
+    "completionClaim": {
+      "contractRevision": "semantic-receipts-v1",
+      "objectiveSatisfied": true,
+      "criteria": [],
+      "remainingWork": []
+    },
+    "evidence": [
+      {
+        "receiptId": "receipt_semantic_future"
+      }
+    ],
+    "verification": [
+      {
+        "commandOrCheck": "optional field projection stability",
+        "status": "passed"
+      }
+    ],
+    "attentionRequests": [],
+    "artifacts": []
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "done",
+    "workAssessmentId": "assessment_semantic_future",
+    "statusDecisionId": "decision_semantic_future"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "semantic_future_01",
+      "sourceSeq": 1,
+      "eventType": "mcp_app.tool_input",
+      "emittedAt": "2026-08-11T10:50:00.000Z",
+      "itemId": "item_semantic_future",
+      "summary": "mcp_app tool_input"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "semantic_future_02",
+      "sourceSeq": 2,
+      "eventType": "mcp_app.tool_result",
+      "emittedAt": "2026-08-11T10:50:00.010Z",
+      "itemId": "item_semantic_future",
+      "summary": "mcp_app tool_result"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "semantic_future_03",
+      "sourceSeq": 3,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-11T10:50:00.020Z",
+      "summary": "Unknown optional receipt fields were ignored by the v1 projection."
+    },
+    {
+      "position": 4,
+      "sourceEventId": "semantic_future_04",
+      "sourceSeq": 4,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-11T10:50:00.030Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_semantic_future": 4
+  },
+  "processedEventIds": [
+    "semantic_future_01",
+    "semantic_future_02",
+    "semantic_future_03",
+    "semantic_future_04"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

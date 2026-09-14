@@ -11,7 +11,7 @@ import {
   ShieldAlert,
   XCircle,
 } from "lucide-react";
-import type { DecisionEffect, DecisionOption } from "@paperclipai/shared";
+import { decisionEffectTargetIssueIds, type DecisionEffect, type DecisionOption } from "@paperclipai/shared";
 import type {
   Decision,
   DecisionEffectExecution,
@@ -66,18 +66,6 @@ export interface DecisionCardProps {
 function humanStatus(status: string | null | undefined): string {
   if (!status) return "unknown";
   return status.replaceAll("_", " ");
-}
-
-function referencedTargetIds(effect: DecisionEffect): string[] {
-  const ids = new Set([effect.targetIssueId]);
-  if (effect.type === "create_issue") {
-    if (effect.draft.parentId) ids.add(effect.draft.parentId);
-    for (const id of effect.draft.blockedByIssueIds ?? []) ids.add(id);
-  }
-  if (effect.type === "resolve_blocker") {
-    for (const id of effect.removeBlockedByIssueIds) ids.add(id);
-  }
-  return [...ids];
 }
 
 function issueLabel(ref: DecisionIssueRef | null, fallbackId: string): string {
@@ -312,6 +300,22 @@ export function DecisionCard({
   };
 
   const dimmed = decision.status === "expired" || decision.status === "cancelled";
+  const expiredReason = (decision.metadata as { expiredReason?: string } | null)?.expiredReason;
+
+  // The issues this decision acts on. The origin issue is only where the agent
+  // was running when it proposed the decision — the queue links there, but the
+  // decision may target a different issue entirely, so name the targets
+  // explicitly or the card is undiscoverable from the issue it applies to.
+  const targetRefs = useMemo(() => {
+    const ids = new Set<string>();
+    for (const option of decision.options) {
+      for (const effect of option.effects) {
+        for (const id of decisionEffectTargetIssueIds(effect)) ids.add(id);
+      }
+    }
+    if (originIssue?.id) ids.delete(originIssue.id);
+    return [...ids].map((id) => ({ id, ref: resolveIssue(id) }));
+  }, [decision.options, originIssue?.id, resolveIssue]);
 
   return (
     <div
@@ -344,9 +348,26 @@ export function DecisionCard({
         {originIssue && (
           <>
             {" "}while running{" "}
-            <a href={originIssue.href} className="font-medium text-sky-700 hover:underline dark:text-sky-300">
+            <a href={originIssue.href} className="font-medium text-primary underline-offset-2 hover:underline">
               {issueLabel(originIssue, originIssue.id)}
             </a>
+          </>
+        )}
+        {targetRefs.length > 0 && (
+          <>
+            {" · applies to "}
+            {targetRefs.map(({ id, ref }, index) => (
+              <span key={id}>
+                {index > 0 && ", "}
+                {ref ? (
+                  <a href={ref.href} className="font-medium text-primary underline-offset-2 hover:underline">
+                    {issueLabel(ref, id)}
+                  </a>
+                ) : (
+                  <span className="font-medium text-foreground">{issueLabel(null, id)}</span>
+                )}
+              </span>
+            ))}
           </>
         )}
         {runHref && (
@@ -418,7 +439,7 @@ export function DecisionCard({
           {decision.options.map((option) => {
             const destructive = isDestructiveOption(option);
             const blockedStale = option.effects.some(
-              (effect) => effect.staleness === "strict" && referencedTargetIds(effect).some((id) => staleTargetIdSet.has(id)),
+              (effect) => effect.staleness === "strict" && decisionEffectTargetIssueIds(effect).some((id) => staleTargetIdSet.has(id)),
             );
             const disabled = busy || requiredUnmet || blockedStale;
             const cancelTree = cancelTreeEffect(option);
@@ -559,9 +580,11 @@ export function DecisionCard({
                 <Clock className="h-4 w-4" aria-hidden /> The decision window closed
               </div>
               <p className="mt-1">
-                {((decision.metadata as { expiredReason?: string } | null)?.expiredReason === "target_gone")
+                {expiredReason === "target_gone"
                   ? "A target issue was cancelled before this was decided."
-                  : "No response before the expiry deadline."}
+                  : expiredReason === "target_completed"
+                    ? "All target issues were completed before this was decided."
+                    : "No response before the expiry deadline."}
                 {decision.continuationPolicy === "wake_origin_agent" && " The proposer was re-woken."}
               </p>
             </div>

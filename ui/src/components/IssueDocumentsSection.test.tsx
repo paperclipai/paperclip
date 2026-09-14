@@ -252,6 +252,7 @@ function createIssue(): Issue {
     status: "in_progress",
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -340,6 +341,81 @@ describe("IssueDocumentsSection", () => {
       root.unmount();
     });
     queryClient.clear();
+  });
+
+  it("copies document bodies through the plain HTTP clipboard fallback", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const writeText = vi.fn(async () => {});
+    const execCommand = vi.fn(() => true);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const originalSecureContext = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, "execCommand");
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: false,
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({ body: "# Copy over HTTP" }),
+    ]);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection issue={issue} canDeleteDocuments={false} />
+          </QueryClientProvider>,
+        );
+      });
+      await flush();
+      await flush();
+
+      const copyButton = container.querySelector('button[title="Copy document"]');
+      expect(copyButton).toBeTruthy();
+
+      await act(async () => {
+        copyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(writeText).not.toHaveBeenCalled();
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      expect(container.querySelector('button[title="Copied"]')).toBeTruthy();
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      queryClient.clear();
+      if (originalClipboard) {
+        Object.defineProperty(navigator, "clipboard", originalClipboard);
+      } else {
+        delete (navigator as { clipboard?: Clipboard }).clipboard;
+      }
+      if (originalSecureContext) {
+        Object.defineProperty(window, "isSecureContext", originalSecureContext);
+      } else {
+        delete (window as { isSecureContext?: boolean }).isSecureContext;
+      }
+      if (originalExecCommand) {
+        Object.defineProperty(document, "execCommand", originalExecCommand);
+      } else {
+        delete (document as { execCommand?: (command: string) => boolean }).execCommand;
+      }
+    }
   });
 
   it("locks documents from the document header action", async () => {

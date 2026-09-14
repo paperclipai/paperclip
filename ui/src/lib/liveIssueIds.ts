@@ -1,13 +1,71 @@
+import type { IssueStatus } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "../api/heartbeats";
 
 function isLiveRunStatus(status: string): boolean {
   return status === "queued" || status === "running";
 }
 
-export function collectLiveIssueIds(liveRuns: readonly LiveRunForIssue[] | null | undefined): Set<string> {
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+
+export function isTerminalIssueStatus(status: string | null | undefined): status is IssueStatus {
+  return TERMINAL_ISSUE_STATUSES.has(status as IssueStatus);
+}
+
+export function isLiveIssueRun(
+  run: Pick<LiveRunForIssue, "status">,
+  issueStatus?: string | null,
+): boolean {
+  return isLiveRunStatus(run.status) && !isTerminalIssueStatus(issueStatus);
+}
+
+export interface LiveIssueStatusNode {
+  id: string;
+  status: IssueStatus | string;
+  updatedAt?: Date | string | number | null;
+}
+
+function collectIssueStatusById(issues: readonly LiveIssueStatusNode[] | null | undefined): Map<string, string> {
+  const snapshotByIssueId = new Map<string, { status: string; updatedAtMs: number | null }>();
+  for (const issue of issues ?? []) {
+    const candidate = {
+      status: issue.status,
+      updatedAtMs: issueUpdatedAtMs(issue.updatedAt),
+    };
+    const existing = snapshotByIssueId.get(issue.id);
+    if (!existing || shouldReplaceIssueStatusSnapshot(existing, candidate)) snapshotByIssueId.set(issue.id, candidate);
+  }
+  return new Map([...snapshotByIssueId].map(([issueId, snapshot]) => [issueId, snapshot.status]));
+}
+
+function issueUpdatedAtMs(updatedAt: LiveIssueStatusNode["updatedAt"]): number | null {
+  if (updatedAt === null || updatedAt === undefined) return null;
+  const timestamp = updatedAt instanceof Date ? updatedAt.getTime() : new Date(updatedAt).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function shouldReplaceIssueStatusSnapshot(
+  existing: { status: string; updatedAtMs: number | null },
+  candidate: { status: string; updatedAtMs: number | null },
+): boolean {
+  if (candidate.updatedAtMs !== null && existing.updatedAtMs !== null) {
+    if (candidate.updatedAtMs !== existing.updatedAtMs) return candidate.updatedAtMs > existing.updatedAtMs;
+  } else if (candidate.updatedAtMs !== null) {
+    return true;
+  } else if (existing.updatedAtMs !== null) {
+    return false;
+  }
+
+  return !isTerminalIssueStatus(existing.status) && isTerminalIssueStatus(candidate.status);
+}
+
+export function collectLiveIssueIds(
+  liveRuns: readonly LiveRunForIssue[] | null | undefined,
+  issues?: readonly LiveIssueStatusNode[] | null,
+): Set<string> {
   const ids = new Set<string>();
+  const statusByIssueId = collectIssueStatusById(issues);
   for (const run of liveRuns ?? []) {
-    if (run.issueId && isLiveRunStatus(run.status)) ids.add(run.issueId);
+    if (run.issueId && isLiveIssueRun(run, statusByIssueId.get(run.issueId))) ids.add(run.issueId);
   }
   return ids;
 }

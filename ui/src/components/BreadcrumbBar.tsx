@@ -1,8 +1,9 @@
 import { Link } from "@/lib/router";
-import { Menu } from "lucide-react";
+import { Menu, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { usePanel } from "../context/PanelContext";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -12,17 +13,35 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
-import { Fragment, useMemo } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { cn } from "../lib/utils";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
-function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
+/** Task identifier rendered in gray monospace beside its breadcrumb label. */
+function CrumbIdentifier({ identifier }: { identifier?: string }) {
+  if (!identifier) return null;
+  return (
+    <span data-slot="task-title-identifier" className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+      {identifier}
+    </span>
+  );
+}
+
+function GlobalToolbar({
+  context,
+  pageToolbar,
+}: {
+  context: GlobalToolbarContext;
+  pageToolbar?: ReactNode;
+}) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1 pl-2 empty:hidden">
+      {pageToolbar}
       {slots.length > 0 ? (
         <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
       ) : null}
@@ -33,10 +52,18 @@ function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
   );
 }
 
-export function BreadcrumbBar() {
-  const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
+export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+  const {
+    breadcrumbs,
+    breadcrumbToolbar,
+    breadcrumbPanelControl,
+    mobileToolbar,
+  } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
+  const { panelVisible, togglePanelVisible } = usePanel();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
+  const toggleTaskPanel = breadcrumbPanelControl?.onToggle ?? togglePanelVisible;
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -46,11 +73,16 @@ export function BreadcrumbBar() {
     [selectedCompanyId, selectedCompany?.issuePrefix],
   );
 
-  const globalToolbarSlots = <GlobalToolbar context={globalToolbarSlotContext} />;
+  const globalToolbarSlots = (
+    <GlobalToolbar
+      context={globalToolbarSlotContext}
+      pageToolbar={isMobile ? null : breadcrumbToolbar}
+    />
+  );
 
   if (isMobile && mobileToolbar) {
     return (
-      <div className="border-b border-border px-2 h-12 shrink-0 flex items-center">
+      <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-2">
         {mobileToolbar}
       </div>
     );
@@ -58,7 +90,7 @@ export function BreadcrumbBar() {
 
   if (breadcrumbs.length === 0) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center justify-end">
+      <div className="h-(--sz-60px) shrink-0 flex items-center justify-end border-b border-border px-4 md:px-6">
         {globalToolbarSlots}
       </div>
     );
@@ -76,15 +108,99 @@ export function BreadcrumbBar() {
     </Button>
   );
 
-  // Single breadcrumb = page title (uppercase)
-  if (breadcrumbs.length === 1) {
+  const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
+  if (isMobile && breadcrumbs[0]?.label === "Tasks" && currentCrumb.identifier) {
     return (
-      <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+      <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
+        {menuButton}
+        <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm">
+          {currentCrumb.leading ? (
+            <span className="flex shrink-0 items-center self-center">{currentCrumb.leading}</span>
+          ) : null}
+          <span className="min-w-0 truncate" title={currentCrumb.label}>{currentCrumb.label}</span>
+          <CrumbIdentifier identifier={currentCrumb.identifier} />
+        </h1>
+        {globalToolbarSlots}
+      </div>
+    );
+  }
+
+  const breadcrumbTrail = (
+    <div className="min-w-0 overflow-hidden flex-1">
+      <Breadcrumb className="min-w-0 overflow-hidden">
+        <BreadcrumbList className="flex-nowrap">
+          {breadcrumbs.map((crumb, i) => {
+            const isLast = i === breadcrumbs.length - 1;
+            return (
+              <Fragment key={i}>
+                {i > 0 && <BreadcrumbSeparator />}
+                <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
+                  {isLast || !crumb.href ? (
+                    crumb.leading || crumb.identifier ? (
+                      <BreadcrumbPage className="flex min-w-0 items-baseline gap-1.5">
+                        {crumb.leading && (
+                          <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
+                        )}
+                        {!taskDetailLayout ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                        <span className="min-w-0 truncate">{crumb.label}</span>
+                        {taskDetailLayout && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                      </BreadcrumbPage>
+                    ) : (
+                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                    )
+                  ) : (
+                    <BreadcrumbLink asChild>
+                      {crumb.leading || crumb.identifier ? (
+                        <Link
+                          to={crumb.href}
+                          className={cn(
+                            "flex min-w-0 items-baseline gap-1.5",
+                            i === 0 && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {crumb.leading && (
+                            <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
+                          )}
+                          {!taskDetailLayout ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                          <span className="min-w-0 truncate">{crumb.label}</span>
+                          {taskDetailLayout && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                        </Link>
+                      ) : (
+                        <Link
+                          to={crumb.href}
+                          className={cn(
+                            "min-w-0 truncate",
+                            i === 0 && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {crumb.label}
+                        </Link>
+                      )}
+                    </BreadcrumbLink>
+                  )}
+                  {crumb.trailing && <span className="flex shrink-0 items-center">{crumb.trailing}</span>}
+                </BreadcrumbItem>
+              </Fragment>
+            );
+          })}
+        </BreadcrumbList>
+      </Breadcrumb>
+    </div>
+  );
+
+  // Task details use the same breadcrumb typography even with one item.
+  // Other single-crumb pages keep their existing page-title presentation.
+  if (breadcrumbs.length === 1 && !taskDetailLayout) {
+    return (
+      <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4 md:px-6">
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          {breadcrumbs[0].leading ? (
-            <h1 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider">
-              <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+          {breadcrumbs[0].leading || breadcrumbs[0].identifier ? (
+            <h1 className="flex items-baseline gap-1.5 text-sm font-semibold uppercase tracking-wider">
+              {breadcrumbs[0].leading && (
+                <span className="flex shrink-0 items-center self-center">{breadcrumbs[0].leading}</span>
+              )}
+              <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
               <span className="truncate">{breadcrumbs[0].label}</span>
             </h1>
           ) : (
@@ -100,46 +216,27 @@ export function BreadcrumbBar() {
 
   // Multiple breadcrumbs = breadcrumb trail
   return (
-    <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
+    <div
+      className={cn(
+        "relative h-(--sz-60px) shrink-0 flex items-center border-b border-border",
+        "px-4 md:px-6",
+      )}
+    >
       {menuButton}
-      <div className="min-w-0 overflow-hidden flex-1">
-        <Breadcrumb className="min-w-0 overflow-hidden">
-          <BreadcrumbList className="flex-nowrap">
-            {breadcrumbs.map((crumb, i) => {
-              const isLast = i === breadcrumbs.length - 1;
-              return (
-                <Fragment key={i}>
-                  {i > 0 && <BreadcrumbSeparator />}
-                  <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
-                    {isLast || !crumb.href ? (
-                      crumb.leading ? (
-                        <BreadcrumbPage className="flex min-w-0 items-center gap-1.5">
-                          <span className="flex shrink-0 items-center">{crumb.leading}</span>
-                          <span className="truncate">{crumb.label}</span>
-                        </BreadcrumbPage>
-                      ) : (
-                        <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
-                      )
-                    ) : (
-                      <BreadcrumbLink asChild>
-                        {crumb.leading ? (
-                          <Link to={crumb.href} className="flex items-center gap-1.5">
-                            <span className="flex shrink-0 items-center">{crumb.leading}</span>
-                            <span className="truncate">{crumb.label}</span>
-                          </Link>
-                        ) : (
-                          <Link to={crumb.href}>{crumb.label}</Link>
-                        )}
-                      </BreadcrumbLink>
-                    )}
-                  </BreadcrumbItem>
-                </Fragment>
-              );
-            })}
-          </BreadcrumbList>
-        </Breadcrumb>
-      </div>
+      {breadcrumbTrail}
       {globalToolbarSlots}
+      {taskDetailLayout ? (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="ml-5 size-9 shrink-0 text-muted-foreground"
+          onClick={toggleTaskPanel}
+          aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
+          title={taskPanelOpen ? "Hide properties" : "Show properties"}
+        >
+          {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+        </Button>
+      ) : null}
     </div>
   );
 }

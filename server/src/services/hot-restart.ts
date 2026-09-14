@@ -25,16 +25,23 @@ export type HotRestartIntentRun = {
   processPid: number | null;
   processGroupId: number | null;
   issueId: string | null;
+  runtimeMode?: string | null;
+  nativeSessionId?: string | null;
+  runnerInstanceId?: string | null;
+  processStartedAt?: string | null;
 };
 
 export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
+  recoveryRequestId?: string | null;
   previousServerPid: number;
   previousServerIdentity?: string | null;
   previousServerStartedAt?: string | null;
   previousServerVersion: string | null;
   drainRequired: boolean;
+  drainReason?: "requested" | "active_acp_run" | null;
+  drainRunIds?: string[];
   requestedByRunId: string | null;
   preflightActiveRunIds: string[];
   shutdownSnapshot?: {
@@ -58,6 +65,7 @@ export type HotRestartReport = {
   requestedAt: string;
   completedAt: string;
   drainRequired: boolean;
+  drainReason: "requested" | "active_acp_run" | null;
   previousServerPid: number;
   newServerPid: number;
   previousServerVersion: string | null;
@@ -121,6 +129,10 @@ function asNumber(value: unknown): number | null {
 
 function asBoolean(value: unknown): boolean {
   return value === true;
+}
+
+function asDrainReason(value: unknown) {
+  return value === "requested" || value === "active_acp_run" ? value : null;
 }
 
 function asDateString(value: unknown): string | null {
@@ -375,7 +387,8 @@ function isSameHotRestartRequest(left: HotRestartIntent, right: HotRestartIntent
   return left.requestedAt === right.requestedAt
     && left.previousServerPid === right.previousServerPid
     && left.drainRequired === right.drainRequired
-    && left.requestedByRunId === right.requestedByRunId;
+    && left.requestedByRunId === right.requestedByRunId
+    && (left.recoveryRequestId ?? null) === (right.recoveryRequestId ?? null);
 }
 
 function parseRun(value: unknown): HotRestartIntentRun | null {
@@ -395,6 +408,10 @@ function parseRun(value: unknown): HotRestartIntentRun | null {
     processPid: asNumber(value.processPid),
     processGroupId: asNumber(value.processGroupId),
     issueId: asString(value.issueId),
+    runtimeMode: asString(value.runtimeMode),
+    nativeSessionId: asString(value.nativeSessionId),
+    runnerInstanceId: asString(value.runnerInstanceId),
+    processStartedAt: asDateString(value.processStartedAt),
   };
 }
 
@@ -407,11 +424,14 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt,
+    recoveryRequestId: asString(value.recoveryRequestId),
     previousServerPid,
     previousServerIdentity: asString(value.previousServerIdentity),
     previousServerStartedAt: asDateString(value.previousServerStartedAt),
     previousServerVersion: asString(value.previousServerVersion),
     drainRequired: asBoolean(value.drainRequired),
+    drainReason: asDrainReason(value.drainReason),
+    drainRunIds: asStringArray(value.drainRunIds),
     requestedByRunId: asString(value.requestedByRunId),
     preflightActiveRunIds: asStringArray(value.preflightActiveRunIds),
   };
@@ -479,9 +499,11 @@ export async function writeHotRestartIntent(input: {
   previousServerStartedAt?: string | null;
   previousServerVersion?: string | null;
   drainRequired?: boolean;
+  drainReason?: "requested" | "active_acp_run" | null;
   requestedByRunId?: string | null;
   preflightActiveRunIds?: string[];
   requestedAt?: Date;
+  recoveryRequestId?: string | null;
   homeDir?: string;
 }) {
   const previousServerStartedAt = input.previousServerStartedAt === undefined
@@ -497,11 +519,13 @@ export async function writeHotRestartIntent(input: {
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt: (input.requestedAt ?? new Date()).toISOString(),
+    recoveryRequestId: input.recoveryRequestId ?? null,
     previousServerPid: input.previousServerPid,
     previousServerIdentity,
     previousServerStartedAt,
     previousServerVersion: input.previousServerVersion ?? null,
     drainRequired: input.drainRequired ?? false,
+    drainReason: input.drainReason ?? (input.drainRequired ? "requested" : null),
     requestedByRunId: input.requestedByRunId ?? null,
     preflightActiveRunIds: asStringArray(input.preflightActiveRunIds),
   };
@@ -527,11 +551,20 @@ export async function writeHotRestartShutdownSnapshot(input: {
   intent: HotRestartIntent;
   signal: "SIGINT" | "SIGTERM";
   activeRuns: HotRestartIntentRun[];
+  drainReason?: "active_acp_run";
+  drainRunIds?: string[];
   capturedAt?: Date;
   homeDir?: string;
 }) {
   const updated: HotRestartIntent = {
     ...input.intent,
+    ...(input.drainReason
+      ? {
+        drainRequired: true,
+        drainReason: input.drainReason,
+        drainRunIds: asStringArray(input.drainRunIds),
+      }
+      : {}),
     shutdownSnapshot: {
       capturedAt: (input.capturedAt ?? new Date()).toISOString(),
       signal: input.signal,

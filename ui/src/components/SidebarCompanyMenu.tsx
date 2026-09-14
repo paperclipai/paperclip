@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   Check,
   ChevronsUpDown,
   GripVertical,
   LogOut,
   Plus,
-  Settings,
+  RefreshCw,
   UserPlus,
 } from "lucide-react";
 import {
@@ -20,21 +20,26 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { Company } from "@paperclipai/shared";
+import { hidesCompanyPage, type Company } from "@paperclipai/shared";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { authApi } from "@/api/auth";
+import { cloudApi, type CloudStackSummary } from "@/api/cloud";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
+import { useSignOut } from "@/hooks/useSignOut";
+import { navigateTopLevel } from "@/lib/browserNavigation";
+import { cloudStackCreateUrl, cloudStackEnterUrl } from "@/lib/cloudLinks";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
@@ -45,14 +50,88 @@ interface SidebarCompanyMenuProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-function WorkspaceIcon({ company }: { company: Company }) {
+const TRIGGER_WORKSPACE_ICON_CLASS = "size-5 shrink-0 rounded-md text-(length:--text-micro)";
+const POPOVER_WORKSPACE_ICON_CLASS =
+  "size-(--organization-popover-avatar-size) shrink-0 rounded-lg text-(length:--text-micro)";
+const ORGANIZATION_ROW_CLASS =
+  "h-(--organization-popover-company-row-height) min-w-0 gap-(--organization-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) focus:bg-accent/50 focus:text-foreground";
+const ORGANIZATION_ACTION_CLASS =
+  "h-(--organization-popover-action-row-height) gap-(--organization-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--organization-popover-action-line-height) text-foreground focus:bg-accent/50 focus:text-foreground";
+
+function WorkspaceIcon({ company, inPopover = false }: { company: Company; inPopover?: boolean }) {
   return (
     <CompanyPatternIcon
       companyName={company.name}
       logoUrl={company.logoUrl}
-      brandColor={company.brandColor}
-      className="size-5 shrink-0 rounded-md text-(length:--text-micro)"
+      className={inPopover ? POPOVER_WORKSPACE_ICON_CLASS : TRIGGER_WORKSPACE_ICON_CLASS}
     />
+  );
+}
+
+/**
+ * Cloud stacks have no hot-linkable icon URL in the portfolio payload, so v1
+ * renders the same deterministic monogram treatment cloud's own portfolio page
+ * uses — seeded by the display name, never fetched.
+ */
+function StackIcon({ displayName }: { displayName: string }) {
+  return <CompanyPatternIcon companyName={displayName} className={POPOVER_WORKSPACE_ICON_CLASS} />;
+}
+
+/**
+ * The switcher trigger on a Cloud instance. A Cloud tenant holds exactly one
+ * company and the harness pushes the stack's uploaded workspace icon into
+ * that company's branding, so the company logo is the stack logo here.
+ * The stack rows keep the monogram treatment above.
+ */
+function CurrentStackIcon({
+  displayName,
+  company,
+}: {
+  displayName: string;
+  company: Company | null;
+}) {
+  return (
+    <CompanyPatternIcon
+      companyName={displayName}
+      logoUrl={company?.logoUrl}
+      className={TRIGGER_WORKSPACE_ICON_CLASS}
+    />
+  );
+}
+
+function CloudStackItem({
+  stack,
+  isSelected,
+  onSelect,
+}: {
+  stack: CloudStackSummary;
+  isSelected: boolean;
+  onSelect: (stack: CloudStackSummary) => void;
+}) {
+  return (
+    <DropdownMenuItem
+      onSelect={() => onSelect(stack)}
+      className={ORGANIZATION_ROW_CLASS}
+    >
+      <StackIcon displayName={stack.displayName} />
+      <span className="min-w-0 flex-1">
+        <span
+          className="block truncate font-medium leading-(--organization-popover-name-line-height)"
+          title={stack.displayName}
+        >
+          {stack.displayName}
+        </span>
+        <span
+          className="block truncate text-(length:--text-nano) leading-(--organization-popover-prefix-line-height) text-muted-foreground"
+          title={stack.stackSlug}
+        >
+          {stack.stackSlug}
+        </span>
+      </span>
+      <span className="flex size-5 shrink-0 items-center justify-center">
+        {isSelected ? <Check className="size-4 text-foreground" /> : null}
+      </span>
+    </DropdownMenuItem>
   );
 }
 
@@ -93,20 +172,28 @@ function SortableCompanyItem({
         onSelect(company);
       }}
       className={cn(
-        "min-w-0 gap-2 py-2",
+        ORGANIZATION_ROW_CLASS,
         isEditing && "cursor-grab",
         isDragging && "opacity-80",
-        isSelected && "bg-accent text-accent-foreground",
       )}
     >
-      <WorkspaceIcon company={company} />
-      <span className="min-w-0 flex-1 truncate">{company.name}</span>
+      <WorkspaceIcon company={company} inPopover />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium leading-(--organization-popover-name-line-height)">
+          {company.name}
+        </span>
+        {isEditing ? null : (
+          <span className="block truncate text-(length:--text-nano) leading-(--organization-popover-prefix-line-height) text-muted-foreground">
+            {company.issuePrefix}
+          </span>
+        )}
+      </span>
       {isEditing ? (
         <button
           type="button"
           ref={setActivatorNodeRef}
           aria-label={`Reorder ${company.name}`}
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -117,12 +204,9 @@ function SortableCompanyItem({
           <GripVertical className="size-4" aria-hidden="true" />
         </button>
       ) : (
-        <>
-          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground">
-            {company.issuePrefix}
-          </span>
-          {isSelected ? <Check className="size-4 text-muted-foreground" /> : null}
-        </>
+        <span className="flex size-5 shrink-0 items-center justify-center">
+          {isSelected ? <Check className="size-4 text-foreground" /> : null}
+        </span>
       )}
     </DropdownMenuItem>
   );
@@ -131,8 +215,8 @@ function SortableCompanyItem({
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
-  const queryClient = useQueryClient();
-  const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
+    useCompany();
   const { openOnboarding } = useDialogActions();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -163,15 +247,42 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     userId: currentUserId,
   });
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      setOpen(false);
-      if (isMobile) setSidebarOpen(false);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
+  // In Paperclip Cloud the switcher lists the signed-in user's stacks
+  // (organizations) instead of the instance's companies: a cloud instance holds
+  // exactly one company, and switching means leaving this tenant host entirely.
+  const cloud = useCloudInstance();
+  const isCloud = Boolean(cloud);
+  // Invites now live on the Members page; hide the shortcut when the hosting
+  // operator hides either surface. Until the health response resolves, the
+  // hidden set is unknown — keep the shortcut out rather than flash it.
+  const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
+  const showInvitePeople =
+    hiddenSettingsLoaded &&
+    !hidesCompanyPage(hiddenSettings, "company.members") &&
+    !hidesCompanyPage(hiddenSettings, "company.invites");
+  const cloudBaseUrl = cloud?.cloudBaseUrl ?? null;
+  const stacksQuery = useQuery({
+    queryKey: queryKeys.cloud.stacks,
+    queryFn: () => cloudApi.listStacks(),
+    enabled: isCloud,
+    staleTime: 30_000,
+    retry: false,
   });
+  const stacks = stacksQuery.data?.stacks ?? [];
+  const currentStack = isCloud
+    ? stacks.find((stack) => stack.isCurrent)
+      ?? stacks.find((stack) => Boolean(cloud?.stackSlug) && stack.stackSlug === cloud?.stackSlug)
+      ?? null
+    : null;
+  const createStackUrl = isCloud ? cloudStackCreateUrl(cloudBaseUrl) : null;
+  const switcherNoun = "organization";
+  // The one name the chrome shows for "where am I": the stack in cloud, the
+  // company when self-hosted.
+  const currentName = isCloud
+    ? currentStack?.displayName ?? cloud?.stackDisplayName ?? cloud?.stackSlug ?? null
+    : selectedCompany?.name ?? null;
+
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) setIsEditingOrder(false);
@@ -200,10 +311,33 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     }
   }
 
+  /**
+   * Switching stacks is a full top-level navigation, not client routing: the
+   * cloud entry-code handoff authenticates the user for the target stack and
+   * wakes it if it is asleep before landing on its own tenant host.
+   */
+  function selectStack(stack: CloudStackSummary) {
+    setOpen(false);
+    if (isMobile) setSidebarOpen(false);
+    if (stack.stackSlug === currentStack?.stackSlug) return;
+    const target = cloudStackEnterUrl(cloudBaseUrl, stack.stackSlug);
+    if (!target) return;
+    navigateTopLevel(target);
+  }
+
   function addCompany() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
-    openOnboarding();
+    // Cloud creates organizations in the cloud app; the in-app company wizard
+    // is unreachable there (POST /companies is a 403 floor on managed stacks).
+    if (isCloud) {
+      if (createStackUrl) navigateTopLevel(createStackUrl);
+      return;
+    }
+    // Skip the front-door "how would you like to get started?" choice and land
+    // directly on "Name your organization" — this entry point is unambiguously
+    // "create a new company" (PAP-431).
+    openOnboarding({ initialStep: 1 });
   }
 
   const handleDragEnd = useCallback(
@@ -226,120 +360,188 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          // `px-3` (not px-2) so the logo's left edge lines up with the nav icon
-          // column (nav px-3 + item px-3) and, crucially, stays put between states:
-          // the Button's default size adds `has-[>svg]:px-3`, so with the chevron
-          // svg present (expanded) it was already 12px but without it (rail) it fell
-          // back to 8px — a 4px horizontal jump on collapse (PAP-10676).
-          className="h-9 flex-1 justify-start gap-2 px-3 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} company switcher` : "Open company switcher"}
+          // The nav icon column sits at nav px-3 + item mx-2 + item px-2.
+          // Match that inset with wrapper px-3 + trigger px-4. Override the
+          // Button's direct-SVG padding too so the expanded chevron cannot pull
+          // the avatar four pixels left of the nav icons.
+          // `min-w-0` on every link of the flex chain (button → label row → label)
+          // is what lets the name truncate: a flex item's default `min-width:auto`
+          // floors it at its content width, so without it a long name widens the
+          // trigger past the sidebar and pushes the chevron out of bounds. Company
+          // names were short in practice; cloud stack names are user-chosen.
+          className="h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground has-[>svg]:px-4 dark:hover:bg-sidebar-accent dark:hover:text-sidebar-accent-foreground"
+          aria-label={
+            currentName
+              ? `Open ${currentName} ${switcherNoun} switcher`
+              : `Open ${switcherNoun} switcher`
+          }
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
-            {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
-            <span className={cn("truncate text-sm font-bold text-foreground", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>
-              {selectedCompany?.name ?? "Select company"}
+            {isCloud
+              ? currentName ? <CurrentStackIcon displayName={currentName} company={selectedCompany} /> : null
+              : selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
+            {/* The header has room for ~110px of name beside the collapse
+                control (~142px on mobile, which hides it) — search moved to
+                the nav to buy that width. A name that still
+                truncates stays hover-recoverable via title. */}
+            <span
+              className={cn(
+                "min-w-0 truncate text-sm font-bold text-foreground",
+                rail && SIDEBAR_RAIL_HIDDEN_LABEL,
+              )}
+              title={currentName ?? undefined}
+            >
+              {currentName ?? `Select ${switcherNoun}`}
             </span>
           </span>
           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
-        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-          <DropdownMenuLabel className="p-0 text-(length:--text-micro) font-semibold uppercase text-muted-foreground">
-            Switch company
+      <DropdownMenuContent
+        align="start"
+        sideOffset={8}
+        className="ml-2 w-(--organization-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
+      >
+        <div className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
+          <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
+            Organizations
           </DropdownMenuLabel>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setIsEditingOrder((current) => !current);
-            }}
-            className="rounded px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            {isEditingOrder ? "Done" : "Edit"}
-          </button>
-        </div>
-        <div className="max-h-96 overflow-y-auto">
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
-          >
-            <SortableContext
-              items={orderedCompanies.map((company) => company.id)}
-              strategy={verticalListSortingStrategy}
+          {/* Stack order is owned by cloud's own portfolio in v1, so the
+              drag-to-reorder affordance stays self-hosted-only. */}
+          {isCloud ? null : (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setIsEditingOrder((current) => !current);
+              }}
+              className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              {orderedCompanies.map((company) => (
-                <SortableCompanyItem
-                  key={company.id}
-                  company={company}
-                  isEditing={isEditingOrder}
-                  isSelected={company.id === selectedCompany?.id}
-                  onSelect={selectCompany}
+              {isEditingOrder ? "Done" : "Edit"}
+            </button>
+          )}
+        </div>
+        <div className="flex max-h-96 flex-col gap-0.5 overflow-y-auto px-2.5 pb-2 pt-1">
+          {isCloud ? (
+            <>
+              {stacks.map((stack) => (
+                <CloudStackItem
+                  key={stack.stackSlug}
+                  stack={stack}
+                  isSelected={stack.stackSlug === currentStack?.stackSlug}
+                  onSelect={selectStack}
                 />
               ))}
-            </SortableContext>
-          </DndContext>
-          {orderedCompanies.length === 0 ? (
-            <DropdownMenuItem disabled>No companies</DropdownMenuItem>
-          ) : null}
+              {stacks.length === 0 ? (
+                <DropdownMenuItem disabled>
+                  {stacksQuery.isLoading
+                    ? "Loading organizations..."
+                    : stacksQuery.isError
+                      ? "Could not load organizations"
+                      : "No organizations"}
+                </DropdownMenuItem>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <SortableContext
+                  items={orderedCompanies.map((company) => company.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {orderedCompanies.map((company) => (
+                    <SortableCompanyItem
+                      key={company.id}
+                      company={company}
+                      isEditing={isEditingOrder}
+                      isSelected={company.id === selectedCompany?.id}
+                      onSelect={selectCompany}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
+              {orderedCompanies.length === 0 ? (
+                // "No companies" is a claim about the account. After a failed
+                // list request it is one we cannot make, and this menu is the
+                // only place the customer can act on it — say what happened and
+                // offer the way back.
+                companyListUnavailable ? (
+                  <>
+                    <DropdownMenuItem disabled>Couldn&apos;t load organizations</DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={(event) => {
+                        // Keep the menu open so the result of the retry is visible.
+                        event.preventDefault();
+                        void retryCompanies();
+                      }}
+                    >
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Try again
+                    </DropdownMenuItem>
+                  </>
+                ) : (
+                  <DropdownMenuItem disabled>No organizations</DropdownMenuItem>
+                )
+              ) : null}
+            </>
+          )}
         </div>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={addCompany}
-          className="gap-2 py-2 text-muted-foreground"
-          disabled={isEditingOrder}
-        >
-          <Plus className="size-4" />
-          <span>Create new company...</span>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem asChild disabled={isEditingOrder}>
-          <Link
-            to="/company/settings/invites"
-            onClick={(event) => {
-              if (isEditingOrder) {
-                event.preventDefault();
-                return;
-              }
-              closeNavigationChrome();
-            }}
-          >
-            <UserPlus className="size-4" />
-            <span className="truncate">
-              {selectedCompany ? `Invite people to ${selectedCompany.name}` : "Invite people"}
-            </span>
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild disabled={isEditingOrder}>
-          <Link
-            to="/company/settings"
-            onClick={(event) => {
-              if (isEditingOrder) {
-                event.preventDefault();
-                return;
-              }
-              closeNavigationChrome();
-            }}
-          >
-            <Settings className="size-4" />
-            <span>Company settings</span>
-          </Link>
-        </DropdownMenuItem>
-        {session?.session ? (
-          <>
-            <DropdownMenuSeparator />
+        <div className="flex flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
+          {/* A cloud instance without a configured cloud origin has nowhere to
+              send the user, so the row drops out entirely. */}
+          {isCloud && !createStackUrl ? null : (
             <DropdownMenuItem
-              variant="destructive"
+              onClick={addCompany}
+              className={ORGANIZATION_ACTION_CLASS}
+              disabled={isEditingOrder}
+            >
+              <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                <Plus className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1 truncate">Create organization</span>
+            </DropdownMenuItem>
+          )}
+          {showInvitePeople ? (
+            <DropdownMenuItem asChild disabled={isEditingOrder} className={ORGANIZATION_ACTION_CLASS}>
+              <Link
+                to="/company/settings/members?tab=invites"
+                onClick={(event) => {
+                  if (isEditingOrder) {
+                    event.preventDefault();
+                    return;
+                  }
+                  closeNavigationChrome();
+                }}
+              >
+                <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                  <UserPlus className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1 truncate">
+                  {currentName ? `Invite people to ${currentName}` : "Invite people"}
+                </span>
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
+          {session?.session ? (
+            <DropdownMenuItem
+              className={ORGANIZATION_ACTION_CLASS}
               onClick={() => signOutMutation.mutate()}
               disabled={isEditingOrder || signOutMutation.isPending}
             >
-              <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                <LogOut className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1 truncate">
+                {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+              </span>
             </DropdownMenuItem>
-          </>
-        ) : null}
+          ) : null}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

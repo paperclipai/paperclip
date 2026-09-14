@@ -6,6 +6,7 @@ import {
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
+import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 
 type AuthErrorBody =
   | {
@@ -14,6 +15,11 @@ type AuthErrorBody =
     error?: string | { code?: string; message?: string };
   }
   | null;
+
+export interface SignOutResult {
+  success?: boolean;
+  redirectTo?: string;
+}
 
 export class AuthApiError extends Error {
   status: number;
@@ -105,7 +111,7 @@ function logAuthHttpError(method: string, path: string, status: number, statusTe
   });
 }
 
-async function authPost(path: string, body: Record<string, unknown>) {
+async function authPost(path: string, body: Record<string, unknown>): Promise<unknown> {
   let res: Response;
   try {
     res = await fetch(`/api/auth${path}`, {
@@ -120,6 +126,8 @@ async function authPost(path: string, body: Record<string, unknown>) {
   }
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
+    const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+    if (recovery) return recovery;
     logAuthHttpError("POST", path, res.status, res.statusText, payload);
     throw extractAuthError(payload as AuthErrorBody, res.status);
   }
@@ -135,6 +143,8 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
   });
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
+    const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+    if (recovery) return recovery;
     throw extractAuthError(payload as AuthErrorBody, res.status);
   }
   return parse(payload);
@@ -146,9 +156,11 @@ export const authApi = {
       credentials: "include",
       headers: { Accept: "application/json" },
     });
-    if (res.status === 401) return null;
     const payload = await res.json().catch(() => null);
     if (!res.ok) {
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
+      if (res.status === 401) return null;
       throw new Error(`Failed to load session (${res.status})`);
     }
     const direct = toSession(payload);
@@ -172,6 +184,8 @@ export const authApi = {
     });
     const payload = await res.json().catch(() => null);
     if (!res.ok) {
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
       throw new Error((payload as { error?: string } | null)?.error ?? `Failed to load profile (${res.status})`);
     }
     return currentUserProfileSchema.parse(payload);
@@ -180,7 +194,14 @@ export const authApi = {
   updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
 
-  signOut: async () => {
-    await authPost("/sign-out", {});
+  signOut: async (): Promise<SignOutResult | null> => {
+    const payload = await authPost("/sign-out", {});
+    if (!payload || typeof payload !== "object") return null;
+
+    const result = payload as Record<string, unknown>;
+    return {
+      ...(typeof result.success === "boolean" ? { success: result.success } : {}),
+      ...(typeof result.redirectTo === "string" ? { redirectTo: result.redirectTo } : {}),
+    };
   },
 };

@@ -1,3 +1,5 @@
+import { logger } from "../middleware/logger.js";
+import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -56,6 +58,8 @@ import type {
   CompanySkillListItem,
   CompanySkillLastEditor,
   CompanySkillOriginalSummary,
+  CompanySkillProjectBrowseRequest,
+  CompanySkillProjectBrowseResult,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanCandidate,
   CompanySkillProjectScanRequest,
@@ -255,7 +259,7 @@ type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
 
 export type ImportPackageSkillResult = {
   skill: CompanySkill;
-  action: "created" | "updated" | "skipped";
+  action: "created" | "renamed" | "replaced" | "skipped";
   originalKey: string;
   originalSlug: string;
   requestedRefs: string[];
@@ -615,6 +619,23 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
     ?? asString(paperclip?.key),
   );
 }
+
+/**
+ * The bundled operating skills the default agent instructions assume every
+ * lead agent has (coordination, board usage, planning, hiring, memory). A
+ * seeded or hired CEO must arrive with these enabled: an agent's runtime only
+ * receives skills in its own desired set, so a CEO with an empty set
+ * truthfully reports these as not installed while its instructions tell it to
+ * use them. Mirrors the repo-root `skills/` bundle that
+ * `ensureSkillInventoryCurrent` imports into every company library.
+ */
+export const PAPERCLIP_CORE_SKILL_KEYS = [
+  "paperclipai/paperclip/paperclip",
+  "paperclipai/paperclip/paperclip-board",
+  "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
+  "paperclipai/paperclip/paperclip-create-agent",
+  "paperclipai/paperclip/para-memory-files",
+] as const;
 
 function deriveCanonicalSkillKey(
   companyId: string,
@@ -1099,6 +1120,12 @@ async function statPath(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+async function hasExactSkillFile(directoryPath: string) {
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true }).catch(() => []);
+  const skillEntry = entries.find((entry) => entry.name === "SKILL.md");
+  return Boolean(skillEntry && (skillEntry.isFile() || skillEntry.isSymbolicLink()));
+}
+
 function pathIsContained(rootPath: string, candidatePath: string) {
   const relativePath = path.relative(rootPath, candidatePath);
   return relativePath === ""
@@ -1126,13 +1153,26 @@ async function validateProjectSkillImportPath(
 ) {
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const resolvedSkillDir = path.resolve(skillDir);
-  if (!pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir)) {
-    throw unprocessable(`Project skill candidate ${resolvedSkillDir} is outside workspace root ${resolvedWorkspaceRoot}.`);
+  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
+  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
+  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
+    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
   }
 
-  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
-  let currentPath = resolvedWorkspaceRoot;
-  const relativeSkillDir = path.relative(resolvedWorkspaceRoot, resolvedSkillDir);
+  // macOS exposes the same temporary directory through both `/var` and
+  // `/private/var`. Discovery returns a canonical path, while a persisted
+  // workspace may retain the user-facing alias. Traverse the lexical path when
+  // possible so symlinks remain detectable; otherwise compare and traverse the
+  // already-verified canonical pair.
+  const lexicalPathIsContained = pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir);
+  const traversalWorkspaceRoot = lexicalPathIsContained
+    ? resolvedWorkspaceRoot
+    : canonicalWorkspaceRoot;
+  const traversalSkillDir = lexicalPathIsContained
+    ? resolvedSkillDir
+    : canonicalSkillDir;
+  let currentPath = traversalWorkspaceRoot;
+  const relativeSkillDir = path.relative(traversalWorkspaceRoot, traversalSkillDir);
   for (const segment of relativeSkillDir.split(path.sep).filter(Boolean)) {
     currentPath = path.join(currentPath, segment);
     const segmentStat = await fs.lstat(currentPath);
@@ -1141,12 +1181,7 @@ async function validateProjectSkillImportPath(
     }
   }
 
-  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
-  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
-    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
-  }
-
-  const skillFilePath = path.join(resolvedSkillDir, "SKILL.md");
+  const skillFilePath = path.join(traversalSkillDir, "SKILL.md");
   const skillFileStat = await fs.lstat(skillFilePath);
   if (skillFileStat.isSymbolicLink()) {
     throw unprocessable(`Project skill candidate contains a symbolic link at ${skillFilePath}.`);
@@ -1407,7 +1442,10 @@ export async function readLocalSkillImportFromDirectory(
   };
 }
 
-export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSkillScanTarget): Promise<Array<{
+export async function discoverProjectWorkspaceSkillDirectories(
+  target: ProjectSkillScanTarget,
+  explicitPaths: string[] = [],
+): Promise<Array<{
   skillDir: string;
   directoryRoot: string;
   relativePath: string;
@@ -1418,17 +1456,41 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
     relativePath: string;
     inventoryMode: LocalSkillInventoryMode;
   }>();
-  const rootSkillPath = path.join(target.workspaceCwd, "SKILL.md");
+  const workspaceRoot = await fs.realpath(path.resolve(target.workspaceCwd)).catch(() => null);
+  if (!workspaceRoot) return [];
+  const rootSkillPath = path.join(workspaceRoot, "SKILL.md");
   if ((await statPath(rootSkillPath))?.isFile()) {
-    discovered.set(path.resolve(target.workspaceCwd), {
+    discovered.set(workspaceRoot, {
       directoryRoot: ".",
       relativePath: ".",
       inventoryMode: "project_root",
     });
   }
 
+  for (const explicitPath of explicitPaths) {
+    const relativeSkillDir = explicitPath.toLowerCase().endsWith("/skill.md")
+      ? path.posix.dirname(explicitPath)
+      : explicitPath.toLowerCase() === "skill.md"
+        ? "."
+        : explicitPath;
+    const absoluteSkillDir = await fs.realpath(path.resolve(workspaceRoot, relativeSkillDir)).catch(() => null);
+    if (!absoluteSkillDir) continue;
+    const relativeToWorkspace = path.relative(workspaceRoot, absoluteSkillDir);
+    if (
+      relativeToWorkspace === ".."
+      || relativeToWorkspace.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativeToWorkspace)
+    ) continue;
+    if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
+    discovered.set(absoluteSkillDir, {
+      directoryRoot: relativeSkillDir === "." ? "." : path.posix.dirname(relativeSkillDir),
+      relativePath: relativeSkillDir,
+      inventoryMode: relativeSkillDir === "." ? "project_root" : "full",
+    });
+  }
+
   for (const relativeRoot of PROJECT_SCAN_DIRECTORY_ROOTS) {
-    const absoluteRoot = path.join(target.workspaceCwd, relativeRoot);
+    const absoluteRoot = path.join(workspaceRoot, relativeRoot);
     const rootStat = await statPath(absoluteRoot);
     if (!rootStat?.isDirectory()) continue;
 
@@ -1440,7 +1502,7 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
       if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
       discovered.set(absoluteSkillDir, {
         directoryRoot: relativeRoot,
-        relativePath: normalizePortablePath(path.relative(target.workspaceCwd, absoluteSkillDir)),
+        relativePath: normalizePortablePath(path.relative(workspaceRoot, absoluteSkillDir)),
         inventoryMode: "full",
       });
     }
@@ -3089,10 +3151,10 @@ export function companySkillService(db: Db) {
         continue;
       }
 
-      await db
-        .delete(companySkills)
-        .where(eq(companySkills.id, skill.id));
-      await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+      await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
+        await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+        await db.delete(companySkills).where(eq(companySkills.id, skill.id));
+      });
     }
   }
 
@@ -4092,12 +4154,14 @@ export function companySkillService(db: Db) {
       throw error;
     }
 
-    // Remove the stale runtime materialization so runtime sync recreates it
-    // under the new key/slug.
-    await fs.rm(
-      path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
-      { recursive: true, force: true },
-    );
+    // The rename has committed. Cache cleanup must not make a successful rename appear to fail.
+    try {
+      await fs.rm(path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
+        { recursive: true, force: true });
+      await removeRuntimeSkillCache(managedRoot, skill.id);
+    } catch (error) {
+      logger.warn({ err: error, companyId, skillId: skill.id }, "Skill renamed; obsolete runtime cache cleanup failed");
+    }
 
     const renamed = await getById(companyId, skill.id);
     if (!renamed) throw notFound("Renamed skill not found");
@@ -4213,6 +4277,10 @@ export function companySkillService(db: Db) {
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
+    return readLoadedSkillFile(skill, relativePath);
+  }
+
+  async function readLoadedSkillFile(skill: CompanySkill, relativePath: string): Promise<CompanySkillFileDetail> {
     const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
     const fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
     if (!fileEntry) {
@@ -4782,6 +4850,66 @@ export function companySkillService(db: Db) {
     return persistAuditMetadata(reset, postAudit);
   }
 
+  async function browseProjectWorkspace(
+    companyId: string,
+    input: CompanySkillProjectBrowseRequest,
+  ): Promise<CompanySkillProjectBrowseResult> {
+    const project = (await projects.listByIds(companyId, [input.projectId]))[0];
+    if (!project) throw notFound("Project not found");
+    const workspace = project.workspaces.find((entry) => entry.id === input.workspaceId);
+    if (!workspace) throw notFound("Project workspace not found");
+    const workspaceCwd = asString(workspace.cwd);
+    if (!workspaceCwd || workspace.sourceType === "remote_managed") {
+      throw unprocessable("Project workspace is not available for local browsing.");
+    }
+
+    const normalizedPath = input.path?.trim() ? normalizeProjectScanSelectionPath(input.path) : ".";
+    if (!normalizedPath) throw unprocessable("Project workspace path is invalid.");
+    const workspaceRoot = await fs.realpath(path.resolve(workspaceCwd)).catch(() => null);
+    if (!workspaceRoot) throw unprocessable("Project workspace is not available locally.");
+    const targetPath = await fs.realpath(path.resolve(workspaceRoot, normalizedPath)).catch(() => null);
+    if (!targetPath) throw notFound("Project workspace folder not found");
+    const relativeTarget = path.relative(workspaceRoot, targetPath);
+    if (relativeTarget === ".." || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) {
+      throw forbidden("Project workspace path is outside the workspace.");
+    }
+    const targetStat = await fs.stat(targetPath);
+    if (!targetStat.isDirectory()) throw unprocessable("Project workspace path must be a folder.");
+
+    const directoryEntries = await fs.readdir(targetPath, { withFileTypes: true });
+    const visibleDirectoryEntries = directoryEntries.filter((entry) => (
+      !entry.isSymbolicLink()
+      && entry.name !== ".git"
+      && entry.name !== "node_modules"
+      && (entry.isDirectory() || entry.isFile())
+    ));
+    const entries: CompanySkillProjectBrowseResult["entries"] = [];
+    for (const entry of visibleDirectoryEntries.slice(0, 250)) {
+      const entryPath = normalizedPath === "." ? entry.name : `${normalizedPath}/${entry.name}`;
+      entries.push({
+        name: entry.name,
+        path: entryPath,
+        kind: entry.isDirectory() ? "directory" : "file",
+        isSkill: entry.isDirectory()
+          ? await hasExactSkillFile(path.join(targetPath, entry.name))
+          : entry.name === "SKILL.md",
+      });
+    }
+    entries.sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+    return {
+      projectId: project.id,
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      path: normalizedPath,
+      parentPath: normalizedPath === "." ? null : path.posix.dirname(normalizedPath) || ".",
+      entries,
+      truncated: visibleDirectoryEntries.length > 250,
+    };
+  }
+
   async function scanProjectWorkspaces(
     companyId: string,
     input: CompanySkillProjectScanRequest = {},
@@ -4897,7 +5025,10 @@ export function companySkillService(db: Db) {
 
     for (const target of scanTargets) {
       scannedProjectIds.add(target.projectId);
-      const directories = await discoverProjectWorkspaceSkillDirectories(target);
+      const explicitPaths = Array.from(selectedPaths.values())
+        .filter((selection) => selection.workspaceId === target.workspaceId)
+        .map((selection) => selection.path);
+      const directories = await discoverProjectWorkspaceSkillDirectories(target, explicitPaths);
 
       for (const directory of directories) {
         discovered += 1;
@@ -5549,10 +5680,12 @@ export function companySkillService(db: Db) {
     let wroteSkillFile = false;
     for (const entry of skill.fileInventory) {
       const normalizedPath = normalizePortablePath(entry.path);
-      const detail = await readFile(companyId, skill.id, normalizedPath).catch(() => null);
+      const detail = await readLoadedSkillFile(skill, normalizedPath);
       const content = detail?.content ?? (normalizedPath === "SKILL.md" ? skill.markdown : null);
-      if (content === null) continue;
-      const targetPath = path.resolve(skillDir, entry.path);
+      if (content === null) throw unprocessable("Declared skill file is unavailable");
+      const resolved = resolveVersionSnapshotPath(skillDir, entry.path);
+      if (!resolved) throw unprocessable("Invalid skill file path");
+      const targetPath = resolved.targetPath;
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, content, "utf8");
       if (normalizedPath === "SKILL.md") wroteSkillFile = true;
@@ -5666,20 +5799,51 @@ export function companySkillService(db: Db) {
   ): Promise<RuntimeSkillSourceResolution | null> {
     const selectedVersionId = options.versionSelections?.get(skill.key) ?? null;
     if (selectedVersionId) {
+      const versionPath = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId);
       const version = await getVersion(companyId, skill.id, selectedVersionId);
       if (!version) {
         return {
           status: "missing",
-          source: path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId),
+          source: versionPath,
           detail: "The selected skill version no longer exists.",
         };
       }
-      const versionSource = await materializeVersionSnapshot(companyId, skill, version).catch(() => null);
-      return versionSource ? { status: "available", source: versionSource } : null;
+      // A failed snapshot materialization must surface as a "missing" entry
+      // with the real cause — a silent drop makes the skill vanish from the
+      // runtime while the library still shows it installed.
+      try {
+        const versionSource = await materializeVersionSnapshot(companyId, skill, version);
+        if (versionSource) return { status: "available", source: versionSource };
+        return { status: "missing", source: versionPath, detail: "The selected skill version produced no files." };
+      } catch (error) {
+        return {
+          status: "missing",
+          source: versionPath,
+          detail: `Failed to materialize the selected skill version: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
     }
 
     const source = await resolveExistingSkillDirectory(normalizeSkillDirectory(skill));
     if (source) return { status: "available", source };
+
+    try {
+      const cache = runtimeSkillCacheSpec(resolveManagedSkillsRoot(companyId), skill);
+      if (cache) {
+        const cachedSource = await resolveRuntimeSkillCache(cache,
+          async (relativePath) => (await readLoadedSkillFile(skill, relativePath)).content,
+          options.materializeMissing !== false,
+          async () => (await getById(companyId, skill.id))?.key === skill.key);
+        return cachedSource
+          ? { status: "available", source: cachedSource }
+          : { status: "missing", source: path.join(cache.entry, "files"), detail: buildMissingRuntimeSourceDetail(skill) };
+      }
+    } catch (error) {
+      return {
+        status: "missing", source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: `Failed to materialize skill files: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
 
     if (options.materializeMissing === false) {
       const materializedPath = resolveRuntimeSkillMaterializedPath(companyId, skill);
@@ -5692,8 +5856,24 @@ export function companySkillService(db: Db) {
       };
     }
 
-    const materializedSource = await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
-    return materializedSource ? { status: "available", source: materializedSource } : null;
+    // Same contract as above: a materialization failure becomes a structured
+    // "missing" resolution carrying the underlying error, so snapshots and the
+    // UI can show the skill as broken instead of pretending it does not exist.
+    try {
+      const materializedSource = await materializeRuntimeSkillFiles(companyId, skill);
+      if (materializedSource) return { status: "available", source: materializedSource };
+      return {
+        status: "missing",
+        source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: buildMissingRuntimeSourceDetail(skill),
+      };
+    } catch (error) {
+      return {
+        status: "missing",
+        source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: `Failed to materialize skill files: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   async function listRuntimeSkillEntries(
@@ -5734,6 +5914,14 @@ export function companySkillService(db: Db) {
     const importedSkills = readInlineSkillImports(companyId, normalizedFiles);
     if (importedSkills.length === 0) return [];
 
+    // Conflict handling must never bypass source and reserved-key checks. In
+    // particular, the safe default "skip" path still validates the incoming
+    // package before returning the existing skill.
+    for (const skill of importedSkills) {
+      assertImportedSkillKeyAllowed(skill);
+      assertImportedSkillSourceAllowed(skill);
+    }
+
     for (const skill of importedSkills) {
       if (skill.sourceType !== "catalog") continue;
       const materializedDir = await materializeCatalogSkillFiles(companyId, skill, normalizedFiles);
@@ -5742,7 +5930,7 @@ export function companySkillService(db: Db) {
       }
     }
 
-    const conflictStrategy = options?.onConflict ?? "replace";
+    const conflictStrategy = options?.onConflict ?? "skip";
     const existingSkills = await listFull(companyId);
     const existingByKey = new Map(existingSkills.map((skill) => [skill.key, skill]));
     const existingBySlug = new Map(
@@ -5756,8 +5944,7 @@ export function companySkillService(db: Db) {
       skill: ImportedSkill;
       originalKey: string;
       originalSlug: string;
-      existingBefore: CompanySkill | null;
-      actionHint: "created" | "updated";
+      actionHint: "created" | "renamed" | "replaced";
       reason: string | null;
     }> = [];
     const out: ImportPackageSkillResult[] = [];
@@ -5771,17 +5958,29 @@ export function companySkillService(db: Db) {
       const conflict = existingByIncomingKey ?? existingByIncomingSlug;
 
       if (!conflict || conflictStrategy === "replace") {
-        toPersist.push(importedSkill);
+        const skillToPersist = conflict && conflict.key !== importedSkill.key
+          ? {
+              ...importedSkill,
+              key: conflict.key,
+              slug: conflict.slug,
+              metadata: {
+                ...(importedSkill.metadata ?? {}),
+                skillKey: conflict.key,
+                importedFromSkillKey: originalKey,
+                importedFromSkillSlug: originalSlug,
+              },
+            }
+          : importedSkill;
+        toPersist.push(skillToPersist);
         prepared.push({
-          skill: importedSkill,
+          skill: skillToPersist,
           originalKey,
           originalSlug,
-          existingBefore: existingByIncomingKey,
-          actionHint: existingByIncomingKey ? "updated" : "created",
-          reason: existingByIncomingKey ? "Existing skill key matched; replace strategy." : null,
+          actionHint: conflict ? "replaced" : "created",
+          reason: conflict ? "Existing skill matched; explicit replace strategy." : null,
         });
-        usedSlugs.add(normalizedSlug);
-        usedKeys.add(importedSkill.key);
+        usedSlugs.add(normalizeSkillSlug(skillToPersist.slug) ?? skillToPersist.slug);
+        usedKeys.add(skillToPersist.key);
         continue;
       }
 
@@ -5815,8 +6014,7 @@ export function companySkillService(db: Db) {
         skill: renamedSkill,
         originalKey,
         originalSlug,
-        existingBefore: null,
-        actionHint: "created",
+        actionHint: "renamed",
         reason: `Existing skill matched; renamed to ${renamedSlug}.`,
       });
       usedSlugs.add(renamedSlug);
@@ -6767,13 +6965,12 @@ export function companySkillService(db: Db) {
       );
     }
 
-    // Delete DB row
-    await db
-      .delete(companySkills)
-      .where(eq(companySkills.id, skillId));
-
-    // Clean up materialized runtime files
-    await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+    // Take the cache lifecycle lock before deleting the row. A busy publisher must not
+    // turn a committed deletion into an apparent API failure, nor recreate its cache.
+    await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
+      await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+      await db.delete(companySkills).where(eq(companySkills.id, skillId));
+    });
 
     return skill;
   }
@@ -6835,6 +7032,7 @@ export function companySkillService(db: Db) {
     pruneExpiredTestHarnessIssues,
     importFromSource,
     installFromCatalog,
+    browseProjectWorkspace,
     scanProjectWorkspaces,
     importPackageFiles,
     auditSkill,

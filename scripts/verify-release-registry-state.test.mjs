@@ -6,6 +6,7 @@ import {
   createManifestLookupKey,
   fetchRegistryJson,
   isCanaryVersion,
+  isPrereleaseVersion,
   verifyPackageRegistryProblems,
   verifyPackageRegistryState,
 } from "./verify-release-registry-state.mjs";
@@ -13,6 +14,13 @@ import {
 test("isCanaryVersion matches release canaries", () => {
   assert.equal(isCanaryVersion("2026.427.0-canary.3"), true);
   assert.equal(isCanaryVersion("2026.427.0"), false);
+});
+
+test("isPrereleaseVersion matches canary and nightly versions", () => {
+  assert.equal(isPrereleaseVersion("2026.427.0-canary.3"), true);
+  assert.equal(isPrereleaseVersion("2026.427.0-nightly.0"), true);
+  assert.equal(isPrereleaseVersion("2026.427.0-beta.2"), true);
+  assert.equal(isPrereleaseVersion("2026.427.0"), false);
 });
 
 test("collectInternalDependencyProblems flags missing internal versions", () => {
@@ -192,7 +200,7 @@ test("verifyPackageRegistryState fails when canary latest is left in place by de
       allowCanaryLatest: false,
     }),
     [
-      "@paperclipai/plugin-e2b: latest dist-tag still resolves to canary 2026.425.0-canary.5; if that state is intentional, rerun the verification script directly with --allow-canary-latest",
+      "@paperclipai/plugin-e2b: latest dist-tag still resolves to prerelease 2026.425.0-canary.5; if that state is intentional, rerun the verification script directly with --allow-canary-latest",
       "@paperclipai/plugin-e2b@2026.425.0-canary.5 via latest: dependencies requires @paperclipai/plugin-sdk@2026.425.0-canary.5, but npm does not expose that version",
     ],
   );
@@ -225,7 +233,37 @@ test("verifyPackageRegistryProblems marks canary latest drift as non-retriable",
   });
 
   assert.equal(problems[0]?.retriable, false);
-  assert.match(problems[0]?.message ?? "", /latest dist-tag still resolves to canary/);
+  assert.match(problems[0]?.message ?? "", /latest dist-tag still resolves to prerelease/);
+});
+
+test("verifyPackageRegistryProblems accepts the nightly channel and flags nightly latest drift", () => {
+  const packageDocsByName = new Map([
+    [
+      "@paperclipai/plugin-e2b",
+      {
+        "dist-tags": {
+          latest: "2026.425.0-nightly.1",
+          nightly: "2026.427.0-nightly.0",
+        },
+        versions: {
+          "2026.427.0-nightly.0": {},
+        },
+      },
+    ],
+  ]);
+
+  const problems = verifyPackageRegistryProblems({
+    packageName: "@paperclipai/plugin-e2b",
+    packageDoc: packageDocsByName.get("@paperclipai/plugin-e2b"),
+    packageDocsByName,
+    channel: "nightly",
+    distTag: "nightly",
+    targetVersion: "2026.427.0-nightly.0",
+    allowCanaryLatest: false,
+  });
+
+  assert.equal(problems[0]?.retriable, false);
+  assert.match(problems[0]?.message ?? "", /latest dist-tag still resolves to prerelease 2026\.425\.0-nightly\.1/);
 });
 
 test("verifyPackageRegistryState allows intentional canary latest but still checks dependencies", () => {

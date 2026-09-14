@@ -8,21 +8,39 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
-- Either `ANTHROPIC_API_KEY` in adapter env/host env, or a Claude Code
-  subscription login available to the execution target
+- Either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in adapter or
+  environment env (or host env), or a Claude Code subscription login
+  available to the execution target
 
 ## Configuration Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
+| `model` | string | No | Claude model to use (default: `claude-opus-5`) |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+
+## Default model
+
+An omitted, empty, or whitespace-only `model` uses Claude Opus 5
+(`claude-opus-5`) on both the CLI and ACP engines. This also applies to existing
+agents with an unset model, including agents created through the API and agents
+running in sandboxes. No database migration is needed. The editor shows the
+Paperclip default and leaves the setting unset until you select a model.
+
+An explicit `model` takes precedence over `ANTHROPIC_MODEL`. When only
+`ANTHROPIC_MODEL` is configured, the adapter keeps that override. Bedrock and
+Vertex configurations without an explicit model keep their provider-specific
+default because those providers use different model IDs. Host environment
+settings apply only to local targets when resolving the model.
+
+The default does not change explicitly configured agent models or the separate
+Paperclip Runner's qualified provider profiles.
 
 ## Prompt Templates
 
@@ -72,6 +90,7 @@ The adapter creates a temporary directory with symlinks to Paperclip skills and 
 
 ## Remote credential ownership
 
+When no API key or `CLAUDE_CODE_OAUTH_TOKEN` is configured,
 `claude_local` uses a snapshot-owns-auth topology for managed sandbox execution
 targets. When the run uses a sandbox execution target and no explicit
 `CLAUDE_CONFIG_DIR` is configured, Paperclip creates a remote
@@ -100,7 +119,7 @@ therefore shadows any Codex login already present inside the sandbox image.
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
 ```sh
-pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
+npx paperclipai agent local-cli claudecoder --company-id <company-id>
 ```
 
 This installs Paperclip skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
@@ -111,5 +130,12 @@ Use the "Test Environment" button in the UI to validate the adapter config. It c
 
 - Claude CLI is installed and accessible
 - Working directory is absolute and available (auto-created if missing and permitted)
-- API key/auth mode hints (`ANTHROPIC_API_KEY` vs subscription login)
+- API key/auth mode hints (`ANTHROPIC_API_KEY` vs `CLAUDE_CODE_OAUTH_TOKEN` vs subscription login)
 - A live hello probe (`claude --print - --output-format stream-json --verbose` with prompt `Respond with hello.`) to verify CLI readiness
+
+The probe sees the same layered env as a real run: when an environment is
+selected, its environment variables (secret refs included) are resolved and
+merged under the adapter config's `env`, so environment-level auth is
+reflected in the test result. A secret binding that is missing surfaces as
+an `environment_env_binding_missing` failure instead of a silently passing
+probe.

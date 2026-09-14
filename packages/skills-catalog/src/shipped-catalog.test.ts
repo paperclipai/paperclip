@@ -24,6 +24,7 @@ const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/finance/ramp",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
+  "paperclipai/optional/software-development/prepare-mcp-integration",
 ];
 
 const MAX_FRONTMATTER_DESCRIPTION_LENGTH = 300;
@@ -39,6 +40,9 @@ const SKILL_FRONTMATTER_ROOTS = [
 
 function listSkillFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    // Standalone provider installs can contain third-party skills. They are not
+    // shipped Paperclip skills and must not participate in this repo audit.
+    if (entry.name === "node_modules") return [];
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) return listSkillFiles(entryPath);
     if (entry.isFile() && entry.name === "SKILL.md") return [entryPath];

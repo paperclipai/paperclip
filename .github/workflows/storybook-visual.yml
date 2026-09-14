@@ -3,6 +3,16 @@ name: Storybook Visual
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Repository branch to publish (deployment only; empty uses the selected workflow branch)"
+        required: false
+        type: string
+        default: ""
+      deploy_preview:
+        description: "Publish this branch to S3/CloudFront instead of running visual tests (CODEOWNERS only)"
+        required: false
+        type: boolean
+        default: false
       update_snapshots:
         description: "Generate updated snapshots and a baseline review bundle"
         required: false
@@ -18,7 +28,7 @@ on:
       - labeled
 
 concurrency:
-  group: storybook-visual-${{ github.event.pull_request.number || github.ref }}
+  group: storybook-visual-${{ inputs.deploy_preview && github.run_id || 'visual' }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -28,7 +38,7 @@ jobs:
   visual:
     name: Storybook visual regression
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.deploy_preview) ||
       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'storybook-visual'))
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -100,3 +110,13 @@ jobs:
           path: tests/storybook-visual/baseline-review/snapshots.tgz
           retention-days: 30
           if-no-files-found: error
+
+  preview:
+    name: Deploy selected branch Storybook
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_preview
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/storybook-deploy.yml
+    with:
+      branch: ${{ inputs.branch }}

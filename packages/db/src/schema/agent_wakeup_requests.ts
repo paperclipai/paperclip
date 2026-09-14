@@ -1,4 +1,14 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  jsonb,
+  integer,
+  index,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -6,8 +16,12 @@ export const agentWakeupRequests = pgTable(
   "agent_wakeup_requests",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
-    agentId: uuid("agent_id").notNull().references(() => agents.id),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
     source: text("source").notNull(),
     triggerDetail: text("trigger_detail"),
     reason: text("reason"),
@@ -18,23 +32,58 @@ export const agentWakeupRequests = pgTable(
     requestedByActorId: text("requested_by_actor_id"),
     idempotencyKey: text("idempotency_key"),
     runId: uuid("run_id"),
-    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    requestedAt: timestamp("requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => ({
-    companyAgentStatusIdx: index("agent_wakeup_requests_company_agent_status_idx").on(
-      table.companyId,
+    companyAgentStatusIdx: index(
+      "agent_wakeup_requests_company_agent_status_idx",
+    ).on(table.companyId, table.agentId, table.status),
+    companyRequestedIdx: index(
+      "agent_wakeup_requests_company_requested_idx",
+    ).on(table.companyId, table.requestedAt),
+    agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(
       table.agentId,
-      table.status,
-    ),
-    companyRequestedIdx: index("agent_wakeup_requests_company_requested_idx").on(
-      table.companyId,
       table.requestedAt,
     ),
-    agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    reviewPathRecoveryIdempotencyUq: uniqueIndex(
+      "agent_wakeup_requests_review_path_recovery_idempotency_uq",
+    )
+      .on(table.companyId, table.idempotencyKey)
+      .where(
+        sql`${table.idempotencyKey} LIKE 'issue_review_path_lost:%' AND ${table.status} <> 'skipped'`,
+      ),
+    dispositionRepairIdempotencyUq: uniqueIndex(
+      "agent_wakeup_requests_disposition_repair_idempotency_uq",
+    )
+      .on(table.companyId, table.idempotencyKey)
+      .where(
+        sql`${table.idempotencyKey} LIKE 'issue_disposition_repair:%' AND ${table.status} <> 'skipped'`,
+      ),
+    questionResponseDeliveryIdempotencyUq: uniqueIndex(
+      "agent_wakeup_requests_question_response_delivery_idempotency_uq",
+    )
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`(${table.idempotencyKey} LIKE 'question-response:%' OR ${table.idempotencyKey} LIKE 'interaction:%') AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
+    connectionIntentDeliveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_connection_intent_delivery_idempotency_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'connection-intent:%' AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
+    toolActionDeliveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_tool_action_delivery_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'tool-action-response:%' AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
+    companyPayloadIssueIdx: index("agent_wakeup_requests_company_payload_issue_idx").on(
+      table.companyId,
+      sql`(${table.payload} ->> 'issueId')`,
+    ),
   }),
 );

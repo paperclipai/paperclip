@@ -64,3 +64,23 @@ export { execute } from "./execute.js";
 export { listGrokSkills, syncGrokSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseGrokJsonl, isGrokUnknownSessionError } from "./parse.js";
+export {
+  GROK_DEVICE_LOGIN_COMMAND,
+  GROK_DEVICE_LOGIN_URL_ORIGIN,
+  GROK_DEVICE_LOGIN_URL_PATH,
+  parseGrokDeviceLoginPrompt,
+  type DeviceLoginPrompt as GrokDeviceLoginPrompt,
+} from "./device-login-parse.js";
+export { resolveManagedGrokHomeDir, grokHomeHasUsableAuth } from "./grok-home.js";
+export {
+  promoteGrokDeviceLoginCredential,
+  checkStagedGrokCredentialReadiness,
+  DeviceLoginReadinessError as GrokDeviceLoginReadinessError,
+  type CredentialReadinessResult as GrokCredentialReadinessResult,
+  type PromoteGrokDeviceLoginCredentialInput,
+  type PromoteGrokDeviceLoginCredentialOutcome,
+} from "./adapter-auth-promotion.js";
+
+export { decideGrokAuthMerge } from "./grok-auth-merge-decision.js";
+
+export { parseGrokAuthPayload, hasUsableGrokAuthValue } from "./grok-home.js";

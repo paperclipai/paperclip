@@ -9,6 +9,9 @@ import {
   jsonb,
   index,
   uniqueIndex,
+  unique,
+  bigint,
+  check,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -17,14 +20,19 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
-import type { SourceTrustMetadata } from "@paperclipai/shared";
-import type { IssueUnblockDescriptor } from "@paperclipai/shared";
+import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
 
 export const issues = pgTable(
   "issues",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
+    // Conversation identity and session boundaries are owned by the server.
+    conversationAgentId: uuid("conversation_agent_id").references(() => agents.id),
+    conversationUserId: text("conversation_user_id"),
+    conversationState: text("conversation_state").$type<"active" | "waiting">(),
+    conversationSessionGeneration: integer("conversation_session_generation").notNull().default(0),
+    conversationBoundaryCommentId: uuid("conversation_boundary_comment_id"),
     projectId: uuid("project_id").references(() => projects.id),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
@@ -32,9 +40,12 @@ export const issues = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
+    statusVersion: bigint("status_version", { mode: "number" }).notNull().default(0),
+    lastStatusDecisionId: uuid("last_status_decision_id"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
+    reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -49,6 +60,8 @@ export const issues = pgTable(
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
     originRunId: text("origin_run_id"),
+    originIdentityContextId: uuid("origin_identity_context_id"),
+    continuationIdentityContextId: uuid("continuation_identity_context_id"),
     originFingerprint: text("origin_fingerprint").notNull().default("default"),
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),
@@ -77,6 +90,17 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    conversationIdentityIdx: uniqueIndex("issues_conversation_identity_idx").on(table.companyId, table.conversationAgentId, table.conversationUserId),
+    conversationIdentityCheck: check("issues_conversation_identity_check", sql`(
+      ${table.conversationAgentId} is null and ${table.conversationUserId} is null and ${table.conversationState} is null
+    ) or (
+      ${table.conversationAgentId} is not null and ${table.conversationUserId} is not null
+      and ${table.assigneeAgentId} = ${table.conversationAgentId} and ${table.assigneeAgentId} is not null
+      and ${table.assigneeUserId} is null and ${table.conversationState} is not null
+      and ${table.conversationState} in ('active', 'waiting')
+      and ${table.status} not in ('done', 'cancelled')
+    )`),
+    companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
@@ -168,5 +192,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    // The onboarding first-task origin grants privileged behavior (agent-attributed
+    // greeting, description suppression), so at most one issue per company may ever
+    // carry it — concurrent creates race on the pre-insert count check and this
+    // index is what atomically rejects the loser.
+    onboardingFirstTaskIdx: uniqueIndex("issues_onboarding_first_task_uq")
+      .on(table.companyId)
+      .where(sql`${table.originKind} = 'onboarding_first_task'`),
   }),
 );
