@@ -495,6 +495,14 @@ export async function runEverydayFlow(input: Input) {
                     r.contextSnapshot?.taskId === i.id),
               ),
           ),
+        reject: (state) => {
+          const failed = state.runs.find((run) =>
+            ["failed", "timed_out"].includes(run.status),
+          );
+          return failed
+            ? `Delegation prerequisite failed before feedback: ${failed.errorCode}: ${failed.error}`
+            : undefined;
+        },
       });
       const child = ev.issues.find((i) => i.parentId === parent!.id)!;
       note("late-feedback-boundary", {
