@@ -13,7 +13,8 @@ exact execution ID explicitly.
 | Build a small project and revise it | `build-revise` | Download both ZIPs through the UI; independently execute the delivered CLI and import its function; test the revision; retrieve the original bytes again. |
 | Delegate and incorporate late feedback | `delegate-feedback` | One child assigned to Riley; send feedback while the child runs; find it in the child history and independently test `--max-length` in the delivered ZIP. The worker must not execute on the parent. |
 | Hire a teammate and use them again | `hire-reuse` | One Morgan QA reporting to the lead, native runner and the same encrypted connection bindings, real child execution, then a second usable delivery from that same agent. |
-| Connect to a service with a human decision | `service-approve`, `service-decline` | Configure a real local MCP fixture through the connection UI; no provider call before approval; exactly one call after approval and a document containing the actual returned verification code; no call after decline. |
+| Decide on an installed service action | `service-approve`, `service-decline` | Assign an authenticated local MCP fixture with Ask first; match its tool action and connection ID; no provider call before approval; exactly one after approval and a verified document; none after decline. |
+| Decline a new connection | `connection-decline` | Start without service connections; match a Notion connection intent; click Not now; verify the saved rejection, no new connection or repeated request, and an explanation followed by Done. |
 | Preserve work and queued input across interruption | `recover-runner-uncertain`, `recover-runner-safe`, `recover-controller` | Observe source before interruption, persist the user message, kill only a daemon whose command line proves ownership or restart the isolated controller; inspect continuation and the delivered result. |
 | Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
 
@@ -124,3 +125,23 @@ Stop now waits for the owned runner to exit, records project file hashes, and
 checks them again after the new response. This proves stability over that interval,
 not indefinite monitoring. Hiring and declined-access policy changes are deferred
 by user decision; their old results must not be presented as new campaign runs.
+
+## Decline correction (14 September, third campaign)
+
+The catalog now has 35 cells (29 local, six remote). `service-decline` tests
+rejection of a protected action on an already installed service; its former
+"connection request" title was misleading. `connection-decline` separately tests
+Not now on new Notion setup. Both permit a brief explanation as the complete
+fallback, so Done is expected after that explanation. Neither test requires
+completion after refusing work that is still required.
+
+The installed-service decline fixture now uses the same server-held credential
+as approval. The harness requires one pending interaction, validates its kind
+and connection/provider identity before clicking, and waits for the exact
+interaction's saved decision. Wrong interactions fail `decision-request-matches-story`
+with a screenshot; they are not evidence of an ignored decline. Both decline
+stories check a new explanation after the decision and reject repeated requests.
+
+Historical attempts remain unchanged. This campaign resumes the previously
+deferred decline cases; hiring remains deferred. Notion setup is declined in
+the UI, so this test neither authenticates to nor reads real Notion data.

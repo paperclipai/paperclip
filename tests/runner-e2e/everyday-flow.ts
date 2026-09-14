@@ -9,6 +9,11 @@ import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { setupConnectionReview } from "./connection-reviews.js";
+import {
+  pendingStoryDecision,
+  StoryDecisionError,
+  type StoryInteraction,
+} from "./everyday-decisions.js";
 import { LATE_REQUIREMENT, SLUGIFY_REVISION } from "./everyday-cases.js";
 import {
   isActiveStoryRun,
@@ -122,6 +127,11 @@ export async function runEverydayFlow(input: Input) {
   let review: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
   let project = fixtures.project;
   const caseId = execution.task.id;
+  const decliningConnection = caseId === "connection-decline";
+  const declining = decliningConnection || caseId === "service-decline";
+  let decisionId: string | undefined;
+  let decisionResolvedAt: string | undefined;
+  let initialConnections: string[] = [];
   const uncertainCrash = caseId === "recover-runner-uncertain";
   const safeCrash = caseId === "recover-runner-safe";
   let stoppedWorkspace: Record<string, string> | undefined;
@@ -375,6 +385,7 @@ export async function runEverydayFlow(input: Input) {
     const harnessFiles = [
       "everyday-flow.ts",
       "everyday-cases.ts",
+      "everyday-decisions.ts",
       "everyday-observations.ts",
       "everyday-artifact.py",
       "user-actions.ts",
@@ -397,7 +408,7 @@ export async function runEverydayFlow(input: Input) {
           .join("\n"),
       )
       .digest("hex");
-    if (!project && !caseId.startsWith("service-")) {
+    if (!project && !caseId.startsWith("service-") && !decliningConnection) {
       project = await api.post(
         `/api/companies/${fixtures.company.id}/projects`,
         {
@@ -455,8 +466,21 @@ export async function runEverydayFlow(input: Input) {
         companyId: fixtures.company.id,
         agentId: fixtures.agent.id,
         marker: `Pages: Roadmap, Meeting notes. Verification code: SERVICE_${nonce}`,
-        authenticated: caseId === "service-approve",
+        authenticated: true,
       });
+    if (decliningConnection) {
+      const state = await api.get<{ connections: Row[] }>(
+        `/api/companies/${fixtures.company.id}/tools/connections`,
+      );
+      initialConnections = state.connections.map((c) => c.id);
+      check(
+        "connection-starts-unconfigured",
+        state.connections.length === 0,
+        "This isolated company has no service connection before the request.",
+      );
+      if (state.connections.length)
+        throw new Error("New-connection story requires an unconnected company");
+    }
     await createTaskThroughUi({
       page,
       issuePrefix: prefix,
@@ -680,16 +704,18 @@ export async function runEverydayFlow(input: Input) {
         throw new Error("Uncertain crash safety assertions failed");
       return { issue: parent!, runs: ev.runs, evidence: ev };
     }
-    if (review) {
+    if (review || decliningConnection) {
       const interactions = await pollUntil({
-        label: "connection approval",
+        label: "story decision request",
         deadlineAt: input.deadlineAt,
         load: async () => {
           const [interactions, issue] = await Promise.all([
-            api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
+            api.get<StoryInteraction[]>(
+              `/api/issues/${parent!.id}/interactions`,
+            ),
             api.get<StoryIssue>(`/api/issues/${parent!.id}`),
           ]);
-          return { interactions, issue, calls: review!.invocationCount() };
+          return { interactions, issue, calls: review?.invocationCount() ?? 0 };
         },
         accept: (state) =>
           state.interactions.some((i) => i.status === "pending"),
@@ -697,43 +723,56 @@ export async function runEverydayFlow(input: Input) {
           state.calls > 0
             ? `The provider received ${state.calls} call(s) before approval.`
             : ["done", "blocked", "cancelled"].includes(state.issue.status)
-              ? `Task reached ${state.issue.status} without requesting tool approval.`
+              ? `Task reached ${state.issue.status} without requesting the expected decision.`
               : undefined,
       });
-      const pendingInteraction = interactions.interactions.find(
-        (i) => i.status === "pending",
-      );
-      if (pendingInteraction?.kind !== "request_confirmation")
-        throw new Error(
-          `Expected a tool review for the installed page service; observed ${pendingInteraction?.kind}: ${pendingInteraction?.title}`,
-        );
-      check(
-        "no-call-before-approval",
-        review.invocationCount() === 0,
-        "Service must not execute before the user decides.",
-      );
       await openParent();
       await input.capture(
-        "tool-review-pending",
-        "Connection request before the decision",
-        "tool-review-pending.png",
+        "decision-pending",
+        "Request before the user decision",
+        "decision-pending.png",
       );
-      const dismiss = page.getByRole("button", {
-        name: "Dismiss Approve tool action",
-      });
-      if (await dismiss.isVisible()) await dismiss.click();
-      await page
-        .getByRole("button", { name: "Review request", exact: true })
-        .click();
-      await page
-        .getByRole("button", {
-          name: caseId === "service-decline" ? "Decline" : "Approve & run",
-          exact: true,
-        })
-        .click();
-      const decisionStatus =
-        caseId === "service-decline" ? "rejected" : "accepted";
-      await pollUntil({
+      const pendingInteraction = pendingStoryDecision(
+        interactions.interactions,
+        review
+          ? { kind: "tool", connectionId: review.connectionId }
+          : { kind: "connection", serviceSlug: "notion" },
+      );
+      decisionId = pendingInteraction.id;
+      check(
+        "decision-request-matches-story",
+        true,
+        review
+          ? "Tool approval belongs to the installed page service."
+          : "New connection request is for Notion.",
+      );
+      if (review)
+        check(
+          "no-call-before-approval",
+          review.invocationCount() === 0,
+          "Service must not execute before the user decides.",
+        );
+      if (decliningConnection) {
+        await page
+          .getByRole("button", { name: "Not now", exact: true })
+          .click();
+      } else {
+        const dismiss = page.getByRole("button", {
+          name: "Dismiss Approve tool action",
+        });
+        if (await dismiss.isVisible()) await dismiss.click();
+        await page
+          .getByRole("button", { name: "Review request", exact: true })
+          .click();
+        await page
+          .getByRole("button", {
+            name: declining ? "Decline" : "Approve & run",
+            exact: true,
+          })
+          .click();
+      }
+      const decisionStatus = declining ? "rejected" : "accepted";
+      const decided = await pollUntil({
         label: "connection decision persisted",
         deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000),
         load: () => api.get<Row[]>(`/api/issues/${parent!.id}/interactions`),
@@ -744,6 +783,12 @@ export async function runEverydayFlow(input: Input) {
               interaction.status === decisionStatus,
           ),
       });
+      decisionResolvedAt = decided.find((i) => i.id === decisionId)?.resolvedAt;
+      check(
+        "user-decision-persisted",
+        true,
+        `Interaction ${decisionId} saved as ${decisionStatus}.`,
+      );
       note("connection-decision", {
         decision: caseId,
         interactionId: pendingInteraction.id,
@@ -751,6 +796,49 @@ export async function runEverydayFlow(input: Input) {
       });
     }
     await settled();
+    if (declining) {
+      const issue = ev.issues.find((i) => i.id === parent!.id)!;
+      const requests = issue.interactions as Row[];
+      check(
+        "decline-not-repeated",
+        requests.length === 1 &&
+          requests[0]?.id === decisionId &&
+          requests[0]?.status === "rejected",
+        "The saved decline remains rejected and no replacement request appears.",
+      );
+      const replies = issue.comments.filter(
+        (c: Row) =>
+          c.authorAgentId &&
+          Date.parse(c.createdAt) >= Date.parse(decisionResolvedAt ?? ""),
+      );
+      const text = replies.map((c: Row) => String(c.body ?? "")).join("\n");
+      check(
+        "decline-visible-explanation",
+        replies.length > 0 &&
+          /declin|not now|could(?:n.t| not)|cannot|can.t|unable|not (?:connect|retriev)|without (?:access|connect)/i.test(
+            text,
+          ),
+        "A new agent response explains the missing access after the saved decline.",
+      );
+      check(
+        "decline-no-fabricated-result",
+        !text.includes(`SERVICE_${nonce}`),
+        "The fallback does not claim the private verification code.",
+      );
+      if (decliningConnection) {
+        const state = await api.get<{ connections: Row[] }>(
+          `/api/companies/${fixtures.company.id}/tools/connections`,
+        );
+        check(
+          "decline-no-connection-created",
+          isDeepStrictEqual(
+            state.connections.map((c) => c.id).sort(),
+            initialConnections.sort(),
+          ),
+          "Not now did not create a service connection.",
+        );
+      }
+    }
     if (caseId === "build-revise") {
       await download(parent!.id, "base", "initial");
       await reply(SLUGIFY_REVISION);
@@ -1049,7 +1137,9 @@ export async function runEverydayFlow(input: Input) {
     return { issue: parent!, runs: ev.runs, evidence: ev };
   } catch (error) {
     check(
-      "workflow-completed",
+      error instanceof StoryDecisionError
+        ? error.checkId
+        : "workflow-completed",
       false,
       error instanceof Error ? error.message : String(error),
     );
