@@ -36,6 +36,10 @@ export interface StoryRun {
   sessionIdAfter?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  retryOfRunId?: string | null;
+  scheduledRetryReason?: string | null;
+  runtimeModeResolvedAt?: string | null;
+  lastOutputSeq?: number | null;
   errorCode?: string | null;
   error?: string | null;
 }
@@ -44,10 +48,27 @@ export const isActiveStoryRun = (run: StoryRun) =>
 export function isStoryWorkspaceDeferral(run: StoryRun) {
   const recovery = run.resultJson?.executionRecovery as
     Record<string, unknown> | undefined;
+  const startup = run.resultJson?.startupCancellation as
+    Record<string, unknown> | undefined;
+  const neverStartedRetry =
+    run.errorCode === "cancelled" &&
+    run.scheduledRetryReason === "workspace_busy" &&
+    typeof run.retryOfRunId === "string" &&
+    run.retryOfRunId.length > 0 &&
+    run.startedAt === null &&
+    run.runtimeModeResolvedAt === null &&
+    run.lastOutputSeq === 0 &&
+    !run.processStartedAt &&
+    !run.sessionIdAfter &&
+    !run.usageJson &&
+    !run.runnerProfileJson?.nativeExecutionInput &&
+    typeof startup?.requestedAt === "string" &&
+    Number.isFinite(Date.parse(startup.requestedAt));
   return (
     run.status === "cancelled" &&
-    run.errorCode === "workspace_busy" &&
-    recovery?.providerWorkStarted === false &&
+    ((run.errorCode === "workspace_busy" &&
+      recovery?.providerWorkStarted === false) ||
+      neverStartedRetry) &&
     !run.runnerInstanceId &&
     !run.nativeSessionId &&
     !run.processPid

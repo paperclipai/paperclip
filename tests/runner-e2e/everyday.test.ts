@@ -3,6 +3,7 @@ import { runnerMatrix, runnerSuites } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import {
+  isStoryWorkspaceDeferral,
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyParentFinishedAfterChildren,
@@ -209,5 +210,43 @@ describe("delegation completion order", () => {
     expect(
       storyParentFinishedAfterChildren([base], "parent", "lead", ["child"]),
     ).toBe(false);
+  });
+});
+
+describe("cancelled queued workspace retry", () => {
+  const queued: StoryRun = {
+    id: "retry",
+    companyId: "company",
+    agentId: "agent",
+    status: "cancelled",
+    runtimeMode: "legacy",
+    runtimeModeResolvedAt: null,
+    startedAt: null,
+    retryOfRunId: "workspace-deferral",
+    scheduledRetryReason: "workspace_busy",
+    errorCode: "cancelled",
+    lastOutputSeq: 0,
+    resultJson: {
+      startupCancellation: {
+        requestedAt: "2026-09-14T19:10:23.057Z",
+        beforeNativeSelection: false,
+      },
+    },
+  };
+  it("does not mistake an unstarted cancelled retry for provider execution", () => {
+    expect(isStoryWorkspaceDeferral(queued)).toBe(true);
+  });
+  it.each([
+    { startedAt: "2026-09-14T19:10:22Z" },
+    { processPid: 42 },
+    { runnerInstanceId: "runner" },
+    { nativeSessionId: "session" },
+    { lastOutputSeq: 1 },
+    { usageJson: { outputTokens: 1 } },
+    { runtimeModeResolvedAt: "2026-09-14T19:10:22Z" },
+    { scheduledRetryReason: "other" },
+    { resultJson: null },
+  ])("retains a contradictory or unproven cancellation %j", (change) => {
+    expect(isStoryWorkspaceDeferral({ ...queued, ...change })).toBe(false);
   });
 });

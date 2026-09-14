@@ -8848,3 +8848,25 @@ it("persists an active provider as settled before bounded suspension", async () 
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);
+
+
+it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
+  const gateway = {
+    PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+    PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateway",
+    PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-scoped-gateway-token-1234567890",
+  };
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider: "acpx",
+    options: { provider: "acpx", acpxAgent: agent, environment: {
+      PATH: "/bin", ...gateway, PAPERCLIP_API_KEY: "must-not-cross", DATABASE_URL: "must-not-cross",
+    } },
+    identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
+      normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1" },
+    codexHome: "/isolated/home", runtimeContextPath: "/isolated/context.json", hasRuntimeContext: true,
+    acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
+  });
+  expect(environment).toMatchObject(gateway);
+  expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
+  expect(environment.DATABASE_URL).toBeUndefined();
+});
