@@ -110,12 +110,12 @@ interface EmbeddedEvalReport {
     usage: {
       agentTurns: number;
       providerRequests: number | null;
-      inputTokens: number;
-      outputTokens: number;
-      cachedInputTokens: number;
-      reasoningTokens: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      reasoningTokens?: number;
       providerReportedCostNanodollars?: number;
-      estimatedCostNanodollars: number;
+      estimatedCostNanodollars?: number;
       pricingVersion: string;
     } | null;
   };
