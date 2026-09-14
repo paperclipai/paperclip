@@ -2334,6 +2334,33 @@ export function routineService(
           updatedByUserId: actor.userId ?? null,
         };
 
+        const isActivating = locked.status !== "active" && candidate.status === "active";
+        if (isActivating) {
+          const activationClock = new Date();
+          const scheduleTriggers = await txDb
+            .select({
+              id: routineTriggers.id,
+              cronExpression: routineTriggers.cronExpression,
+              timezone: routineTriggers.timezone,
+            })
+            .from(routineTriggers)
+            .where(
+              and(
+                eq(routineTriggers.routineId, locked.id),
+                eq(routineTriggers.kind, "schedule"),
+                eq(routineTriggers.enabled, true),
+              ),
+            );
+          for (const trigger of scheduleTriggers) {
+            if (!trigger.cronExpression || !trigger.timezone) continue;
+            const nextRunAt = nextCronTickInTimeZone(trigger.cronExpression, trigger.timezone, activationClock);
+            await txDb
+              .update(routineTriggers)
+              .set({ nextRunAt, updatedAt: activationClock })
+              .where(eq(routineTriggers.id, trigger.id));
+          }
+        }
+
         const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
         if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
           if (!folderChanged) return locked;
