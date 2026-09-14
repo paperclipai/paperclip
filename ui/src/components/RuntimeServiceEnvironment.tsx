@@ -10,9 +10,10 @@ import { Button } from "./ui/button";
 
 export function RuntimeServiceEnvironmentEditor({ service, disabled }: { service: RuntimeService; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
-  return open ? <EnvironmentEditor service={service} disabled={disabled} onClose={() => setOpen(false)} /> : (
-    <Button className="self-start" variant="outline" size="sm" disabled={disabled || service.state === "deleted"} onClick={() => setOpen(true)}>Configure environment</Button>
-  );
+  return <section className="flex min-w-0 flex-col gap-4 py-4" aria-label="Environment settings">
+    <div className="flex items-start justify-between gap-4"><div className="flex min-w-0 flex-col gap-1"><h3 className="text-sm font-medium">Environment</h3><p className="text-xs text-muted-foreground">Variables and organization secrets applied at startup.</p></div>{!open && <Button className="shrink-0" variant="ghost" size="sm" disabled={disabled || service.state === "deleted"} onClick={() => setOpen(true)}>Configure environment</Button>}</div>
+    {open && <EnvironmentEditor service={service} disabled={disabled} onClose={() => setOpen(false)} />}
+  </section>;
 }
 
 function EnvironmentEditor({ service, disabled, onClose }: { service: RuntimeService; disabled?: boolean; onClose: () => void }) {
@@ -60,9 +61,8 @@ function EnvironmentEditor({ service, disabled, onClose }: { service: RuntimeSer
     operation.run({ env: parsed.data }, loaded.revision);
   }
   return (
-    <section className="flex min-w-0 flex-col gap-3" aria-label="Service environment">
-      <h3 className="text-sm font-medium">Environment</h3>
-      <p className="text-xs text-muted-foreground">Organization secrets are bound to this service and resolved at each start. Rotated values take effect on the next start; an existing process keeps the values it already received.</p>
+    <section className="flex min-w-0 flex-col gap-4 rounded-md bg-muted/30 p-4 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)" aria-label="Service environment">
+      <p className="text-xs text-muted-foreground">Changes and rotated secrets take effect on the next start. A running process keeps its current values.</p>
       {!stopped && <p className="text-xs text-muted-foreground" role="status">Stop the service before changing its environment.</p>}
       {query.isPending && <p className="text-xs text-muted-foreground" role="status">Loading environment…</p>}
       {query.isError && <div role="alert" className="flex flex-col gap-2"><p className="text-xs text-destructive">Environment could not be loaded. Your draft is preserved.</p><Button size="sm" variant="outline" className="self-start" disabled={operation.pending || operation.ambiguous} onClick={() => void query.refetch()}>Retry loading environment</Button></div>}

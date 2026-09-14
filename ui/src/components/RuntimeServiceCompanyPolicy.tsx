@@ -52,13 +52,13 @@ export function RuntimeServiceCompanyPolicyEditor({ companyId }: { companyId: st
     sending.current = true; mutation.mutate(input);
   }
   return <section className="flex min-w-0 flex-col gap-3" aria-label="Company service policy">
-    <div className="flex flex-wrap items-center gap-3">
-      <Button variant="outline" size="sm" onClick={() => draft ? setDraft(null) : load()} disabled={locked || !query.data} aria-expanded={!!draft} aria-controls={`${id}-form`}><Settings2 aria-hidden="true" />{draft ? "Close company policy" : "Company defaults and limits"}</Button>
-      {query.data && <p className="text-xs text-muted-foreground">{query.data.usage.runningServices}{query.data.config.maxRunningServices === null ? "" : ` / ${query.data.config.maxRunningServices}`} running reservations · {query.data.usage.serviceAllocations}{query.data.config.maxServiceAllocations === null ? "" : ` / ${query.data.config.maxServiceAllocations}`} retained allocations</p>}
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <Button variant="ghost" size="sm" onClick={() => draft ? setDraft(null) : load()} disabled={locked || !query.data} aria-expanded={!!draft} aria-controls={`${id}-form`}><Settings2 aria-hidden="true" />{draft ? "Close company policy" : "Company defaults and limits"}</Button>
+      {query.data && <p className="text-xs text-muted-foreground">{query.data.usage.runningServices}{query.data.config.maxRunningServices === null ? "" : ` / ${query.data.config.maxRunningServices}`} running · {query.data.usage.serviceAllocations}{query.data.config.maxServiceAllocations === null ? "" : ` / ${query.data.config.maxServiceAllocations}`} retained workspaces</p>}
     </div>
     {query.isPending && <p role="status" className="text-xs text-muted-foreground">Loading company service policy…</p>}
     {query.isError && <div className="flex flex-wrap items-center gap-2" role="alert"><p className="text-xs text-destructive">Company policy could not be refreshed.</p><Button variant="outline" size="sm" onClick={() => void query.refetch()}>Refresh company policy</Button></div>}
-    {draft && <form id={`${id}-form`} className="flex max-w-xl flex-col gap-4" aria-label="Company defaults and limits" onSubmit={(event) => {
+    {draft && <form id={`${id}-form`} className="flex max-w-3xl flex-col gap-4 rounded-md border border-border p-4 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)" aria-label="Company defaults and limits" onSubmit={(event) => {
       event.preventDefault();
       if (locked || stale || query.isError) return;
       const config = Object.fromEntries(fields.map((field) => [field.key, draft.fields[field.key] === "" ? null : (field.days ? Math.round(Number(draft.fields[field.key]) * 86400) : field.minutes ? Math.round(Number(draft.fields[field.key]) * 60) : Number(draft.fields[field.key]))]));

@@ -22,3 +22,12 @@ export const NoServices: Story = { args: { scenario: "empty" } };
 export const ReadOnlyViewer: Story = { args: { scenario: "viewer" } };
 export const MobileProperties: Story = { globals: { viewport: { value: "mobile" } }, play: async ({ canvasElement }) => { await userEvent.click(await within(canvasElement).findByRole("button", { name: "Show properties" })); await expect(await within(canvasElement.ownerDocument.body).findByRole("link", { name: "All company services" })).toBeVisible(); } };
 export const Light: Story = { globals: { theme: "light" } };
+
+export const ServiceActions: Story = {
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("button", { name: "More actions for Customer dashboard" }));
+    const menu = within(canvasElement.ownerDocument.body);
+    await expect(await menu.findByRole("menuitem", { name: "Restart" })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: "Copy web URL" })).toBeVisible();
+  },
+};

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw } from "lucide-react";
+import { ChevronRight, RefreshCw } from "lucide-react";
 import type { RuntimeService, RuntimeServiceStorageView } from "@paperclipai/shared";
 import { runtimeServicesApi } from "../api/runtime-services";
 import { formatDateTime } from "../lib/utils";
@@ -33,9 +33,9 @@ export function RuntimeServiceStorage({ service, canManage }: { service: Runtime
   }, [mutation.isError, query.data?.usage.checkedAt, mutation.reset]);
   const usage = query.data?.usage;
   const expiration = service.retention.expiration;
-  return <section className="flex min-w-0 flex-col gap-3 border-t border-border pt-5" aria-labelledby={id}>
-    <div className="flex flex-wrap items-center justify-between gap-2"><h2 id={id} className="text-sm font-medium">Workspace storage</h2>
-      {canManage && <Button size="sm" variant="outline" disabled={mutation.isPending} onClick={() => {
+  return <section className="flex min-w-0 flex-col gap-4" aria-labelledby={id}>
+    <div className="flex flex-wrap items-center justify-between gap-2"><h2 id={id} className="text-sm font-semibold">Workspace storage</h2>
+      {canManage && <Button size="sm" variant="ghost" disabled={mutation.isPending} onClick={() => {
         if (submitting.current) return;
         submitting.current = true; attemptedAfter.current = usage?.checkedAt ?? null;
         void mutation.mutateAsync().catch(() => {}).finally(() => { submitting.current = false; });
@@ -43,7 +43,7 @@ export function RuntimeServiceStorage({ service, canManage }: { service: Runtime
     {query.isPending && <p className="text-sm text-muted-foreground" role="status">Loading storage…</p>}
     {(query.isError || mutation.isError) && <div className="flex flex-col gap-2" role="alert"><p className="text-sm text-destructive">Storage could not be refreshed. Displayed information may be out of date.</p><Button className="self-start" size="sm" variant="outline" onClick={() => void query.refetch()}>Refresh storage details</Button></div>}
     {usage && <div className="flex flex-col gap-1 text-sm" aria-live="polite">
-      <p>{usage.bytes === null ? "Storage has not been measured." : serviceStorageSize(usage.bytes)}</p>
+      <p className={usage.bytes === null ? "text-xs text-muted-foreground" : "font-mono text-xl font-medium"}>{usage.bytes === null ? "Storage has not been measured." : serviceStorageSize(usage.bytes)}</p>
       {usage.measuredAt && <p className="text-xs text-muted-foreground">Last measured {formatDateTime(usage.measuredAt)}.</p>}
       {usage.reason && <p className="text-xs text-muted-foreground">{reasons[usage.reason]}</p>}
     </div>}
@@ -58,7 +58,7 @@ export function RuntimeServiceStorage({ service, canManage }: { service: Runtime
         {expiration.checkedAt && <p>Dependencies last checked {formatDateTime(expiration.checkedAt)}.</p>}
       </>}
     </div>}
-    <p className="text-xs text-muted-foreground">Disk space used by this workspace, including source, dependencies and application data. Hard-linked files are counted once; symbolic links are not followed. Other mounted filesystems are excluded. Workspace measurements can overlap and are not the provider’s billing total.</p>
+    <details className="group text-xs text-muted-foreground"><summary className="flex cursor-pointer list-none items-center gap-1.5 hover:text-foreground"><ChevronRight className="size-3 transition-transform duration-(--motion-duration-fast) group-open:rotate-90" aria-hidden="true" />How storage is measured</summary><p className="pt-2">Disk space used by this workspace, including source, dependencies and application data. Hard-linked files are counted once; symbolic links are not followed. Other mounted filesystems are excluded. Workspace measurements can overlap and are not the provider’s billing total.</p></details>
     {query.data && query.data.serviceCount > 1 && <div className="flex flex-col gap-1 text-xs text-muted-foreground">
       <p>This allocation is shared by {query.data.serviceCount} services. Their storage totals refer to the same workspace.</p>
       <ul className="flex flex-col gap-1">{query.data.services.filter((other) => other.id !== service.id).map((other) => <li key={other.id}><Link className="hover:underline" to={`/runtime-services/${other.id}`}>{other.name}</Link></li>)}</ul>

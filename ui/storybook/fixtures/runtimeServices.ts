@@ -11,7 +11,7 @@ export const companyId = "company-storybook";
 export const serviceId = "42000000-0000-4000-8000-000000000001";
 export const environmentId = "42000000-0000-4000-8000-000000000004";
 export const reviewTask = createIssue({
-  id: "42000000-0000-4000-8000-000000000002", identifier: "PAP-42", issueNumber: 42,
+  id: "42000000-0000-4000-8000-000000000002", identifier: "DEMO-101", issueNumber: 101,
   title: "Build and iterate on the customer dashboard", status: "in_review",
   description: "Create a Vite React dashboard. Keep its preview available while I test it, then update the chart when I return. The app should hot reload without losing my work.",
   executionWorkspaceId: null, currentExecutionWorkspace: null, projectWorkspaceId: null,

@@ -39,21 +39,21 @@ export function RuntimeServiceTaskWorkspace({ service, disabled = false }: { ser
     },
     onSettled: () => { submitting.current = false; },
   });
-  if (service.taskWorkspace) return <div className="flex flex-col gap-2 text-sm">
-    <p role="status">Agent runs in the attached task use this service’s retained files.</p>
-    <Link className="self-start text-primary hover:underline" to={`/issues/${service.taskWorkspace.issueId}`}>Open development task</Link>
+  if (service.taskWorkspace) return <section className="flex min-w-0 flex-col gap-3 py-4" aria-label="Development task">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex flex-col gap-1"><h3 className="text-sm font-medium">Development task</h3><p className="text-xs text-muted-foreground" role="status">Agent runs in the attached task use this service’s retained files.</p></div><Button variant="ghost" size="sm" asChild><Link to={`/issues/${service.taskWorkspace.issueId}`}>Open development task</Link></Button></div>
     <RuntimeServiceTaskDetach service={service} disabled={disabled} />
-  </div>;
+  </section>;
   if (!service.canAttachTaskWorkspace) return null;
   const frozen = mutation.isPending || Boolean(request.current);
   const options = [
     ...(task.value ? [{ key: task.value, ...task }] : []),
     ...(tasks.data ?? []).filter((issue) => issue.id !== task.value).map((issue) => ({ key: issue.id, value: issue.id, label: `${issue.identifier ?? "Task"} · ${issue.title}` })),
   ];
-  return <section className="flex min-w-0 flex-col gap-3 border-t border-border pt-4">
-    {!open ? <Button className="self-start" variant="outline" disabled={disabled} onClick={() => setOpen(true)}>Develop in a task</Button> : <>
-      <div className="flex flex-col gap-1"><h3 className="text-sm font-medium">Develop in a task</h3>
-        <p className="text-sm text-muted-foreground">The task’s next agent run will use this service’s retained files. Its previous checkout stays saved. Finish any active run before attaching.</p></div>
+  return <section className="flex min-w-0 flex-col gap-4 py-4">
+    <div className="flex items-start justify-between gap-4"><div className="flex min-w-0 flex-col gap-1"><h3 className="text-sm font-medium">Development task</h3><p className="text-xs text-muted-foreground">Continue editing this service with an agent.</p></div>{!open && <Button className="shrink-0" variant="ghost" size="sm" disabled={disabled} onClick={() => setOpen(true)}>Develop in a task</Button>}</div>
+    {open && <div className="flex min-w-0 flex-col gap-4 rounded-md bg-muted/30 p-4 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)">
+      <div className="flex flex-col gap-1">
+        <p className="text-xs text-muted-foreground">The task’s next agent run will use this service’s retained files. Its previous checkout stays saved. Finish any active run before attaching.</p></div>
       <div className="flex flex-col gap-2">
         <Label htmlFor={id}>Development task</Label>
         <SearchableSelect id={id} value={task.value} disabled={disabled || frozen} groups={[{ id: "tasks", options }]}
@@ -64,15 +64,15 @@ export function RuntimeServiceTaskWorkspace({ service, disabled = false }: { ser
       {tasks.isError && <p className="text-sm text-destructive" role="alert">Tasks could not be loaded. <Button size="sm" variant="ghost" onClick={() => void tasks.refetch()}>Retry</Button></p>}
       {mutation.isError && <p className="text-sm text-destructive" role="alert">{request.current ? "Attachment could not be confirmed. Retry the same request to check its result." : mutation.error.message}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <Button disabled={disabled || mutation.isPending || !task.value} onClick={() => {
+        <Button size="sm" disabled={disabled || mutation.isPending || !task.value} onClick={() => {
           if (submitting.current) return;
           submitting.current = true;
           request.current ??= { issueId: task.value, requestId: crypto.randomUUID(), expectedRevision: service.revision };
           mutation.mutate(request.current);
         }}>{mutation.isPending && <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" />}{mutation.isPending ? "Attaching…" : request.current ? "Retry attachment" : "Attach task workspace"}</Button>
-        <Button variant="ghost" disabled={frozen} onClick={() => { setOpen(false); mutation.reset(); }}>Cancel</Button>
+        <Button size="sm" variant="ghost" disabled={frozen} onClick={() => { setOpen(false); mutation.reset(); }}>Cancel</Button>
       </div>
       <span className="sr-only" role="status" aria-live="polite">{mutation.isPending ? "Attaching service workspace" : ""}</span>
-    </>}
+    </div>}
   </section>;
 }

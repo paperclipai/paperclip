@@ -1,9 +1,9 @@
 import { useEffect, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, Loader2, Play, RotateCcw, Square, Terminal } from "lucide-react";
+import { Check, Copy, ExternalLink, Globe2, Loader2, MoreHorizontal, Play, RotateCcw, Square, Terminal } from "lucide-react";
 import type { RuntimeService } from "@paperclipai/shared";
 import { Link } from "../lib/router";
-import { formatDateTime } from "../lib/utils";
+import { cn, formatDateTime } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { runtimeServicesApi } from "../api/runtime-services";
 import { serviceKeys, useRuntimeServiceOperation } from "../hooks/useRuntimeServices";
@@ -11,6 +11,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { StatusBadge } from "./StatusBadge";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 export function servicePolicyLabel(service: RuntimeService): string {
   const policy = service.effectivePolicy ?? service.policy;
@@ -23,8 +24,8 @@ const stateLabels: Record<RuntimeService["state"], string> = {
   sleeping: "Sleeping", stopping: "Stopping", stopped: "Stopped", failed: "Failed", deleted: "Removed",
 };
 
-export function RuntimeServiceControls({ service, canManage, stale = false, detail = false }: {
-  service: RuntimeService; canManage: boolean; stale?: boolean; detail?: boolean;
+export function RuntimeServiceControls({ service, canManage, stale = false, detail = false, compact = false, list = false }: {
+  service: RuntimeService; canManage: boolean; stale?: boolean; detail?: boolean; compact?: boolean; list?: boolean;
 }) {
   const policy = service.effectivePolicy ?? service.policy;
   const operation = useRuntimeServiceOperation(service);
@@ -32,6 +33,11 @@ export function RuntimeServiceControls({ service, canManage, stale = false, deta
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const logsId = useId();
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(null), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
   const logs = useQuery({
     queryKey: serviceKeys.logs(service.companyId, service.id),
     queryFn: ({ signal }) => runtimeServicesApi.logs(service.companyId, service.id, { signal }),
@@ -50,19 +56,62 @@ export function RuntimeServiceControls({ service, canManage, stale = false, deta
     try { await copyTextToClipboard(url); setCopied(name); setCopyError(null); }
     catch { setCopyError("Could not copy the URL. Open the preview and copy its address."); }
   }
+  const overflow = compact || list;
+  const actionSize = compact ? "xs" : "sm";
+  const hasPreview = !service.dataDeletion && service.endpoints.some((endpoint) => endpoint.url);
+  const statusLabel = service.dataDeletion
+    ? ({ pending: "Deletion queued", deleting: "Deleting data", failed: "Deletion needs attention", deleted: "Data deleted" } as const)[service.dataDeletion.state]
+    : requested ?? stateLabels[service.state];
   return (
-    <section className="flex min-w-0 flex-col gap-3" aria-label={`${service.name} service`}>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {detail ? <h2 className="min-w-0 flex-1 break-words text-base font-medium">{service.name}</h2> : (
-          <Link to={service.detailPath} className="min-w-0 flex-1 break-words text-sm font-medium hover:underline">{service.name}</Link>
-        )}
-        <div className="flex items-center gap-1.5" role="status" aria-live="polite" aria-atomic="true">
-          {(operation.pending || transitioning) && <Loader2 className="size-3.5 text-muted-foreground motion-safe:animate-spin" aria-hidden="true" />}
-          <StatusBadge status={service.dataDeletion?.state === "failed" ? "failed" : tone} label={service.dataDeletion ? ({ pending: "Deletion queued", deleting: "Deleting data", failed: "Deletion needs attention", deleted: "Data deleted" } as const)[service.dataDeletion.state] : requested ?? stateLabels[service.state]} />
+    <section className={cn("flex min-w-0 flex-col gap-3", detail && "gap-4")} aria-label={`${service.name} service`}>
+      <div className={cn("flex min-w-0 flex-col gap-3", list && "md:flex-row md:items-start md:justify-between md:gap-6")}>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          {detail && <p className="flex items-center gap-2 text-xs text-muted-foreground">{service.purpose === "preview" ? <Globe2 className="size-3.5" aria-hidden="true" /> : <Terminal className="size-3.5" aria-hidden="true" />}{service.purpose === "preview" ? "Development preview" : "Background worker"}</p>}
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            {detail ? <h1 className="min-w-0 break-words text-xl font-bold">{service.name}</h1> : (
+              <Link to={service.detailPath} className="min-w-0 break-words text-sm font-medium transition-colors hover:text-muted-foreground">{service.name}</Link>
+            )}
+            <div className="flex shrink-0 items-center gap-1.5" role="status" aria-live="polite" aria-atomic="true">
+              {(operation.pending || transitioning) && <Loader2 className="size-3.5 text-muted-foreground motion-safe:animate-spin" aria-hidden="true" />}
+              <span key={statusLabel} className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)"><StatusBadge className={tone === "running" ? "dark:text-foreground" : undefined} status={service.dataDeletion?.state === "failed" ? "failed" : tone} label={statusLabel} /></span>
+            </div>
+          </div>
+          {!service.dataDeletion && !detail && <p className="text-xs text-muted-foreground">{servicePolicyLabel(service)}</p>}
+          {list && service.issueId && <Link className="self-start text-xs text-muted-foreground hover:text-foreground hover:underline" to={`/issues/${service.issueId}`}>Associated task</Link>}
+        </div>
+        <div className={cn("flex min-w-0 flex-wrap items-center gap-1", list && "shrink-0 md:justify-end", detail && "gap-2")}>
+          {hasPreview && service.endpoints.map((endpoint) => endpoint.url && <div key={endpoint.name} className="flex items-center gap-0.5">
+            <Button variant={detail || compact ? "default" : "outline"} size={actionSize} className={compact ? "max-sm:h-9" : undefined} asChild>
+              <a href={endpoint.url} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" />Open {endpoint.name}</a>
+            </Button>
+            {!overflow && <Button variant="ghost" size="icon-sm" aria-label={`Copy ${endpoint.name} URL`} onClick={() => void copy(endpoint.name, endpoint.url!)}>
+              {copied === endpoint.name ? <Check className="motion-safe:animate-in motion-safe:fade-in-0" aria-hidden="true" /> : <Copy aria-hidden="true" />}
+            </Button>}
+          </div>)}
+          <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1">
+          {canManage && !service.dataDeletion && <>
+            {running && service.state !== "failed" ? (
+              <Button variant={hasPreview ? "ghost" : "outline"} size={actionSize} className={compact ? "max-sm:h-9" : undefined} disabled={disabled || service.state === "stopping"} onClick={() => operation.run({ action: "stop" })}><Square aria-hidden="true" />Stop</Button>
+            ) : (
+              <Button variant={hasPreview ? "outline" : "default"} size={actionSize} className={compact ? "max-sm:h-9" : undefined} disabled={disabled || service.state === "stopping"} onClick={() => operation.run({ action: "start" })}><Play aria-hidden="true" />Start</Button>
+            )}
+            {service.state === "failed" && <Button variant="ghost" size={actionSize} className={compact ? "max-sm:h-9" : undefined} disabled={disabled} onClick={() => operation.run({ action: "stop" })}><Square aria-hidden="true" />{running ? "Stop" : "Retry stop"}</Button>}
+            {!overflow && <Button variant="ghost" size={actionSize} className={compact ? "max-sm:h-9" : undefined} disabled={disabled || transitioning} onClick={() => operation.run({ action: "restart" })}><RotateCcw aria-hidden="true" />Restart</Button>}
+          </>}
+          {overflow ? <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button variant="ghost" size={compact ? "icon-xs" : "icon-sm"} className={compact ? "max-sm:size-9" : undefined} aria-label={`More actions for ${service.name}`}><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {canManage && !service.dataDeletion && <DropdownMenuItem disabled={disabled || transitioning} onSelect={() => operation.run({ action: "restart" })}><RotateCcw aria-hidden="true" />Restart</DropdownMenuItem>}
+              <DropdownMenuItem onSelect={() => setLogsOpen(!logsOpen)}><Terminal aria-hidden="true" />{logsOpen ? "Hide logs" : "Logs"}</DropdownMenuItem>
+              {!service.dataDeletion && service.endpoints.map((endpoint) => endpoint.url && <DropdownMenuItem key={endpoint.name} onSelect={() => void copy(endpoint.name, endpoint.url!)}><Copy aria-hidden="true" />Copy {endpoint.name} URL</DropdownMenuItem>)}
+              <DropdownMenuItem asChild><Link to={service.detailPath}>Service details</Link></DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu> : <Button variant="ghost" size={actionSize} aria-expanded={logsOpen} aria-controls={logsId} onClick={() => setLogsOpen(!logsOpen)}><Terminal aria-hidden="true" />{logsOpen ? "Hide logs" : "Logs"}</Button>}
+          </div>
+          {copied && <span className="text-xs text-muted-foreground" role="status">Copied</span>}
         </div>
       </div>
-      {!service.dataDeletion && <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-        <p>{servicePolicyLabel(service)}</p>
+      {!service.dataDeletion && <div className="flex flex-col gap-1 text-xs text-muted-foreground empty:hidden">
         {service.handoff?.phase === "pending" && <p>Moving the existing command to service supervision. Its stop must be confirmed before the managed service starts.</p>}
         {service.handoff?.phase === "stopped" && service.desiredState === "running" && <p>The original command is stopped. Starting the managed service from the same files.</p>}
         {service.policy.keepRunningUntil && Date.parse(service.policy.keepRunningUntil) > Date.now() && <p>Idle sleep paused until {formatDateTime(service.policy.keepRunningUntil)}.</p>}
@@ -73,54 +122,23 @@ export function RuntimeServiceControls({ service, canManage, stale = false, deta
         {service.state === "stopped" && <p>Files are retained. Start explicitly to resume.</p>}
         {service.state === "starting" && <p>Waiting for the application to become ready.</p>}
       </div>}
-      {!service.dataDeletion && service.endpoints.length > 0 && (
-        <ul className="flex min-w-0 flex-col gap-2" aria-label="Preview endpoints">
-          {service.endpoints.map((endpoint) => (
-            <li key={endpoint.name} className="flex min-w-0 flex-col gap-1">
-              {endpoint.url ? (
-                <div className="flex flex-wrap items-center gap-1">
-                  <Button variant="outline" size="sm" asChild>
-                    <a href={endpoint.url} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" />Open {endpoint.name}</a>
-                  </Button>
-                  <Button variant="ghost" size="icon-sm" aria-label={`Copy ${endpoint.name} URL`} onClick={() => void copy(endpoint.name, endpoint.url!)}>
-                    {copied === endpoint.name ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-                  </Button>
-                  {copied === endpoint.name && <span className="text-xs text-muted-foreground" role="status">Copied</span>}
-                </div>
-              ) : (
-                <p className="break-words text-xs text-muted-foreground">{endpoint.name}: {endpoint.status === "failed" ? endpoint.error ?? "Preview unavailable" : "Preview is not ready yet"}</p>
-              )}
-              {endpoint.url && endpoint.status === "failed" && <p className="break-words text-xs text-destructive">{endpoint.error ?? "Preview routing is unavailable. Open the URL to retry."}</p>}
-            </li>
-          ))}
-        </ul>
-      )}
-      {!service.dataDeletion && detail && service.purpose === "preview" && service.endpoints.some((endpoint) => endpoint.url) && <p className="text-xs text-muted-foreground">
-        {service.previewActivity?.lastSignalAt ? `Browser activity last received ${formatDateTime(service.previewActivity.lastSignalAt)}.` : "Waiting for browser activity. App security policies can prevent activity signals; use the lifetime controls if needed."}
-      </p>}
-      {service.error && <p className="break-words text-xs text-destructive" role="alert">{service.error}</p>}
+      {!service.dataDeletion && service.endpoints.some((endpoint) => !endpoint.url || endpoint.status === "failed") && <ul className="flex min-w-0 flex-col gap-1" aria-label="Preview endpoints">
+        {service.endpoints.map((endpoint) => (!endpoint.url || endpoint.status === "failed") && <li key={endpoint.name} className={cn("break-words text-xs", endpoint.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
+          {endpoint.name}: {endpoint.status === "failed" ? endpoint.error ?? "Preview routing is unavailable. Open the URL to retry." : "Preview is not ready yet"}
+        </li>)}
+      </ul>}
+      {service.error && <p className="break-words rounded-md bg-destructive/10 p-3 text-xs text-destructive" role="alert">{service.error}</p>}
       {service.retention.error && <p className="break-words text-xs text-destructive" role="alert">{service.retention.error}</p>}
       {copyError && <p className="text-xs text-destructive" role="alert">{copyError}</p>}
-      <div className="flex flex-wrap items-center gap-1">
-        {canManage && !service.dataDeletion && <>
-          {running && service.state !== "failed" ? (
-            <Button variant="outline" size="sm" disabled={disabled || service.state === "stopping"} onClick={() => operation.run({ action: "stop" })}><Square aria-hidden="true" />Stop</Button>
-          ) : (
-            <Button variant="outline" size="sm" disabled={disabled || service.state === "stopping"} onClick={() => operation.run({ action: "start" })}><Play aria-hidden="true" />Start</Button>
-          )}
-          {service.state === "failed" && <Button variant="outline" size="sm" disabled={disabled} onClick={() => operation.run({ action: "stop" })}><Square aria-hidden="true" />{running ? "Stop" : "Retry stop"}</Button>}
-          <Button variant="ghost" size="sm" disabled={disabled || transitioning} onClick={() => operation.run({ action: "restart" })}><RotateCcw aria-hidden="true" />Restart</Button>
-        </>}
-        <Button variant="ghost" size="sm" aria-expanded={logsOpen} aria-controls={logsId} onClick={() => setLogsOpen(!logsOpen)}><Terminal aria-hidden="true" />{logsOpen ? "Hide logs" : "Logs"}</Button>
-      </div>
       {operation.isError && (
-        <div className="flex flex-col gap-2 text-xs" role="alert">
+        <div className="flex flex-col gap-2 rounded-md bg-destructive/10 p-3 text-xs" role="alert">
           <p className="text-destructive">{operation.ambiguous ? "The request timed out or disconnected. Checking the service’s current state." : operation.error.message}</p>
           {operation.ambiguous && <Button variant="outline" size="sm" className="self-start" disabled={operation.pending} onClick={operation.retryRequest}>Retry same request</Button>}
         </div>
       )}
       {logsOpen && (
-        <div id={logsId} className="flex min-w-0 flex-col gap-2">
+        <div id={logsId} className="flex min-w-0 flex-col gap-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)">
+          {overflow && <div className="flex items-center justify-between"><span className="text-xs font-medium">Logs</span><Button size="xs" variant="ghost" aria-expanded="true" aria-controls={logsId} onClick={() => setLogsOpen(false)}>Hide logs</Button></div>}
           {logs.isPending && <p className="text-xs text-muted-foreground" role="status">Loading logs…</p>}
           {logs.isError && <div className="flex flex-wrap items-center gap-2" role="alert"><span className="text-xs text-destructive">Logs could not be refreshed.</span><Button size="xs" variant="outline" onClick={() => void logs.refetch()}>Retry logs</Button></div>}
           {logs.data && <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs" tabIndex={0} aria-label={`${service.name} logs`}>{logs.data.text || "No output yet."}</pre>}
@@ -165,9 +183,10 @@ export function RuntimeServicePolicyEditor({ service, disabled }: { service: Run
     setEditing(true);
   }
   return (
-    <div className="flex flex-col gap-3">
-      {!editing ? <Button className="self-start" variant="outline" size="sm" disabled={disabled} onClick={open}>Edit lifetime</Button> : (
-        <form className="flex flex-col gap-3" onSubmit={(event) => {
+    <div className="flex min-w-0 flex-col gap-4 py-4">
+      <div className="flex items-start justify-between gap-4"><div className="flex min-w-0 flex-col gap-1"><h3 className="text-sm font-medium">Lifetime</h3><p className="text-xs text-muted-foreground">{servicePolicyLabel(service)}</p></div>{!editing && <Button className="shrink-0" variant="ghost" size="sm" disabled={disabled} onClick={open}>Edit lifetime</Button>}</div>
+      {editing && (
+        <form className="flex flex-col gap-4 rounded-md bg-muted/30 p-4 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)" onSubmit={(event) => {
           event.preventDefault();
           // Preserve an unchanged timestamp exactly, including its seconds and
           // offset through a daylight-saving transition.
@@ -180,10 +199,10 @@ export function RuntimeServicePolicyEditor({ service, disabled }: { service: Run
           setFormError(null);
           operation.run({ expectedPolicy: editPolicy, policy: { idleSeconds: idle === "" ? null : Math.round(Number(idle) * 60), maxRunningSeconds: maximum === "" ? null : Math.round(Number(maximum) * 60), keepRunningUntil } }, editRevision);
         }}>
-          <fieldset disabled={disabled || operation.pending || operation.ambiguous} className="flex min-w-0 flex-col gap-3">
+          <fieldset disabled={disabled || operation.pending || operation.ambiguous} className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5"><Label htmlFor={`${formId}-idle`}>Sleep after idle minutes</Label><Input id={`${formId}-idle`} type="number" min={1 / 60} max="43200" step="any" value={idle} onChange={(event) => { setIdle(event.target.value); operation.reset(); }} placeholder="No idle shutdown" /><p className="text-xs text-muted-foreground">Leave empty to run until explicitly stopped.</p></div>
             <div className="flex flex-col gap-1.5"><Label htmlFor={`${formId}-max`}>Maximum running minutes</Label><Input id={`${formId}-max`} type="number" min={1 / 60} max="43200" step="any" value={maximum} onChange={(event) => { setMaximum(event.target.value); operation.reset(); }} placeholder="No maximum" /><p className="text-xs text-muted-foreground">Applies even during active use.{service.companyMaxRunningSeconds != null ? ` Company policy caps every start at ${service.companyMaxRunningSeconds / 60} minutes.` : ""}</p></div>
-            <div className="flex flex-col gap-1.5"><Label htmlFor={`${formId}-keep`}>Keep running until</Label><Input id={`${formId}-keep`} type="datetime-local" value={keepUntil} aria-describedby={`${formId}-keep-help`} onChange={(event) => { setKeepUntil(event.target.value); setFormError(null); operation.reset(); }} /><p id={`${formId}-keep-help`} className="text-xs text-muted-foreground">Pause idle sleep until this local time. Maximum running time and Stop still apply. Start a stopped service separately; clear this field to resume its idle policy.</p></div>
+            <div className="flex flex-col gap-1.5 sm:col-span-2"><Label htmlFor={`${formId}-keep`}>Keep running until</Label><Input id={`${formId}-keep`} type="datetime-local" value={keepUntil} aria-describedby={`${formId}-keep-help`} onChange={(event) => { setKeepUntil(event.target.value); setFormError(null); operation.reset(); }} /><p id={`${formId}-keep-help`} className="text-xs text-muted-foreground">Pause idle sleep until this local time. Maximum running time and Stop still apply. Start a stopped service separately; clear this field to resume its idle policy.</p></div>
           </fieldset>
           {formError && <p className="text-xs text-destructive" role="alert">{formError}</p>}
           <div className="flex gap-2"><Button size="sm" type="submit" disabled={disabled || operation.pending || operation.ambiguous}>{operation.pending ? "Saving…" : "Save lifetime"}</Button><Button size="sm" variant="ghost" type="button" onClick={() => setEditing(false)}>Close</Button></div>

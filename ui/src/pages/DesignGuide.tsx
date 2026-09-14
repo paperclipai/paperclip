@@ -770,6 +770,11 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="Service status contrast">
+          <StatusBadge status="running" label="Running" className="dark:text-foreground" />
+          <p className="text-xs text-muted-foreground">Service badges use the foreground token in dark mode to keep small status labels readable. The className override preserves the shared status background and border.</p>
+        </SubSection>
+
         <SubSection title="IssueStatusBadge (brand chip + glyph — PAP-75)">
           <div className="flex items-center gap-2 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"].map(

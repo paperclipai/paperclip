@@ -48,7 +48,7 @@ export function CreateRuntimeServiceForm({ companyId, onClose }: { companyId: st
   });
   const ambiguous = mutation.isError && !(mutation.error instanceof ApiError);
   return (
-    <form className="flex max-w-xl flex-col gap-4" aria-label="Create service" onSubmit={(event) => {
+    <form className="flex max-w-3xl flex-col gap-5 rounded-lg border border-border p-5 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)" aria-label="Create service" onSubmit={(event) => {
       event.preventDefault();
       if (mutation.isPending) return;
       if (ambiguous && mutation.variables) { mutation.mutate(mutation.variables); return; }
@@ -67,13 +67,13 @@ export function CreateRuntimeServiceForm({ companyId, onClose }: { companyId: st
       mutation.mutate(parsed.data);
     }}>
       <h2 className="text-base font-medium">Create a service</h2>
-      <fieldset className="flex min-w-0 flex-col gap-4" disabled={mutation.isPending || ambiguous}>
+      <fieldset className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2" disabled={mutation.isPending || ambiguous}>
       <div className="flex flex-col gap-1.5"><Label htmlFor={`${id}-name`}>Name</Label><Input id={`${id}-name`} name="name" required maxLength={120} placeholder="React preview" /></div>
-      <div className="flex flex-col gap-1.5"><Label htmlFor={`${id}-purpose`}>Purpose</Label><Select value={purpose} onValueChange={(value) => setPurpose(value as "preview" | "worker")}><SelectTrigger id={`${id}-purpose`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="preview">Development preview</SelectItem><SelectItem value="worker">Background worker</SelectItem></SelectContent></Select><p className="text-xs text-muted-foreground">Uses the company’s idle default. You can adjust the service lifetime after creation; company limits still apply.</p></div>
-      <div className="flex flex-col gap-1.5"><Label htmlFor={`${id}-command`}>Start command</Label><Textarea className="font-mono" id={`${id}-command`} name="command" required placeholder={purpose === "preview" ? 'npm run dev -- --host 0.0.0.0 --port "$PORT"' : "node worker.js"} /></div>
+      <div className="flex flex-col gap-1.5"><Label htmlFor={`${id}-purpose`}>Purpose</Label><Select value={purpose} onValueChange={(value) => setPurpose(value as "preview" | "worker")}><SelectTrigger className="w-full" id={`${id}-purpose`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="preview">Development preview</SelectItem><SelectItem value="worker">Background worker</SelectItem></SelectContent></Select><p className="text-xs text-muted-foreground">Starts with company lifetime defaults. Company limits still apply.</p></div>
+      <div className="flex flex-col gap-1.5 sm:col-span-2"><Label htmlFor={`${id}-command`}>Start command</Label><Textarea className="font-mono" id={`${id}-command`} name="command" required placeholder={purpose === "preview" ? 'npm run dev -- --host 0.0.0.0 --port "$PORT"' : "node worker.js"} /></div>
       <div className="flex flex-col gap-1.5"><Label htmlFor={`${id}-cwd`}>Working folder</Label><Input id={`${id}-cwd`} name="cwd" placeholder="Use the associated task’s current folder" /><p className="text-xs text-muted-foreground">Uses the files in this folder, including uncommitted changes.</p></div>
       {purpose === "preview" && <div className="flex flex-col gap-1.5"><Label htmlFor={`${id}-port`}>Application port</Label><Input id={`${id}-port`} name="port" type="number" min="1024" max="65535" placeholder="Choose automatically" /><p className="text-xs text-muted-foreground">The chosen port is available to the command as PORT. For a fixed-port command, enter its port here.</p></div>}
-      <details className="flex flex-col gap-3" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+      <details className="flex flex-col gap-3 border-t border-border pt-4 sm:col-span-2" onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
         <summary className="cursor-pointer text-sm">Task and environment</summary>
         <div className="flex flex-col gap-3 py-3">
           <div className="flex flex-col gap-1.5">
@@ -83,7 +83,7 @@ export function CreateRuntimeServiceForm({ companyId, onClose }: { companyId: st
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor={`${id}-environment`}>Environment</Label>
-            <Select value={environmentId || "current"} onValueChange={(value) => setEnvironmentId(value === "current" ? "" : value)}><SelectTrigger id={`${id}-environment`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Use the task’s current environment</SelectItem>{environments.data?.map((environment) => <SelectItem key={environment.id} value={environment.id} disabled={environment.status !== "active"}>{environment.name}</SelectItem>)}</SelectContent></Select>
+            <Select value={environmentId || "current"} onValueChange={(value) => setEnvironmentId(value === "current" ? "" : value)}><SelectTrigger className="w-full" id={`${id}-environment`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Use the task’s current environment</SelectItem>{environments.data?.map((environment) => <SelectItem key={environment.id} value={environment.id} disabled={environment.status !== "active"}>{environment.name}</SelectItem>)}</SelectContent></Select>
             {environments.isError && <div className="flex items-center gap-2 text-xs" role="alert"><span className="text-destructive">Environments could not be loaded.</span><Button type="button" size="xs" variant="outline" onClick={() => void environments.refetch()}>Retry</Button></div>}
           </div>
           <p className="text-xs text-muted-foreground">Agents attach the current task and environment automatically.</p>

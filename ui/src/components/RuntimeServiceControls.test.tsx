@@ -31,13 +31,13 @@ let root: Root | undefined;
 let node: HTMLDivElement;
 let client: QueryClient;
 
-async function mount(options: { service?: RuntimeService; canManage?: boolean; copies?: number; policy?: boolean } = {}) {
+async function mount(options: { service?: RuntimeService; canManage?: boolean; copies?: number; policy?: boolean; compact?: boolean } = {}) {
   node = document.createElement("div"); document.body.appendChild(node);
   root = createRoot(node);
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } });
   function Surface() {
     const { data } = useQuery({ queryKey: serviceKeys.detail(initial.companyId, initial.id), queryFn: async () => initial, initialData: options.service ?? initial, enabled: false });
-    return <>{Array.from({ length: options.copies ?? 1 }, (_, index) => <RuntimeServiceControls key={index} service={data} canManage={options.canManage ?? true} />)}{options.policy && <RuntimeServicePolicyEditor service={data} />}</>;
+    return <>{Array.from({ length: options.copies ?? 1 }, (_, index) => <RuntimeServiceControls key={index} service={data} canManage={options.canManage ?? true} compact={options.compact} />)}{options.policy && <RuntimeServicePolicyEditor service={data} />}</>;
   }
   await act(async () => { root!.render(<QueryClientProvider client={client}><Surface /></QueryClientProvider>); });
 }
@@ -47,6 +47,25 @@ async function settle() { await act(async () => { await new Promise((resolve) =>
 afterEach(async () => { await act(async () => { root?.unmount(); }); node?.remove(); client?.clear(); vi.clearAllMocks(); });
 
 describe("runtime service controls under failures and concurrent use", () => {
+  it("keeps task controls compact and exposes keyboard-accessible logs without granting viewer mutations", async () => {
+    api.logs.mockResolvedValueOnce({ text: "Application started\n" });
+    await mount({ canManage: false, service: running, compact: true });
+    expect(node.querySelector('a[target="_blank"]')?.getAttribute("href")).toBe("https://preview.example.test/");
+    expect(button("Restart")).toBeUndefined();
+    expect(button("Stop")).toBeUndefined();
+    const trigger = node.querySelector<HTMLButtonElement>('button[aria-label="More actions for React preview"]')!;
+    await act(async () => { trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    await settle();
+    const items = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    expect(items.map((item) => item.textContent)).not.toContain("Restart");
+    expect(items.map((item) => item.textContent)).toContain("Copy web URL");
+    await act(async () => { items.find((item) => item.textContent === "Logs")!.click(); });
+    await settle();
+    expect(node.querySelector("pre")?.textContent).toContain("Application started");
+    expect(button("Hide logs").getAttribute("aria-expanded")).toBe("true");
+    expect(api.control).not.toHaveBeenCalled();
+  });
+
   it("keeps deletion progress independently of service revisions and hides obsolete controls", async () => {
     const pending = { id: "deletion", state: "pending" as const, attempts: 0, error: null, requestedAt: "2026-09-13T00:00:00.000Z", updatedAt: "2026-09-13T00:00:00.000Z", completedAt: null, retryAt: null };
     const complete = { ...pending, state: "deleted" as const, attempts: 1, updatedAt: "2026-09-13T00:00:01.000Z", completedAt: "2026-09-13T00:00:01.000Z" };

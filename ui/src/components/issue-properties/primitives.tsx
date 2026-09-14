@@ -6,6 +6,7 @@ export function PropertySection({
   children,
   className,
   title,
+  titleClassName,
   first,
   streamlined,
 }: {
@@ -13,6 +14,7 @@ export function PropertySection({
   className?: string;
   /** Labeled section header (§4). When set, renders the uppercase header above the rows. */
   title?: string;
+  titleClassName?: string;
   /** First section drops the top padding on its header. */
   first?: boolean;
   streamlined?: boolean;
@@ -26,6 +28,7 @@ export function PropertySection({
               ? "pb-1 font-mono text-(length:--text-nano) font-normal uppercase tracking-wide text-muted-foreground/70"
               : "text-xs font-semibold uppercase tracking-wide text-muted-foreground pb-1",
             first ? "pt-0" : "pt-3",
+            titleClassName,
           )}
         >
           {title}

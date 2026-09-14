@@ -32,7 +32,8 @@ describe("preview sharing under uncertain responses", () => {
     await act(async () => { button("Create share link").click(); button("Create share link").click(); }); await settle();
     expect(api.createShare).toHaveBeenCalledTimes(1); expect(node.textContent).toContain("Creating link…");
     await act(async () => { reject(new TypeError("Network interrupted")); }); await settle();
-    expect(Array.from(node.querySelectorAll("select")).every((select) => select.disabled)).toBe(true);
+    expect(node.querySelectorAll('button[role="combobox"]')).toHaveLength(2);
+    expect(Array.from(node.querySelectorAll<HTMLButtonElement>('button[role="combobox"]')).every((select) => select.disabled)).toBe(true);
     await click("Retry same request"); await settle();
     expect(api.createShare.mock.calls[1]![2]).toEqual(api.createShare.mock.calls[0]![2]);
     expect(node.textContent).toContain("Share link created.");
@@ -50,7 +51,8 @@ describe("preview sharing under uncertain responses", () => {
     api.createShare.mockRejectedValue(new ApiError("This endpoint has no preview URL", 422, {}));
     await mount(); await click("Share preview"); await click("Create share link"); await settle();
     expect(node.textContent).toContain("This endpoint has no preview URL");
-    expect(Array.from(node.querySelectorAll("select")).every((select) => !select.disabled)).toBe(true);
+    expect(node.querySelectorAll('button[role="combobox"]')).toHaveLength(2);
+    expect(Array.from(node.querySelectorAll<HTMLButtonElement>('button[role="combobox"]')).every((select) => !select.disabled)).toBe(true);
   });
 
   it("confirms revocation from a fresh list after its mutation response was lost", async () => {

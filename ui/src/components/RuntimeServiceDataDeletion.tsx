@@ -60,11 +60,8 @@ export function RuntimeServiceDataDeletion({ service, canManage }: { service: Ru
     finally { submitting.current = false; }
   }
   return <section className="flex min-w-0 flex-col gap-3 border-t border-border pt-5" aria-labelledby={id}>
-    <h2 id={id} className="text-sm font-medium">Workspace data deletion</h2>
-    {!open && !deletion ? <>
-      <p className="text-xs text-muted-foreground">Stopping a service keeps its files. Review the workspace and its dependencies before permanently deleting data.</p>
-      <Button className="self-start" size="sm" variant="outline" onClick={() => setOpen(true)}>Review data deletion</Button>
-    </> : <>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex min-w-0 flex-col gap-1"><h2 id={id} className="text-sm font-medium">Workspace data deletion</h2>{!open && !deletion && <p className="text-xs text-muted-foreground">Stopping keeps your files. Deleting data is permanent.</p>}</div>{!open && !deletion && <Button className="shrink-0" size="sm" variant="ghost" onClick={() => setOpen(true)}>Review data deletion</Button>}</div>
+    {(open || deletion) && <div className="flex min-w-0 flex-col gap-3 rounded-md bg-muted/30 p-4 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-(--motion-duration-fast)">
       {query.isPending && <p className="text-sm text-muted-foreground" role="status">Loading deletion review…</p>}
       {query.isError && <div className="flex flex-col gap-2" role="alert"><p className="text-sm text-destructive">The deletion review could not be refreshed.</p><Button className="self-start" size="sm" variant="outline" onClick={() => void query.refetch()}>Refresh deletion review</Button></div>}
       {deletion && <div className="flex flex-col gap-2 text-sm" role="status" aria-live="polite">
@@ -93,6 +90,6 @@ export function RuntimeServiceDataDeletion({ service, canManage }: { service: Ru
         </form>}
       </>}
       {message && <p className="text-xs text-destructive" role="alert">{message}</p>}
-    </>}
+    </div>}
   </section>;
 }
