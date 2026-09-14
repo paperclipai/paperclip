@@ -188,7 +188,7 @@ describe("heartbeat AI subscription contention", () => {
     }
   });
 
-  it("does not turn an assignee wake into a non-assignee retry after reassignment during preflight", async () => {
+  it.each(["issue_assigned", "issue_commented"])("does not turn an assignee %s wake into a non-assignee retry after reassignment during preflight", async (wakeReason) => {
     const f = await fixture();
     try {
       afterCheckout.mockImplementationOnce(async () => {
@@ -196,8 +196,11 @@ describe("heartbeat AI subscription contention", () => {
           assigneeAgentId: null, assigneeUserId: f.userId, executionRunId: null,
         }).where(eq(issues.id, f.issueId));
       });
+      const commentId = randomUUID();
+      await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: f.userId, body: "Continue this task." });
       const run = await heartbeat.invoke(f.agentId, "assignment", {
-        issueId: f.issueId, wakeReason: "issue_assigned", aiConnectionBusyDeferredWhileAssignee: false,
+        issueId: f.issueId, wakeReason, commentId, aiConnectionBusyDeferredWhileAssignee: false,
       }, "system");
       await heartbeat.drainActiveRunExecutions();
       expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: "ai_connection_busy" });

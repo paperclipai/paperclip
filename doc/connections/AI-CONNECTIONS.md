@@ -123,7 +123,9 @@ and does not request a reconnect or consume its provider-failure retry allowance
 Each attempt rechecks task eligibility, ownership, budget, and current credential
 access. Revocation and other configuration failures still require user action.
 Authorized comment wakes that started as non-assignee runs can resume without
-claiming the assignee’s execution lock. Assignee retries must still own that lock.
+claiming the assignee’s execution lock. Admission records this authority while
+holding the task and run locks. A reassignment during preflight cannot grant it.
+Assignee retries must still own that lock.
 Already-started native sessions retain their existing same-run recovery path;
 they must not be replaced by a fresh execution with a pre-provider receipt.
 
