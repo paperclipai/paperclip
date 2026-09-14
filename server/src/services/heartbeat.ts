@@ -17330,6 +17330,107 @@ export function heartbeatService(
     });
   }
 
+  // Periodically drain queued backlog across agents as capacity opens.
+  // startNextQueuedRunForAgent only fires on an agent wake or on a run
+  // finalization. With every lane's per-agent timer disabled (heartbeat.enabled
+  // = false, intervalSec = 0), the timer tick path is silent for that lane and
+  // the event-driven path is the only path. If no agent ever wakes and no run
+  // finalizes, a lane's queued runs accumulate forever. This sweep is the
+  // independent timer-tick that fills that gap.
+  //
+  // The sweep is promotion-only: it calls startNextQueuedRunForAgent, which is
+  // the existing claim path that takes withAgentStartLock and re-checks
+  // invokability and capacity under the lock. Two overlapping sweeps therefore
+  // can't double-claim a run.
+  async function sweepQueuedRunBacklog({
+    maxAgentsPerTick,
+  }: {
+    maxAgentsPerTick: number;
+  }): Promise<{ scanned: number; claimed: number }> {
+    if ((await getSchedulingSuppression()).suppressed) {
+      return { scanned: 0, claimed: 0 };
+    }
+    const boundedMaxAgents = Math.max(1, Math.floor(maxAgentsPerTick));
+
+    // Count queued + running per agent in one query. Filter to agents with at
+    // least one queued run, then sort by oldest queued run so the most stale
+    // agent drains first.
+    const candidateRows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        queued: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued')::integer`,
+        running: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'running')::integer`,
+        oldestQueuedAt: sql<Date>`min(${heartbeatRuns.createdAt}) filter (where ${heartbeatRuns.status} = 'queued')`,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.status, ["queued", "running"]))
+      .groupBy(heartbeatRuns.agentId)
+      .having(
+        sql`count(*) filter (where ${heartbeatRuns.status} = 'queued') > 0`,
+      )
+      .orderBy(
+        sql`min(${heartbeatRuns.createdAt}) filter (where ${heartbeatRuns.status} = 'queued') asc`,
+      )
+      .limit(boundedMaxAgents);
+
+    if (candidateRows.length === 0) {
+      return { scanned: 0, claimed: 0 };
+    }
+
+    // Pull the agent rows, joined with companies for the active-company filter.
+    // An agent in an archived company has its runs parked; the sweep must not
+    // dispatch new work there.
+    const candidateAgentIds = candidateRows.map((row) => row.agentId);
+    const candidateAgents = await db
+      .select({ ...getTableColumns(agents) })
+      .from(agents)
+      .innerJoin(companies, eq(companies.id, agents.companyId))
+      .where(
+        and(
+          inArray(agents.id, candidateAgentIds),
+          eq(companies.status, "active"),
+        ),
+      );
+    const candidateAgentById = new Map(candidateAgents.map((a) => [a.id, a]));
+    const agentsByCompany = groupAgentOrgRowsByCompany(
+      candidateAgents.map(toAgentOrgRow),
+    );
+
+    let scanned = 0;
+    let claimed = 0;
+    for (const row of candidateRows) {
+      const agent = candidateAgentById.get(row.agentId);
+      // Agent disappeared, or its company is not active: skip without claiming.
+      if (!agent) continue;
+
+      const invokability = evaluateAgentInvokability(
+        toAgentOrgRow(agent),
+        agentsByCompany.get(agent.companyId) ?? [],
+      );
+      if (!invokability.invokable) continue;
+
+      const policy = parseHeartbeatPolicy(agent);
+      // Pre-filter on capacity to avoid contending on withAgentStartLock for
+      // agents already at cap. startNextQueuedRunForAgent re-checks this under
+      // the lock; the lock still serializes concurrent claims for the same
+      // agent.
+      if (row.running >= policy.maxConcurrentRuns) continue;
+
+      scanned += 1;
+      try {
+        const claimedRuns = await startNextQueuedRunForAgent(row.agentId);
+        claimed += claimedRuns.length;
+      } catch (err) {
+        logger.error(
+          { err, agentId: row.agentId },
+          "queued-run sweep failed for agent",
+        );
+      }
+    }
+
+    return { scanned, claimed };
+  }
+
   // Await every background heartbeat execution that is currently in flight. A
   // draining run can, in its finally block, promote and dispatch the next queued
   // run for the same agent — that follow-up execution is registered in the set
@@ -25591,6 +25692,12 @@ export function heartbeatService(
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+
+    // Independent timer-tick that drains queued backlog across agents as
+    // capacity opens. Promotion only: it calls startNextQueuedRunForAgent, the
+    // existing claim path that re-checks invokability and capacity under
+    // withAgentStartLock. See sweepQueuedRunBacklog above.
+    sweepQueuedRunBacklog,
 
     scheduleBoundedRetry: async (
       runId: string,

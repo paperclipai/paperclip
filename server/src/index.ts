@@ -1462,6 +1462,27 @@ export async function startServer(): Promise<StartedServer> {
             .catch((err) => {
               logger.error({ err }, "heartbeat timer tick failed");
             }));
+
+          // Independent timer-tick that drains queued backlog across agents as
+          // capacity opens. The per-agent timer path above is silent for any
+          // lane with heartbeat.enabled=false or intervalSec=0; the event-driven
+          // path only fires when an agent wake arrives or a run finalizes. If
+          // nothing else moves a run, queued runs accumulate. The sweep runs
+          // regardless of per-agent policy: any agent with queued runs and
+          // available capacity is a candidate. See CAN-3454 / CAN-3363.
+          trackHeartbeatSchedulerWork(heartbeat
+            .sweepQueuedRunBacklog({ maxAgentsPerTick: 50 })
+            .then((result) => {
+              if (result.scanned > 0 || result.claimed > 0) {
+                logger.info(
+                  result,
+                  "heartbeat queued-run backlog sweep drained capacity",
+                );
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "heartbeat queued-run backlog sweep failed");
+            }));
         }
 
         if (heartbeatSchedulerStopped) return;
