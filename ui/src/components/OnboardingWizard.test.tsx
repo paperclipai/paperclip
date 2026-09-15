@@ -163,6 +163,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 const mockAdapterRegistry = vi.hoisted(() => ({
   list: [] as Array<{ type: string }>,
   disabled: new Set<string>(),
+  recommendedTypes: new Set(["claude_local", "codex_local"]),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -198,7 +199,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     // then sat in the "Advanced settings" disclosure and was reachable anyway;
     // with the step down to a tile row built from this flag, it made that row
     // empty in every test and hid the surface under it.
-    recommended: type === "claude_local" || type === "codex_local",
+    recommended: mockAdapterRegistry.recommendedTypes.has(type),
     label: type,
     description: "",
     icon: () => null,
@@ -250,6 +251,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@pa
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
+import { TooltipProvider } from "./ui/tooltip";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -341,6 +343,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompaniesApi.list.mockResolvedValue([]);
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
+    mockAdapterRegistry.recommendedTypes = new Set(["claude_local", "codex_local"]);
     mockAdapterBuild.buildAdapterConfig.mockReset();
     mockAdapterBuild.buildAdapterConfig.mockReturnValue({});
     // Default: no stored Claude login for the owner. The route returns a
@@ -1997,7 +2000,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => {
         root.render(
           <QueryClientProvider client={queryClient}>
-            <OnboardingWizard />
+            <TooltipProvider>
+              <OnboardingWizard />
+            </TooltipProvider>
           </QueryClientProvider>,
         );
       });
@@ -2212,6 +2217,30 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     it("starts no call to the test-environment route on adapter selection", async () => {
       const { root } = await openStep4();
       expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
+    it("shows discovered OpenCode models in onboarding", async () => {
+      mockAdapterRegistry.recommendedTypes.add("opencode_local");
+      mockAdapterRegistry.list = [{ type: "opencode_local" }];
+      mockAgentsApi.adapterModels.mockImplementation(async (...args: unknown[]) =>
+        args[1] === "opencode_local"
+          ? [{ id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5" }]
+          : [],
+      );
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/opencode_local/);
+
+      const modelButton = [...document.body.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Select model (required)"),
+      );
+      expect(modelButton, "OpenCode onboarding should require a model selection").toBeTruthy();
+      await act(async () => modelButton!.click());
+      for (let i = 0; i < 3; i++) await flushReact();
+      expect(document.body.textContent).toContain("claude-sonnet-4-5");
+      expect(document.body.textContent).not.toContain("openai/gpt-5.2-codex");
+
       await act(async () => root.unmount());
     });
 
