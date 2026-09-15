@@ -7365,6 +7365,50 @@ export function issueService(db: Db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
+  async function withActiveCheckoutRun<T>(input: {
+    issueId: string;
+    companyId: string;
+    agentId: string;
+    checkoutRunId: string;
+    operation: (tx: DbTransaction) => Promise<T>;
+  }): Promise<T> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${input.issueId} for update`,
+      );
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.checkoutRunId} for update`,
+      );
+      const checkoutRun = await tx
+        .select({
+          status: heartbeatRuns.status,
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.checkoutRunId))
+        .then((rows) => rows[0] ?? null);
+      const isOwnedRun = checkoutRun
+        && checkoutRun.companyId === input.companyId
+        && checkoutRun.agentId === input.agentId;
+      if (!isOwnedRun) {
+        throw conflict("Issue checkout requires an active heartbeat run", {
+          code: "checkout_run_not_active",
+          checkoutRunId: input.checkoutRunId,
+          runStatus: "missing",
+        });
+      }
+      if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(checkoutRun.status)) {
+        throw conflict("Issue checkout requires an active heartbeat run", {
+          code: "checkout_run_not_active",
+          checkoutRunId: input.checkoutRunId,
+          runStatus: checkoutRun.status,
+        });
+      }
+      return input.operation(tx);
+    });
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -7474,6 +7518,10 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     return db.transaction(async (tx) => {
+      // Keep the issue -> heartbeat lock order aligned with checkout and stale-lock cleanup.
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${input.issueId} for update`,
+      );
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
@@ -11222,6 +11270,16 @@ export function issueService(db: Db) {
       expectedStatuses: string[],
       checkoutRunId: string | null,
     ) => {
+      const terminalExpectedStatuses = expectedStatuses.filter(
+        (status) => status === "done" || status === "cancelled",
+      );
+      if (terminalExpectedStatuses.length > 0) {
+        throw unprocessable(
+          "Issue checkout cannot expect terminal issue statuses",
+          { terminalExpectedStatuses },
+        );
+      }
+
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -11255,6 +11313,16 @@ export function issueService(db: Db) {
             "Fail Securely",
             "Secure Defaults",
           ],
+        });
+      }
+
+      if (checkoutRunId) {
+        await withActiveCheckoutRun({
+          issueId: id,
+          companyId: issueCompany.companyId,
+          agentId,
+          checkoutRunId,
+          operation: async () => undefined,
         });
       }
 
@@ -11300,7 +11368,7 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updated = await db
+      const updateIssue = (dbOrTx: Db | DbTransaction) => dbOrTx
         .update(issues)
         .set({
           assigneeAgentId: agentId,
@@ -11321,6 +11389,15 @@ export function issueService(db: Db) {
         )
         .returning()
         .then((rows) => rows[0] ?? null);
+      const updated = checkoutRunId
+        ? await withActiveCheckoutRun({
+            issueId: id,
+            companyId: issueCompany.companyId,
+            agentId,
+            checkoutRunId,
+            operation: updateIssue,
+          })
+        : await updateIssue(db);
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
