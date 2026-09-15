@@ -10,5 +10,5 @@ permissions:
 
 jobs:
   ci:
-    # Pin: #13300 merge — restore-only dependency caches and parallel native verification.
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@44dde2dec42a22746a2f36b595acacc9ccfa1df6
+    # Pin: #13457 merge — restore-only Rust dependency cache on the PR runner lane.
+    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@f97a3f886eb4baf19ea8eefaa53a44cb1c2d4636
