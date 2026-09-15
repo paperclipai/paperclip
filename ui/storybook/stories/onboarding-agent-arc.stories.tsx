@@ -215,7 +215,14 @@ export const ConnectAModel: StoryObj = {
     return resetOnboardingFixtureState;
   },
   render: () => <WizardArc />,
-  play: () => advance("Connect a model"),
+  play: async () => {
+    const name = await screen.findByRole("textbox", { name: "Agent name" }, { timeout: STEP_TIMEOUT_MS });
+    await userEvent.clear(name);
+    await userEvent.type(name, " {Enter}");
+    await expect(screen.getByRole("button", { name: PRIMARY })).toBeDisabled();
+    await userEvent.type(name, "Chief of staff{Enter}");
+    await screen.findByRole("heading", { name: "Connect a model" }, { timeout: STEP_TIMEOUT_MS });
+  },
 };
 
 /**
@@ -411,7 +418,8 @@ export const ConnectWithSavedChatGptSubscription: StoryObj = {
   play: async () => {
     await advance("Connect a model");
     await userEvent.click(screen.getByRole("radio", {name: /OpenAI/}));
-    await screen.findByRole("combobox", {name: "Saved subscription"}, {timeout: STEP_TIMEOUT_MS});
+    await screen.findByRole("heading", { name: "Let's get started..." }, { timeout: STEP_TIMEOUT_MS });
+    await expect(screen.queryByRole("combobox", { name: "Saved subscription" })).not.toBeInTheDocument();
   },
 };
 
@@ -424,6 +432,71 @@ export const ConnectWithSavedClaudeSubscription: StoryObj = {
   play: async () => {
     await advance("Connect a model");
     await pickFirstSource();
+    await screen.findByRole("heading", { name: "Let's get started..." }, { timeout: STEP_TIMEOUT_MS });
     await expect(screen.queryByRole("combobox", { name: "Saved API key" })).not.toBeInTheDocument();
   },
 };
+
+/** Local terminal sign-in with the production wizard and controllable API responses. */
+function localSubscriptionStory(
+  provider: "Claude" | "OpenAI",
+  state: "sign-in" | "detected" | "testing" | "retry" | "success",
+): StoryObj {
+  return {
+    name: `Local ${provider} · ${state}`,
+    beforeEach: () => {
+      setOnboardingFixtureState({
+        environments: "local",
+        localLoginStatus: state === "detected" ? "ready" : "sign_in_required",
+        connectPending: state === "detected",
+        testPending: state === "testing",
+        testFailuresRemaining: state === "retry" ? 1 : 0,
+        testDelayMs: state === "success" || state === "retry" ? 800 : 0,
+      });
+      return resetOnboardingFixtureState;
+    },
+    render: () => <WizardArc />,
+    play: async () => {
+      await advance("Connect a model");
+      await userEvent.click(screen.getByRole("radio", { name: new RegExp(provider) }));
+      if (state === "detected") {
+        await screen.findByRole("button", { name: "Connecting…" }, { timeout: STEP_TIMEOUT_MS });
+        await expect(screen.getByRole("button", { name: "Connecting…" })).toBeDisabled();
+      } else {
+        await screen.findByText(/Run this in a terminal/, {}, { timeout: STEP_TIMEOUT_MS });
+        if (state === "sign-in") {
+          await expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+          return;
+        }
+        // Simulate the terminal finishing; the user's return triggers the real
+        // login hook, which must advance without a second Connect click.
+        setOnboardingFixtureState({ localLoginStatus: "ready" });
+        window.dispatchEvent(new Event("focus"));
+        if (state === "testing") {
+          await screen.findByRole("button", { name: "Testing…" }, { timeout: STEP_TIMEOUT_MS });
+          await expect(screen.getByRole("button", { name: "Testing…" })).toBeDisabled();
+          await expect(screen.getByRole("status")).toHaveTextContent("Testing connection…");
+        } else if (state === "retry") {
+          await screen.findByText("The provider did not respond. Try connecting again.", {}, { timeout: STEP_TIMEOUT_MS });
+          await expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+        } else {
+          await screen.findByRole("heading", { name: "Let's get started..." }, { timeout: STEP_TIMEOUT_MS });
+        }
+      }
+      await expect(screen.queryByRole("combobox", { name: "Saved subscription" })).not.toBeInTheDocument();
+      await expect(screen.queryByText(/Run this in a terminal/)).not.toBeInTheDocument();
+      await expect(screen.queryByRole("button", { name: "Start sign-in again" })).not.toBeInTheDocument();
+    },
+  };
+}
+
+export const LocalClaudeSignInRequired = localSubscriptionStory("Claude", "sign-in");
+export const LocalCodexSignInRequired = localSubscriptionStory("OpenAI", "sign-in");
+export const LocalClaudeDetected = localSubscriptionStory("Claude", "detected");
+export const LocalCodexDetected = localSubscriptionStory("OpenAI", "detected");
+export const LocalClaudeTesting = localSubscriptionStory("Claude", "testing");
+export const LocalCodexTesting = localSubscriptionStory("OpenAI", "testing");
+export const LocalClaudeRetry = localSubscriptionStory("Claude", "retry");
+export const LocalCodexRetry = localSubscriptionStory("OpenAI", "retry");
+export const LocalClaudeSuccess = localSubscriptionStory("Claude", "success");
+export const LocalCodexSuccess = localSubscriptionStory("OpenAI", "success");
