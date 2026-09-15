@@ -5,6 +5,10 @@ import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  STORAGE_TRANSACTION_LOCK_DIR_NAME,
+  STORAGE_TRANSACTION_PARTICIPATION_NAME,
+} from "./backup-transaction-lock.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -71,6 +75,40 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+describe("runDatabaseBackup transaction teardown", () => {
+  it("does not publish an owner when database client setup throws synchronously", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-setup-failure-");
+
+    await expect(runDatabaseBackup({
+      connectionString: "not-a-url",
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupEngine: "javascript",
+    })).rejects.toThrow();
+
+    expect(fs.existsSync(path.join(backupDir, STORAGE_TRANSACTION_LOCK_DIR_NAME))).toBe(false);
+    expect(fs.existsSync(path.join(backupDir, STORAGE_TRANSACTION_PARTICIPATION_NAME))).toBe(false);
+  });
+
+  it("releases an acquired owner when the backup connection fails", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-connection-failure-");
+
+    await expect(runDatabaseBackup({
+      connectionString: "postgres://paperclip:paperclip@127.0.0.1:1/paperclip",
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupEngine: "javascript",
+      connectTimeoutSeconds: 1,
+    })).rejects.toThrow();
+
+    expect(fs.existsSync(path.join(backupDir, STORAGE_TRANSACTION_LOCK_DIR_NAME))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(
+      path.join(backupDir, STORAGE_TRANSACTION_PARTICIPATION_NAME),
+      "utf8",
+    ))).toMatchObject({ state: "ready" });
   });
 });
 
