@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -206,7 +207,7 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
     const winner = winners[0]!;
     if (!winner.ok) throw new Error("unreachable");
     expect(winner.value.status).toBe("in_progress");
-    expect(winner.value.assigneeAgentId).toEqual(winner.value.assigneeAgentId);
+    expect(agentIds).toContain(winner.value.assigneeAgentId);
     expect(winner.value.checkoutRunId).toBeTruthy();
   });
 
@@ -240,9 +241,7 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
     const [dbRow] = await db
       .select()
       .from(issues)
-      .where(
-        (await import("drizzle-orm")).eq(issues.id, issueId),
-      );
+      .where(eq(issues.id, issueId));
     expect(dbRow?.status).toBe("in_progress");
     expect(dbRow?.assigneeAgentId).toBe(winner.value.assigneeAgentId);
     expect(dbRow?.checkoutRunId).toBe(winner.value.checkoutRunId);
@@ -284,9 +283,7 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
     const [dbRow] = await db
       .select()
       .from(issues)
-      .where(
-        (await import("drizzle-orm")).eq(issues.id, issueId),
-      );
+      .where(eq(issues.id, issueId));
     expect(dbRow?.assigneeAgentId).toBe(agentIds[0]);
     expect(dbRow?.checkoutRunId).toBe(runIds[0]);
   });
@@ -352,7 +349,6 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
   it("new run can adopt checkout from a terminal (succeeded) run on the same agent", async () => {
     const { agentIds, runIds } = await createFixtures(1);
     const issueId = await createTodoIssue();
-    const { eq } = await import("drizzle-orm");
 
     // First run checks out
     await svc.checkout(issueId, agentIds[0]!, ["todo"], runIds[0]!);

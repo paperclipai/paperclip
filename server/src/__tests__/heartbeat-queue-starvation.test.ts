@@ -70,7 +70,6 @@ describeEmbeddedPostgres("heartbeat queue starvation", () => {
    */
   async function seedAgent(
     companyId: string,
-    issuePrefix: string,
     opts: {
       agentName: string;
       runningRunCount?: number;
@@ -145,7 +144,7 @@ describeEmbeddedPostgres("heartbeat queue starvation", () => {
     });
 
     // Looping agent: 1 run already executing, 3 more queued (simulating a tight loop)
-    const { runIds: looperRuns } = await seedAgent(companyId, issuePrefix, {
+    const { runIds: looperRuns } = await seedAgent(companyId, {
       agentName: "Looper",
       runningRunCount: 1,
       queuedRunCount: 3,
@@ -153,7 +152,7 @@ describeEmbeddedPostgres("heartbeat queue starvation", () => {
     });
 
     // Victim agent: 1 run waiting in queue
-    const { runIds: victimRuns } = await seedAgent(companyId, issuePrefix, {
+    const { runIds: victimRuns } = await seedAgent(companyId, {
       agentName: "Victim",
       runningRunCount: 0,
       queuedRunCount: 1,
@@ -204,7 +203,7 @@ describeEmbeddedPostgres("heartbeat queue starvation", () => {
     });
 
     // Looper: fully occupied (running=2), plus 3 queued burst
-    await seedAgent(companyId, issuePrefix, {
+    await seedAgent(companyId, {
       agentName: "Looper",
       runningRunCount: 2,
       queuedRunCount: 3,
@@ -212,12 +211,12 @@ describeEmbeddedPostgres("heartbeat queue starvation", () => {
     });
 
     // Two victim agents
-    const { runIds: victim1Runs } = await seedAgent(companyId, issuePrefix, {
+    const { runIds: victim1Runs } = await seedAgent(companyId, {
       agentName: "Victim1",
       runningRunCount: 0,
       queuedRunCount: 1,
     });
-    const { runIds: victim2Runs } = await seedAgent(companyId, issuePrefix, {
+    const { runIds: victim2Runs } = await seedAgent(companyId, {
       agentName: "Victim2",
       runningRunCount: 0,
       queuedRunCount: 1,
@@ -259,7 +258,7 @@ describeEmbeddedPostgres("heartbeat queue starvation", () => {
     });
 
     // Looper: no running run (finished), 1 queued run (its next iteration)
-    const { runIds: looperRuns } = await seedAgent(companyId, issuePrefix, {
+    const { runIds: looperRuns } = await seedAgent(companyId, {
       agentName: "Looper",
       runningRunCount: 0,
       queuedRunCount: 1,
@@ -293,7 +292,7 @@ describeEmbeddedPostgres("heartbeat queue starvation", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    const { agentId, runIds } = await seedAgent(companyId, issuePrefix, {
+    const { agentId, runIds } = await seedAgent(companyId, {
       agentName: "Looper",
       runningRunCount: 0,
       queuedRunCount: 5,
