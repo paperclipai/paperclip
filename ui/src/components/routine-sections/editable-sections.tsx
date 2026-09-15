@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Braces,
@@ -134,6 +134,13 @@ export function OverviewSection({
     navigateToSection,
   } = ctx;
   const [descriptionAnnotationsOpen, setDescriptionAnnotationsOpen] = useState(defaultDescriptionAnnotationsOpen);
+  // MDXEditor can normalize markdown and emit onChange while it mounts. Only
+  // treat editor output as a draft after a real interaction so merely opening
+  // a routine for edit cannot mark the description dirty.
+  const descriptionInteractedRef = useRef(false);
+  const markDescriptionInteracted = useCallback(() => {
+    descriptionInteractedRef.current = true;
+  }, []);
 
   const activeTriggers = routine.triggers.length;
   const nextFire = useMemo(() => {
@@ -273,10 +280,49 @@ export function OverviewSection({
             panelOpen={descriptionAnnotationsOpen}
             onPanelOpenChange={setDescriptionAnnotationsOpen}
           >
+            <div
+              onBeforeInputCapture={markDescriptionInteracted}
+              onDropCapture={markDescriptionInteracted}
+              onInput={markDescriptionInteracted}
+              onKeyDownCapture={markDescriptionInteracted}
+              onPasteCapture={markDescriptionInteracted}
+              onPointerDownCapture={markDescriptionInteracted}
+            >
+              <MarkdownEditor
+                ref={descriptionEditorRef}
+                value={editDraft.description}
+                onChange={(description) => {
+                  if (!descriptionInteractedRef.current) return;
+                  setEditDraft((current) => ({ ...current, description }));
+                }}
+                placeholder="Add instructions..."
+                bordered={false}
+                contentClassName="min-h-(--sz-120px) text-sm leading-7"
+                mentions={mentionOptions}
+                onSubmit={() => {
+                  if (!saveRoutine.isPending && editDraft.title.trim()) {
+                    saveRoutine.mutate();
+                  }
+                }}
+              />
+            </div>
+          </IssueDocumentAnnotations>
+        ) : (
+          <div
+            onBeforeInputCapture={markDescriptionInteracted}
+            onDropCapture={markDescriptionInteracted}
+            onInput={markDescriptionInteracted}
+            onKeyDownCapture={markDescriptionInteracted}
+            onPasteCapture={markDescriptionInteracted}
+            onPointerDownCapture={markDescriptionInteracted}
+          >
             <MarkdownEditor
               ref={descriptionEditorRef}
               value={editDraft.description}
-              onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
+              onChange={(description) => {
+                if (!descriptionInteractedRef.current) return;
+                setEditDraft((current) => ({ ...current, description }));
+              }}
               placeholder="Add instructions..."
               bordered={false}
               contentClassName="min-h-(--sz-120px) text-sm leading-7"
@@ -287,22 +333,7 @@ export function OverviewSection({
                 }
               }}
             />
-          </IssueDocumentAnnotations>
-        ) : (
-          <MarkdownEditor
-            ref={descriptionEditorRef}
-            value={editDraft.description}
-            onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-            placeholder="Add instructions..."
-            bordered={false}
-            contentClassName="min-h-(--sz-120px) text-sm leading-7"
-            mentions={mentionOptions}
-            onSubmit={() => {
-              if (!saveRoutine.isPending && editDraft.title.trim()) {
-                saveRoutine.mutate();
-              }
-            }}
-          />
+          </div>
         )}
       </div>
 
