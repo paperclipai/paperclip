@@ -896,8 +896,24 @@ export async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): P
   const baseRef = workspace.baseRef;
 
   if (repoRoot && baseRef) {
+    let targetRef: string = baseRef;
     try {
-      const counts = (await runGit(["rev-list", "--left-right", "--count", `${baseRef}...HEAD`], workspacePath)).stdout.trim();
+      await runGit(["remote", "get-url", "origin"], workspacePath);
+      const remoteBranch = baseRef.startsWith("refs/remotes/origin/")
+        ? baseRef.slice("refs/remotes/origin/".length)
+        : baseRef.startsWith("origin/")
+          ? baseRef.slice("origin/".length)
+          : baseRef;
+      if (!/^[0-9a-f]{40}$/i.test(remoteBranch)) {
+        await runGit(["fetch", "--quiet", "origin", `${remoteBranch}:refs/remotes/origin/${remoteBranch}`], workspacePath);
+        targetRef = `refs/remotes/origin/${remoteBranch}`;
+      }
+    } catch {
+      // Local-only repositories and immutable refs have no authoritative remote
+      // to refresh; retain the configured target ref for those workspaces.
+    }
+    try {
+      const counts = (await runGit(["rev-list", "--left-right", "--count", `${targetRef}...HEAD`], workspacePath)).stdout.trim();
       const [behindRaw, aheadRaw] = counts.split(/\s+/);
       behindCount = behindRaw ? Number.parseInt(behindRaw, 10) : 0;
       aheadCount = aheadRaw ? Number.parseInt(aheadRaw, 10) : 0;
@@ -908,7 +924,7 @@ export async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): P
     }
 
     try {
-      await runGit(["merge-base", "--is-ancestor", "HEAD", baseRef], workspacePath);
+      await runGit(["merge-base", "--is-ancestor", "HEAD", targetRef], workspacePath);
       isMergedIntoBase = true;
     } catch (error) {
       const code = typeof error === "object" && error && "code" in error ? (error as { code?: unknown }).code : null;
@@ -922,11 +938,12 @@ export async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): P
 
     if (isMergedIntoBase === false) {
       try {
-        const cherry = (await runGit(["cherry", baseRef, "HEAD"], workspacePath)).stdout
+        const mergeCommits = (await runGit(["rev-list", "--merges", `${targetRef}..HEAD`], workspacePath)).stdout.trim();
+        const cherry = mergeCommits ? [] : (await runGit(["cherry", targetRef, "HEAD"], workspacePath)).stdout
           .split("\n")
           .map((line) => line.trim())
           .filter(Boolean);
-        isPatchEquivalentToBase = cherry.length > 0 && cherry.every((line) => line.startsWith("-"));
+        isPatchEquivalentToBase = !mergeCommits && cherry.length > 0 && cherry.every((line) => line.startsWith("-"));
       } catch (error) {
         warnings.push(
           `Could not determine whether commits were cherry-picked onto ${baseRef}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1930,6 +1947,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         hasIsolatedGitWorkspace: false,
         issueStatus: issue.status,
         reviewPolicy: issue.reviewPolicy,
+        enforceTransitionStatus: issue.status !== "done",
       });
     }
 
@@ -1945,6 +1963,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       workspaceGitInspectionSucceeded: inspection.statusInspectionSucceeded,
       issueStatus: issue.status,
       reviewPolicy: issue.reviewPolicy,
+      enforceTransitionStatus: issue.status !== "done",
     });
   }
 
@@ -2709,7 +2728,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           eq(issueWorkProducts.isPrimary, true),
           inArray(issueWorkProducts.type, [...CODE_WORK_PRODUCT_TYPES]),
         ))
-        .where(eq(issues.status, "done"));
+        .where(eq(issues.status, "done"))
+        .orderBy(desc(issues.updatedAt))
+        .limit(50);
       const deliveryDriftIssueIds = new Set<string>();
       for (const row of historicalPrimaryCodeProducts) {
         const readiness = await assessIssueDoneDeliveryReadiness(row.issueId);

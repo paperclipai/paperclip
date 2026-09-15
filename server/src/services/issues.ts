@@ -10469,6 +10469,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        deliveryReadinessVerified?: boolean;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10514,6 +10515,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         companyGuard,
+        deliveryReadinessVerified,
         ...issueData
       } = data;
       if (
@@ -10785,7 +10787,11 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
-        if (receiptExisting.status !== "done" && patch.status === "done") {
+        if (
+          !deliveryReadinessVerified
+          && receiptExisting.status !== "done"
+          && patch.status === "done"
+        ) {
           // Enforce delivery readiness at the shared mutation boundary. Several
           // internal completion paths call issueService directly and do not pass
           // through the HTTP route checks.

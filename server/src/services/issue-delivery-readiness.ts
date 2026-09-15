@@ -15,6 +15,7 @@ export type IssueDoneDeliveryReasonCode =
   | "combined_regression_checks_missing"
   | "combined_regression_checks_failed"
   | "delivery_not_reconciled"
+  | "delivery_evidence_stale"
   | "delivered_commit_not_on_target"
   | "workspace_git_state_unverified"
   | "workspace_dirty";
@@ -38,6 +39,7 @@ type DeliveryWorkProduct = {
   reviewState: string;
   healthStatus: string;
   metadata: Record<string, unknown> | null;
+  updatedAt?: Date | string | null;
 };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -78,6 +80,7 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
   workspaceGitInspectionSucceeded?: boolean;
   issueStatus?: string;
   reviewPolicy?: string | null;
+  enforceTransitionStatus?: boolean;
 }): IssueDoneDeliveryReadiness {
   const primaryIsCode = Boolean(
     input.primaryWorkProduct && CODE_WORK_PRODUCT_TYPES.has(input.primaryWorkProduct.type),
@@ -107,7 +110,9 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
   if (input.reviewPolicy !== "not_creator" && input.reviewPolicy !== "human_only") {
     reasons.push("independent_review_not_configured");
   }
-  if (input.issueStatus !== "in_review") reasons.push("independent_review_not_pending");
+  if (input.enforceTransitionStatus !== false && input.issueStatus !== "in_review") {
+    reasons.push("independent_review_not_pending");
+  }
   const product = primaryIsCode ? input.primaryWorkProduct : null;
   if (!product) {
     reasons.push("missing_primary_code_work_product");
@@ -120,8 +125,11 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
     const regressionState = combinedRegressionState(evidence);
     if (regressionState === "missing") reasons.push("combined_regression_checks_missing");
     if (regressionState === "failed") reasons.push("combined_regression_checks_failed");
-    if (typeof evidence.reconciledAt !== "string" || !Number.isFinite(Date.parse(evidence.reconciledAt))) {
+    const reconciledAt = typeof evidence.reconciledAt === "string" ? Date.parse(evidence.reconciledAt) : Number.NaN;
+    if (!Number.isFinite(reconciledAt)) {
       reasons.push("delivery_not_reconciled");
+    } else if (product.updatedAt && reconciledAt < new Date(product.updatedAt).getTime()) {
+      reasons.push("delivery_evidence_stale");
     }
     if (!input.hasIsolatedGitWorkspace && evidence.commitOnTarget !== true) {
       reasons.push("delivered_commit_not_on_target");

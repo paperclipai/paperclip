@@ -141,6 +141,28 @@ describe("issue Done delivery readiness", () => {
     expect(result).toMatchObject({ required: true, ready: true, disposition: "code", reasonCodes: [] });
   });
 
+  it("evaluates historical Done delivery without reapplying the transition status gate", () => {
+    const result = evaluateIssueDoneDeliveryReadiness({
+      primaryWorkProduct: primary(),
+      hasIsolatedGitWorkspace: false,
+      issueStatus: "done",
+      reviewPolicy: "not_creator",
+      enforceTransitionStatus: false,
+    });
+    expect(result.ready).toBe(true);
+    expect(result.reasonCodes).not.toContain("independent_review_not_pending");
+  });
+
+  it("rejects evidence recorded before the current work-product revision", () => {
+    const result = evaluateIssueDoneDeliveryReadiness({
+      primaryWorkProduct: primary({ updatedAt: new Date("2026-09-15T12:01:00.000Z") }),
+      hasIsolatedGitWorkspace: false,
+      issueStatus: "in_review",
+      reviewPolicy: "not_creator",
+    });
+    expect(result.reasonCodes).toContain("delivery_evidence_stale");
+  });
+
   it("recognizes an explicit analysis-only no-merge disposition even with an isolated workspace", () => {
     const product = primary({
       type: "document",
@@ -194,5 +216,41 @@ describe("issue Done delivery readiness", () => {
       hasDirtyTrackedFiles: false,
       hasUntrackedFiles: false,
     });
+  });
+
+  it("does not call a branch patch-equivalent when it contains merge-only resolution content", async () => {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-delivery-merge-readiness-"));
+    tempDirs.add(repo);
+    await git(repo, "init");
+    await git(repo, "config", "user.name", "Paperclip Test");
+    await git(repo, "config", "user.email", "test@paperclip.local");
+    await fs.writeFile(path.join(repo, "README.md"), "initial\n");
+    await git(repo, "add", "README.md");
+    await git(repo, "commit", "-m", "initial");
+    await git(repo, "branch", "-M", "main");
+    await git(repo, "checkout", "-b", "side");
+    await fs.writeFile(path.join(repo, "side.txt"), "side\n");
+    await git(repo, "add", "side.txt");
+    await git(repo, "commit", "-m", "side");
+    await git(repo, "checkout", "-b", "feature", "main");
+    await fs.writeFile(path.join(repo, "feature.txt"), "feature\n");
+    await git(repo, "add", "feature.txt");
+    await git(repo, "commit", "-m", "feature");
+    await git(repo, "merge", "--no-ff", "side", "-m", "merge side");
+
+    const inspection = await inspectGitCloseReadiness({
+      id: "workspace-merge",
+      mode: "isolated_workspace",
+      providerType: "git_worktree",
+      providerRef: repo,
+      cwd: repo,
+      repoUrl: null,
+      baseRef: "main",
+      branchName: "feature",
+      metadata: {},
+    } as ExecutionWorkspace);
+
+    expect(inspection.git?.isMergedIntoBase).toBe(false);
+    expect(inspection.git?.isPatchEquivalentToBase).toBe(false);
   });
 });

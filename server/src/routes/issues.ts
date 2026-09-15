@@ -9369,10 +9369,6 @@ export function issueRoutes(
               actor: { type: actor.actorType, id: actor.actorId },
             });
           }
-          if (sourceIssueStatus === "done") {
-            await assertIssueDoneDeliveryReady(lockedIssue.id, tx as unknown as Db);
-          }
-
           const updateFields: Record<string, unknown> = {
             status: sourceIssueStatus,
           };
@@ -13483,6 +13479,7 @@ export function issueRoutes(
         ...updateFields,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        ...(updateFields.status === "done" ? { deliveryReadinessVerified: true } : {}),
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
@@ -13538,14 +13535,8 @@ export function issueRoutes(
             reviewPolicy: lockedExisting.reviewPolicy,
           });
         }
-        if (
-          lockedExisting.status !== "done" &&
-          updateFields.status === "done"
-        ) {
-          await assertIssueDoneDeliveryReady(
-            lockedExisting.id,
-            tx as unknown as Db,
-          );
+        if (lockedExisting.status !== "done" && updateFields.status === "done") {
+          await assertIssueDoneDeliveryReady(lockedExisting.id, tx as unknown as Db);
         }
         return true;
       };
@@ -17617,10 +17608,6 @@ export function issueRoutes(
           txResult = await db.transaction(async (tx) => {
             const lockedIssue = await svc.getByIdForUpdate(id, tx);
             if (!lockedIssue) throw new AutoApprovalIssueMissingError();
-            await assertIssueDoneDeliveryReady(
-              lockedIssue.id,
-              tx as unknown as Db,
-            );
             const insertedComment = await svc.addComment(
               id,
               req.body.body,
