@@ -73,6 +73,20 @@ export type AttachmentArtifactWorkProductMetadata = z.infer<typeof attachmentArt
 export const issueWorkProductMetadataSchema = z
   .object({
     resourceRef: workspaceFileRefSchema.optional().nullable(),
+    deliveryEvidence: z.object({
+      reconciledAt: z.string().datetime(),
+      commitOnTarget: z.boolean().optional(),
+      combinedRegressionChecks: z.array(z.object({
+        name: z.string().trim().min(1),
+        status: z.enum(["passed", "failed", "success"]),
+        command: z.string().trim().min(1).optional(),
+        recordedAt: z.string().datetime().optional(),
+      }).strict()).min(1),
+    }).strict().optional(),
+    deliveryDisposition: z.object({
+      kind: z.literal("no_merge"),
+      reason: z.string().trim().min(1),
+    }).strict().optional(),
   })
   .passthrough();
 

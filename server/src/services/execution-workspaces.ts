@@ -62,6 +62,10 @@ import {
   listCurrentRuntimeServicesForProjectWorkspaces,
   selectConfiguredRuntimeServiceRows,
 } from "./workspace-runtime-read-model.js";
+import {
+  CODE_WORK_PRODUCT_TYPES,
+  evaluateIssueDoneDeliveryReadiness,
+} from "./issue-delivery-readiness.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -262,9 +266,11 @@ export function deriveExecutionWorkspaceDeliveryState(input: {
   mergedPullRequest: boolean;
   pullRequestStateUnknown: boolean;
   isMergedIntoBase: boolean | null;
+  isPatchEquivalentToBase?: boolean | null;
 }): ExecutionWorkspaceDeliveryState {
   if (input.sourceIssueTerminal && input.mergedPullRequest) return "merged_via_pr";
   if (input.isMergedIntoBase === true) return "merged_by_ancestry";
+  if (input.isPatchEquivalentToBase === true) return "merged_by_patch_equivalence";
   if (input.isMergedIntoBase === false && !input.pullRequestStateUnknown) return "unmerged";
   return "unknown";
 }
@@ -788,7 +794,7 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
   }
 }
 
-async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
+export async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
   statusInspectionSucceeded: boolean;
@@ -826,6 +832,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         aheadCount: null,
         behindCount: null,
         isMergedIntoBase: null,
+        isPatchEquivalentToBase: null,
         createdByRuntime,
       },
       warnings,
@@ -885,11 +892,28 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   let aheadCount: number | null = null;
   let behindCount: number | null = null;
   let isMergedIntoBase: boolean | null = null;
+  let isPatchEquivalentToBase: boolean | null = null;
   const baseRef = workspace.baseRef;
 
   if (repoRoot && baseRef) {
+    let targetRef: string = baseRef;
     try {
-      const counts = (await runGit(["rev-list", "--left-right", "--count", `${baseRef}...HEAD`], workspacePath)).stdout.trim();
+      await runGit(["remote", "get-url", "origin"], workspacePath);
+      const remoteBranch = baseRef.startsWith("refs/remotes/origin/")
+        ? baseRef.slice("refs/remotes/origin/".length)
+        : baseRef.startsWith("origin/")
+          ? baseRef.slice("origin/".length)
+          : baseRef;
+      if (!/^[0-9a-f]{40}$/i.test(remoteBranch)) {
+        await runGit(["fetch", "--quiet", "origin", `${remoteBranch}:refs/remotes/origin/${remoteBranch}`], workspacePath);
+        targetRef = `refs/remotes/origin/${remoteBranch}`;
+      }
+    } catch {
+      // Local-only repositories and immutable refs have no authoritative remote
+      // to refresh; retain the configured target ref for those workspaces.
+    }
+    try {
+      const counts = (await runGit(["rev-list", "--left-right", "--count", `${targetRef}...HEAD`], workspacePath)).stdout.trim();
       const [behindRaw, aheadRaw] = counts.split(/\s+/);
       behindCount = behindRaw ? Number.parseInt(behindRaw, 10) : 0;
       aheadCount = aheadRaw ? Number.parseInt(aheadRaw, 10) : 0;
@@ -900,7 +924,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     }
 
     try {
-      await runGit(["merge-base", "--is-ancestor", "HEAD", baseRef], workspacePath);
+      await runGit(["merge-base", "--is-ancestor", "HEAD", targetRef], workspacePath);
       isMergedIntoBase = true;
     } catch (error) {
       const code = typeof error === "object" && error && "code" in error ? (error as { code?: unknown }).code : null;
@@ -908,6 +932,21 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       else {
         warnings.push(
           `Could not determine whether this workspace is merged into ${baseRef}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    if (isMergedIntoBase === false) {
+      try {
+        const mergeCommits = (await runGit(["rev-list", "--merges", `${targetRef}..HEAD`], workspacePath)).stdout.trim();
+        const cherry = mergeCommits ? [] : (await runGit(["cherry", targetRef, "HEAD"], workspacePath)).stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        isPatchEquivalentToBase = !mergeCommits && cherry.length > 0 && cherry.every((line) => line.startsWith("-"));
+      } catch (error) {
+        warnings.push(
+          `Could not determine whether commits were cherry-picked onto ${baseRef}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
@@ -926,6 +965,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       aheadCount,
       behindCount,
       isMergedIntoBase,
+      isPatchEquivalentToBase,
       createdByRuntime,
     },
     warnings,
@@ -1377,10 +1417,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   async function assessDelivery(
     workspace: ExecutionWorkspaceRow,
     git: ExecutionWorkspaceCloseGitReadiness | null,
+    options: { treatSourceIssueAsTerminal?: boolean } = {},
   ) {
     const issueTree = await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
-    const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
+    const sourceIssueTerminal = options.treatSourceIssueAsTerminal === true
+      || Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
     const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
     // The cooldown anchor is the most recent terminal timestamp across the whole
     // issue tree. The reaper compares it against the cooldown window. A null
@@ -1453,6 +1495,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         mergedPullRequest,
         pullRequestStateUnknown,
         isMergedIntoBase: git?.isMergedIntoBase ?? null,
+        isPatchEquivalentToBase: git?.isPatchEquivalentToBase ?? null,
       }),
       sourceIssueTerminal,
       subtreeTerminal,
@@ -1862,6 +1905,68 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return conditions;
   }
 
+  async function assessIssueDoneDeliveryReadiness(issueId: string) {
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        status: issues.status,
+        reviewPolicy: issues.reviewPolicy,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return null;
+
+    const primaryWorkProducts = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(and(
+        eq(issueWorkProducts.companyId, issue.companyId),
+        eq(issueWorkProducts.issueId, issue.id),
+        eq(issueWorkProducts.isPrimary, true),
+      ))
+      .orderBy(desc(issueWorkProducts.updatedAt))
+      .limit(100);
+    const primaryWorkProduct = primaryWorkProducts.find((product) =>
+      CODE_WORK_PRODUCT_TYPES.has(product.type)
+    ) ?? primaryWorkProducts[0] ?? null;
+
+    const workspace = issue.executionWorkspaceId
+      ? await db.select().from(executionWorkspaces).where(and(
+          eq(executionWorkspaces.id, issue.executionWorkspaceId),
+          eq(executionWorkspaces.companyId, issue.companyId),
+        )).then((rows) => rows[0] ?? null)
+      : null;
+    const hasIsolatedGitWorkspace = workspace?.mode === "isolated_workspace"
+      && workspace.providerType === "git_worktree";
+    if (!hasIsolatedGitWorkspace || !workspace) {
+      return evaluateIssueDoneDeliveryReadiness({
+        primaryWorkProduct,
+        hasIsolatedGitWorkspace: false,
+        issueStatus: issue.status,
+        reviewPolicy: issue.reviewPolicy,
+        enforceTransitionStatus: issue.status !== "done",
+      });
+    }
+
+    const inspection = await inspectGitCloseReadiness(toExecutionWorkspace(workspace));
+    const assessment = await assessDelivery(workspace, inspection.git, {
+      treatSourceIssueAsTerminal: true,
+    });
+    return evaluateIssueDoneDeliveryReadiness({
+      primaryWorkProduct,
+      hasIsolatedGitWorkspace: true,
+      workspaceDeliveryState: assessment.deliveryState,
+      workspaceGit: inspection.git,
+      workspaceGitInspectionSucceeded: inspection.statusInspectionSucceeded,
+      issueStatus: issue.status,
+      reviewPolicy: issue.reviewPolicy,
+      enforceTransitionStatus: issue.status !== "done",
+    });
+  }
+
   return {
     listOverview: async (
       companyId: string,
@@ -2262,6 +2367,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       );
     },
 
+    getIssueDoneDeliveryReadiness: assessIssueDoneDeliveryReadiness,
+
     getCloseReadiness: async (id: string): Promise<ExecutionWorkspaceCloseReadiness | null> => {
       const workspace = await db
         .select()
@@ -2540,6 +2647,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedActiveRun: 0,
           skippedNonTerminalTree: 0,
           skippedUndelivered: 0,
+          deliveryDriftDetected: 0,
           skippedRace: 0,
           skippedReopened: 0,
           skippedCooldown: 0,
@@ -2604,11 +2712,32 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedActiveRun: 0,
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
+        deliveryDriftDetected: 0,
         skippedRace: 0,
         skippedReopened: 0,
         skippedCooldown: 0,
         clearedStaleReopenPending: 0,
       };
+
+      const historicalPrimaryCodeProducts = await db
+        .selectDistinct({ issueId: issues.id })
+        .from(issues)
+        .innerJoin(issueWorkProducts, and(
+          eq(issueWorkProducts.companyId, issues.companyId),
+          eq(issueWorkProducts.issueId, issues.id),
+          eq(issueWorkProducts.isPrimary, true),
+          inArray(issueWorkProducts.type, [...CODE_WORK_PRODUCT_TYPES]),
+        ))
+        .where(eq(issues.status, "done"))
+        .orderBy(desc(issues.updatedAt))
+        .limit(50);
+      const deliveryDriftIssueIds = new Set<string>();
+      for (const row of historicalPrimaryCodeProducts) {
+        const readiness = await assessIssueDoneDeliveryReadiness(row.issueId);
+        if (readiness?.required && !readiness.ready) {
+          deliveryDriftIssueIds.add(row.issueId);
+        }
+      }
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
@@ -2637,6 +2766,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
+        if (workspace.sourceIssueId) {
+          const doneReadiness = await assessIssueDoneDeliveryReadiness(workspace.sourceIssueId);
+          if (doneReadiness?.required && !doneReadiness.ready) {
+            deliveryDriftIssueIds.add(workspace.sourceIssueId);
+          }
+        }
         if (assessment.workspaceDirty) {
           result.skippedUndelivered += 1;
           continue;
@@ -2644,6 +2779,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (
           assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
+          && assessment.deliveryState !== "merged_by_patch_equivalence"
         ) {
           result.skippedUndelivered += 1;
           continue;
@@ -2874,6 +3010,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           });
         }
       }
+      result.deliveryDriftDetected = deliveryDriftIssueIds.size;
       return result;
       } finally {
         terminalSweepInProgress = false;

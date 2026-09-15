@@ -107,6 +107,7 @@ const {
       skippedActiveRun: 0,
       skippedNonTerminalTree: 0,
       skippedUndelivered: 0,
+      deliveryDriftDetected: 0,
       skippedRace: 0,
     })),
   };
