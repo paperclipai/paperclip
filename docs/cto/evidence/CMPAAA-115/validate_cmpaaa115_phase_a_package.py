@@ -63,22 +63,30 @@ def main() -> None:
     missing_in_115 = [field for field in SHARED_FIELDS if field not in sample_keys]
     missing_in_49 = [field for field in SHARED_FIELDS if field not in cmpaaa49_keys]
 
-    escalation_sent_at = parse_utc(sample["escalation_sent_at"])
-    escalation_acknowledged_at = parse_utc(sample["escalation_acknowledged_at"])
-    mitigation_started_at = parse_utc(sample["mitigation_started_at"])
-    resolved_at = parse_utc(sample["resolved_at"])
+    try:
+        escalation_sent_at = parse_utc(sample["escalation_sent_at"])
+        escalation_acknowledged_at = parse_utc(sample["escalation_acknowledged_at"])
+        mitigation_started_at = parse_utc(sample["mitigation_started_at"])
+        resolved_at = parse_utc(sample["resolved_at"])
 
-    ordering_valid = (
-        escalation_sent_at
-        <= escalation_acknowledged_at
-        <= mitigation_started_at
-        <= resolved_at
+        ordering_valid = (
+            escalation_sent_at
+            <= escalation_acknowledged_at
+            <= mitigation_started_at
+            <= resolved_at
+        )
+
+        latency_minutes_expected = int((resolved_at - escalation_sent_at).total_seconds() / 60)
+        latency_matches = sample.get("handling_latency_minutes") == latency_minutes_expected
+    except (KeyError, TypeError, AttributeError, ValueError):
+        # Missing or malformed escalation timestamps fail these checks instead of crashing.
+        ordering_valid = False
+        latency_matches = False
+
+    refs = sample.get("audit_evidence_refs")
+    evidence_prefixes_ok = isinstance(refs, list) and has_required_evidence_prefixes(
+        [ref for ref in refs if isinstance(ref, str)]
     )
-
-    latency_minutes_expected = int((resolved_at - escalation_sent_at).total_seconds() / 60)
-    latency_matches = sample["handling_latency_minutes"] == latency_minutes_expected
-
-    evidence_prefixes_ok = has_required_evidence_prefixes(sample["audit_evidence_refs"])
 
     summary = {
         "schema_error_count": len(schema_errors),
@@ -130,6 +138,9 @@ def main() -> None:
     with OUTPUT_PATH.open("w", encoding="utf-8") as handle:
         json.dump(output, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
+
+    if not all(acceptance.values()):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

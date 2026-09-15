@@ -191,6 +191,9 @@ def main() -> None:
         json.dump(output, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
 
+    if not acceptance["closeout_ready"]:
+        raise SystemExit(1)
+
 
 if __name__ == "__main__":
     main()
