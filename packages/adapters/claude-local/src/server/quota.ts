@@ -10,6 +10,19 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
 
+/** Stable window keys, shared with the server-side subscription budget gate. */
+const CLAUDE_QUOTA_WINDOW_KEYS = {
+  "Current session": "five_hour",
+  "Current week (all models)": "seven_day",
+  "Current week (Sonnet only)": "seven_day_sonnet",
+  "Current week (Opus only)": "seven_day_opus",
+  "Extra usage": "extra_usage",
+} as const;
+
+function claudeQuotaWindowKey(label: string): string | null {
+  return (CLAUDE_QUOTA_WINDOW_KEYS as Record<string, string>)[label] ?? null;
+}
+
 export function claudeConfigDir(): string {
   const fromEnv = process.env.CLAUDE_CONFIG_DIR;
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
@@ -234,6 +247,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
 
   if (body.five_hour != null) {
     windows.push({
+      key: "five_hour",
       label: "Current session",
       usedPercent: toPercent(body.five_hour.utilization),
       resetsAt: body.five_hour.resets_at ?? null,
@@ -243,6 +257,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.seven_day != null) {
     windows.push({
+      key: "seven_day",
       label: "Current week (all models)",
       usedPercent: toPercent(body.seven_day.utilization),
       resetsAt: body.seven_day.resets_at ?? null,
@@ -252,6 +267,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.seven_day_sonnet != null) {
     windows.push({
+      key: "seven_day_sonnet",
       label: "Current week (Sonnet only)",
       usedPercent: toPercent(body.seven_day_sonnet.utilization),
       resetsAt: body.seven_day_sonnet.resets_at ?? null,
@@ -261,6 +277,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.seven_day_opus != null) {
     windows.push({
+      key: "seven_day_opus",
       label: "Current week (Opus only)",
       usedPercent: toPercent(body.seven_day_opus.utilization),
       resetsAt: body.seven_day_opus.resets_at ?? null,
@@ -270,6 +287,7 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
   }
   if (body.extra_usage != null) {
     windows.push({
+      key: "extra_usage",
       label: "Extra usage",
       usedPercent: body.extra_usage.is_enabled === false ? null : toPercent(body.extra_usage.utilization),
       resetsAt: null,
@@ -422,6 +440,7 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
   const windows = sections.map<QuotaWindow>((section) => {
     const usedPercent = section.lines.map(percentFromLine).find((value) => value != null) ?? null;
     return {
+      key: claudeQuotaWindowKey(section.label),
       label: section.label,
       usedPercent,
       resetsAt: null,

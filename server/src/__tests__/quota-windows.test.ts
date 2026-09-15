@@ -322,6 +322,7 @@ describe("parseClaudeCliUsageText", () => {
 
     expect(parseClaudeCliUsageText(raw)).toEqual([
       {
+        key: "five_hour",
         label: "Current session",
         usedPercent: 2,
         resetsAt: null,
@@ -329,6 +330,7 @@ describe("parseClaudeCliUsageText", () => {
         detail: "Resets 5pm (America/Chicago)",
       },
       {
+        key: "seven_day",
         label: "Current week (all models)",
         usedPercent: 47,
         resetsAt: null,
@@ -336,6 +338,7 @@ describe("parseClaudeCliUsageText", () => {
         detail: "Resets Mar 18 at 7:59am (America/Chicago)",
       },
       {
+        key: "seven_day_sonnet",
         label: "Current week (Sonnet only)",
         usedPercent: 0,
         resetsAt: null,
@@ -343,6 +346,7 @@ describe("parseClaudeCliUsageText", () => {
         detail: "Resets Mar 18 at 8:59am (America/Chicago)",
       },
       {
+        key: "extra_usage",
         label: "Extra usage",
         usedPercent: null,
         resetsAt: null,
@@ -532,6 +536,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
+      key: "five_hour",
       label: "Current session",
       usedPercent: 34,
       resetsAt: "2026-01-01T00:00:00Z",
@@ -543,6 +548,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
+      key: "seven_day",
       label: "Current week (all models)",
       usedPercent: 91,
       resetsAt: null,
@@ -553,6 +559,7 @@ describe("fetchClaudeQuota", () => {
     mockFetch({ five_hour: { utilization: 0.4, resets_at: null } });
     const windows = await fetchClaudeQuota("token");
     expect(windows[0]).toMatchObject({
+      key: "five_hour",
       label: "Current session",
       usedPercent: 40,
     });
@@ -606,6 +613,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toEqual([
       {
+        key: "extra_usage",
         label: "Extra usage",
         usedPercent: null,
         resetsAt: null,
@@ -627,6 +635,7 @@ describe("fetchClaudeQuota", () => {
     const windows = await fetchClaudeQuota("token");
     expect(windows).toHaveLength(1);
     expect(windows[0]).toMatchObject({
+      key: "extra_usage",
       label: "Extra usage",
       usedPercent: 49,
       valueLabel: "$67.93 / $140.00",
@@ -763,6 +772,7 @@ describe("mapCodexRpcQuota", () => {
     expect(snapshot.planType).toBe("pro");
     expect(snapshot.windows).toEqual([
       {
+        key: "five_hour",
         label: "5h limit",
         usedPercent: 1,
         resetsAt: "2025-11-18T21:06:40.000Z",
@@ -770,6 +780,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        key: "seven_day",
         label: "Weekly limit",
         usedPercent: 27,
         resetsAt: null,
@@ -777,6 +788,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        key: null,
         label: "GPT-5.3-Codex-Spark · 5h limit",
         usedPercent: 8,
         resetsAt: null,
@@ -784,6 +796,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
+        key: null,
         label: "GPT-5.3-Codex-Spark · Weekly limit",
         usedPercent: 20,
         resetsAt: null,
@@ -806,6 +819,7 @@ describe("mapCodexRpcQuota", () => {
 
     expect(snapshot.windows).toEqual([
       {
+        key: "credits",
         label: "Credits",
         usedPercent: null,
         resetsAt: null,

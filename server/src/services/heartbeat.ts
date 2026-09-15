@@ -13,6 +13,14 @@ import { executionBlockerPredicate, getExecutionBlocker } from "./execution-bloc
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import {
+  SUBSCRIPTION_WINDOW_SKIPPED_ERROR_CODE,
+  SUBSCRIPTION_WINDOW_WAIT_EXHAUSTED_ERROR_CODE,
+  SUBSCRIPTION_WINDOW_WAIT_RETRY_REASON,
+  boundSubscriptionWindowWait,
+  subscriptionWindowGateService,
+  type SubscriptionWindowWait,
+} from "./subscription-window-gate.js";
+import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "./legacy-execution-recovery.js";
@@ -9162,6 +9170,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
+  /** Subscription window gate override (tests inject a fixed quota snapshot). */
+  subscriptionWindowGate?: Pick<ReturnType<typeof subscriptionWindowGateService>, "evaluate">;
   /** Test seam immediately before the durable chat-control admission check. */
   beforeChatControlRecoveryCheck?: (input: {
     runId: string;
@@ -9404,6 +9414,8 @@ export function heartbeatService(
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const subscriptionWindowGate =
+    options.subscriptionWindowGate ?? subscriptionWindowGateService(db);
   const recovery = recoveryService(db, {
     enqueueWakeup,
     liveRunExecutions,
@@ -16585,6 +16597,157 @@ export function heartbeatService(
     return null;
   }
 
+  function summarizeSubscriptionWindowWait(wait: SubscriptionWindowWait) {
+    return {
+      policyId: wait.policyId,
+      scopeType: wait.scopeType,
+      scopeId: wait.scopeId,
+      windowKind: wait.windowKind,
+      quotaKey: wait.quotaKey,
+      provider: wait.provider,
+      usedPercent: wait.usedPercent,
+      usageUnknown: wait.usageUnknown,
+      limitPercent: wait.limitPercent,
+      resetsAt: wait.resetsAt,
+      resumeAt: wait.resumeAt.toISOString(),
+    };
+  }
+
+  /**
+   * A queued run whose provider subscription window is saturated is not a
+   * failure. Timer heartbeats recur on their own interval, so that tick is
+   * skipped quietly (the daily-cap precedent). Every other wake keeps its run
+   * and is deferred to the window reset as an ordinary scheduled retry, which
+   * the due-retry loop promotes back into the queue; no incident, no pause,
+   * and no board escalation is created on this path.
+   */
+  async function holdQueuedRunForSubscriptionWindow(
+    run: typeof heartbeatRuns.$inferSelect,
+    wait: SubscriptionWindowWait,
+  ) {
+    const now = new Date();
+    const summary = summarizeSubscriptionWindowWait(wait);
+
+    if (run.invocationSource === "timer") {
+      const reason = `Skipped timer heartbeat: ${wait.reason}`;
+      const cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt: now,
+        error: reason,
+        errorCode: SUBSCRIPTION_WINDOW_SKIPPED_ERROR_CODE,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: SUBSCRIPTION_WINDOW_SKIPPED_ERROR_CODE,
+          subscriptionWindowWait: summary,
+        },
+      });
+      if (!cancelled) return null;
+      await setWakeupStatus(run.wakeupRequestId, "skipped", {
+        finishedAt: now,
+        error: reason,
+      });
+      await appendRunEvent(cancelled, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: reason,
+        payload: summary,
+      });
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: true,
+      });
+      return cancelled;
+    }
+
+    // Only this gate's own deferrals count toward the bound. A run promoted
+    // after workspace-busy, transient, or continuation retries starts a fresh
+    // wait, mirroring how WorkspaceBusyDeferral reads its attempt.
+    const continuing = run.scheduledRetryReason === SUBSCRIPTION_WINDOW_WAIT_RETRY_REASON;
+    const previousWait = continuing
+      ? parseObject(parseObject(run.resultJson).subscriptionWindowWait)
+      : {};
+    const previousStartedAt =
+      typeof previousWait.waitStartedAt === "string" ? new Date(previousWait.waitStartedAt) : null;
+    const waitStartedAt =
+      previousStartedAt && !Number.isNaN(previousStartedAt.getTime()) ? previousStartedAt : now;
+    const attempt = continuing ? (run.scheduledRetryAttempt ?? 0) + 1 : 1;
+    const bound = boundSubscriptionWindowWait({ waitStartedAt, resumeAt: wait.resumeAt, now });
+    const waitSummary = {
+      ...summary,
+      resumeAt: bound.resumeAt.toISOString(),
+      waitStartedAt: waitStartedAt.toISOString(),
+      waitDeadline: bound.deadline.toISOString(),
+    };
+
+    if (bound.exhausted) {
+      // Cancel through the same pre-invocation path as the daily cap. The
+      // general cancel routine re-enters the dispatcher's own lifecycle work
+      // and stalls when invoked from inside a claim, and immediate recovery
+      // would only re-queue the work straight back into this gate.
+      const reason =
+        `Cancelled after waiting for the provider subscription window since ${waitStartedAt.toISOString()} ` +
+        `(${attempt - 1} consecutive deferrals): ${wait.reason}`;
+      const cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt: now,
+        error: reason,
+        errorCode: SUBSCRIPTION_WINDOW_WAIT_EXHAUSTED_ERROR_CODE,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: SUBSCRIPTION_WINDOW_WAIT_EXHAUSTED_ERROR_CODE,
+          subscriptionWindowWait: waitSummary,
+        },
+      });
+      if (!cancelled) return null;
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt: now,
+        error: reason,
+      });
+      await appendRunEvent(cancelled, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: { ...waitSummary, scheduledRetryAttempt: attempt - 1 },
+      });
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: true,
+      });
+      logger.warn(
+        { runId: run.id, agentId: run.agentId, waitStartedAt: waitStartedAt.toISOString(), attempt: attempt - 1 },
+        "claimQueuedRun: cancelled queued run after the subscription window wait bound",
+      );
+      return null;
+    }
+
+    const deferred = await setRunStatus(run.id, "scheduled_retry", {
+      scheduledRetryAt: bound.resumeAt,
+      scheduledRetryAttempt: attempt,
+      scheduledRetryReason: SUBSCRIPTION_WINDOW_WAIT_RETRY_REASON,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        subscriptionWindowWait: waitSummary,
+      },
+    });
+    if (!deferred) return null;
+    await appendRunEvent(deferred, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: `Deferred until the provider subscription window resets: ${wait.reason}`,
+      payload: { ...waitSummary, scheduledRetryAttempt: attempt },
+    });
+    logger.info(
+      {
+        runId: run.id,
+        agentId: run.agentId,
+        resumeAt: bound.resumeAt.toISOString(),
+        waitStartedAt: waitStartedAt.toISOString(),
+        attempt,
+      },
+      "claimQueuedRun: deferred queued run for subscription window",
+    );
+    return deferred;
+  }
+
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<
@@ -17069,6 +17232,17 @@ export function heartbeatService(
     );
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
+      return null;
+    }
+
+    const subscriptionWait = await subscriptionWindowGate.evaluate({
+      companyId: run.companyId,
+      agentId: run.agentId,
+      adapterType: agent.adapterType,
+      projectId: readNonEmptyString(context.projectId),
+    });
+    if (subscriptionWait) {
+      await holdQueuedRunForSubscriptionWindow(run, subscriptionWait);
       return null;
     }
 

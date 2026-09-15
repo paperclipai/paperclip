@@ -9,21 +9,32 @@ import {
   costEvents,
   projects,
 } from "@paperclipai/db";
-import type {
-  BudgetIncident,
-  BudgetIncidentResolutionInput,
-  BudgetMetric,
-  BudgetOverview,
-  PauseReason,
-  BudgetPolicy,
-  BudgetPolicySummary,
-  BudgetPolicyUpsertInput,
-  BudgetScopeType,
-  BudgetThresholdType,
-  BudgetWindowKind,
+import {
+  isSubscriptionBudgetWindowKind,
+  type BudgetIncident,
+  type BudgetIncidentResolutionInput,
+  type BudgetMetric,
+  type BudgetOverview,
+  type PauseReason,
+  type BudgetPolicy,
+  type BudgetPolicySummary,
+  type BudgetPolicyUpsertInput,
+  type BudgetScopeType,
+  type BudgetThresholdType,
+  type BudgetWindowKind,
+  type SubscriptionBudgetWindowKind,
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import {
+  providerSlugForAdapterType,
+  readQuotaSnapshot as readSharedQuotaSnapshot,
+  type QuotaSnapshotReader,
+} from "./quota-windows.js";
+import {
+  observeSubscriptionWindow,
+  type SubscriptionWindowObservation,
+} from "./subscription-window-gate.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -43,7 +54,24 @@ export type BudgetEnforcementScope = {
 
 export type BudgetServiceHooks = {
   cancelWorkForScope?: (scope: BudgetEnforcementScope) => Promise<void>;
+  /** Memoized provider quota reader used to summarize `subscription_percent` policies. */
+  readQuotaSnapshot?: QuotaSnapshotReader;
 };
+
+/** Nominal lengths of the provider subscription windows, used only to render window bounds. */
+const SUBSCRIPTION_WINDOW_DURATION_MS: Record<SubscriptionBudgetWindowKind, number> = {
+  provider_session: 5 * 60 * 60 * 1000,
+  provider_week: 7 * 24 * 60 * 60 * 1000,
+};
+
+/**
+ * `billed_cents` policies pause scopes and open incidents. `subscription_percent`
+ * policies only defer dispatch through the subscription window gate; the
+ * provider window resets on its own, so there is nothing for a human to resolve.
+ */
+function isEnforcedByIncidents(policy: Pick<PolicyRow, "metric">) {
+  return policy.metric === "billed_cents";
+}
 
 function currentUtcMonthWindow(now = new Date()) {
   const year = now.getUTCFullYear();
@@ -53,11 +81,25 @@ function currentUtcMonthWindow(now = new Date()) {
   return { start, end };
 }
 
-function resolveWindow(windowKind: BudgetWindowKind, now = new Date()) {
+function resolveWindow(
+  windowKind: BudgetWindowKind,
+  now = new Date(),
+  observation: SubscriptionWindowObservation | null = null,
+) {
   if (windowKind === "lifetime") {
     return {
       start: new Date(Date.UTC(1970, 0, 1, 0, 0, 0, 0)),
       end: new Date(Date.UTC(9999, 0, 1, 0, 0, 0, 0)),
+    };
+  }
+  if (isSubscriptionBudgetWindowKind(windowKind)) {
+    // The provider owns these bounds. Without a reported reset the window is
+    // rendered as ending "now" so the summary never claims a bogus deadline.
+    const reportedEnd = observation?.resetsAt ? new Date(observation.resetsAt) : null;
+    const end = reportedEnd && !Number.isNaN(reportedEnd.getTime()) ? reportedEnd : now;
+    return {
+      start: new Date(end.getTime() - SUBSCRIPTION_WINDOW_DURATION_MS[windowKind]),
+      end,
     };
   }
   return currentUtcMonthWindow(now);
@@ -211,6 +253,8 @@ async function markApprovalStatus(
 }
 
 export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
+  const readQuotaSnapshot = hooks.readQuotaSnapshot ?? readSharedQuotaSnapshot;
+
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
@@ -314,10 +358,51 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .orderBy(desc(budgetPolicies.updatedAt));
   }
 
+  /**
+   * Reads the current provider window for a `subscription_percent` policy. An
+   * agent scope reads its own adapter's provider; company and project scopes
+   * span every agent, so they report the most-used provider window.
+   */
+  async function observeSubscriptionPolicy(policy: PolicyRow): Promise<SubscriptionWindowObservation | null> {
+    const windowKind = policy.windowKind;
+    if (policy.metric !== "subscription_percent" || !isSubscriptionBudgetWindowKind(windowKind)) return null;
+    const snapshot = await readQuotaSnapshot();
+    let providers: string[] | null = null;
+    if (policy.scopeType === "agent") {
+      const agent = await db
+        .select({ adapterType: agents.adapterType })
+        .from(agents)
+        .where(eq(agents.id, policy.scopeId))
+        .then((rows) => rows[0] ?? null);
+      if (!agent) return null;
+      providers = [providerSlugForAdapterType(agent.adapterType)];
+    }
+    let best: SubscriptionWindowObservation | null = null;
+    for (const result of snapshot.results) {
+      if (providers && !providers.includes(result.provider)) continue;
+      const observation = observeSubscriptionWindow(result, windowKind);
+      if (!observation) continue;
+      if (!best || (observation.usedPercent ?? -1) > (best.usedPercent ?? -1)) best = observation;
+    }
+    return best;
+  }
+
   async function buildPolicySummary(policy: PolicyRow): Promise<BudgetPolicySummary> {
     const scope = await resolveScopeRecord(db, policy.scopeType as BudgetScopeType, policy.scopeId);
-    const observedAmount = await computeObservedAmount(db, policy);
-    const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
+    const isSubscription = policy.metric === "subscription_percent";
+    const observation = isSubscription ? await observeSubscriptionPolicy(policy) : null;
+    // A subscription policy only knows its usage when the provider reported
+    // the window. A failed quota fetch, a missing window, or a window without
+    // utilization is "unknown" and must not be presented as a healthy 0%.
+    const usageUnavailable = isSubscription && observation?.usedPercent == null;
+    // The snapshot keeps the last successful read while a refresh fails, so
+    // the usage is real but older than usual; say so instead of flipping to
+    // "unknown" and back on every transient probe failure.
+    const usageStale = isSubscription && !usageUnavailable && observation?.stale === true;
+    const observedAmount = isSubscription
+      ? observation?.usedPercent ?? 0
+      : await computeObservedAmount(db, policy);
+    const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind, new Date(), observation);
     const amount = policy.isActive ? policy.amount : 0;
     const utilizationPercent =
       amount > 0 ? Number(((observedAmount / amount) * 100).toFixed(2)) : 0;
@@ -333,11 +418,14 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       observedAmount,
       remainingAmount: amount > 0 ? Math.max(0, amount - observedAmount) : 0,
       utilizationPercent,
+      usageUnavailable,
+      usageStale,
+      usageObservedAt: isSubscription ? observation?.observedAt ?? null : null,
       warnPercent: policy.warnPercent,
       hardStopEnabled: policy.hardStopEnabled,
       notifyEnabled: policy.notifyEnabled,
       isActive: policy.isActive,
-      status: policy.isActive
+      status: policy.isActive && !usageUnavailable
         ? budgetStatusFromObserved(observedAmount, amount, policy.warnPercent)
         : "ok",
       paused: scope.paused,
@@ -588,7 +676,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .where(eq(agents.id, input.scopeId));
       }
 
-      if (amount > 0) {
+      if (!isEnforcedByIncidents(row)) {
+        // Subscription window policies are enforced at dispatch time only.
+      } else if (amount > 0) {
         const observedAmount = await computeObservedAmount(db, row);
         if (observedAmount < amount) {
           await resumeScopeFromBudget(row);

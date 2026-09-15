@@ -1,5 +1,7 @@
 /** a single rate-limit or usage window returned by a provider quota API */
 export interface QuotaWindow {
+  /** stable machine key (e.g. "five_hour", "seven_day"), null when the window has no known key */
+  key?: string | null;
   /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
   label: string;
   /** percent of the window already consumed (0-100), null when not reported */
@@ -22,7 +24,18 @@ export interface ProviderQuotaResult {
   ok: boolean;
   /** machine-readable error family when ok is false */
   errorFamily?: string | null;
-  /** error message when ok is false */
+  /** error message when ok is false, or the latest failed read when `stale` is true */
   error?: string;
+  /**
+   * ISO timestamp of the provider read that produced `windows`. Set by the
+   * server's memoized quota snapshot; absent on a raw adapter result.
+   */
+  observedAt?: string | null;
+  /**
+   * True when the latest provider read failed and `windows` still come from
+   * the last successful read, which is no older than the snapshot's stale
+   * bound. `ok` stays true so consumers keep using the last known usage.
+   */
+  stale?: boolean;
   windows: QuotaWindow[];
 }

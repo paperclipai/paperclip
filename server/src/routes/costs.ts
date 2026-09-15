@@ -21,7 +21,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { readQuotaSnapshot } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -281,8 +281,10 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows();
-    res.json(results);
+    // Same memoized snapshot the budget overview and the dispatch gate read,
+    // so every surface agrees on the current usage and one probe serves all.
+    const snapshot = await readQuotaSnapshot();
+    res.json(snapshot.results);
   });
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {

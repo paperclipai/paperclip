@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
+  BudgetPolicyUpsertInput,
   CostByAgentModel,
   CostByBiller,
   CostByProviderModel,
@@ -15,6 +16,7 @@ import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { SubscriptionWindowBudgets } from "../components/SubscriptionWindowBudgets";
 import { EmptyState } from "../components/EmptyState";
 import { FinanceBillerCard } from "../components/FinanceBillerCard";
 import { FinanceKindCard } from "../components/FinanceKindCard";
@@ -147,7 +149,7 @@ function FinanceSummaryCard({
 }
 
 export function Costs() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -213,12 +215,14 @@ export function Costs() {
       scopeId: string;
       amount: number;
       windowKind: BudgetPolicySummary["windowKind"];
+      metric?: BudgetPolicyUpsertInput["metric"];
     }) =>
       budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
         scopeId: input.scopeId,
         amount: input.amount,
         windowKind: input.windowKind,
+        ...(input.metric ? { metric: input.metric } : {}),
       }),
     onSuccess: invalidateBudgetViews,
   });
@@ -332,7 +336,7 @@ export function Costs() {
   const { data: quotaData, isLoading: quotaLoading } = useQuery({
     queryKey: queryKeys.usageQuotaWindows(companyId),
     queryFn: () => costsApi.quotaWindows(companyId),
-    enabled: !!selectedCompanyId && mainTab === "providers",
+    enabled: !!selectedCompanyId && (mainTab === "providers" || mainTab === "budgets"),
     refetchInterval: 300_000,
     staleTime: 60_000,
   });
@@ -522,11 +526,18 @@ export function Costs() {
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
-  const budgetPoliciesByScope = useMemo(() => ({
-    company: budgetPolicies.filter((policy) => policy.scopeType === "company"),
-    agent: budgetPolicies.filter((policy) => policy.scopeType === "agent"),
-    project: budgetPolicies.filter((policy) => policy.scopeType === "project"),
-  }), [budgetPolicies]);
+  const subscriptionBudgetPolicies = useMemo(
+    () => budgetPolicies.filter((policy) => policy.metric === "subscription_percent"),
+    [budgetPolicies],
+  );
+  const budgetPoliciesByScope = useMemo(() => {
+    const billed = budgetPolicies.filter((policy) => policy.metric !== "subscription_percent");
+    return {
+      company: billed.filter((policy) => policy.scopeType === "company"),
+      agent: billed.filter((policy) => policy.scopeType === "agent"),
+      project: billed.filter((policy) => policy.scopeType === "project"),
+    };
+  }, [budgetPolicies]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
@@ -843,7 +854,7 @@ export function Costs() {
                 <CardHeader className="px-5 pt-5 pb-3">
                   <CardTitle className="text-base">Budget control plane</CardTitle>
                   <CardDescription>
-                    Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
+                    Hard-stop spend limits for agents and projects, plus subscription usage limits that defer new runs until the provider window resets.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
@@ -901,6 +912,22 @@ export function Costs() {
                 </div>
               ) : null}
 
+              <SubscriptionWindowBudgets
+                companyId={companyId}
+                companyName={selectedCompany?.name ?? "Organization"}
+                policies={subscriptionBudgetPolicies}
+                quotaResults={quotaData ?? []}
+                isSaving={policyMutation.isPending}
+                onSave={({ windowKind, amount }) =>
+                  policyMutation.mutate({
+                    scopeType: "company",
+                    scopeId: companyId,
+                    amount,
+                    windowKind,
+                    metric: "subscription_percent",
+                  })}
+              />
+
               <div className="space-y-5">
                 {(["company", "agent", "project"] as const).map((scopeType) => {
                   const rows = budgetPoliciesByScope[scopeType];
@@ -929,6 +956,7 @@ export function Costs() {
                                 scopeId: summary.scopeId,
                                 amount,
                                 windowKind: summary.windowKind,
+                                metric: summary.metric,
                               })}
                           />
                         ))}

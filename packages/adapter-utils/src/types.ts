@@ -369,6 +369,12 @@ export interface HireApprovedHookResult {
 
 /** a single rate-limit or usage window returned by a provider quota API */
 export interface QuotaWindow {
+  /**
+   * stable machine key for the window, independent of the display label.
+   * Known keys: "five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus",
+   * "extra_usage", "credits". Null or omitted when the window has no known key.
+   */
+  key?: string | null;
   /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
   label: string;
   /** percent of the window already consumed (0-100), null when not reported */

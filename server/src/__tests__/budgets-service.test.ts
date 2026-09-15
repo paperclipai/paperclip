@@ -10,6 +10,7 @@ import {
   createDb,
   projects,
 } from "@paperclipai/db";
+import type { ProviderQuotaResult } from "@paperclipai/shared";
 import { budgetService } from "../services/budgets.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -531,6 +532,109 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       expect(call.details).not.toHaveProperty("prompt");
       expect(call.details).not.toHaveProperty("message");
     }
+  });
+
+  it("reports subscription usage as unavailable instead of a healthy 0% when the provider window is unknown", async () => {
+    const { companyId } = await createBudgetFixture();
+    let quota: ProviderQuotaResult[] = [
+      { provider: "openai", ok: false, error: "usage endpoint down", windows: [] },
+    ];
+    const service = budgetService(db, {
+      readQuotaSnapshot: async () => ({ results: quota, fetchedAt: new Date() }),
+    });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      metric: "subscription_percent",
+      windowKind: "provider_session",
+      amount: 80,
+      warnPercent: 50,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    const failedFetch = await service.overview(companyId);
+    expect(failedFetch.policies[0]).toMatchObject({
+      metric: "subscription_percent",
+      usageUnavailable: true,
+      observedAmount: 0,
+      status: "ok",
+    });
+
+    quota = [
+      {
+        provider: "openai",
+        ok: true,
+        windows: [
+          { key: "seven_day", label: "Weekly limit", usedPercent: 40, resetsAt: null, valueLabel: null, detail: null },
+        ],
+      },
+    ];
+    const missingWindow = await service.overview(companyId);
+    expect(missingWindow.policies[0]).toMatchObject({ usageUnavailable: true, observedAmount: 0, status: "ok" });
+
+    quota = [
+      {
+        provider: "openai",
+        ok: true,
+        windows: [
+          { key: "five_hour", label: "5h limit", usedPercent: null, resetsAt: null, valueLabel: null, detail: null },
+        ],
+      },
+    ];
+    const noUtilization = await service.overview(companyId);
+    expect(noUtilization.policies[0]).toMatchObject({ usageUnavailable: true, observedAmount: 0, status: "ok" });
+
+    quota = [
+      {
+        provider: "openai",
+        ok: true,
+        windows: [
+          {
+            key: "five_hour",
+            label: "5h limit",
+            usedPercent: 90,
+            resetsAt: "2099-01-01T00:00:00.000Z",
+            valueLabel: null,
+            detail: null,
+          },
+        ],
+      },
+    ];
+    const reported = await service.overview(companyId);
+    expect(reported.policies[0]).toMatchObject({
+      usageUnavailable: false,
+      observedAmount: 90,
+      remainingAmount: 0,
+      status: "hard_stop",
+    });
+    expect(reported.policies[0]?.windowEnd.toISOString()).toBe("2099-01-01T00:00:00.000Z");
+    expect(reported.policies[0]).toMatchObject({ usageStale: false, usageObservedAt: null });
+
+    // A failed refresh keeps the last good read: still a measurement, flagged
+    // as stale with its read time, never a flip back to "unavailable".
+    quota = [
+      {
+        provider: "openai",
+        ok: true,
+        stale: true,
+        observedAt: "2026-09-13T11:58:00.000Z",
+        error: "usage endpoint down",
+        windows: [
+          { key: "five_hour", label: "5h limit", usedPercent: 60, resetsAt: null, valueLabel: null, detail: null },
+        ],
+      },
+    ];
+    const stale = await service.overview(companyId);
+    expect(stale.policies[0]).toMatchObject({
+      usageUnavailable: false,
+      usageStale: true,
+      usageObservedAt: "2026-09-13T11:58:00.000Z",
+      observedAmount: 60,
+      status: "warning",
+    });
   });
 
   it("hard-stops project work until a valid budget raise resumes it and overview reconciles ledger spend", async () => {
