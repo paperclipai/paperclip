@@ -1232,6 +1232,10 @@ export type {
   Goal,
   Approval,
   ApprovalComment,
+  ApprovalSideEffect,
+  ApprovalRefundDetail,
+  ApprovalReplyDetail,
+  ApprovalDetailV2,
   BudgetPolicy,
   BudgetPolicySummary,
   BudgetIncident,
@@ -2104,6 +2108,10 @@ export {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  approvalSideEffectSchema,
+  approvalRefundDetailSchema,
+  approvalReplyDetailSchema,
+  approvalDetailV2Schema,
   type CreateApproval,
   type UpsertBudgetPolicy,
   type ResolveBudgetIncident,
@@ -2111,6 +2119,7 @@ export {
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type ApprovalDetailV2Contract,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,
@@ -2763,4 +2772,10 @@ export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
+export {
+  APPROVAL_DETAIL_CONTRACT_VERSION,
+  hydrateApprovalDetailV2,
+  type HydratableApproval,
+  type HydrateApprovalDetailOptions,
+} from "./approval-detail-v2.js";
 export * from "./announcements.js";
