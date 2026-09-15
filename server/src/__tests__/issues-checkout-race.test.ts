@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -63,10 +64,10 @@ function isCheckoutConflict(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as Record<string, unknown>;
   // The service throws via the `conflict()` helper which sets status=409 and
-  // includes the word "conflict" in the message.
+  // the message "Issue checkout conflict".
   return (
-    e["status"] === 409 ||
-    String(e["message"] ?? "").toLowerCase().includes("conflict")
+    e["status"] === 409 &&
+    String(e["message"] ?? "").toLowerCase().includes("checkout conflict")
   );
 }
 
@@ -167,9 +168,12 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
     return { agentIds, runIds };
   }
 
+  let nextIssueNumber = 1;
+
   /** Create a fresh todo issue, return its id. */
   async function createTodoIssue(): Promise<string> {
     const issueId = randomUUID();
+    const issueNumber = nextIssueNumber++;
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -177,8 +181,8 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
       title: `Race issue ${issueId.slice(0, 8)}`,
       status: "todo",
       priority: "medium",
-      issueNumber: Math.floor(Math.random() * 1_000_000),
-      identifier: `RCT-${Math.floor(Math.random() * 1_000_000)}`,
+      issueNumber,
+      identifier: `RCT-${issueNumber}`,
     });
     return issueId;
   }
@@ -206,7 +210,7 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
     const winner = winners[0]!;
     if (!winner.ok) throw new Error("unreachable");
     expect(winner.value.status).toBe("in_progress");
-    expect(winner.value.assigneeAgentId).toEqual(winner.value.assigneeAgentId);
+    expect([agentIds[0], agentIds[1]]).toContain(winner.value.assigneeAgentId);
     expect(winner.value.checkoutRunId).toBeTruthy();
   });
 
@@ -240,9 +244,7 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
     const [dbRow] = await db
       .select()
       .from(issues)
-      .where(
-        (await import("drizzle-orm")).eq(issues.id, issueId),
-      );
+      .where(eq(issues.id, issueId));
     expect(dbRow?.status).toBe("in_progress");
     expect(dbRow?.assigneeAgentId).toBe(winner.value.assigneeAgentId);
     expect(dbRow?.checkoutRunId).toBe(winner.value.checkoutRunId);
@@ -284,9 +286,7 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
     const [dbRow] = await db
       .select()
       .from(issues)
-      .where(
-        (await import("drizzle-orm")).eq(issues.id, issueId),
-      );
+      .where(eq(issues.id, issueId));
     expect(dbRow?.assigneeAgentId).toBe(agentIds[0]);
     expect(dbRow?.checkoutRunId).toBe(runIds[0]);
   });
@@ -352,7 +352,6 @@ describeEmbeddedPostgres("issueService.checkout — concurrency / race condition
   it("new run can adopt checkout from a terminal (succeeded) run on the same agent", async () => {
     const { agentIds, runIds } = await createFixtures(1);
     const issueId = await createTodoIssue();
-    const { eq } = await import("drizzle-orm");
 
     // First run checks out
     await svc.checkout(issueId, agentIds[0]!, ["todo"], runIds[0]!);
