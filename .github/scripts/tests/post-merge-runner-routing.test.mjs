@@ -11,7 +11,7 @@ const base = {
 };
 const expectedJobs = {
   "cloud-readiness.yml": [],
-  "cloud-artifacts.yml": ["dispatch_migrator"],
+  "cloud-migrator-artifacts.yml": [],
   "release-verify.yml": ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"],
   "runner-chaos-evals.yml": ["chaos_and_recovery"],
   "release.yml": ["plan_preview", "package_preview"],

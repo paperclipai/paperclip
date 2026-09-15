@@ -170,15 +170,8 @@ test("preview workflow separates branch compilation from trusted publishing", ()
   assert.match(workflow, /Stack deploy \{0\} build/);
 });
 
-test("merge dispatch uses the existing publisher outside full-release concurrency without claiming image readiness", () => {
-  const dispatcher = readFileSync(new URL("../.github/workflows/cloud-artifacts.yml", import.meta.url), "utf8");
+test("manual migrator and branch preview retain their npm publisher and concurrency", () => {
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.match(dispatcher, /branches: \[master\]/);
-  assert.match(dispatcher, /github.ref == 'refs\/heads\/master'/);
-  assert.match(dispatcher, /SOURCE_SHA: \$\{\{ github.sha \}\}/);
-  assert.match(dispatcher, /gh workflow run release.yml .*--ref master/);
-  assert.match(dispatcher, /--field channel=cloud-migrator/);
-  assert.doesNotMatch(dispatcher, /actions\/checkout|id-token: write|packages: write|secrets\./);
   assert.match(release, /\(inputs.channel == 'preview' \|\| inputs.channel == 'cloud-migrator'\) && format\('\{0\}-\{1\}', inputs.channel, inputs.source_ref\)/);
   const publisher = release.split("  publish_preview:")[1].split("  image_preview:")[0];
   assert.match(publisher, /group: preview-package-publish-\$\{\{ inputs.source_ref \}\}/);

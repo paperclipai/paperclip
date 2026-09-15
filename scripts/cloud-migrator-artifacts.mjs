@@ -150,10 +150,12 @@ async function download(url, fetchImpl) {
   return Buffer.concat(chunks);
 }
 
-export async function verifyPublished(sha, fetchImpl = fetch) {
+export async function verifyPublished(sha, fetchImpl = fetch, { verifyProvenance } = {}) {
   versionFor(sha);
-  const manifest = JSON.parse(await download(`${artifactBase}/${sha}/manifest.json`, fetchImpl));
+  const bytes = await download(`${artifactBase}/${sha}/manifest.json`, fetchImpl);
+  const manifest = JSON.parse(bytes);
   assertManifest(manifest, sha);
+  if (verifyProvenance) await verifyProvenance(bytes, sha);
   await Promise.all(names.map(async (name) => {
     const bytes = await download(manifest.packages[name].url, fetchImpl);
     verifyBytes(bytes, manifest.packages[name]);

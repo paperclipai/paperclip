@@ -170,10 +170,12 @@ The deploy policies are checked in under `.github/cloud-migrator-deploy/`:
 
 There is no lifecycle expiry on this prefix. Keep referenced artifacts for
 rollback; deleting them can prevent a fresh migrator install for an old release.
-This producer rollout is additive. npm preview publication and the current
-cloud readiness gate remain active until the cloud consumer supports the new
-manifest. A later cutover must preserve source verification, image identity,
-migration compatibility, and the cloud runner's integrity checks.
+Cloud readiness consumes the signed direct bundle after its exact-source
+publisher succeeds. It retains source verification, image identity, and the
+cloud runner's integrity and migration compatibility checks. The cloud direct
+artifact switch must be enabled before adopting this gate. Automatic npm-only
+migrator dispatch is removed; explicit npm previews and manual migrator runs
+remain available. See `doc/cloud-build-readiness.md` for coordinated rollback.
 
 Local verification:
 
