@@ -207,6 +207,10 @@ export function createAuthDriftWebhookDispatcher(
       log.info({ key, debounceMs }, "auth-drift webhook debounced");
       return "debounced";
     }
+    // Record the attempt before the first await so concurrent same-key
+    // dispatches and failed deliveries are both debounced within the window,
+    // instead of retrying a broken endpoint on every heartbeat.
+    lastSentAt.set(key, now());
     const body = JSON.stringify(buildSlackWebhookBody(payload));
     let attempt = 1;
     let result = await postOnce(body);
@@ -216,7 +220,6 @@ export function createAuthDriftWebhookDispatcher(
       result = await postOnce(body);
     }
     if (result.ok) {
-      lastSentAt.set(key, now());
       log.info(
         {
           key,
