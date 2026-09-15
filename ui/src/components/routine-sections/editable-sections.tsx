@@ -143,17 +143,21 @@ export function OverviewSection({
   }, []);
   // Disarm the gate when it stops applying to the routine that armed it:
   // switching to a different routine (this component instance can persist
-  // across that switch — it isn't guaranteed to unmount) and after a
-  // successful save (so a subsequent re-render fed by the saved value can't
-  // be mistaken for another live interaction).
+  // across that switch — it isn't guaranteed to unmount), and when a save
+  // starts (mirroring AgentDetail.tsx's onMutate resets). The reset has to
+  // happen when the save STARTS, not when it succeeds: saveRoutine.isSuccess
+  // only flips after onSuccess's invalidateQueries calls have resolved, by
+  // which point the resulting refetch may already have re-rendered this
+  // editor — resetting on isSuccess would arrive too late to disarm the gate
+  // before that re-render's onChange fires.
   useEffect(() => {
     descriptionInteractedRef.current = false;
   }, [routine.id]);
   useEffect(() => {
-    if (saveRoutine.isSuccess) {
+    if (saveRoutine.isPending) {
       descriptionInteractedRef.current = false;
     }
-  }, [saveRoutine.isSuccess]);
+  }, [saveRoutine.isPending]);
 
   const activeTriggers = routine.triggers.length;
   const nextFire = useMemo(() => {

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type ComponentType } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverviewSection } from "./editable-sections";
+import { OverviewSection as OverviewSectionProduction } from "./editable-sections.production";
 import { RoutineDetailContext, type RoutineDetailContextValue, type RoutineEditDraft } from "./context";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -32,6 +33,9 @@ const { mountNormalizationSpy, editorRenderSpy } = vi.hoisted(() => ({
 // mount-only layout effect calls onChange with a value DIFFERENT from its
 // `value` prop (appending a trailing newline, like real normalization does),
 // then it behaves like a normal controlled input for subsequent typing.
+// Both `editable-sections.tsx` and `editable-sections.production.tsx` import
+// `../MarkdownEditor` relative to this same directory, so one mock covers
+// both variants under test below.
 vi.mock("../MarkdownEditor", () => ({
   MarkdownEditor: ({
     value,
@@ -91,13 +95,15 @@ function makeDraft(overrides: Partial<RoutineEditDraft> = {}): RoutineEditDraft 
 }
 
 function Harness({
+  overviewSection: OverviewSectionComponent,
   onDescriptionDirtyChange,
   routineId = "routine-1",
-  saveIsSuccess = false,
+  saveIsPending = false,
 }: {
+  overviewSection: ComponentType;
   onDescriptionDirtyChange: (dirty: boolean) => void;
   routineId?: string;
-  saveIsSuccess?: boolean;
+  saveIsPending?: boolean;
 }) {
   const originalDescription = "Original description";
   const [editDraft, setEditDraft] = useState<RoutineEditDraft>(makeDraft());
@@ -133,7 +139,7 @@ function Harness({
     descriptionEditorRef: { current: null },
     routineRuns: [],
     activity: [],
-    saveRoutine: { isPending: false, isSuccess: saveIsSuccess, mutate: vi.fn() },
+    saveRoutine: { isPending: saveIsPending, isSuccess: false, mutate: vi.fn() },
     saveConflict: false,
     isSectionDirty,
     navigateToSection: vi.fn(),
@@ -141,12 +147,15 @@ function Harness({
 
   return (
     <RoutineDetailContext.Provider value={value}>
-      <OverviewSection />
+      <OverviewSectionComponent />
     </RoutineDetailContext.Provider>
   );
 }
 
-describe("OverviewSection description editor", () => {
+describe.each([
+  ["default variant", OverviewSection],
+  ["production variant", OverviewSectionProduction],
+] as const)("OverviewSection description editor (%s)", (_label, OverviewSectionComponent) => {
   let container: HTMLDivElement;
   let root: Root | null;
 
@@ -172,7 +181,9 @@ describe("OverviewSection description editor", () => {
     root = createRoot(container);
 
     act(() => {
-      root?.render(<Harness onDescriptionDirtyChange={onDescriptionDirtyChange} />);
+      root?.render(
+        <Harness overviewSection={OverviewSectionComponent} onDescriptionDirtyChange={onDescriptionDirtyChange} />,
+      );
     });
 
     // The mocked editor's mount-only layout effect has already fired by now —
@@ -204,14 +215,20 @@ describe("OverviewSection description editor", () => {
     expect(onDescriptionDirtyChange).toHaveBeenCalledWith(true);
   });
 
-  it("disarms the gate after a successful save so a later spurious onChange is ignored", async () => {
+  it("disarms the gate when a save starts, so a later spurious onChange is ignored", async () => {
     const onDescriptionDirtyChange = vi.fn();
     root = createRoot(container);
     const getEditor = () =>
       container.querySelector<HTMLTextAreaElement>('[data-testid="description-editor"]')!;
 
     act(() => {
-      root?.render(<Harness onDescriptionDirtyChange={onDescriptionDirtyChange} saveIsSuccess={false} />);
+      root?.render(
+        <Harness
+          overviewSection={OverviewSectionComponent}
+          onDescriptionDirtyChange={onDescriptionDirtyChange}
+          saveIsPending={false}
+        />,
+      );
     });
     await flushEffects();
 
@@ -226,21 +243,29 @@ describe("OverviewSection description editor", () => {
     });
     expect(getEditor().value).toBe("Edited by user");
 
-    // Simulate the save succeeding — this component instance is NOT
-    // guaranteed to unmount on save (that's the bug: RoutineDetail.tsx never
-    // clears `overviewEditing` in saveRoutine.onSuccess), so the reset must
-    // come from OverviewSection's own effect watching saveRoutine.isSuccess.
+    // Simulate the save STARTING (saveRoutine.isPending flips true as soon as
+    // .mutate() is called — well before onSuccess's invalidations resolve).
+    // This component instance is NOT guaranteed to unmount across a save
+    // (the wrapping edit-mode toggle can stay on), so the reset must come
+    // from OverviewSection's own effect watching saveRoutine.isPending.
     act(() => {
-      root?.render(<Harness onDescriptionDirtyChange={onDescriptionDirtyChange} saveIsSuccess={true} />);
+      root?.render(
+        <Harness
+          overviewSection={OverviewSectionComponent}
+          onDescriptionDirtyChange={onDescriptionDirtyChange}
+          saveIsPending={true}
+        />,
+      );
     });
     await flushEffects();
 
     // A subsequent onChange NOT preceded by a real interaction (e.g. the
-    // editor's own normalization firing again off a props update) must be
-    // ignored now that the successful-save reset disarmed the gate.
+    // editor's own normalization firing again off a props update once the
+    // save's invalidated queries refetch) must be ignored now that the
+    // save-start reset disarmed the gate.
     const latestOnChange = editorRenderSpy.mock.calls.at(-1)?.[0]?.onChange as (value: string) => void;
     act(() => {
-      latestOnChange("Ghost normalization after save");
+      latestOnChange("Ghost normalization after save start");
     });
 
     expect(getEditor().value).toBe("Edited by user");
@@ -253,7 +278,13 @@ describe("OverviewSection description editor", () => {
       container.querySelector<HTMLTextAreaElement>('[data-testid="description-editor"]')!;
 
     act(() => {
-      root?.render(<Harness onDescriptionDirtyChange={onDescriptionDirtyChange} routineId="routine-1" />);
+      root?.render(
+        <Harness
+          overviewSection={OverviewSectionComponent}
+          onDescriptionDirtyChange={onDescriptionDirtyChange}
+          routineId="routine-1"
+        />,
+      );
     });
     await flushEffects();
 
@@ -269,9 +300,15 @@ describe("OverviewSection description editor", () => {
 
     // Switch to a different routine while still on this component instance
     // (it is NOT guaranteed to unmount across a routine-to-routine
-    // navigation — that's the bug).
+    // navigation — that's the bug this effect guards against).
     act(() => {
-      root?.render(<Harness onDescriptionDirtyChange={onDescriptionDirtyChange} routineId="routine-2" />);
+      root?.render(
+        <Harness
+          overviewSection={OverviewSectionComponent}
+          onDescriptionDirtyChange={onDescriptionDirtyChange}
+          routineId="routine-2"
+        />,
+      );
     });
     await flushEffects();
 
@@ -281,7 +318,8 @@ describe("OverviewSection description editor", () => {
     });
 
     // The phantom onChange must be ignored: the routine-id change disarmed
-    // the gate, and there has been no real interaction since.
-    expect(getEditor().value).not.toBe("Ghost normalization for a different routine");
+    // the gate, and there has been no real interaction since, so the
+    // description must still read the last value a real interaction wrote.
+    expect(getEditor().value).toBe("Edited on routine one");
   });
 });
