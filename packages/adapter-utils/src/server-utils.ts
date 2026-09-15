@@ -1091,16 +1091,26 @@ export async function runChildProcess(
     // that the claude CLI prioritizes over the macOS keychain. When that token
     // expires/rotates, subprocesses fail with 401 even though the keychain has
     // a fresh token. Deleting these forces claude CLI to read keychain.
+    // Auth vars are only stripped when inherited from process.env; values
+    // passed explicitly via opts.env (e.g. adapter config env for API-key
+    // billing) are preserved.
     const CLAUDE_CODE_NESTING_VARS = [
       "CLAUDECODE",
       "CLAUDE_CODE_ENTRYPOINT",
       "CLAUDE_CODE_SESSION",
       "CLAUDE_CODE_PARENT_SESSION",
-      "CLAUDE_CODE_OAUTH_TOKEN",
-      "ANTHROPIC_API_KEY",
     ] as const;
     for (const key of CLAUDE_CODE_NESTING_VARS) {
       delete rawMerged[key];
+    }
+    const INHERITED_CLAUDE_AUTH_VARS = [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "ANTHROPIC_API_KEY",
+    ] as const;
+    for (const key of INHERITED_CLAUDE_AUTH_VARS) {
+      if (!Object.prototype.hasOwnProperty.call(opts.env, key)) {
+        delete rawMerged[key];
+      }
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
