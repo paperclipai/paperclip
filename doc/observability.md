@@ -389,6 +389,10 @@ integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 - An Express `HttpError` with `status >= 500`.
 - Any unknown throw that is not a `ZodError`. It always answers 500.
 - A server startup failure.
+- A run that ends with the status `failed` or the status `timed_out`. The
+  event carries five context fields: `taskId`, `runId`, `errorMessage`,
+  `errorCode`, and `agentAdapter`. The server redacts the error message and
+  the error code before it sends the event.
 
 **Server events the default integrations add**
 

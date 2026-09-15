@@ -120,8 +120,6 @@ export type RunFailureStatus = "failed" | "timed_out";
  * event. `errorCode` is `null` when the run holds no error code.
  */
 export interface RunFailureEvent {
-  /** The Paperclip instance value: the operator's public base URL, or the host name. */
-  instance: string;
   /** The task UUID the run belongs to. */
   taskId: string;
   /** The `heartbeat_runs` row id. */
@@ -158,7 +156,6 @@ export function captureRunFailure(event: RunFailureEvent): void {
       scope.setTag("agent_adapter", event.agentAdapter);
       scope.setTag("run_status", event.runStatus);
       scope.setContext("run_failure", {
-        instance: event.instance,
         taskId: event.taskId,
         runId: event.runId,
         errorMessage: event.errorMessage,

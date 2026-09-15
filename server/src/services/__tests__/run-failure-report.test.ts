@@ -9,7 +9,6 @@ import {
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 const mockRedactCurrentUserText = vi.hoisted(() => vi.fn());
-const mockLoadConfig = vi.hoisted(() => vi.fn(() => ({ authPublicBaseUrl: undefined as string | undefined })));
 
 vi.mock("../../sentry.js", () => ({
   captureRunFailure: mockCaptureRunFailure,
@@ -22,9 +21,6 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
   mockRedactCurrentUserText.mockImplementation(actual.redactCurrentUserText);
   return { ...actual, redactCurrentUserText: mockRedactCurrentUserText };
 });
-vi.mock("../../config.js", () => ({
-  loadConfig: mockLoadConfig,
-}));
 
 import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../../redaction.js";
@@ -355,72 +351,6 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     await expect(reportRunFailure(throwingDb, run)).resolves.toBeUndefined();
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
-  });
-
-  it("sends config.authPublicBaseUrl as the instance when it is set", async () => {
-    await seedCompanyAndAgent();
-    mockLoadConfig.mockReturnValue({ authPublicBaseUrl: "https://paperclip.example.com" });
-    vi.resetModules();
-    const { reportRunFailure: freshReportRunFailure } = await import("../run-failure-report.js");
-    const run = buildRun({ status: "failed" });
-
-    await freshReportRunFailure(db, run);
-
-    expect(mockCaptureRunFailure).toHaveBeenCalledWith(
-      expect.objectContaining({ instance: "https://paperclip.example.com" }),
-    );
-  });
-
-  it("sends os.hostname() as the instance when authPublicBaseUrl is absent", async () => {
-    await seedCompanyAndAgent();
-    mockLoadConfig.mockReturnValue({ authPublicBaseUrl: undefined });
-    vi.resetModules();
-    const { reportRunFailure: freshReportRunFailure } = await import("../run-failure-report.js");
-    const run = buildRun({ status: "failed" });
-
-    await freshReportRunFailure(db, run);
-
-    expect(mockCaptureRunFailure).toHaveBeenCalledWith(
-      expect.objectContaining({ instance: os.hostname() }),
-    );
-  });
-
-  it("does not call loadConfig on import", async () => {
-    mockLoadConfig.mockImplementation(() => {
-      throw new Error("bind configuration is invalid");
-    });
-    vi.resetModules();
-
-    await expect(import("../run-failure-report.js")).resolves.toBeDefined();
-    expect(mockLoadConfig).not.toHaveBeenCalled();
-  });
-
-  it("does not throw and logs a warning when loadConfig throws", async () => {
-    await seedCompanyAndAgent();
-    mockLoadConfig.mockImplementation(() => {
-      throw new Error("bind configuration is invalid");
-    });
-    vi.resetModules();
-    const { reportRunFailure: freshReportRunFailure } = await import("../run-failure-report.js");
-    const run = buildRun({ status: "failed" });
-
-    await expect(freshReportRunFailure(db, run)).resolves.toBeUndefined();
-
-    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
-  });
-
-  it("calls loadConfig exactly once across two calls to reportRunFailure", async () => {
-    await seedCompanyAndAgent();
-    mockLoadConfig.mockReturnValue({ authPublicBaseUrl: "https://paperclip.example.com" });
-    vi.resetModules();
-    const { reportRunFailure: freshReportRunFailure } = await import("../run-failure-report.js");
-    const firstRun = buildRun({ status: "failed" });
-    const secondRun = buildRun({ status: "failed" });
-
-    await freshReportRunFailure(db, firstRun);
-    await freshReportRunFailure(db, secondRun);
-
-    expect(mockLoadConfig).toHaveBeenCalledTimes(1);
   });
 
   describe("waitForPendingRunFailureReports", () => {

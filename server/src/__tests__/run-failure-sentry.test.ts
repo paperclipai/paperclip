@@ -20,7 +20,6 @@ const originalBackendDsn = process.env[BACKEND_DSN_ENV];
 
 function baseEvent(overrides: Partial<RunFailureEvent> = {}): RunFailureEvent {
   return {
-    instance: "https://paperclip.example.com",
     taskId: "11111111-1111-1111-1111-111111111111",
     runId: "22222222-2222-2222-2222-222222222222",
     errorMessage: "the provider process exited with code 1",
@@ -121,20 +120,28 @@ describe("captureRunFailure", () => {
     expect(scope.setFingerprint).toHaveBeenCalledWith(["unknown", "claude-code"]);
   });
 
-  it("sets the six diagnostic values on the run_failure context", async () => {
+  it("sets the five diagnostic values on the run_failure context", async () => {
     const { sentryModule, scope } = await importFreshSentryWithGateOpen();
     const event = baseEvent();
 
     sentryModule.captureRunFailure(event);
 
     expect(scope.setContext).toHaveBeenCalledWith("run_failure", {
-      instance: event.instance,
       taskId: event.taskId,
       runId: event.runId,
       errorMessage: event.errorMessage,
       errorCode: event.errorCode,
       agentAdapter: event.agentAdapter,
     });
+  });
+
+  it("does not set an instance key on the run_failure context", async () => {
+    const { sentryModule, scope } = await importFreshSentryWithGateOpen();
+
+    sentryModule.captureRunFailure(baseEvent());
+
+    const [, context] = scope.setContext.mock.calls[0]!;
+    expect(context).not.toHaveProperty("instance");
   });
 
   it("sets run_id, task_id, error_code, agent_adapter, and run_status as tags", async () => {
