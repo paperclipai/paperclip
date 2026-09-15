@@ -37,6 +37,12 @@ or existing package identity mismatches fail the workflow. Retries reuse matchin
 published artifacts, including a shared package published before a DB publish
 failure. Allow npm's visibility polling to finish before retrying.
 
+The publisher validates both package archives first, then submits each missing
+package without waiting for the other to become visible. One visibility poll
+checks both accepted packages, so their registry propagation delays overlap.
+The publisher succeeds only after both packages pass the identity and
+distribution-pin checks. A visibility timeout names the package still missing.
+
 The final `stack-deploy-result` artifact contains `result.json` with contract
 version 1, request ID, SHA, stage `build`, and status `ready`. It expires after
 30 days. This confirms artifact availability; it does not certify a tenant deploy.
