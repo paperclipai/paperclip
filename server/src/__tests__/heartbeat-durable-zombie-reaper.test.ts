@@ -438,6 +438,52 @@ describeEmbeddedPostgres("durable zombie reaper", () => {
       try { child.kill("SIGKILL"); } catch { /* ignore */ }
     }, 10_000);
 
+    it(
+      "skips kill and terminates run when PID appears recycled (silent zombie path, Linux only)",
+      async () => {
+        // On non-Linux the identity check is skipped (fail open), so this test
+        // only makes sense on Linux where /proc/<pid>/stat is readable.
+        if (process.platform !== "linux") return;
+
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          stdio: "ignore",
+        });
+        const pid = child.pid!;
+        expect(isPidAlive(pid)).toBe(true);
+
+        const companyId = await seedCompany();
+        const agentId = await seedAgent(companyId);
+        const runId = await seedRun(companyId, agentId, {
+          lastOutputAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+          processPid: pid,
+          // processStartedAt 1 h in the future — far outside the 30-s tolerance,
+          // simulating a PID that was recycled after the original process exited.
+          processStartedAt: new Date(Date.now() + 60 * 60 * 1000),
+        });
+
+        runningProcesses.set(runId, { child: {} as never, graceSec: 30, processGroupId: null });
+
+        const heartbeat = heartbeatService(db);
+        const result = await heartbeat.reapSilentZombieRuns({ killThresholdMs: 0 });
+
+        // The run must be terminalized (lock released) even though the kill was skipped.
+        expect(result.reaped).toBe(1);
+        expect(result.runIds).toContain(runId);
+
+        // The process must NOT have been killed — the PID guard prevented the signal.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(isPidAlive(pid)).toBe(true);
+
+        // DB run must be in a terminal state.
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(run?.status).toMatch(/^(failed|interrupted|cancelled)$/);
+
+        // Cleanup
+        child.kill("SIGKILL");
+      },
+      10_000,
+    );
+
     it("retains the in-memory handle and leaves the run as running when the kill throws", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent(companyId);

@@ -19182,17 +19182,30 @@ export function heartbeatService(
       // and we must NOT release the lock or mark the run terminal — doing so
       // would let a new run start while the zombie is still running. Leave the
       // handle in runningProcesses so the next sweep retries the kill.
-      try {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
-      } catch (killErr) {
+      //
+      // Guard against PID recycling before every kill attempt — including
+      // retries after a previous failed kill where the handle was retained.
+      // If the OS reused the PID, the original process is already gone; skip
+      // the signal and fall through to terminalize the run and release the lock.
+      if (!isProbablySameProcess(run.processPid, run.processStartedAt)) {
         logger.warn(
-          { runId, processPid: run.processPid, processGroupId: run.processGroupId, err: killErr },
-          "reapSilentZombieRuns: kill failed; retaining handle and deferring cleanup to next sweep",
+          { runId, processPid: run.processPid },
+          "reapSilentZombieRuns: PID appears recycled; skipping kill, proceeding with terminalization",
         );
-        continue;
+        // Fall through to terminalize — the original process is already gone.
+      } else {
+        try {
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        } catch (killErr) {
+          logger.warn(
+            { runId, processPid: run.processPid, processGroupId: run.processGroupId, err: killErr },
+            "reapSilentZombieRuns: kill failed; retaining handle and deferring cleanup to next sweep",
+          );
+          continue;
+        }
       }
       runningProcesses.delete(runId);
 
