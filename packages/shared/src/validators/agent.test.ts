@@ -51,7 +51,7 @@ describe("adapterConfigSchema", () => {
     }
   });
 
-  it("rejects a config with git_worktree strategy and a whitespace-only cwd as valid (empty string is not a cwd)", () => {
+  it("accepts a config with git_worktree strategy when cwd is whitespace-only (treated as absent)", () => {
     const result = createAgentSchema.safeParse({
       name: "test-agent",
       adapterType: "claude_local",
