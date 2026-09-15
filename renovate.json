@@ -1,0 +1,21 @@
+{
+  "extends": ["config:base"],
+  "packageRules": [
+    {
+      "matchPackageNames": ["paperclipai/paperclip"],
+      "matchPackagePatterns": ["*"],
+      "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$",
+      "rangeStrategy": "bump"
+    }
+  ],
+  "regexManagers": [
+    {
+      "fileMatch": ["^k8s/deployment\\.yaml$"],
+      "matchStrings": [
+        "git checkout (?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "paperclipai/paperclip"
+    }
+  ]
+}
