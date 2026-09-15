@@ -21,8 +21,6 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
   const res = await request.post("/api/companies", { data: { name: `prosumer MCP flow ${label} ${Date.now()}` } });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
-  const flags = await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
-  expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
   return {
     companyId: company.id,
     prefix: company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E",
@@ -162,6 +160,11 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     const linkInput = page.getByPlaceholder("https://example.com/actions");
     await linkInput.fill(mock.url);
     await page.getByRole("button", { name: "Continue" }).click();
+
+    // Access is chosen before credentials so the user knows who and which
+    // agents will receive the connection before Paperclip contacts it.
+    await expect(page.getByText("Which humans can use this credential?")).toBeVisible();
+    await page.getByRole("button", { name: "Save and continue" }).click();
 
     // LinkKey step keeps the BYO connection heading. Mock doesn't
     // require a key — leave the default "No" answer.

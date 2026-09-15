@@ -41,7 +41,8 @@
         "description": "Search and read messages, threads, drafts, and labels."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -70,7 +71,8 @@
         "description": "Search and read messages, threads, drafts, and labels."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -112,7 +114,8 @@
         "description": "Read Gmail and create drafts for review in Gmail."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -143,7 +146,8 @@
         "description": "Read Gmail and create drafts for review in Gmail."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

@@ -60,8 +60,10 @@ Google makes Workspace MCP generally available.
 | Google People | `https://people.googleapis.com/mcp/v1` | Read contacts |
 | Google Workspace Search | `https://workspacemcp.googleapis.com/mcp/v1` | Search Workspace |
 
-The setup flow asks for the capability first. It then offers the authentication
-methods available for that capability:
+The setup flow asks for the capability first. When the managed method is
+available, it uses Paperclip by default. A small **Use your own Google OAuth app**
+link reveals the custom client fields; **Use Paperclip instead** returns to the
+managed method. The available authentication methods are:
 
 - **Connect with Paperclip** uses the Paperclip Cloud broker when that exact
   profile is returned for this enrolled instance by the signed
@@ -73,9 +75,20 @@ methods available for that capability:
 - **Use the Paperclip robot account** remains an additional Google Sheets-only
   option for explicitly shared spreadsheets.
 
-OAuth grants begin as personal connections. Existing promotion controls may
-later make an eligible connection available to the company without silently
-changing the underlying Google principal.
+Before Google consent, the setup flow asks whether the credential is for just
+the connecting user or for any human in the company. A personal choice stores
+the tokens only on that user's grant. A company choice stores them on the
+default organization grant, while still recording which signed-in Google
+principal completed consent so refresh and reconnect stay bound to that
+principal.
+
+Catalog discovery and connection creation use the same signed, instance-specific
+profile availability. Local enrollment files and Cloud-delivered environment
+identities follow this same path; neither enables managed methods globally in
+the static app definitions. Saved connections remain recognizable for OAuth
+callback, refresh, and revoke, while the broker enforces current profile access.
+Switching capability or authentication methods preserves the selected credential
+owner when the new method supports that owner.
 
 ## Broker profiles
 
@@ -121,7 +134,10 @@ path.
 Cloud-hosted stacks receive these values through the existing per-stack secret
 delivery path. A self-hosted instance creates its keys during enrollment and
 stores them with owner-only permissions in the instance's ignored secret
-directory. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
+directory. The setup page supplies its authenticated same-origin HTTPS address
+to enrollment, so a normal Tailscale-hosted self-hoster does not need to edit
+`config.json` or set `PAPERCLIP_PUBLIC_URL`; the enrolled origin becomes the
+durable callback binding. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
 Paperclip ID protocol and are not read aliases. Enroll with Paperclip Cloud and
 reconnect legacy grants before their old access tokens expire.
 

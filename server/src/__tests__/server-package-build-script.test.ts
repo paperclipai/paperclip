@@ -62,6 +62,22 @@ describe("server package build script", () => {
     );
   });
 
+  it("verifies vendored runner dependencies are mirrored before building", () => {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    // See scripts/verify-runner-vendor-dependencies.mjs: packages/paperclip-runner
+    // is vendored with a raw `cp -R` of its compiled dist/, so every runtime
+    // dependency it imports must also be a direct dependency of server. This
+    // check derives that requirement from an esbuild scan of the vendored
+    // entry points instead of relying on a human to have kept a hand-copied
+    // list in sync (the smol-toml incident in #13110/#13116).
+    expect(packageJson.scripts?.build).toContain(
+      "node scripts/verify-runner-vendor-dependencies.mjs",
+    );
+  });
+
   it("loads runner source when the source server starts before workspace builds", () => {
     const shim = readFileSync(runnerShimPath, "utf8");
 

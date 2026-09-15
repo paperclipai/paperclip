@@ -132,10 +132,10 @@ describe("IssueThreadInteractionCard", () => {
     });
 
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeTruthy();
-    expect(host.textContent).toContain("Connect / Use existing");
+    expect(host.textContent).toContain("Connect");
     expect(host.textContent).toContain("Not now");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Connect / Use existing"),
+      button.textContent?.trim() === "Connect",
     );
     await act(async () => {
       loadButton?.click();
@@ -159,7 +159,7 @@ describe("IssueThreadInteractionCard", () => {
     });
 
     expect(host.querySelector('[data-testid="connection-intent-waiting"]')).toBeTruthy();
-    expect(host.textContent).not.toContain("Connect / Use existing");
+    expect(Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim())).not.toContain("Connect");
     expect(host.textContent).not.toContain("Not now");
   });
 
@@ -1008,79 +1008,56 @@ describe("IssueThreadInteractionCard", () => {
 });
 
 describe("IssueThreadInteractionCard tool-action card", () => {
-  it("selects the pending state with the Approve & run affordance and identity header", () => {
-    const host = renderCard({
-      interaction: pendingToolActionWriteInteraction,
-      onAcceptInteraction: vi.fn(),
-      onRejectInteraction: vi.fn(),
-    });
-
-    // Pending eyebrow, never a bare "Accepted".
-    expect(host.textContent).toContain("Awaiting approval");
-    // Identity header: tool display name + WRITE risk badge + app/tool sub-line.
-    expect(host.textContent).toContain("Append row to spreadsheet");
-    expect(host.textContent).toContain("WRITE");
-    expect(host.textContent).toContain("Google Sheets");
-    // Primary CTA is "Approve & run" (approve = run), plus the hint + countdown.
-    const approve = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Approve & run"),
-    );
-    expect(approve).toBeTruthy();
-    expect(host.textContent).toContain("Approving runs this action now.");
-    expect(host.textContent).toContain("Approval expires in");
-    // Technical details drawer is present but collapsed by default (hash hidden).
-    expect(host.textContent).toContain("Technical details");
+  it("shows only the request description, app icon, and decision controls", () => {
+    const host = renderCard({ interaction: pendingToolActionWriteInteraction, onAcceptInteraction: vi.fn(), onRejectInteraction: vi.fn() });
+    expect(host.textContent).toContain("Add 1 row");
+    expect(host.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe("Google Sheets");
+    expect(host.textContent).toContain("Approve & run");
+    expect(host.textContent).toContain("Decline");
+    expect(host.textContent).not.toContain("Append row to spreadsheet");
+    expect(host.textContent).not.toContain("Technical details");
+    expect(host.textContent).not.toContain("Expires");
     expect(host.textContent).not.toContain("args hash");
   });
 
-  it("uses the destructive risk badge and a destructive primary button", () => {
-    const host = renderCard({
-      interaction: pendingToolActionDestructiveInteraction,
-      onAcceptInteraction: vi.fn(),
-      onRejectInteraction: vi.fn(),
-    });
+  it("keeps reviewed argument values visible across preview paragraphs", () => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    interaction.payload.toolAction!.previewMarkdown = "Add a row.\n\n**Title:** Launch checklist";
+    const host = renderCard({ interaction });
+    expect(host.textContent).toContain("Launch checklist");
+  });
 
-    expect(host.textContent).toContain("DESTRUCTIVE");
-    const approve = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Approve & run"),
-    );
+  it("keeps the destructive request warning and approval styling", () => {
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: vi.fn(), onRejectInteraction: vi.fn() });
+    expect(host.textContent).toContain("cannot be undone");
+    const approve = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run");
     expect(approve?.getAttribute("data-variant")).toBe("destructive");
   });
 
-  it("reveals redacted args and the hash when the technical drawer is opened", () => {
-    const host = renderCard({
-      interaction: pendingToolActionWriteInteraction,
-      onAcceptInteraction: vi.fn(),
-      onRejectInteraction: vi.fn(),
-    });
-
-    const trigger = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Technical details"),
-    );
-    act(() => {
-      (trigger as HTMLButtonElement).click();
-    });
-
-    expect(host.textContent).toContain("args hash");
-    expect(host.textContent).toContain("sha256:9f2c1a7be4d0c8a3");
-    // Redacted arguments render verbatim, never raw secrets.
-    expect(host.textContent).toContain("[redacted]");
+  it("declines in one click without an optional reason form", async () => {
+    const reject = vi.fn();
+    const host = renderCard({ interaction: pendingToolActionWriteInteraction, onRejectInteraction: reject });
+    const decline = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Decline");
+    await act(async () => { decline?.click(); });
+    expect(reject).toHaveBeenCalledExactlyOnceWith(pendingToolActionWriteInteraction);
+    expect(host.querySelector("textarea")).toBeNull();
   });
 
   it("renders the approved-running state with a spinner and no action buttons", () => {
     const host = renderCard({ interaction: runningToolActionInteraction });
 
     expect(host.textContent).toContain("Running…");
-    expect(host.textContent).toContain("running the action now");
+    expect(host.textContent).toContain("Approved · Running");
     expect(host.textContent).not.toContain("Approve & run");
     expect(host.querySelector(".animate-spin")).toBeTruthy();
   });
 
-  it("renders the executed state with a result summary and never reads Accepted", () => {
+  it("keeps the executed result collapsed and never reads Accepted", () => {
     const host = renderCard({ interaction: executedToolActionInteraction });
 
-    expect(host.textContent).toContain("Executed");
-    expect(host.textContent).toContain("Row 42 added");
+    expect(host.textContent).toContain("Succeeded");
+    expect(host.textContent).not.toContain("Row 42 added");
+    expect(host.querySelector('button[aria-label="Show result details"]')?.getAttribute("aria-expanded")).toBe("false");
     expect(host.textContent).not.toContain("Accepted");
     const link = Array.from(host.querySelectorAll("a")).find((a) =>
       a.textContent?.includes("View result"),
@@ -1088,11 +1065,23 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(link?.getAttribute("href")).toContain("docs.google.com");
   });
 
+  it("expands stored results as formatted JSON on demand", async () => {
+    const interaction = structuredClone(executedToolActionInteraction);
+    interaction.result!.toolAction!.resultSummary = '{"pages":["Roadmap","Meeting notes"]}';
+    const host = renderCard({ interaction });
+    expect(host.textContent).not.toContain("Roadmap");
+    const toggle = host.querySelector('button[aria-label="Show result details"]') as HTMLButtonElement;
+    await act(async () => toggle.click());
+    expect(host.querySelector("pre")?.textContent).toBe(JSON.stringify({ pages: ["Roadmap", "Meeting notes"] }, null, 2));
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => toggle.click());
+    expect(host.textContent).not.toContain("Roadmap");
+  });
+
   it("distinguishes failed (ran + connector error) from declined (did not run)", () => {
     const failed = renderCard({ interaction: failedToolActionInteraction });
-    expect(failed.textContent).toContain("Failed");
-    expect(failed.textContent).toContain("insufficient_permission");
-    expect(failed.textContent).toContain("but the connector returned an error");
+    expect(failed.textContent).toContain("Execution failed");
+    expect(failed.textContent).toContain(failedToolActionInteraction.result!.toolAction!.errorMessage);
 
     act(() => root?.unmount());
     failed.remove();
@@ -1100,19 +1089,14 @@ describe("IssueThreadInteractionCard tool-action card", () => {
 
     const declined = renderCard({ interaction: declinedToolActionInteraction });
     expect(declined.textContent).toContain("Declined");
-    expect(declined.textContent).toContain("did");
-    expect(declined.textContent).toContain("not");
-    expect(declined.textContent).toContain("run");
     expect(declined.textContent).toContain("use the CRM sync instead");
     expect(declined.textContent).not.toContain("Approve & run");
   });
 
-  it("renders the expired state with the 60-minute rule and a recovery path", () => {
+  it("renders the expired state without decision controls", () => {
     const host = renderCard({ interaction: expiredToolActionInteraction });
 
     expect(host.textContent).toContain("Expired");
-    expect(host.textContent).toContain("no one responded within 60 minutes");
-    expect(host.textContent).toContain("the agent can request approval again");
     expect(host.textContent).not.toContain("Approve & run");
   });
 
@@ -1438,7 +1422,7 @@ describe("IssueThreadInteractionCard connection-intent card", () => {
     });
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).not.toBeNull();
     const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
-    expect(labels).toContain("Connect / Use existing");
+    expect(labels).toContain("Connect");
     expect(labels).toContain("Not now");
     expect(host.textContent).toContain("Access is added only for this agent");
   });

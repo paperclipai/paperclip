@@ -12,6 +12,9 @@ export const GENERATED_ACPX_SIDECAR_COMMANDS = [
   "tool.resolve",
   "session.read",
   "session.snapshot",
+  "session.goal.get",
+  "session.goal.set",
+  "session.goal.clear",
   "session.suspend",
   "session.close",
 ] as const;
@@ -26,6 +29,7 @@ export const GENERATED_ACPX_SIDECAR_EVENT_TYPES = [
   "runtime.turn_terminal",
   "runtime.process",
   "runtime.diagnostic",
+  "runtime.goal",
 ] as const;
 export type GeneratedAcpxSidecarEventType =
   (typeof GENERATED_ACPX_SIDECAR_EVENT_TYPES)[number];

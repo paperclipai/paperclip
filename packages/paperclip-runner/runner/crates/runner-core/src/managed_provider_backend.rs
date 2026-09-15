@@ -32,7 +32,9 @@ use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedTool, AuthorizedToolSet,
     PendingToolCall, ToolResult, MAX_PENDING_CALLS, TOOL_SET_SCHEMA,
 };
-use crate::provider_events::{normalize_codex_notification, NormalizedProviderEvent};
+use crate::provider_events::{
+    normalize_codex_notification, with_terminal_outcome, NormalizedProviderEvent,
+};
 
 pub const MANAGED_PROVIDER_STATE_FILE: &str = "managed-provider-state.json";
 const MANAGED_PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.managed-provider-state.v1";
@@ -43,7 +45,7 @@ const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const QUALIFIED_CLAUDE_MODEL: &str = "claude-sonnet-5";
 const QUALIFIED_CLAUDE_BETA: &str = "managed-agents-2026-04-01";
 const QUALIFIED_AGENTCORE_MODEL: &str = "global.anthropic.claude-sonnet-4-6";
-const QUALIFIED_AGENTCORE_REVISION: &str = "aws-agentcore-harness-v1";
+const QUALIFIED_AGENTCORE_REVISION: &str = "aws-agentcore-harness-context-v2";
 
 fn initial_event_sequence() -> u64 {
     1
@@ -140,7 +142,7 @@ impl ManagedProviderDescriptor {
 
     fn version(&self) -> &str {
         match self {
-            Self::ClaudeManaged(config) => &config.beta_version,
+            Self::ClaudeManaged(config) => &config.agent_version,
             Self::AwsAgentcore(config) => &config.qualification_revision,
         }
     }
@@ -765,7 +767,7 @@ impl ManagedProviderCommandExecutor {
                 .expect("managed state remains present during recovery");
             let prior_turn = state.active_turn_id.take();
             state.lifecycle = "failed".to_owned();
-            state.push(NormalizedProviderEvent {
+            let provider_terminal = NormalizedProviderEvent {
                 event_type: "turn.failed".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
@@ -775,9 +777,9 @@ impl ManagedProviderCommandExecutor {
                     "providerTerminalObserved": false,
                     "code": "agentcore_active_turn_recovery_requires_review",
                 }),
-            })?;
+            };
             let terminal = terminal_events(state, "turn.failed");
-            for event in terminal {
+            for event in with_terminal_outcome(vec![provider_terminal], terminal) {
                 state.push(event)?;
             }
             self.save_state()?;
@@ -1305,7 +1307,10 @@ impl ManagedProviderCommandExecutor {
             "status": state.lifecycle,
             "provider": state.descriptor.provider_label(),
             "driver": state.descriptor.driver(),
+            "driverSessionId": state.provider_session_id,
             "providerSessionId": state.provider_session_id,
+            "sessionId": state.provider_session_id,
+            "providerAccountSessionId": state.provider_session_id,
             "activeProviderTurnId": state.active_turn_id,
             "durableEventCursor": state.durable_event_cursor,
         })))
@@ -1480,7 +1485,7 @@ impl ManagedProviderCommandExecutor {
                     })?;
                     let prior_turn = state.active_turn_id.take();
                     state.lifecycle = "session_open".to_owned();
-                    state.push(NormalizedProviderEvent {
+                    let provider_terminal = NormalizedProviderEvent {
                         event_type: "turn.failed".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({
@@ -1490,8 +1495,11 @@ impl ManagedProviderCommandExecutor {
                             "stopReason": params.get("stopReason"),
                             "code": "provider_limit_reached",
                         }),
-                    })?;
-                    for event in terminal_events(state, "turn.failed") {
+                    };
+                    for event in with_terminal_outcome(
+                        vec![provider_terminal],
+                        terminal_events(state, "turn.failed"),
+                    ) {
                         state.push(event)?;
                     }
                     return Ok(());
@@ -1529,15 +1537,14 @@ impl ManagedProviderCommandExecutor {
                         );
                     }
                 }
-                for event in normalized {
-                    state.push(event)?;
-                }
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
                     state.lifecycle = "session_open".to_owned();
-                    for event in terminal_events(state, &event_type) {
-                        state.push(event)?;
-                    }
+                    normalized =
+                        with_terminal_outcome(normalized, terminal_events(state, &event_type));
+                }
+                for event in normalized {
+                    state.push(event)?;
                 }
             }
             ProviderEvent::SemanticResult { result, .. } => {
@@ -1591,7 +1598,7 @@ impl ManagedProviderCommandExecutor {
             .expect("managed state exists while failing provider");
         let active = state.active_turn_id.take();
         state.lifecycle = "failed".to_owned();
-        state.push(NormalizedProviderEvent {
+        let mut failures = vec![NormalizedProviderEvent {
             event_type: "session.failed".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1599,9 +1606,10 @@ impl ManagedProviderCommandExecutor {
                 "code": "managed_provider_failed",
                 "message": message,
             }),
-        })?;
+        }];
+        let mut outcome = Vec::new();
         if active.is_some() {
-            state.push(NormalizedProviderEvent {
+            failures.push(NormalizedProviderEvent {
                 event_type: "turn.failed".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
@@ -1610,10 +1618,11 @@ impl ManagedProviderCommandExecutor {
                     "status": "failed",
                     "code": "managed_provider_failed",
                 }),
-            })?;
-            for event in terminal_events(state, "turn.failed") {
-                state.push(event)?;
-            }
+            });
+            outcome = terminal_events(state, "turn.failed");
+        }
+        for event in with_terminal_outcome(failures, outcome) {
+            state.push(event)?;
         }
         self.save_state()
     }
@@ -1667,6 +1676,10 @@ impl CommandExecutor for ManagedProviderCommandExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.config = config.clone();
+    }
+
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.poll_provider()?;
         Ok(self
@@ -1696,6 +1709,10 @@ impl CommandExecutor for ManagedProviderCommandExecutor {
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+        // A replacement runner has no live provider object until durable state
+        // is restored. Require that restoration before accepting terminal
+        // cleanup so a persisted remote session cannot be abandoned silently.
+        self.restore()?;
         if let Some(provider) = self.provider.as_mut() {
             provider.shutdown().map_err(|error| {
                 DurableRunnerError::invalid(format!(
@@ -2431,6 +2448,76 @@ mod tests {
         })
     }
 
+    fn managed_failure_event_types(recovery: bool) -> Vec<String> {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-managed-terminal-test-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = test_config(&directory);
+        let mut executor = ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+        let mut payload = agentcore_prepare_payload();
+        payload["completionContract"] = json!({
+            "revision": "contract-1",
+            "criterionIds": ["requested-work"],
+        });
+        executor.prepare(&payload).unwrap();
+        let state = executor.state.as_mut().unwrap();
+        state.lifecycle = "turn_active".to_owned();
+        state.active_turn_id = Some("provider-turn-1".to_owned());
+        state.provider_session_id = Some("provider-session-1".to_owned());
+        state.provider_usage = Some(json!({
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "requestCount": 1,
+            "estimatedCostUsd": 0.0,
+            "costSource": "paperclip_estimate",
+        }));
+        state.pending_events.clear();
+        if recovery {
+            executor.restore_provider_if_needed().unwrap();
+        } else {
+            executor
+                .fail_provider("synthetic provider crash".to_owned())
+                .unwrap();
+        }
+        let events = executor
+            .state
+            .as_ref()
+            .unwrap()
+            .pending_events
+            .iter()
+            .map(|event| event.event_type.clone())
+            .collect();
+        fs::remove_dir_all(directory).unwrap();
+        events
+    }
+
+    #[test]
+    fn managed_crash_preserves_result_before_failure_closes_authority() {
+        assert_eq!(
+            managed_failure_event_types(false),
+            vec![
+                "run.result.proposed",
+                "session.failed",
+                "turn.failed",
+                "run.terminal",
+            ]
+        );
+    }
+
+    #[test]
+    fn managed_active_turn_recovery_preserves_result_before_failure() {
+        assert_eq!(
+            managed_failure_event_types(true),
+            vec!["run.result.proposed", "turn.failed", "run.terminal",]
+        );
+    }
+
     #[test]
     fn claude_usage_maps_nested_cache_creation_token_buckets() {
         let descriptor = ManagedProviderDescriptor::ClaudeManaged(ClaudeManagedProviderConfig {
@@ -2463,6 +2550,35 @@ mod tests {
         assert_eq!(
             event.payload.pointer("/cumulative/cacheWriteTokens"),
             Some(&json!(89))
+        );
+    }
+
+    #[test]
+    fn claude_runtime_identity_uses_the_pinned_agent_version() {
+        let descriptor = ManagedProviderDescriptor::ClaudeManaged(ClaudeManagedProviderConfig {
+            model: QUALIFIED_CLAUDE_MODEL.to_owned(),
+            profile_id: "profile-1".to_owned(),
+            anthropic_agent_id: "agent-1".to_owned(),
+            agent_version: "17".to_owned(),
+            environment_id: "environment-1".to_owned(),
+            beta_version: QUALIFIED_CLAUDE_BETA.to_owned(),
+            max_session_list_cost_usd: 1.0,
+            instructions: "Complete the supplied task.".to_owned(),
+            runtime_context: None,
+        });
+
+        assert_eq!(descriptor.version(), "17");
+        assert_eq!(
+            session_event_payload(
+                &descriptor,
+                &ProviderRuntimeIdentity::RemoteService {
+                    service: "anthropic_managed_agents".to_owned(),
+                    provider_session_id: "session-17".to_owned(),
+                    process_id: None,
+                },
+            )
+            .pointer("/providerDescriptor/providerVersion"),
+            Some(&json!("17"))
         );
     }
 

@@ -289,8 +289,8 @@ export type ToolPolicyTestResponse = {
 export const toolsApi = {
   getCloudConnectorEnrollment: () =>
     api.get<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment"),
-  startCloudConnectorEnrollment: (companyId: string, label?: string) =>
-    api.post<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment", { companyId, label }),
+  startCloudConnectorEnrollment: (companyId: string, label?: string, returnTo?: string) =>
+    api.post<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment", { companyId, label, returnTo }),
   // --- Applications ---
   listGallery: (companyId: string) =>
     api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
@@ -306,6 +306,7 @@ export const toolsApi = {
     connectionId: string,
     input: {
       asCurrentUser?: boolean;
+      asAgentId?: string;
       interactionId?: string;
     } = {},
   ) =>
@@ -396,7 +397,7 @@ export const toolsApi = {
     connectionId: string,
     input: { subjectUserId: string; scopes?: string[]; returnTo?: string },
   ) =>
-    api.post<{ url: string }>(
+    api.post<{ url: string; handoff?: ToolOAuthStartResult["handoff"] }>(
       `/companies/${companyId}/tools/connections/${connectionId}/start-authorization`,
       input,
     ),
@@ -549,10 +550,10 @@ export const toolsApi = {
     api.get<ToolActionRequestsResponse>(
       `/companies/${companyId}/tools/action-requests?status=${encodeURIComponent(status)}`,
     ),
-  approveActionRequest: (companyId: string, actionRequestId: string) =>
-    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/approve`, { companyId }),
-  declineActionRequest: (companyId: string, actionRequestId: string) =>
-    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/decline`, { companyId }),
+  approveActionRequest: (companyId: string, actionRequestId: string, rememberAction = false) =>
+    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/approve`, { companyId, rememberAction }),
+  declineActionRequest: (companyId: string, actionRequestId: string, reason?: string) =>
+    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/decline`, { companyId, reason }),
   createTrustRuleFromActionRequest: (
     companyId: string,
     actionRequestId: string,

@@ -118,6 +118,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -283,6 +284,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -364,6 +366,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -395,6 +398,10 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "-c",
+      'sandbox_mode="workspace-write"',
+      "-c",
+      "sandbox_workspace_write.network_access=true",
       "-",
     ]);
   });
@@ -435,6 +442,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -466,6 +474,10 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "-c",
+      'sandbox_mode="workspace-write"',
+      "-c",
+      "sandbox_workspace_write.network_access=true",
       "resume",
       "session-123",
       "-",
@@ -508,6 +520,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
@@ -545,6 +558,10 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "-c",
+      'sandbox_mode="workspace-write"',
+      "-c",
+      "sandbox_workspace_write.network_access=true",
       "resume",
       "session-123",
       "-",
@@ -572,7 +589,7 @@ describe("codex remote execution", () => {
         adapterConfig: {},
       },
       runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-      config: { command: "codex", env: { CODEX_HOME: codexHomeDir } },
+      config: { engine: "cli", command: "codex", env: { CODEX_HOME: codexHomeDir } },
       context: {
         paperclipWorkspace: {
           cwd: workspaceDir,

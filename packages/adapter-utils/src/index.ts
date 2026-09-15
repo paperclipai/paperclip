@@ -115,9 +115,13 @@ export type {
 export {
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
+  PAPERCLIP_RUNNER_DEFAULT_MODELS,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerIdleTimeoutMs,
+  resolvePaperclipRunnerModel,
+  paperclipRunnerTransitionConfig,
+  normalizeLegacyRunnerProvider,
   resolvePaperclipRunnerPermissionMode,
 } from "./paperclip-runner-permissions.js";
 export {

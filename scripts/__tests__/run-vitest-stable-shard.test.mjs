@@ -10,6 +10,8 @@ import {
   partitionGeneralServerSuites,
 } from "../general-server-shard.mjs";
 
+import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
 const durationsManifest = path.join(repoRoot, "scripts", "general-server-shard-durations.json");
@@ -172,6 +174,46 @@ test("the checked-in manifest loads and covers most of the current suite set", (
   );
 });
 
+test("the measured chat integration cohort does not share a general-server shard", () => {
+  const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
+  const durations = loadShardDurations(durationsManifest);
+  assert.ok(
+    Number.isFinite(durations[chatSuite]),
+    "the full chat cohort must have a measured duration, not the median fallback",
+  );
+  const unsharded = dryRunJson([
+    "--mode",
+    "general",
+    "--group",
+    "general-server",
+    "--shard-index",
+    "0",
+    "--shard-count",
+    "1",
+  ]);
+  const shards = partitionGeneralServerSuites(
+    unsharded.selectedGeneralServerSuites,
+    SHARD_COUNT,
+    durations,
+  );
+  const chatShards = shards.filter((shard) => shard.files.includes(chatSuite));
+  assert.equal(
+    chatShards.length,
+    1,
+    "the full chat cohort must run exactly once",
+  );
+  assert.deepEqual(
+    chatShards[0].files,
+    [chatSuite],
+    "its measured cost must reserve one existing shard without other suites",
+  );
+  assert.deepEqual(
+    shards.flatMap((shard) => shard.files).sort(),
+    [...unsharded.selectedGeneralServerSuites].sort(),
+    "duration balancing must not omit or duplicate any general-server suite",
+  );
+});
+
 test("the checked-in serialized manifest loads and covers most of the current suite set", () => {
   const durations = loadShardDurations(serializedDurationsManifest);
   assert.ok(Object.keys(durations).length > 0, "manifest must parse to a non-empty duration map");
@@ -223,4 +265,54 @@ test("the real shard partition is duration-balanced", () => {
     maxTotal - minTotal <= heaviest,
     `shard weight spread ${maxTotal - minTotal}ms exceeds heaviest suite ${heaviest}ms: ${totals.join(", ")}`,
   );
+});
+
+
+test("release server shards plus the dedicated chat file cover the original server group exactly", () => {
+  const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"]);
+  const shards = Array.from({ length: 10 }, (_, index) => dryRunJson([
+    "--mode", "general", "--group", "general-server-without-chat",
+    "--shard-index", String(index), "--shard-count", "10",
+  ]));
+  const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
+  const chat = "server/src/__tests__/chat-channels.integration.test.ts";
+  assert.ok(!files.includes(chat));
+  assert.deepEqual([...files, chat].sort(), full.selectedGeneralServerSuites.sort());
+  assert.equal(new Set(files).size, files.length);
+  const defaultRun = dryRunJson([]);
+  assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
+});
+
+const lineShardFile = path.join(repoRoot, "server/src/__tests__/chat-channels.integration.test.ts");
+const caseAt = (line, name) => ({ name, file: lineShardFile, projectName: "@paperclipai/server", location: { line, column: 3 } });
+
+test("test-line shards cover nested and parameterized cases exactly once without splitting a source line", () => {
+  const cases = [caseAt(10, "suite > nested > first"), caseAt(10, "suite > nested > second"),
+    caseAt(20, "same name"), caseAt(30, "same name"), caseAt(40, "last"), caseAt(50, "new case")];
+  const shards = partitionTestLines(cases, 3, lineShardFile);
+  assert.deepEqual(shards.map((shard) => shard.tests.length), [2, 2, 2]);
+  assert.equal(shards.filter((shard) => shard.lines.includes(10)).length, 1);
+  assert.equal(shards.find((shard) => shard.lines.includes(10)).tests.length, 2);
+  assert.equal(shards.flatMap((shard) => shard.lines).length, 5);
+  assert.deepEqual(shards.flatMap((shard) => shard.tests).sort((a, b) => a.location.line - b.location.line), cases);
+  assert.deepEqual(partitionTestLines([...cases].reverse(), 3, lineShardFile).map((shard) => shard.lines), shards.map((shard) => shard.lines));
+});
+
+test("line-shard collection rejects empty, foreign, or unlocated tests and invalid shard counts", () => {
+  const good = caseAt(10, "valid");
+  for (const input of [[], null, [{ ...good, file: "/another.test.ts" }], [{ ...good, projectName: "wrong" }],
+    [{ ...good, location: undefined }], [{ ...good, location: { line: 0 } }], [{ ...good, name: "" }]]) {
+    assert.throws(() => partitionTestLines(input, 1, lineShardFile));
+  }
+  for (const count of [0, -1, 1.5, Infinity, 2]) assert.throws(() => partitionTestLines([good], count, lineShardFile));
+});
+
+test("filtered collection must match the exact assigned case identities, including duplicates", () => {
+  const expected = [caseAt(10, "same"), caseAt(10, "same"), caseAt(20, "nested > case")];
+  assertSelectedTests(expected, [...expected].reverse(), lineShardFile);
+  for (const actual of [expected.slice(1), [...expected, caseAt(30, "extra")],
+    [expected[0], expected[1], caseAt(20, "renamed")],
+    [expected[0], expected[1], caseAt(21, "nested > case")]]) {
+    assert.throws(() => assertSelectedTests(expected, actual, lineShardFile));
+  }
 });

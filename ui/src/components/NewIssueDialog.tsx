@@ -1,3 +1,4 @@
+import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
@@ -21,8 +22,10 @@ import {
   issueExecutionWorkspaceModeForExistingWorkspace,
 } from "../lib/project-workspace-defaults";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { recordRecentTask } from "../lib/recent-tasks";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
 import { isIssueWorkMode, nextWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";
@@ -79,6 +82,7 @@ import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
+import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -181,14 +185,6 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
-  ],
-  codex_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
   ],
   opencode_local: [
     { value: "", label: "Default" },
@@ -472,6 +468,7 @@ export function NewIssueDialog() {
   const statuses = useMemo(() => buildStatusOptions(), []);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const titleRef = useRef("");
@@ -591,6 +588,11 @@ export function NewIssueDialog() {
     [agents, selectedAssigneeAgentId],
   );
   const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
+  const assigneePrimaryModel = isRecord(selectedAssigneeAgent?.adapterConfig)
+    && typeof selectedAssigneeAgent.adapterConfig.model === "string"
+    ? selectedAssigneeAgent.adapterConfig.model
+    : "";
+  const effectiveAssigneeModel = assigneeModelOverride || assigneePrimaryModel;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -602,12 +604,13 @@ export function NewIssueDialog() {
     });
   }, [agents, companyMembers?.users, orderedProjects]);
 
+  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(selectedAssigneeAgent?.adapterConfig ?? {}).provider ?? "codex") : undefined;
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
       effectiveCompanyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType)
+        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!),
+    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!, { provider: catalogProvider }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
   });
 
@@ -641,6 +644,7 @@ export function NewIssueDialog() {
       return { issue, companyId, failures };
     },
     onSuccess: ({ issue, companyId, failures }) => {
+      if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
@@ -934,7 +938,7 @@ export function NewIssueDialog() {
     }
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+        ? codexReasoningEffortOptions(effectiveAssigneeModel)
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
@@ -944,6 +948,7 @@ export function NewIssueDialog() {
   }, [
     supportsAssigneeOverrides,
     assigneeAdapterType,
+    effectiveAssigneeModel,
     assigneeThinkingEffort,
   ]);
 
@@ -1190,7 +1195,7 @@ export function NewIssueDialog() {
         : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
-      ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+      ? codexReasoningEffortOptions(effectiveAssigneeModel)
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
@@ -1385,7 +1390,8 @@ export function NewIssueDialog() {
             <Popover open={companyOpen} onOpenChange={setCompanyOpen}>
               <PopoverTrigger asChild>
                 <button
-                  className="px-1.5 py-0.5 rounded bg-muted text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity"
+                  data-slot="new-issue-compact-control"
+                  className="rounded bg-muted p-1.5 text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity sm:px-1.5 sm:py-0.5"
                   disabled={isSubIssueMode}
                 >
                   {dialogCompany?.issuePrefix ?? ""}
@@ -1473,6 +1479,8 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Assignee"
+                className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
+                triggerDataSlot="new-issue-compact-control"
                 disablePortal
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
@@ -1532,6 +1540,8 @@ export function NewIssueDialog() {
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder="Project"
+                className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
+                triggerDataSlot="new-issue-compact-control"
                 disablePortal
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
@@ -2074,7 +2084,10 @@ export function NewIssueDialog() {
           {/* Status chip */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+              <button
+                data-slot="new-issue-compact-control"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 py-0 text-xs hover:bg-accent/50 transition-colors sm:h-auto sm:px-2 sm:py-1"
+              >
                 <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
                 {currentStatus.label}
               </button>
@@ -2156,7 +2169,8 @@ export function NewIssueDialog() {
             multiple
           />
           <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+            data-slot="new-issue-compact-control"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 py-0 text-xs hover:bg-accent/50 transition-colors text-muted-foreground sm:h-auto sm:px-2 sm:py-1"
             onClick={() => stageFileInputRef.current?.click()}
             disabled={createIssue.isPending}
           >
@@ -2170,9 +2184,10 @@ export function NewIssueDialog() {
               <button
                 type="button"
                 data-issue-work-mode-chip={workMode}
+                data-slot="new-issue-compact-control"
                 aria-keyshortcuts="Meta+Period Control+Period"
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                  "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 py-0 text-xs transition-colors sm:h-auto sm:px-2 sm:py-1",
                   currentWorkMode.classes.chip,
                 )}
               >
@@ -2212,7 +2227,8 @@ export function NewIssueDialog() {
               <button
                 type="button"
                 data-testid="new-issue-more-menu-trigger"
-                className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50"
+                data-slot="new-issue-compact-control"
+                className="inline-flex size-8 items-center justify-center rounded-md border border-border p-0 text-xs text-muted-foreground transition-colors hover:bg-accent/50 sm:size-auto sm:p-1"
               >
                 <MoreHorizontal className="h-3 w-3" />
               </button>

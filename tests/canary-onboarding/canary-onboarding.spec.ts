@@ -16,6 +16,28 @@ test("the exact published canary installs and reaches Connect a model", async ({
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
+  // Browser storage is scoped to the Paperclip origin, not to a data directory.
+  // A customer can therefore start a freshly installed server with an existing
+  // onboarding draft. Creating the organization invalidates the company list;
+  // this release check must prove that a refetch does not remount the wizard
+  // from that old draft and leave the customer on the name screen.
+  await page.addInitScript(() => {
+    localStorage.setItem("paperclip-onboarding-state", JSON.stringify({
+      step: 1,
+      companyName: "",
+      createdCompanyId: null,
+    }));
+  });
+  let delayCompanyListRefetch = false;
+  await page.route("**/api/companies", async (route) => {
+    if (delayCompanyListRefetch && route.request().method() === "GET") {
+      // Make the invalidation window observable. The previous implementation
+      // unmounted the live wizard for this entire request.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await route.continue();
+  });
+
   const health = await getJson<{
     status: string;
     version: string;
@@ -30,6 +52,7 @@ test("the exact published canary installs and reaches Connect a model", async ({
     page.getByRole("heading", { name: "What is the name of your organization?" }),
   ).toBeVisible();
   await page.getByRole("textbox").fill(companyName);
+  delayCompanyListRefetch = true;
   await page.getByRole("button", { name: "Continue", exact: true }).click();
 
   const agentNameField = page.locator("#onboarding-agent-name");

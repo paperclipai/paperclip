@@ -34,10 +34,10 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
     "esbuild": "^0.28.2",
-    "rollup": "^4.62.4",
+    "rollup": "^4.63.1",
     "tslib": "^2.8.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "react": ">=18"

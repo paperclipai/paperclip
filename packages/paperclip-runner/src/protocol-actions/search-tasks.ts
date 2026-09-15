@@ -31,7 +31,7 @@ export const searchTasksAction = {
   },
   "documentation": {
     "title": "Search company tasks",
-    "description": "Search mock tasks by text and status within the run company.",
+    "description": "Search tasks by text and status within the run company.",
     "note": null
   },
   "examples": {
@@ -52,7 +52,7 @@ export const searchTasksAction = {
       "operationId": "search_tasks",
       "version": 1,
       "title": "Search company tasks",
-      "description": "Search mock tasks by text and status within the run company.",
+      "description": "Search tasks by text and status within the run company.",
       "exposure": "optional",
       "requiredClaims": [
         "discovery:tasks:read"

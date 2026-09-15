@@ -18,6 +18,14 @@ export const ACPX_HANDSHAKE_TIMEOUT_MS = 60_000;
 // of a channel loss.
 export const ACPX_HANDSHAKE_TRANSPORT_POLL_MS = 250;
 
+// The bound on how long the host waits, after a latched terminal sandbox
+// duplex-channel loss, for the agent to answer the `turn.cancel()` request.
+// `cancel()` only asks the agent to end the turn; it does not end the turn by
+// itself. An agent that stopped answering never honors it, so this deadline
+// is the host-side bound that ends the run without the agent's help. It is
+// much smaller than the whole-adapter execution timeout.
+export const ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS = 30_000;
+
 export const ACPX_ADAPTER_AGENT_IDS = {
   claude_local: "claude",
   codex_local: "codex",

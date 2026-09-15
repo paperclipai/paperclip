@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/wix.svg"
+    "logoUrl": "/brands/apps/wix.svg",
+    "darkLogoUrl": "/brands/apps/wix-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.wix.com/*"

@@ -358,11 +358,13 @@ export const ISSUE_ORIGIN_KINDS = [
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
+  // Historical origin only; automatic productivity reviews have been retired.
   "issue_productivity_review",
   "stranded_issue_recovery",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  "chat_channel",
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -943,6 +945,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "agent.session.goal.changed",
   "agent.status",
   "activity.logged",
   "external_object.updated",
@@ -1022,7 +1025,7 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
+export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
 
 export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;

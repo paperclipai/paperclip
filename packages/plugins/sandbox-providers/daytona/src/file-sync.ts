@@ -902,7 +902,10 @@ async function syncInDirectoryMapping(input: {
       // Extract the uploaded tarball onto the already-created target directory,
       // then remove the scratch tarball.
       const extractScript = [
-        `tar -xf ${shellQuote(remoteTar)} -C ${shellQuote(mapping.targetPath)} || { echo "extract failed"; exit 43; };`,
+        // BSD archives may revisit a directory after its parent's files. Keep
+        // GNU tar from restoring a read-only skill directory's mode before all
+        // of its children are extracted; final permissions remain unchanged.
+        `tar -xf ${shellQuote(remoteTar)} --delay-directory-restore -C ${shellQuote(mapping.targetPath)} || { echo "extract failed"; exit 43; };`,
         `rm -f ${shellQuote(remoteTar)};`,
       ].join("\n");
       // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and

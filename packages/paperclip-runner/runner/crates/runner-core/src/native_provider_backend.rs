@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
-    PolledEvent,
+    PolledEvent, TerminalDeliveryReconciliation,
 };
 use crate::managed_provider_backend::{
     ManagedProviderCommandExecutor, MANAGED_PROVIDER_STATE_FILE,
@@ -19,6 +19,13 @@ enum SelectedExecutor {
 }
 
 impl CommandExecutor for SelectedExecutor {
+    fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.retained_events(),
+            Self::Acpx(executor) => executor.retained_events(),
+            Self::Managed(executor) => executor.retained_events(),
+        }
+    }
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         match self {
             Self::LocalFacade(executor) => executor.execute(command),
@@ -35,11 +42,37 @@ impl CommandExecutor for SelectedExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        match self {
+            Self::LocalFacade(executor) => executor.rotate_authority(config),
+            Self::Acpx(executor) => executor.rotate_authority(config),
+            Self::Managed(executor) => executor.rotate_authority(config),
+        }
+    }
+
+    fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.maintain_backpressured_provider(),
+            Self::Acpx(executor) => executor.maintain_backpressured_provider(),
+            Self::Managed(executor) => executor.maintain_backpressured_provider(),
+        }
+    }
+
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
         match self {
             Self::LocalFacade(executor) => executor.acknowledge_events(count),
             Self::Acpx(executor) => executor.acknowledge_events(count),
             Self::Managed(executor) => executor.acknowledge_events(count),
+        }
+    }
+
+    fn reconcile_terminal_delivery(
+        &mut self,
+    ) -> Result<TerminalDeliveryReconciliation, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.reconcile_terminal_delivery(),
+            Self::Acpx(executor) => executor.reconcile_terminal_delivery(),
+            Self::Managed(executor) => executor.reconcile_terminal_delivery(),
         }
     }
 
@@ -139,6 +172,11 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.selected
+            .as_mut()
+            .map_or_else(|| Ok(Vec::new()), CommandExecutor::retained_events)
+    }
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.select_recovery()?;
         if self.selected.is_none()
@@ -163,6 +201,21 @@ impl CommandExecutor for NativeProviderCommandExecutor {
             .map_or_else(|| Ok(Vec::new()), CommandExecutor::poll_events)
     }
 
+    fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
+        // A provider that has not yet been selected/restored cannot have
+        // in-process cleanup to advance. Never launch one merely for ACK debt.
+        self.selected
+            .as_mut()
+            .map_or_else(|| Ok(()), CommandExecutor::maintain_backpressured_provider)
+    }
+
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.config = config.clone();
+        if let Some(executor) = self.selected.as_mut() {
+            executor.rotate_authority(config);
+        }
+    }
+
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
         self.select_recovery()?;
         if let Some(executor) = self.selected.as_mut() {
@@ -176,7 +229,24 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         }
     }
 
+    fn reconcile_terminal_delivery(
+        &mut self,
+    ) -> Result<TerminalDeliveryReconciliation, DurableRunnerError> {
+        // Selection only loads the provider authority. The selected executor
+        // decides whether terminal delivery can settle without a cold launch.
+        self.select_recovery()?;
+        self.selected.as_mut().map_or_else(
+            || Ok(TerminalDeliveryReconciliation::CleanupCompleted),
+            CommandExecutor::reconcile_terminal_delivery,
+        )
+    }
+
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+        // Terminal delivery can be reconciled by a replacement runner whose
+        // executor has not processed a provider command. Select the durable
+        // provider authority before cleanup so an absent in-memory selection
+        // can never turn the cleanup fence into a successful no-op.
+        self.select_recovery()?;
         if let Some(executor) = self.selected.as_mut() {
             executor.shutdown()
         } else {

@@ -129,9 +129,7 @@ describe("resolveNativeRuntimeMode", () => {
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5" },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_acpx_model_unqualified",
-    }));
+    })).not.toThrow();
   });
 
   it("rejects incomplete managed-provider selections before a run is persisted", () => {

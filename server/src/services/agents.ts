@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  toolConnectionInstalls,
   agentConfigRevisions,
   agentApiKeys,
   agentRuntimeState,
@@ -27,8 +28,7 @@ import {
   type AgentApiKeyScope,
 } from "@paperclipai/shared";
 import {
-  PAPERCLIP_OPERATIONAL_SKILL_KEY,
-  readPaperclipSkillSyncPreference,
+  normalizePaperclipRunnerAdapterConfig,
 } from "@paperclipai/adapter-utils/server-utils";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
@@ -41,8 +41,10 @@ import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
   assertClaudeOAuthBindingInvariant,
+  claudeOAuthBindingsMatchExactly,
   claudeOAuthClaimRejectedError,
   CLAUDE_LOCAL_ADAPTER_TYPE,
+  readClaudeOAuthBinding,
   secretService,
   type ClaudeOAuthBindingInvariantDecision,
 } from "./secrets.js";
@@ -98,12 +100,20 @@ interface RevisionMetadata {
  * from that actor. The path binds the fixed reference to the owner stored value
  * with no login round trip. It is distinct from `allowInternalBindingOverride`,
  * which does no ownership check.
+ *
+ * The `inheritedFromAgentId` field is the hire-inheritance path. The route
+ * sets it only for an authenticated agent actor whose hire request inherited
+ * the fixed reference from that named parent. The service re-reads the parent
+ * agent inside the write transaction and binds the fixed reference only when
+ * the parent exists, is in the same company, is a `claude_local` agent, and
+ * already holds the exact fixed binding.
  */
 interface ClaudeLoginContext {
   storedSessionId?: string | null;
   ownerUserId?: string | null;
   allowInternalBindingOverride?: boolean;
   applyExistingWithoutClaim?: boolean;
+  inheritedFromAgentId?: string | null;
 }
 
 interface UpdateAgentOptions {
@@ -114,6 +124,7 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
+  aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
@@ -130,32 +141,6 @@ interface AgentShortnameCollisionOptions {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hasPaperclipOperationalSkill(config: unknown): boolean {
-  if (!isPlainRecord(config)) return false;
-  return readPaperclipSkillSyncPreference(config).desiredSkillEntries.some(
-    (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
-  );
-}
-
-export function assertPaperclipRunnerOperationalSkillInvariant(input: {
-  adapterType: string;
-  nextConfig: unknown;
-  priorAdapterType?: string | null;
-  priorConfig?: unknown;
-}): void {
-  if (input.adapterType !== "paperclip_runner" || !hasPaperclipOperationalSkill(input.nextConfig)) {
-    return;
-  }
-  const preservesStaleAssignment =
-    input.priorAdapterType === "paperclip_runner"
-    && hasPaperclipOperationalSkill(input.priorConfig);
-  if (preservesStaleAssignment) return;
-  throw unprocessable(
-    `paperclip_runner does not support the legacy Paperclip operational skill (${PAPERCLIP_OPERATIONAL_SKILL_KEY}); remove it from this agent`,
-    { code: "paperclip_runner_legacy_operational_skill" },
-  );
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -371,7 +356,7 @@ export function agentService(db: Db) {
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
-      permissions: normalizeAgentPermissions(row.permissions, row.role),
+      permissions: normalizeAgentPermissions(row.permissions),
     });
   }
 
@@ -584,6 +569,23 @@ export function agentService(db: Db) {
    * owner or a missing stored value raises the same fixed claim error, so the
    * caller cannot tell the reasons apart.
    *
+   * The hire-inheritance path (`inheritedFromAgentId`) binds the fixed
+   * reference with no login round trip and no stored owner value, because the
+   * owning user resolves per run, not from a value stored against this agent.
+   * The route copies the parent's reference onto the child before this
+   * transaction starts, so a concurrent version change on the parent can
+   * leave the child holding a stale version. The gate re-reads the named
+   * parent agent inside this transaction and permits the bind only when the
+   * parent exists, is in the same company, is a `claude_local` agent, and its
+   * current reference matches the child's copied reference exactly, including
+   * the version selector. The gate locks the parent row with `SELECT ...
+   * FOR UPDATE` before it reads the reference. The lock blocks a concurrent
+   * credential rotation on the same parent row until this transaction
+   * commits or rolls back, so the compare-and-bind check stays atomic with
+   * the parent's current state. The route derives the parent identifier
+   * from the authenticated agent actor, never from the request body, so the
+   * gate treats it as a claim to verify, not a trusted value.
+   *
    * A controlled internal override skips the claim for a migration or an
    * administrator repair. The function creates the fixed user-secret definition
    * before the caller runs the declaration synchronization, so the synchronized
@@ -597,6 +599,13 @@ export function agentService(db: Db) {
       consume: boolean;
       environmentId: string | null;
       claudeLogin?: ClaudeLoginContext;
+      /**
+       * The adapter config the write is about to persist. The
+       * `inheritedFromAgentId` path reads the child's copied
+       * `CLAUDE_CODE_OAUTH_TOKEN` reference from it, to compare against the
+       * parent's current reference.
+       */
+      childAdapterConfig?: unknown;
     },
   ): Promise<void> {
     const ownerUserId = input.claudeLogin?.ownerUserId ?? null;
@@ -613,6 +622,34 @@ export function agentService(db: Db) {
           ownerUserId,
         );
         if (!stored) {
+          throw claudeOAuthClaimRejectedError();
+        }
+      } else if (input.claudeLogin?.inheritedFromAgentId) {
+        // The hire-inheritance path. Re-read the named parent inside this
+        // transaction; a caller-supplied identifier never binds on its own.
+        // Compare the parent's current reference against the reference
+        // already copied onto the child, including the version selector, so
+        // a concurrent version change on the parent cannot leave the child
+        // bound to a stale version.
+        const parentId = input.claudeLogin.inheritedFromAgentId;
+        const parent = await txDb
+          .select({
+            companyId: agents.companyId,
+            adapterType: agents.adapterType,
+            adapterConfig: agents.adapterConfig,
+          })
+          .from(agents)
+          .where(eq(agents.id, parentId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        const parentBinding = readClaudeOAuthBinding(parent?.adapterConfig ?? null);
+        const childBinding = readClaudeOAuthBinding(input.childAdapterConfig ?? null);
+        if (
+          !parent ||
+          parent.companyId !== input.companyId ||
+          parent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE ||
+          !claudeOAuthBindingsMatchExactly(parentBinding, childBinding)
+        ) {
           throw claudeOAuthClaimRejectedError();
         }
       } else if (!input.consume) {
@@ -703,29 +740,30 @@ export function agentService(db: Db) {
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
     if (
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
       isPlainRecord(normalizedPatch.adapterConfig)
     ) {
-      normalizedPatch.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
         normalizedPatch.adapterConfig,
         { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
       );
+      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+        (normalizedPatch.adapterType ?? existing.adapterType) as string,
+        normalizedAdapterConfig,
+      );
+    } else if (
+      Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterType")
+      && isPlainRecord(existing.adapterConfig)
+    ) {
+      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+        normalizedPatch.adapterType as string,
+        existing.adapterConfig,
+      );
     }
-    const nextAdapterType = (normalizedPatch.adapterType ?? existing.adapterType) as string;
-    const nextAdapterConfig = Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")
-      ? normalizedPatch.adapterConfig
-      : existing.adapterConfig;
-    assertPaperclipRunnerOperationalSkillInvariant({
-      adapterType: nextAdapterType,
-      nextConfig: nextAdapterConfig,
-      priorAdapterType: existing.adapterType,
-      priorConfig: existing.adapterConfig,
-    });
     // Run the server-enforced binding invariant when the patch touches the
     // adapter config. The update, approval, and rollback paths keep an existing
     // fixed binding but reject a newly introduced binding, because they carry no
@@ -750,6 +788,18 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+
+      const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+      const afterConfig = isPlainRecord(updated.adapterConfig) ? updated.adapterConfig : {};
+      const changedExecution = updated.adapterType !== existing.adapterType
+        || (updated.adapterType === "paperclip_runner" && ["provider", "acpxAgent", "model"].some(
+          (key) => priorAdapterConfig[key] !== afterConfig[key],
+        ));
+      if (changedExecution) {
+        await txDb.delete(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, existing.companyId), eq(agentTaskSessions.agentId, id)));
+        await txDb.update(agentRuntimeState).set({ adapterType: updated.adapterType, sessionId: null, stateJson: {}, updatedAt: new Date() })
+          .where(and(eq(agentRuntimeState.companyId, existing.companyId), eq(agentRuntimeState.agentId, id)));
+      }
 
       if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
         if (bindingDecision) {
@@ -831,16 +881,13 @@ export function agentService(db: Db) {
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
       const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const adapterType = data.adapterType ?? "process";
-      const adapterConfig = isPlainRecord(data.adapterConfig)
+      const rawAdapterConfig = isPlainRecord(data.adapterConfig)
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
-      assertPaperclipRunnerOperationalSkillInvariant({
-        adapterType,
-        nextConfig: adapterConfig,
-      });
+      const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
       // Run the server-enforced binding invariant after generic normalization
       // and before any database write. A create has no prior config.
       const bindingDecision = assertClaudeOAuthBindingInvariant({
@@ -859,6 +906,7 @@ export function agentService(db: Db) {
           consume: true,
           environmentId: (data.defaultEnvironmentId as string | null | undefined) ?? null,
           claudeLogin: options?.claudeLogin,
+          childAdapterConfig: adapterConfig,
         });
         const created = await tx
           .insert(agents)
@@ -874,6 +922,13 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        if (options?.aiConnectionInstall) {
+          await tx.insert(toolConnectionInstalls).values({
+            companyId, connectionId: options.aiConnectionInstall.connectionId,
+            targetType: "agent", targetId: created.id,
+            createdByUserId: options.aiConnectionInstall.createdByUserId,
+          }).onConflictDoNothing();
+        }
         await syncAgentSecretBindings(created, txDb);
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
@@ -1041,10 +1096,14 @@ export function agentService(db: Db) {
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
           isPlainRecord(patch.adapterConfig)
         ) {
-          patch.adapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
+          const normalizedAdapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
             existing.companyId,
             patch.adapterConfig,
             { adapterType: (patch.adapterType ?? existing.adapterType) as string },
+          );
+          patch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+            (patch.adapterType ?? existing.adapterType) as string,
+            normalizedAdapterConfig,
           );
           // The approval activation keeps an existing fixed binding but rejects a
           // newly introduced binding, because it carries no stored-session claim.
@@ -1053,20 +1112,19 @@ export function agentService(db: Db) {
             nextConfig: patch.adapterConfig,
             priorConfig: existing.adapterConfig,
           });
-        }
-        assertPaperclipRunnerOperationalSkillInvariant({
-          adapterType: (patch.adapterType ?? existing.adapterType) as string,
-          nextConfig: Object.prototype.hasOwnProperty.call(patch, "adapterConfig")
-            ? patch.adapterConfig
-            : existing.adapterConfig,
-          priorAdapterType: existing.adapterType,
-          priorConfig: existing.adapterConfig,
-        });
-        if (patch.permissions !== undefined) {
-          patch.permissions = normalizeAgentPermissions(
-            patch.permissions,
-            (patch.role ?? existing.role) as string,
+        } else if (
+          Object.prototype.hasOwnProperty.call(patch, "adapterType")
+          && isPlainRecord(existing.adapterConfig)
+        ) {
+          patch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+            patch.adapterType as string,
+            existing.adapterConfig,
           );
+        }
+        if (patch.permissions !== undefined) {
+          // The pending-approval activation replays the original hire
+          // request, so the new-agent creation default applies.
+          patch.permissions = normalizeAgentPermissions(patch.permissions, { context: "create" });
         }
         const updated = await tx
           .update(agents)
@@ -1113,7 +1171,7 @@ export function agentService(db: Db) {
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

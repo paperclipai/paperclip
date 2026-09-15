@@ -2,10 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import {
   acpxRuntimePermissionPolicy,
+  claudeReadPermissionRules,
   decideAcpxPermission,
 } from "./permission-policy.js";
 
 describe("ACPX permission policy", () => {
+  it("uses only catalogued reads assigned to this run, regardless of tool hints", () => {
+    const tools = [
+      "paperclip__get_task_context", "read_document", "write_document",
+      "call_api", "request_approval", "unknown_read", "mcp__other__get_task_context",
+    ].map((name) => ({ name, annotations: { readOnlyHint: true, effect: "read" } }));
+    expect(claudeReadPermissionRules(tools)).toEqual([
+      "mcp__paperclip__get_task_context", "mcp__paperclip__read_document",
+    ]);
+    expect(claudeReadPermissionRules([])).toEqual([]);
+  });
+
   it("maps each configured mode to a closed ACP runtime policy", () => {
     expect(acpxRuntimePermissionPolicy("approve-all")).toEqual({
       defaultAction: "approve",

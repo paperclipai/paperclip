@@ -143,7 +143,7 @@ fn retains_full_kind_classification_from_a_bounded_sidecar_frame() {
 
     let invalid = event(
         GeneratedAcpxSidecarEventType::RuntimeEvent,
-        json!({"type": "tool_call", "toolOperation": "write"}),
+        json!({"type": "tool_call", "toolCallId": "tool-1", "toolOperation": "write"}),
     );
     assert!(decode_acpx_event(&scope, &invalid)
         .unwrap_err()
@@ -157,8 +157,10 @@ fn rejects_unclassified_and_malformed_runtime_payloads() {
     for payload in [
         json!({"type": "future_event"}),
         json!({"type": "text_delta", "text": "x".repeat(65_537)}),
+        json!({"type": "text_delta", "text": "ok", "messageId": "x".repeat(241)}),
         json!({"type": "plan", "entries": [{"content": "Inspect", "status": "blocked"}]}),
         json!({"type": "semantic_result", "callId": "call-1", "operationId": "finish", "result": "not-an-object"}),
+        json!({"type": "tool_call", "status": "pending"}),
         json!({"type": "tool_call", "locations": vec![json!({}); 2_001]}),
         json!({"type": "tool_call", "locations": {"path": "file.txt"}}),
         json!({"type": "provider_notice", "category": "", "summary": "Update"}),
@@ -380,7 +382,7 @@ fn decodes_terminal_and_redacts_diagnostic_payloads() {
     assert!(matches!(
         decoded,
         AcpxEventPayload::Diagnostic { message, .. }
-            if message == "[REDACTED diagnostic containing a sensitive marker]"
+            if message == "Authorization: Bearer [REDACTED]"
     ));
 }
 

@@ -16,7 +16,13 @@ export interface TranscriptParserSource {
   createStdoutParser?: StdoutParserFactory;
 }
 
+export type AdapterConfigSection = "adapter" | "configuration" | "advanced" | "runPolicy" | "environment";
+
 export interface AdapterConfigFieldsProps {
+  /** Render only fields belonging to this shared form section. Omit for all fields. */
+  section?: AdapterConfigSection;
+  /** The shared local-adapter model picker is already rendered by the form. */
+  hideModel?: boolean;
   mode: "create" | "edit";
   isCreate: boolean;
   adapterType: string;

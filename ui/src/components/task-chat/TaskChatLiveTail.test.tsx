@@ -72,7 +72,7 @@ describe("TaskChatLiveTail", () => {
     expect(container.textContent).not.toContain("const x = 1;");
     expect(container.textContent).not.toContain("+1 −1");
 
-    const tool = container.querySelector<HTMLButtonElement>(".tc-enter-tool button");
+    const tool = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-tool-card"] button');
     expect(tool).not.toBeNull();
     flushSync(() => tool?.click());
 
@@ -195,7 +195,7 @@ describe("TaskChatLiveTail", () => {
     render(items);
 
     const tool = container.querySelector<HTMLButtonElement>(
-      ".tc-enter-tool button",
+      '[data-testid="task-chat-tool-card"] button',
     );
     const collapsedTarget = tool?.querySelector(
       ".task-chat-collapsed-line-fade",

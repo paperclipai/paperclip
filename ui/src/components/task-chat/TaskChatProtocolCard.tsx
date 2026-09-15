@@ -46,6 +46,7 @@ import type {
 } from "./task-chat-model";
 import { QuestionForm, QuestionResponseSummary } from "./QuestionForm";
 import { TaskChatComposerTakeoverHeader } from "./TaskChatComposerTakeoverContext";
+import { RichWorkProductCard } from "./RichWorkProductCard";
 
 export interface TaskChatProtocolCardProps {
   item: TaskChatProtocolItem;
@@ -139,7 +140,7 @@ function CardShell({
 }: {
   icon: typeof Circle;
   title: string;
-  status: string;
+  status: string | null;
   summary?: string;
   children?: React.ReactNode;
   testId: string;
@@ -151,7 +152,7 @@ function CardShell({
       <strong className="min-w-0 truncate text-sm font-medium text-foreground">
         {title}
       </strong>
-      {status !== "pending" ? (
+      {status && status !== "pending" ? (
         <span
           className={cn(
             "inline-flex shrink-0 items-center gap-1 text-xs capitalize",
@@ -205,15 +206,17 @@ function CardShell({
             <strong className="text-sm font-medium text-foreground">
               {title}
             </strong>
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 text-xs capitalize",
-                statusTone(status),
-              )}
-            >
-              <StatusIcon status={status} className="h-3.5 w-3.5" />
-              {status.replaceAll("_", " ")}
-            </span>
+            {status ? (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 text-xs capitalize",
+                  statusTone(status),
+                )}
+              >
+                <StatusIcon status={status} className="h-3.5 w-3.5" />
+                {status.replaceAll("_", " ")}
+              </span>
+            ) : null}
           </div>
           {summary ? (
             <p className="mt-1 text-sm text-muted-foreground">{summary}</p>
@@ -1015,6 +1018,9 @@ function ResourceCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "resource" }>;
 }) {
+  if (item.resourceKind === "deliverable" && item.workProduct) {
+    return <RichWorkProductCard workProduct={item.workProduct} href={item.href} />;
+  }
   const Icon =
     item.resourceKind === "document"
       ? FileText
@@ -1025,7 +1031,7 @@ function ResourceCard({
     <CardShell
       icon={Icon}
       title={item.title}
-      status="completed"
+      status={null}
       summary={item.subtitle}
       testId={`task-chat-resource-${item.resourceKind}`}
     />

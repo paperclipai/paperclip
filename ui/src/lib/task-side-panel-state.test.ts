@@ -6,6 +6,7 @@ import {
   taskPanelDocumentTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
+  taskPanelSubtasksTab,
   writeTaskSidePanelState,
 } from "./task-side-panel-state";
 
@@ -52,6 +53,23 @@ describe("task side-panel persistence", () => {
     const restored = readTaskSidePanelState("user-1", "company-1", "task-1", false);
     expect(restored?.state.tabs.map((tab) => tab.id)).toEqual(["properties", "document:plan"]);
     expect(restored?.state.activeTabId).toBe("properties");
+  });
+
+  it("round-trips the Streamlined UI subtasks tab", () => {
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: {
+        tabs: [taskPanelPropertiesTab(), taskPanelSubtasksTab()],
+        activeTabId: "subtasks",
+      },
+      launcherOpen: false,
+      userInteracted: true,
+      autoPlanHandled: true,
+      updatedAt: 1,
+    });
+
+    const restored = readTaskSidePanelState("user-1", "company-1", "task-1", false);
+    expect(restored?.state.tabs.map((tab) => tab.id)).toEqual(["properties", "subtasks"]);
+    expect(restored?.state.activeTabId).toBe("subtasks");
   });
 
   it("retains only the 50 most recently written tasks", () => {

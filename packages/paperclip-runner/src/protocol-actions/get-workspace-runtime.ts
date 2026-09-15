@@ -29,7 +29,7 @@ export const getWorkspaceRuntimeAction = {
   },
   "documentation": {
     "title": "Get workspace runtime",
-    "description": "Read active-task mock workspace services.",
+    "description": "Read active-task workspace services.",
     "note": null
   },
   "examples": {
@@ -50,7 +50,7 @@ export const getWorkspaceRuntimeAction = {
       "operationId": "get_workspace_runtime",
       "version": 1,
       "title": "Get workspace runtime",
-      "description": "Read active-task mock workspace services.",
+      "description": "Read active-task workspace services.",
       "exposure": "optional",
       "requiredClaims": [
         "workspace:read"
