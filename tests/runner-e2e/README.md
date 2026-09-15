@@ -502,3 +502,8 @@ classification.
 The product execution prompt v3 tells agents to record child dependencies and
 end the parent turn when no independent work remains. The user-story prompts
 stay unchanged, so live retests measure the product guidance itself.
+
+Delegated ZIP delivery can appear on the user-facing parent or its child task.
+The grader selects the newest ZIP only within that task family; a reuse request
+requires a new attachment after the request. The hired-agent execution/account
+checks and independent downloaded-code checks remain mandatory.

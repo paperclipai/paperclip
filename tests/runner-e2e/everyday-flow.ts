@@ -5,6 +5,10 @@ import { mkdir, readFile, stat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { pollUntil, type RunnerApi } from "./api.js";
+import {
+  latestStoryDelivery,
+  type StoryDelivery,
+} from "./everyday-delivery.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
@@ -290,6 +294,39 @@ export async function runEverydayFlow(input: Input) {
     ).toBeVisible();
     note("all-tasks-done");
   }
+  async function downloadDelegated(
+    mode: "base" | "separator" | "max-length",
+    phase: string,
+    after?: number,
+  ) {
+    const related = ev.issues.filter(
+      (issue) => issue.id === parent!.id || issue.parentId === parent!.id,
+    );
+    const attachments = (
+      await Promise.all(
+        related.map(async (issue) =>
+          (await api.get<Row[]>(`/api/issues/${issue.id}/attachments`)).map(
+            (a) => ({ ...a, issueId: issue.id }) as StoryDelivery,
+          ),
+        ),
+      )
+    ).flat();
+    const delivery = latestStoryDelivery(
+      attachments,
+      related.map((issue) => issue.id),
+      after,
+    );
+    if (!delivery) {
+      check(
+        `${phase}.zip-delivered`,
+        false,
+        "No new downloadable ZIP was delivered on the parent or its child tasks.",
+      );
+      return;
+    }
+    await download(delivery.issueId, mode, phase);
+  }
+
   async function download(
     issueId: string,
     mode: "base" | "separator" | "max-length",
@@ -395,6 +432,7 @@ export async function runEverydayFlow(input: Input) {
       "everyday-flow.ts",
       "everyday-cases.ts",
       "everyday-decisions.ts",
+      "everyday-delivery.ts",
       "everyday-observations.ts",
       "everyday-artifact.py",
       "user-actions.ts",
@@ -929,7 +967,7 @@ export async function runEverydayFlow(input: Input) {
           ),
         "The new hire must complete a run using the fixture managed account.",
       );
-      if (children[0]) await download(children[0].id, "base", "hired-delivery");
+      await downloadDelegated("base", "hired-delivery");
       const reuseRequestedAt = Date.now();
       await reply(
         `Have the existing Morgan QA add --separator support to the delivered project. Use the same agent; do not hire another. ${SLUGIFY_REVISION}`,
@@ -955,11 +993,7 @@ export async function runEverydayFlow(input: Input) {
         ),
         "The same hired agent performs the follow-up work.",
       );
-      const latestChildren = ev.issues
-        .filter((i) => i.parentId === parent!.id)
-        .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-      for (const child of latestChildren.slice(-1))
-        await download(child.id, "separator", "reused-delivery");
+      await downloadDelegated("separator", "reused-delivery", reuseRequestedAt);
     } else if (caseId === "delegate-feedback") {
       const children = ev.issues.filter((i) => i.parentId === parent!.id);
       check(
@@ -981,7 +1015,7 @@ export async function runEverydayFlow(input: Input) {
         "A completed child execution consumed the delivered user feedback.",
       );
       if (children[0])
-        await download(children[0].id, "max-length", "delegated-delivery");
+        await downloadDelegated("max-length", "delegated-delivery");
       check(
         "feedback-delivered-to-child",
         Boolean(
