@@ -23,6 +23,7 @@ const payload = {
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  managedMcpBearerToken: process.env.PAPERCLIP_MANAGED_MCP_BEARER_TOKEN_1 || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -56,6 +57,7 @@ type CapturePayload = {
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
+  managedMcpBearerToken?: string | null;
   paperclipEnvKeys: string[];
 };
 
@@ -313,7 +315,9 @@ describe("codex execute", () => {
       expect(configText).toContain("[mcp_servers.github]");
       expect(configText).toContain("[mcp_servers.\"paperclip-github\"]");
       expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');
-      expect(configText).toContain('Authorization = "Bearer pcgw_secret-managed-token"');
+      expect(configText).toContain('bearer_token_env_var = "PAPERCLIP_MANAGED_MCP_BEARER_TOKEN_1"');
+      expect(configText).not.toContain("pcgw_secret-managed-token");
+      expect(capture.managedMcpBearerToken).toBe("pcgw_secret-managed-token");
       expect(logs).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
