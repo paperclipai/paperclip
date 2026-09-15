@@ -727,12 +727,13 @@ describeEmbeddedPostgres("secretService", () => {
     try {
       expect(rotateBlocked).toBe(true);
       // The rotate call is confirmed blocked on the existing version row.
-      // If it had updated that row before the parent secret row — the
-      // opposite order this fix removes — the parent row would still be
-      // free here. A `nowait` probe from a third transaction settles which
-      // is true: it fails the instant the parent row already carries an
-      // uncommitted write from the blocked rotate call, and this fix makes
-      // that write happen first.
+      // `rotate()` locks and updates the parent `company_secrets` row
+      // before it touches the `company_secret_versions` rows. Every writer
+      // takes the two row locks in that same order. If the parent row
+      // were still free here, the version row would have been updated
+      // first instead. A `nowait` probe from a third transaction settles
+      // which is true. It fails the instant the parent row already
+      // carries an uncommitted write from the blocked rotate call.
       const probe = await db
         .transaction(async (tx) => {
           await tx.execute(sql`select 1 from company_secrets where id = ${secret.id} for update nowait`);
@@ -745,6 +746,61 @@ describeEmbeddedPostgres("secretService", () => {
     }
     await holder;
     await expect(rotateCall).resolves.toMatchObject({ latestVersion: 2 });
+  });
+
+  it("leaves an orphaned disabled version row when a lost compare-and-set meets a failed provider cleanup, and leaves the parent row as the winner left it", async () => {
+    // `rotate()` inserts the new version row with a plain, non-transactional
+    // `db.insert` before it opens the transaction that locks the parent row.
+    // A caller with no transaction of its own relies on that same insert.
+    // This test's race needs a concurrent rotation to bump `latestVersion`
+    // between two points: after this call reads the secret, but before this
+    // call's own version-row insert runs. The mocked provider write is the
+    // one await between those two points, so it stands in for the
+    // concurrent winner.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `lost-race-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "original-value",
+    });
+
+    vi.spyOn(localEncryptedProvider, "deleteOrArchive").mockRejectedValue(
+      new Error("simulated provider outage during cleanup"),
+    );
+    const originalCreateVersion = localEncryptedProvider.createVersion.bind(localEncryptedProvider);
+    vi.spyOn(localEncryptedProvider, "createVersion").mockImplementationOnce(async (input) => {
+      await db.update(companySecrets).set({ latestVersion: 2 }).where(eq(companySecrets.id, secret.id));
+      return originalCreateVersion(input);
+    });
+
+    await expect(
+      svc.rotate(secret.id, { value: "lost-race-value", expectedLatestVersion: 1 }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "The secret version is stale. Reload and confirm the rotation again.",
+    });
+
+    // The compare-and-set never matched, so `rotate()` made no write of its
+    // own to the parent row. It still reads `latestVersion: 2`, the value
+    // the concurrent winner set, not a value this call produced.
+    const [parentAfter] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+    expect(parentAfter).toMatchObject({ latestVersion: 2 });
+
+    // The provider cleanup failed, so the code path that deletes the new
+    // version row on a successful cleanup never ran. This documents a
+    // pre-existing gap. Version 2, the row this failed call inserted, stays
+    // in the table with `status: "disabled"`, orphaned from the secret's
+    // current version.
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ version: 1, status: "current" }),
+      expect.objectContaining({ version: 2, status: "disabled" }),
+    ]));
+    expect(versions).toHaveLength(2);
   });
 
   it("fails a queued local_encrypted create when an account-home cleanup removes its directory first", async () => {
