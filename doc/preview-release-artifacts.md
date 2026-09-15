@@ -116,3 +116,52 @@ node scripts/preview-artifacts.mjs pack /path/to/source /path/to/output FULL_SHA
 
 This executes source build scripts. Keep output outside the repository and use an
 environment without publishing or cloud-admin credentials.
+
+## Direct cloud migrator artifacts
+
+`cloud-migrator-artifacts.yml` builds the DB and shared preview packages on each
+canonical `master` push. A manual run also requires `master` and uses its exact
+commit. This workflow runs on GitHub-hosted runners. It has no PR trigger.
+
+The build resolves a complete npm lockfile from the two local archives. It then
+pins their download URLs to immutable, content-addressed objects. The cloud
+migration runner can use `npm ci` with this lockfile before either new package
+version is available on npm. Existing external dependencies still come from npm
+and carry SHA-512 integrity pins. Package lifecycle scripts remain disabled.
+
+Artifacts use the existing runner-history S3 bucket and CloudFront distribution,
+under the separate `cloud-migrators/v1/` prefix. The manifest at
+`https://d1p6rlowie26tp.cloudfront.net/cloud-migrators/v1/<full-sha>/manifest.json`
+records the full source SHA, exact preview version, and the size, URL, and SHA-512
+hash of each archive and the lockfile. Blob URLs include the content hash.
+The publisher validates the complete bundle before any write, writes all blobs
+before the manifest, and verifies downloads through the public endpoint.
+A retry reuses a complete existing manifest after verification.
+
+The build job has no AWS credential. The publish job downloads only the four
+fixed files, validates them, and uploads them without executing their code.
+The dedicated `paperclip-cloud-migrator-github` OIDC role trusts only
+`repo:paperclipai/paperclip:ref:refs/heads/master`. Its policy permits prefix
+listing and conditional `PutObject` calls in this one prefix. It permits no
+object deletion or overwrite. PRs, including allowlisted PRs, cannot assume it.
+
+The deploy policies are checked in under `.github/cloud-migrator-deploy/`:
+
+- `trust-policy.json`: the role trust policy.
+- `upload-policy.json`: the role's inline permission policy.
+- `cloudfront-read-statement.json`: append this statement to the existing bucket
+  policy, preserving its other statements and public-access blocks.
+
+There is no lifecycle expiry on this prefix. Keep referenced artifacts for
+rollback; deleting them can prevent a fresh migrator install for an old release.
+This producer rollout is additive. npm preview publication and the current
+cloud readiness gate remain active until the cloud consumer supports the new
+manifest. A later cutover must preserve source verification, image identity,
+migration compatibility, and the cloud runner's integrity checks.
+
+Local verification:
+
+```sh
+node --test scripts/cloud-migrator-artifacts.test.mjs
+node scripts/cloud-migrator-artifacts.mjs verify <full-sha>
+```
