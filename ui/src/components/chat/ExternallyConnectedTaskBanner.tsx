@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
+import { randomUuid } from "@/lib/random-uuid";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import { issuesApi } from "@/api/issues";
 import {
@@ -845,7 +846,7 @@ function ConnectedTaskComposer({
                   retainedScopeKey.current !== storageKey
                 )
                   return;
-                idempotencyKey.current ??= crypto.randomUUID();
+                idempotencyKey.current ??= randomUuid();
                 const input = retainedSend.current ?? {
                   attachmentIds: selectedAttachmentIds,
                   attachmentNames: selectedAttachmentIds.map((id) => ({
