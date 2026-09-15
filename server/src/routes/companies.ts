@@ -296,6 +296,10 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   const importJobTerminalRetentionMs = 60 * 60 * 1000;
 
   function parseBooleanQuery(value: unknown) {
+    // Duplicate query params (e.g. "...&download=1&...&download=1") arrive as
+    // arrays after query parsing. Treat the param as true when any element
+    // matches, instead of silently failing the whole flag.
+    if (Array.isArray(value)) return value.some((entry) => parseBooleanQuery(entry));
     return value === true || value === "true" || value === "1";
   }
 
