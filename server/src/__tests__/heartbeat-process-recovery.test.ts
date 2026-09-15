@@ -13116,6 +13116,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
     expect(recoveryIssue?.originKind).toBe("stranded_issue_recovery");
     expect(recoveryIssue?.originId).toBe(sourceIssueId);
+    // This in-place escalation must not create the same invisible-card
+    // hazard as the primary path: a board-owned unblockDescriptor is
+    // required whenever recovery flips a card to `blocked`.
+    expect(recoveryIssue?.unblockDescriptor).toMatchObject({ owner: "board" });
+    expect(
+      typeof recoveryIssue?.unblockDescriptor?.action,
+    ).toBe("string");
 
     const nestedRecoveries = await db
       .select()
@@ -13610,10 +13617,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
+    // Union of both sides: upstream #14046 rerouted this fixture through
+    // `escalateDispositionRepair`, so the comment text is the disposition-repair
+    // notice. The KEE-250 invariant assertion is kept on top of that.
     expect(comments[0]?.body).toContain("bounded original-owner disposition repair");
     expect(comments[0]?.body).toContain("Attempts: 1/1");
     expect(recoveryAction.evidence).toMatchObject({ sourceAttemptCount: 1, sourceMaxAttempts: 1 });
     expect(recoveryAction.ownerType).toBe("board");
+    // A `blocked` card with no first-class blocker and no unblockDescriptor
+    // is invisible to every view and owner queue. Recovery must never create
+    // that state.
+    expect(issue?.unblockDescriptor).toEqual({
+      owner: "board",
+      action: recoveryAction.nextAction,
+    });
   });
 
   async function seedNativePassiveBoardResponse(
