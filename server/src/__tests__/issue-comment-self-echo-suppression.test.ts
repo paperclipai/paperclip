@@ -140,7 +140,7 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
-function makeApp(actor: Record<string, unknown>) {
+function makeApp() {
   const app = express();
   app.use(express.json());
   return app;
@@ -278,7 +278,7 @@ describe.sequential("issue_commented self-echo suppression", () => {
   describe("POST /api/issues/:id/comments", () => {
     it("does NOT wake the assignee when the assignee agent posts a comment on its own issue", async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue());
-      const app = makeApp(agentActor(ASSIGNEE_AGENT_ID));
+      const app = makeApp();
       await installActor(app, agentActor(ASSIGNEE_AGENT_ID));
 
       const res = await request(app)
@@ -287,7 +287,8 @@ describe.sequential("issue_commented self-echo suppression", () => {
 
       expect(res.status).toBe(201);
 
-      await new Promise((r) => setTimeout(r, 50));
+      // Drain pending microtasks so the fire-and-forget wake fan-out has completed.
+      await new Promise((r) => setImmediate(r));
 
       const issuedCommentedWakes = mockHeartbeatService.wakeup.mock.calls.filter(
         ([agentId, wake]) => agentId === ASSIGNEE_AGENT_ID && wake.reason === "issue_commented",
@@ -298,7 +299,7 @@ describe.sequential("issue_commented self-echo suppression", () => {
     it("DOES wake the assignee agent when a board user posts a comment on the issue", async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue());
       mockIssueService.addComment.mockResolvedValue(makeComment({ authorUserId: "local-board" }));
-      const app = makeApp(boardActor());
+      const app = makeApp();
       await installActor(app, boardActor());
 
       const res = await request(app)
@@ -320,7 +321,7 @@ describe.sequential("issue_commented self-echo suppression", () => {
       mockIssueService.addComment.mockResolvedValue(
         makeComment({ authorAgentId: OTHER_AGENT_ID }),
       );
-      const app = makeApp(agentActor(OTHER_AGENT_ID));
+      const app = makeApp();
       await installActor(app, agentActor(OTHER_AGENT_ID));
 
       const res = await request(app)
@@ -348,7 +349,7 @@ describe.sequential("issue_commented self-echo suppression", () => {
       mockIssueService.addComment.mockResolvedValue(
         makeComment({ authorAgentId: ASSIGNEE_AGENT_ID }),
       );
-      const app = makeApp(agentActor(ASSIGNEE_AGENT_ID));
+      const app = makeApp();
       await installActor(app, agentActor(ASSIGNEE_AGENT_ID));
 
       const res = await request(app)
@@ -357,7 +358,8 @@ describe.sequential("issue_commented self-echo suppression", () => {
 
       expect(res.status).toBe(200);
 
-      await new Promise((r) => setTimeout(r, 50));
+      // Drain pending microtasks so the fire-and-forget wake fan-out has completed.
+      await new Promise((r) => setImmediate(r));
 
       const selfCommentedWakes = mockHeartbeatService.wakeup.mock.calls.filter(
         ([agentId, wake]) => agentId === ASSIGNEE_AGENT_ID && wake.reason === "issue_commented",
@@ -372,7 +374,7 @@ describe.sequential("issue_commented self-echo suppression", () => {
       mockIssueService.addComment.mockResolvedValue(
         makeComment({ authorUserId: "local-board" }),
       );
-      const app = makeApp(boardActor());
+      const app = makeApp();
       await installActor(app, boardActor());
 
       const res = await request(app)
@@ -396,7 +398,7 @@ describe.sequential("issue_commented self-echo suppression", () => {
       mockIssueService.addComment.mockResolvedValue(
         makeComment({ authorAgentId: OTHER_AGENT_ID }),
       );
-      const app = makeApp(agentActor(OTHER_AGENT_ID));
+      const app = makeApp();
       await installActor(app, agentActor(OTHER_AGENT_ID));
 
       const res = await request(app)
