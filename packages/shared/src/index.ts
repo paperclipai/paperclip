@@ -1787,6 +1787,8 @@ export {
 } from "./validators/instance.js";
 
 export {
+  subscriptionThrottleConfigSchema,
+  type SubscriptionThrottleConfig,
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,

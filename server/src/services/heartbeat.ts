@@ -50,6 +50,7 @@ import {
 import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
+import { readFileSync as readFileSyncFs } from "node:fs";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -459,6 +460,7 @@ import {
   instanceSettingsService,
   resolveWorktreeRunExecutionActivation,
 } from "./instance-settings.js";
+import { subscriptionThrottleService } from "./subscription-throttle.js";
 import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
@@ -8805,6 +8807,43 @@ export async function persistHeartbeatRunProcessMetadata(
   });
 }
 
+// Returns the wall-clock process start time in milliseconds by reading
+// /proc/<pid>/stat (Linux only). Returns null on non-Linux or read failure.
+function readPidStartTimeMs(pid: number): number | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const stat = readFileSyncFs(`/proc/${pid}/stat`, "utf8");
+    // The second field is the process name wrapped in parens. Find the last
+    // closing paren to correctly handle names that contain spaces or parens.
+    const afterParen = stat.lastIndexOf(")");
+    if (afterParen < 0) return null;
+    // Remaining fields after "state" (index 0) — starttime is at index 19.
+    const fields = stat.slice(afterParen + 1).trim().split(/\s+/);
+    const startTicks = parseInt(fields[19] ?? "0", 10);
+    if (!Number.isFinite(startTicks) || startTicks <= 0) return null;
+    const uptimeLine = readFileSyncFs("/proc/uptime", "utf8");
+    const uptimeSec = parseFloat(uptimeLine.split(" ")[0] ?? "0");
+    const bootTimeMs = Date.now() - uptimeSec * 1000;
+    return bootTimeMs + (startTicks / 100) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+// Guards against killing a recycled PID. Returns true when we are confident
+// the PID belongs to the original child, or when we cannot verify (fail open).
+// expectedStartedAt is when Paperclip recorded the run as started, which is
+// close to but not identical to OS process creation time; allow 30 s slack.
+function isProbablySameProcess(
+  pid: number | null | undefined,
+  expectedStartedAt: Date | null | undefined,
+): boolean {
+  if (typeof pid !== "number" || !expectedStartedAt) return true;
+  const procStartMs = readPidStartTimeMs(pid);
+  if (procStartMs === null) return true;
+  return Math.abs(procStartMs - expectedStartedAt.getTime()) < 30_000;
+}
+
 async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
@@ -9410,6 +9449,7 @@ export function heartbeatService(
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const subscriptionThrottle = subscriptionThrottleService(db, instanceSettings);
   const recovery = recoveryService(db, {
     enqueueWakeup,
     liveRunExecutions,
@@ -17079,6 +17119,22 @@ export function heartbeatService(
       return null;
     }
 
+    // The subscription throttle only applies to claude_local — it tracks Anthropic
+    // spend-window usage. Other adapters (Gemini, Codex, cloud, etc.) have separate
+    // billing and must not be blocked by this gate.
+    if (agent.adapterType === "claude_local") {
+      const throttleBlock = await subscriptionThrottle.getBlock(run.companyId);
+      if (throttleBlock) {
+        // Do NOT cancel — leave the run queued so it is retried on the next timer tick
+        // once the subscription window usage drops below the resume threshold.
+        logger.info(
+          { runId: run.id, companyId: run.companyId, usagePercent: throttleBlock.usagePercent },
+          "claimQueuedRun: deferring queued run due to subscription throttle; run stays queued",
+        );
+        return null;
+      }
+    }
+
     const dailyCapBlock = await getHeartbeatDailyCapBlock(
       agent,
       parseHeartbeatPolicy(agent),
@@ -18866,8 +18922,36 @@ export function heartbeatService(
               },
             });
           }
+          // First detection: just mark detached and wait for the next tick to kill.
+          continue;
         }
-        continue;
+
+        // Already marked detached on a prior tick. Kill if the staleness threshold
+        // has elapsed since we wrote the detached warning (run.updatedAt). This
+        // gives the process one full stale window to reconnect before we forcibly
+        // terminate it and release the issue lock.
+        if (staleThresholdMs > 0) {
+          const detachedSince = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+          if (now.getTime() - detachedSince < staleThresholdMs) {
+            continue;
+          }
+          // Stale detached process — kill it and fall through to terminalize.
+          // Guard against PID recycling: only send signals if the OS process
+          // start time matches what we recorded when the run was launched.
+          if (isProbablySameProcess(run.processPid, run.processStartedAt)) {
+            await terminateHeartbeatRunProcess({
+              pid: run.processPid,
+              processGroupId: run.processGroupId,
+            });
+          } else {
+            logger.warn(
+              { runId: run.id, pid: run.processPid },
+              "reapOrphanedRuns: detached PID appears reused; skipping kill, proceeding with terminalization",
+            );
+          }
+        } else {
+          continue;
+        }
       }
 
       const runContext = parseObject(run.contextSnapshot);
@@ -19011,6 +19095,177 @@ export function heartbeatService(
         { errorKind: PENDING_CLEANUP_SWEEP_ERROR_KIND },
         "pending_cleanup lease sweep failed",
       );
+    }
+
+    return { reaped: reaped.length, runIds: reaped };
+  }
+
+  // Kills local-adapter processes that still hold an in-memory handle but have
+  // been silent beyond `killThresholdMs`. Handles the spend-limit / auth-failure
+  // zombie pattern where the adapter process is alive but the session is dead and
+  // produces no output — a case reapOrphanedRuns cannot reach because
+  // runningProcesses still contains the handle.
+  //
+  // Terminalizing the run in the DB is the durable action: sweepStaleIssueLocks
+  // clears the executionRunId / checkoutRunId on the next tick even if this
+  // process crashes between kill and releaseIssueExecutionAndPromote.
+  async function reapSilentZombieRuns(opts?: { killThresholdMs?: number }) {
+    const killThresholdMs = opts?.killThresholdMs ?? 4 * 60 * 60 * 1000; // 4 h default
+    const now = new Date();
+    const killBefore = new Date(now.getTime() - killThresholdMs);
+
+    const reaped: string[] = [];
+
+    for (const [runId, handle] of runningProcesses) {
+      const run = await getRun(runId);
+
+      if (!run) {
+        // Stale in-memory entry with no DB row (deleted by company/agent cleanup
+        // while the child was still alive). Terminate the process before dropping
+        // the only management handle, otherwise it becomes permanently untracked.
+        const childPid = handle.child.pid;
+        if (typeof childPid === "number" && isProcessAlive(childPid)) {
+          logger.warn(
+            { runId, childPid },
+            "reapSilentZombieRuns: DB row deleted while child still alive; terminating orphaned process",
+          );
+          try {
+            await terminateHeartbeatRunProcess({ pid: childPid, processGroupId: handle.processGroupId });
+          } catch (killErr) {
+            logger.warn(
+              { runId, childPid, err: killErr },
+              "reapSilentZombieRuns: failed to terminate orphaned child after DB row deletion",
+            );
+          }
+        }
+        runningProcesses.delete(runId);
+        continue;
+      }
+
+      if (run.status !== "running") {
+        // Run already reached a terminal status via another path; remove handle.
+        runningProcesses.delete(runId);
+        continue;
+      }
+
+      const agentRow = await db
+        .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+        .from(agents)
+        .where(eq(agents.id, run.agentId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!agentRow || !isTrackedLocalChildProcessAdapter(agentRow.adapterType)) {
+        // Only kill local child-process adapters; remote/cloud runs have different
+        // liveness semantics and are not managed by runningProcesses.
+        continue;
+      }
+
+      const { adapterType, adapterConfig } = agentRow;
+
+      // Use the latest output timestamp as the silence reference, falling back
+      // to process-start → run-start → creation time so newly started runs
+      // are never considered stale.
+      const silenceRef = run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt;
+      if (!silenceRef || new Date(silenceRef).getTime() > killBefore.getTime()) {
+        continue;
+      }
+
+      const silenceMs = now.getTime() - new Date(silenceRef).getTime();
+      const killMessage = `Silent zombie reaper: local process silent for ${Math.round(silenceMs / 60_000)} min; killing and releasing lock`;
+
+      logger.warn(
+        { runId, agentId: run.agentId, silenceMs, processPid: run.processPid, processGroupId: run.processGroupId },
+        killMessage,
+      );
+
+      // Kill the process first. If the kill fails, the process is still alive
+      // and we must NOT release the lock or mark the run terminal — doing so
+      // would let a new run start while the zombie is still running. Leave the
+      // handle in runningProcesses so the next sweep retries the kill.
+      //
+      // Guard against PID recycling before every kill attempt — including
+      // retries after a previous failed kill where the handle was retained.
+      // If the OS reused the PID, the original process is already gone; skip
+      // the signal and fall through to terminalize the run and release the lock.
+      if (!isProbablySameProcess(run.processPid, run.processStartedAt)) {
+        logger.warn(
+          { runId, processPid: run.processPid },
+          "reapSilentZombieRuns: PID appears recycled; skipping kill, proceeding with terminalization",
+        );
+        // Fall through to terminalize — the original process is already gone.
+      } else {
+        try {
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        } catch (killErr) {
+          logger.warn(
+            { runId, processPid: run.processPid, processGroupId: run.processGroupId, err: killErr },
+            "reapSilentZombieRuns: kill failed; retaining handle and deferring cleanup to next sweep",
+          );
+          continue;
+        }
+      }
+      runningProcesses.delete(runId);
+
+      // Persist terminal status so the issue lock is always clearable even
+      // if the steps below fail partway through.
+      let finalizedRun = await setRunStatus(runId, "interrupted", {
+        error: killMessage,
+        errorCode: "silent_zombie_killed",
+        finishedAt: now,
+        resultJson: mergeRunStopMetadataForAgent(
+          { adapterType, adapterConfig },
+          "interrupted",
+          {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "silent_zombie_killed",
+            errorMessage: killMessage,
+          },
+        ),
+      });
+
+      if (!finalizedRun) finalizedRun = await getRun(runId);
+      if (!finalizedRun) {
+        reaped.push(runId);
+        continue;
+      }
+
+      finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+
+      await appendRunEvent(finalizedRun, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: killMessage,
+        payload: {
+          silenceMs,
+          killThresholdMs,
+          ...(run.processPid ? { processPid: run.processPid } : {}),
+          ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+        },
+      });
+
+      await releaseEnvironmentLeasesForRun({
+        runId: finalizedRun.id,
+        companyId: finalizedRun.companyId,
+        agentId: finalizedRun.agentId,
+        status: finalizedRun.status,
+        failureReason: finalizedRun.error ?? undefined,
+      });
+
+      await releaseIssueExecutionAndPromote(finalizedRun);
+      await finalizeAgentStatus(finalizedRun.agentId, "interrupted", killMessage, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(finalizedRun),
+      });
+      await startNextQueuedRunForAgent(finalizedRun.agentId);
+
+      reaped.push(runId);
+    }
+
+    if (reaped.length > 0) {
+      logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped silent zombie runs");
     }
 
     return { reaped: reaped.length, runIds: reaped };
@@ -26131,6 +26386,22 @@ export function heartbeatService(
       });
     }
 
+    // Subscription throttle gates only claude_local — other adapters bill
+    // independently and must not be held back by Anthropic spend-window limits.
+    if (agent.adapterType === "claude_local") {
+      const throttleBlock = await subscriptionThrottle.getBlock(agent.companyId);
+      if (throttleBlock) {
+        await writeSkippedHeartbeatRequest("subscription_throttle", {
+          provider: throttleBlock.provider,
+          usagePercent: throttleBlock.usagePercent,
+        });
+        if (opts.requestedByActorType === "user") {
+          throw conflict(throttleBlock.reason, { code: "subscription_throttle" });
+        }
+        return null;
+      }
+    }
+
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
@@ -29033,6 +29304,7 @@ export function heartbeatService(
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
     reapOrphanedRuns,
+    reapSilentZombieRuns,
     sweepPendingCleanupLeases,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that

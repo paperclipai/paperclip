@@ -1947,6 +1947,13 @@
       "when": 1789390281190,
       "tag": "0279_tired_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 280,
+      "version": "7",
+      "when": 1787906613254,
+      "tag": "0280_perfect_the_twelve",
+      "breakpoints": true
     }
   ]
 }

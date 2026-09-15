@@ -49,6 +49,43 @@ async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
+export async function subscriptionWindowUsage(
+  db: Db,
+  companyId: string,
+  opts: {
+    provider: string;
+    billingTypes: string[];
+    windowHours: number;
+    cachedWeight: number;
+  },
+): Promise<{ usage: number; windowStart: Date }> {
+  const windowStart = new Date(Date.now() - opts.windowHours * 60 * 60 * 1000);
+  const billingTypeSql = sql.join(
+    opts.billingTypes.map((bt) => sql`${bt}`),
+    sql`, `,
+  );
+  const [row] = await db
+    .select({
+      inputTokens: sumAsNumber(costEvents.inputTokens),
+      outputTokens: sumAsNumber(costEvents.outputTokens),
+      cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+    })
+    .from(costEvents)
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        eq(costEvents.provider, opts.provider),
+        sql`${costEvents.billingType} IN (${billingTypeSql})`,
+        gte(costEvents.occurredAt, windowStart),
+      ),
+    );
+  const inputTokens = Number(row?.inputTokens ?? 0);
+  const outputTokens = Number(row?.outputTokens ?? 0);
+  const cachedInputTokens = Number(row?.cachedInputTokens ?? 0);
+  const usage = inputTokens + outputTokens + opts.cachedWeight * cachedInputTokens;
+  return { usage, windowStart };
+}
+
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
