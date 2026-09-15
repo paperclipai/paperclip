@@ -169,6 +169,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   it("creates one reusable watchdog issue and wakes the watchdog on the initial stopped state", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-1", status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
@@ -223,15 +224,39 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.lastObservedStopSnapshot).toMatchObject({
       version: 2,
       fingerprint: watchdog?.lastObservedFingerprint,
-      materialLeaves: [],
+      materialLeaves: [expect.objectContaining({ issueId: childId, status: "blocked" })],
       waitsByIssueId: {},
     });
     expect(watchdog?.triggerCount).toBe(1);
   });
 
+  it("does not trigger when every watched issue is terminal", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-COMPLETE", status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "cancelled" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, complete: 1 });
+    expect(wakes).toHaveLength(0);
+    const watchdogIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(watchdogIssues).toHaveLength(0);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).toBeNull();
+    expect(watchdog?.triggerCount).toBe(0);
+    expect(childId).toBeTruthy();
+  });
+
   it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-DUPE", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
@@ -264,6 +289,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   it("re-wakes a same-fingerprint watchdog review stuck in stale in_review", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
@@ -360,6 +386,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   it("does not keep the source live for runs under a nested task-watchdog issue", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-NEST", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const agentId = await seedAgent(companyId);
     const nestedWatchdogIssueId = await seedIssue(companyId, {
       parentId: sourceId,
@@ -391,7 +418,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   it("reconciles ancestor watchdogs for a descendant issue mutation", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-ANCESTOR", status: "done" });
-    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
@@ -405,7 +432,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   it("marks a completed watchdog fingerprint reviewed, then reuses the same issue for a later stopped state", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-3", status: "done" });
-    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
@@ -425,8 +452,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     await db
       .update(issues)
-      .set({ status: "blocked", updatedAt: new Date(Date.now() + 60_000) })
+      .set({ status: "done", updatedAt: new Date(Date.now() + 30_000) })
       .where(eq(issues.id, childId));
+    await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const retriggered = await service.reconcileTaskWatchdogs({ companyId });
 
     expect(retriggered).toMatchObject({ checked: 1, triggered: 1 });
@@ -491,7 +519,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   it("does not let an old terminal watchdog review mark a newer observed fingerprint reviewed", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE", status: "done" });
-    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "blocked" });
     const agentId = await seedAgent(companyId);
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
@@ -512,7 +540,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     await db
       .update(issues)
-      .set({ status: "blocked", updatedAt: new Date(Date.now() + 60_000) })
+      .set({ assigneeAgentId: agentId, updatedAt: new Date(Date.now() + 60_000) })
       .where(eq(issues.id, childId));
     const changedWhileReviewLive = await service.reconcileTaskWatchdogs({ companyId });
     expect(changedWhileReviewLive).toMatchObject({ checked: 1, triggered: 0, live: 1 });
