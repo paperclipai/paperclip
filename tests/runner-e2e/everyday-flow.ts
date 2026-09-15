@@ -374,7 +374,7 @@ export async function runEverydayFlow(input: Input) {
       target,
       "--mode",
       mode,
-    ]);
+    ], Math.max(1, Math.min(60_000, input.deadlineAt - Date.now())));
     const oracle = JSON.parse(result.stdout) as { checks: StoryCheck[] };
     ev.checks.push(
       ...oracle.checks.map((c) => ({ ...c, id: `${phase}.${c.id}` })),
@@ -461,6 +461,17 @@ export async function runEverydayFlow(input: Input) {
           .join("\n"),
       )
       .digest("hex");
+    if (!caseId.startsWith("service-") && !decliningConnection) {
+      try {
+        const sandbox = await runCommand(process.env.PYTHON ?? "python3", [
+          path.join(import.meta.dirname, "everyday-artifact.py"), "--preflight",
+        ]);
+        if (sandbox.code !== 0) throw new Error(sandbox.stdout);
+        note("artifact-sandbox-qualified", { isolation: "docker", network: "none" });
+      } catch (error) {
+        throw new Error(`Artifact sandbox qualification failed before task creation: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+    }
     if (!project && !caseId.startsWith("service-") && !decliningConnection) {
       project = await api.post(
         `/api/companies/${fixtures.company.id}/projects`,

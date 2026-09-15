@@ -2,6 +2,7 @@
 import importlib.util
 import pathlib
 import stat
+import socket
 import tempfile
 import unittest
 import zipfile
@@ -52,6 +53,27 @@ class ArtifactOracleTests(unittest.TestCase):
     def test_invalid_separator_bug_fails(self):
         checks=self.grade(GOOD.replace("choices=['-','_'],", ""),'separator')
         self.assertFalse(next(c['passed'] for c in checks if c['id']=='reject-invalid-separator'))
+
+    def test_artifact_cannot_read_host_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker=pathlib.Path(tmp)/'host-private-marker';marker.write_text('private fixture')
+            prefix=f"import pathlib\nassert not pathlib.Path({str(marker)!r}).exists(), 'host filesystem is visible'\n"
+            self.assertTrue(all(c['passed'] for c in self.grade(prefix+GOOD)))
+
+    def test_artifact_cannot_reach_host_loopback(self):
+        with socket.socket() as server:
+            server.bind(('127.0.0.1',0));server.listen(64)
+            port=server.getsockname()[1]
+            prefix=f"import socket\ns=socket.socket();s.settimeout(0.2)\nassert s.connect_ex(('127.0.0.1',{port})) != 0, 'host network is visible'\ns.close()\n"
+            self.assertTrue(all(c['passed'] for c in self.grade(prefix+GOOD)))
+
+    def test_artifact_cannot_modify_the_read_only_delivery(self):
+        prefix="import pathlib\ntry: pathlib.Path(__file__).write_text('changed')\nexcept OSError: pass\nelse: raise AssertionError('project is writable')\n"
+        self.assertTrue(all(c['passed'] for c in self.grade(prefix+GOOD)))
+
+    def test_generated_output_is_bounded(self):
+        with self.assertRaisesRegex(ValueError, 'output limit'):
+            self.grade("print('x'*1000000)")
 
     def test_duplicate_source_fails(self):
         self.assertFalse(all(c['passed'] for c in self.grade(extras={'other/slugify.py':GOOD})))

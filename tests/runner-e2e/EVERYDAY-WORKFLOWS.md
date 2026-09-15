@@ -50,6 +50,18 @@ pnpm test:e2e:runner -- --id everyday-workflows.runner-codex-mini.local.build-re
 pnpm test:e2e:runner -- --suite everyday-workflows --environment daytona --max-parallel 2
 ```
 
+Before project stories or the Python calibration tests, start Docker on the
+harness host and fetch the pinned oracle image. This is required for local and
+Daytona stories; artifact checks run on the harness host.
+
+```sh
+docker pull python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+python3 tests/runner-e2e/everyday-artifact.py --preflight
+```
+
+The harness checks this prerequisite before it creates the task. It does not
+pull an image during a model attempt or fall back to host execution.
+
 Use the credential and immutable Daytona image setup in [README.md](README.md).
 Provider calls cost money. Each cell owns an isolated instance and project.
 There are no real third-party mutations in the service fixture; it exercises
@@ -69,9 +81,12 @@ path traversal, and symlinks. Passing agent-authored tests cannot override it.
 Lifecycle calibration rejects legacy execution, missing runner identity,
 unexpected crashes, workers on the parent, and answers left in review.
 
-ZIP evaluation executes agent-authored Python with a minimal credential-free
-environment and bounded subprocess time. Run paid evals on a disposable test
-host; this is not an operating-system sandbox for arbitrary hostile programs.
+ZIP evaluation runs delivered Python in a Docker container with a read-only
+project mount and root filesystem, no network, a non-root user, no Linux
+capabilities, and bounded CPU, memory, process count, output, and duration. Only
+the extracted delivery enters the container. The container is removed after
+grading. Calibration includes attempts to read a host file and reach a host
+loopback service.
 
 ## Evalbook evidence and qualification
 
