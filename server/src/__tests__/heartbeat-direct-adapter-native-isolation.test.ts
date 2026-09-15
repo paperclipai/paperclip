@@ -16,6 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import {
   registerServerAdapter,
   unregisterServerAdapter,
@@ -47,12 +48,14 @@ async function waitForRunToFinish(
 
 describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
   let db!: ReturnType<typeof createDb>;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const execute = vi.fn<ServerAdapterModule["execute"]>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-direct-adapter-isolation-");
     db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db);
     const directCodexAdapter: ServerAdapterModule = {
       type: "codex_local",
       supportsLocalAgentJwt: false,
@@ -68,6 +71,7 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     vi.clearAllMocks();
     await db.execute(sql.raw(`
       TRUNCATE TABLE
@@ -91,6 +95,7 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
   });
 
   afterAll(async () => {
+    await heartbeat.drainActiveRunExecutions();
     unregisterServerAdapter("codex_local");
     await tempDb?.cleanup();
   });
@@ -128,7 +133,6 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
       permissions: {},
     });
 
-    const heartbeat = heartbeatService(db);
     const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
     expect(queued).not.toBeNull();
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
