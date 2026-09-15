@@ -858,10 +858,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const nearRotationNotice = asString(context.paperclipSessionNearRotationNotice, "").trim();
+  const nearRotationAdvisory = nearRotationNotice
+    ? `## Session rotation approaching\n\n${nearRotationNotice}. This session may be rotated to a fresh one soon. Before finishing this run, persist any long-term context worth keeping (open threads, decisions, next steps) now via WORKING-CONTEXT notes or save_to_knowledge — a rotated session will not retain this conversation's in-memory state.`
+    : "";
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
+    nearRotationAdvisory,
     taskContextNote,
     renderedPrompt,
   ]);
@@ -870,6 +875,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
+    nearRotationAdvisoryChars: nearRotationAdvisory.length,
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
