@@ -141,6 +141,19 @@ export function OverviewSection({
   const markDescriptionInteracted = useCallback(() => {
     descriptionInteractedRef.current = true;
   }, []);
+  // Disarm the gate when it stops applying to the routine that armed it:
+  // switching to a different routine (this component instance can persist
+  // across that switch — it isn't guaranteed to unmount) and after a
+  // successful save (so a subsequent re-render fed by the saved value can't
+  // be mistaken for another live interaction).
+  useEffect(() => {
+    descriptionInteractedRef.current = false;
+  }, [routine.id]);
+  useEffect(() => {
+    if (saveRoutine.isSuccess) {
+      descriptionInteractedRef.current = false;
+    }
+  }, [saveRoutine.isSuccess]);
 
   const activeTriggers = routine.triggers.length;
   const nextFire = useMemo(() => {
@@ -152,6 +165,35 @@ export function OverviewSection({
   }, [routine.triggers]);
   const lastRun = (routineRuns ?? [])[0] ?? null;
   const recentActivity = (activity ?? []).slice(0, 5);
+
+  const descriptionEditor = (
+    <div
+      onBeforeInputCapture={markDescriptionInteracted}
+      onDropCapture={markDescriptionInteracted}
+      onInput={markDescriptionInteracted}
+      onKeyDownCapture={markDescriptionInteracted}
+      onPasteCapture={markDescriptionInteracted}
+      onPointerDownCapture={markDescriptionInteracted}
+    >
+      <MarkdownEditor
+        ref={descriptionEditorRef}
+        value={editDraft.description}
+        onChange={(description) => {
+          if (!descriptionInteractedRef.current) return;
+          setEditDraft((current) => ({ ...current, description }));
+        }}
+        placeholder="Add instructions..."
+        bordered={false}
+        contentClassName="min-h-(--sz-120px) text-sm leading-7"
+        mentions={mentionOptions}
+        onSubmit={() => {
+          if (!saveRoutine.isPending && editDraft.title.trim()) {
+            saveRoutine.mutate();
+          }
+        }}
+      />
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -280,60 +322,10 @@ export function OverviewSection({
             panelOpen={descriptionAnnotationsOpen}
             onPanelOpenChange={setDescriptionAnnotationsOpen}
           >
-            <div
-              onBeforeInputCapture={markDescriptionInteracted}
-              onDropCapture={markDescriptionInteracted}
-              onInput={markDescriptionInteracted}
-              onKeyDownCapture={markDescriptionInteracted}
-              onPasteCapture={markDescriptionInteracted}
-              onPointerDownCapture={markDescriptionInteracted}
-            >
-              <MarkdownEditor
-                ref={descriptionEditorRef}
-                value={editDraft.description}
-                onChange={(description) => {
-                  if (!descriptionInteractedRef.current) return;
-                  setEditDraft((current) => ({ ...current, description }));
-                }}
-                placeholder="Add instructions..."
-                bordered={false}
-                contentClassName="min-h-(--sz-120px) text-sm leading-7"
-                mentions={mentionOptions}
-                onSubmit={() => {
-                  if (!saveRoutine.isPending && editDraft.title.trim()) {
-                    saveRoutine.mutate();
-                  }
-                }}
-              />
-            </div>
+            {descriptionEditor}
           </IssueDocumentAnnotations>
         ) : (
-          <div
-            onBeforeInputCapture={markDescriptionInteracted}
-            onDropCapture={markDescriptionInteracted}
-            onInput={markDescriptionInteracted}
-            onKeyDownCapture={markDescriptionInteracted}
-            onPasteCapture={markDescriptionInteracted}
-            onPointerDownCapture={markDescriptionInteracted}
-          >
-            <MarkdownEditor
-              ref={descriptionEditorRef}
-              value={editDraft.description}
-              onChange={(description) => {
-                if (!descriptionInteractedRef.current) return;
-                setEditDraft((current) => ({ ...current, description }));
-              }}
-              placeholder="Add instructions..."
-              bordered={false}
-              contentClassName="min-h-(--sz-120px) text-sm leading-7"
-              mentions={mentionOptions}
-              onSubmit={() => {
-                if (!saveRoutine.isPending && editDraft.title.trim()) {
-                  saveRoutine.mutate();
-                }
-              }}
-            />
-          </div>
+          descriptionEditor
         )}
       </div>
 

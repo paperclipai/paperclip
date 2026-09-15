@@ -340,7 +340,16 @@ export function RoutineDetail() {
 
   useEffect(() => {
     if (section !== "overview") setOverviewEditing(false);
-  }, [routineId, section]);
+  }, [section]);
+
+  // Switching to a different routine must exit overview edit mode even when
+  // the section stays "overview" — otherwise OverviewSection stays mounted
+  // across the switch and its mount-time-normalization guard
+  // (descriptionInteractedRef) can carry stale "interacted" state into an
+  // unrelated routine's description.
+  useEffect(() => {
+    setOverviewEditing(false);
+  }, [routineId]);
 
   const copySecretValue = useCallback(
     async (label: string, value: string) => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Braces,
@@ -135,6 +135,26 @@ export function OverviewSection({
     navigateToSection,
   } = ctx;
   const [descriptionAnnotationsOpen, setDescriptionAnnotationsOpen] = useState(defaultDescriptionAnnotationsOpen);
+  // MDXEditor can normalize markdown and emit onChange while it mounts. Only
+  // treat editor output as a draft after a real interaction so merely opening
+  // a routine for edit cannot mark the description dirty.
+  const descriptionInteractedRef = useRef(false);
+  const markDescriptionInteracted = useCallback(() => {
+    descriptionInteractedRef.current = true;
+  }, []);
+  // Disarm the gate when it stops applying to the routine that armed it:
+  // switching to a different routine (this component instance can persist
+  // across that switch — it isn't guaranteed to unmount) and after a
+  // successful save (so a subsequent re-render fed by the saved value can't
+  // be mistaken for another live interaction).
+  useEffect(() => {
+    descriptionInteractedRef.current = false;
+  }, [routine.id]);
+  useEffect(() => {
+    if (saveRoutine.isSuccess) {
+      descriptionInteractedRef.current = false;
+    }
+  }, [saveRoutine.isSuccess]);
 
   const activeTriggers = routine.triggers.length;
   const nextFire = useMemo(() => {
@@ -147,6 +167,35 @@ export function OverviewSection({
   const boundSecrets = editDraft.env ? Object.keys(editDraft.env).length : 0;
   const lastRun = (routineRuns ?? [])[0] ?? null;
   const recentActivity = (activity ?? []).slice(0, 5);
+
+  const descriptionEditor = (
+    <div
+      onBeforeInputCapture={markDescriptionInteracted}
+      onDropCapture={markDescriptionInteracted}
+      onInput={markDescriptionInteracted}
+      onKeyDownCapture={markDescriptionInteracted}
+      onPasteCapture={markDescriptionInteracted}
+      onPointerDownCapture={markDescriptionInteracted}
+    >
+      <MarkdownEditor
+        ref={descriptionEditorRef}
+        value={editDraft.description}
+        onChange={(description) => {
+          if (!descriptionInteractedRef.current) return;
+          setEditDraft((current) => ({ ...current, description }));
+        }}
+        placeholder="Add instructions..."
+        bordered={false}
+        contentClassName="min-h-(--sz-120px) text-sm leading-7"
+        mentions={mentionOptions}
+        onSubmit={() => {
+          if (!saveRoutine.isPending && editDraft.title.trim()) {
+            saveRoutine.mutate();
+          }
+        }}
+      />
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -275,36 +324,10 @@ export function OverviewSection({
             panelOpen={descriptionAnnotationsOpen}
             onPanelOpenChange={setDescriptionAnnotationsOpen}
           >
-            <MarkdownEditor
-              ref={descriptionEditorRef}
-              value={editDraft.description}
-              onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-              placeholder="Add instructions..."
-              bordered={false}
-              contentClassName="min-h-(--sz-120px) text-sm leading-7"
-              mentions={mentionOptions}
-              onSubmit={() => {
-                if (!saveRoutine.isPending && editDraft.title.trim()) {
-                  saveRoutine.mutate();
-                }
-              }}
-            />
+            {descriptionEditor}
           </IssueDocumentAnnotations>
         ) : (
-          <MarkdownEditor
-            ref={descriptionEditorRef}
-            value={editDraft.description}
-            onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
-            placeholder="Add instructions..."
-            bordered={false}
-            contentClassName="min-h-(--sz-120px) text-sm leading-7"
-            mentions={mentionOptions}
-            onSubmit={() => {
-              if (!saveRoutine.isPending && editDraft.title.trim()) {
-                saveRoutine.mutate();
-              }
-            }}
-          />
+          descriptionEditor
         )}
       </div>
 

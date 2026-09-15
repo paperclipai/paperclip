@@ -4,7 +4,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { OverviewSection } from "./editable-sections";
+import { OverviewSection } from "./editable-sections.production";
 import { RoutineDetailContext, type RoutineDetailContextValue, type RoutineEditDraft } from "./context";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -146,7 +146,7 @@ function Harness({
   );
 }
 
-describe("OverviewSection description editor", () => {
+describe("OverviewSection description editor (production variant)", () => {
   let container: HTMLDivElement;
   let root: Root | null;
 
