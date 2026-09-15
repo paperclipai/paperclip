@@ -1098,3 +1098,157 @@ describe("worker duplex channel dispatch", () => {
     }
   });
 });
+
+describe("worker http.fetch response rebuild", () => {
+  // The host serializes the upstream reply as
+  // `{ status, statusText, headers, body }`. The worker rebuilds a `Response`
+  // from those fields. The Fetch spec forbids a body on null-body
+  // statuses (204, 205, 304), so a plain `new Response(body)` throws for a
+  // successful 204 No Content and the plugin reports a landed write as failed.
+  // The shim must drop the serialized body for those statuses, matching what
+  // global `fetch` returns for the same upstream reply.
+  const hostReplies = new Map<string, { status: number; statusText: string; headers: Record<string, string>; body: string }>([
+    ["https://example.test/write-204", { status: 204, statusText: "No Content", headers: {}, body: "" }],
+    ["https://example.test/write-205", { status: 205, statusText: "Reset Content", headers: {}, body: "" }],
+    ["https://example.test/cache-304", { status: 304, statusText: "Not Modified", headers: {}, body: "" }],
+    ["https://example.test/read-200", { status: 200, statusText: "OK", headers: { "content-type": "application/json" }, body: "{\"ok\":true}" }],
+  ]);
+
+  function makeWorker() {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.actions.register("http-probe", async (params) => {
+          const response = await ctx.http.fetch(String(params.url), {
+            method: "PUT",
+            body: JSON.stringify({ probe: true }),
+          });
+          return {
+            status: response.status,
+            ok: response.ok,
+            statusText: response.statusText,
+            contentType: response.headers.get("content-type"),
+            bodyText: await response.text(),
+          };
+        });
+      },
+    });
+
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message)) return;
+      if (message.method !== "http.fetch") return;
+      const url = String((message.params as { url?: unknown }).url ?? "");
+      const reply = hostReplies.get(url);
+      if (!reply) {
+        hostToWorker.write(serializeMessage(createErrorResponse(
+          message.id,
+          PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED,
+          `no canned reply for ${url}`,
+        )));
+        return;
+      }
+      hostToWorker.write(serializeMessage(createSuccessResponse(message.id, reply)));
+    });
+
+    return { worker, hostReadline, hostToWorker, workerToHost, callWorker };
+  }
+
+  async function probeUrl(url: string) {
+    const { worker, hostReadline, hostToWorker, workerToHost, callWorker } = makeWorker();
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.http-fetch-null-body",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "HTTP fetch null-body test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["http.outbound"],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      });
+      return await callWorker("performAction", { key: "http-probe", params: { url } });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  }
+
+  it("rebuilds a 204 No Content without throwing on the null-body rule", async () => {
+    await expect(probeUrl("https://example.test/write-204")).resolves.toEqual({
+      status: 204,
+      ok: true,
+      statusText: "No Content",
+      contentType: null,
+      bodyText: "",
+    });
+  });
+
+  it("rebuilds a 205 Reset Content without throwing on the null-body rule", async () => {
+    await expect(probeUrl("https://example.test/write-205")).resolves.toEqual({
+      status: 205,
+      ok: true,
+      statusText: "Reset Content",
+      contentType: null,
+      bodyText: "",
+    });
+  });
+
+  it("rebuilds a 304 Not Modified without throwing on the null-body rule", async () => {
+    await expect(probeUrl("https://example.test/cache-304")).resolves.toEqual({
+      status: 304,
+      ok: false,
+      statusText: "Not Modified",
+      contentType: null,
+      bodyText: "",
+    });
+  });
+
+  it("keeps the serialized body for ordinary 200 replies", async () => {
+    await expect(probeUrl("https://example.test/read-200")).resolves.toEqual({
+      status: 200,
+      ok: true,
+      statusText: "OK",
+      contentType: "application/json",
+      bodyText: "{\"ok\":true}",
+    });
+  });
+});
