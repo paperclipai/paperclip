@@ -11307,8 +11307,13 @@ export function issueService(db: Db) {
           assigneeUserId: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
+          // A blocked issue that acquires an owner must stay blocked: leaving
+          // `blocked` is gated by the normal status transition path (activity
+          // entry + statusVersion bump), not by this raw lock write. Decide
+          // from the guarded row itself so the guard cannot race a concurrent
+          // status change (issue #13220).
+          status: sql`CASE WHEN ${issues.status} = 'blocked' THEN ${issues.status} ELSE 'in_progress' END`,
+          startedAt: sql`CASE WHEN ${issues.status} = 'blocked' THEN ${issues.startedAt} ELSE ${now.toISOString()} END`,
           updatedAt: now,
         })
         .where(
@@ -11418,12 +11423,13 @@ export function issueService(db: Db) {
             executionRunId: checkoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
-            status: "in_progress",
+            // Same blocked guard as the main checkout UPDATE above: adopting a
+            // stale execution lock must not silently destroy a blocked state
+            // (issue #13220).
+            status: sql`CASE WHEN ${issues.status} = 'blocked' THEN ${issues.status} ELSE 'in_progress' END`,
+            startedAt: sql`CASE WHEN ${issues.status} IN ('blocked', 'in_progress') THEN ${issues.startedAt} ELSE ${now.toISOString()} END`,
             updatedAt: now,
           };
-          if (current.status !== "in_progress") {
-            adoptionSet.startedAt = now;
-          }
           const adopted = await db
             .update(issues)
             .set(adoptionSet)

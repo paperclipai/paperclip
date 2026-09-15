@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -6074,6 +6074,178 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       assigneeAgentId: agentId,
       checkoutRunId: null,
     });
+  });
+
+  it("checkout of a blocked issue preserves the blocked state and its unblock routing", async () => {
+    // Regression for issue #13220: checkout() force-set status to
+    // 'in_progress' through a raw db.update, silently discarding the blocked
+    // state (the routing request itself), with no activity entry and no
+    // statusVersion bump. A blocked issue that acquires an owner must stay
+    // blocked; leaving 'blocked' belongs to the guarded transition path.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const unblockDescriptor = { owner: "board" as const, action: "Approve the rollout plan" };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-06-10T10:07:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue picked up by a wake",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      unblockDescriptor,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked", "in_review"], runId);
+    expect(checkedOut.status).toBe("blocked");
+
+    const row = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      startedAt: null,
+      statusVersion: 0,
+    });
+    expect(row.unblockDescriptor).toEqual(unblockDescriptor);
+
+    // The checkout must not write a status-departure audit trail entry: the
+    // status never changed, so nothing may record that the issue "left"
+    // blocked (that was the undetectable part of #13220).
+    const entries = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+        ),
+      );
+    expect(entries.filter((entry) => entry.action.startsWith("issue.status"))).toEqual([]);
+  });
+
+  it("checkout of a blocked issue with a stale terminal run lock preserves the blocked state", async () => {
+    // Same regression as above, but through the stale-run reclaim path: the
+    // blocked issue's checkoutRunId/executionRunId point at a terminal run,
+    // which is what the scheduler-driven wake in #13220 observed. Reclaiming
+    // the lock must still not flip the status outside the guarded path.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const failedRunId = randomUUID();
+    const successorRunId = randomUUID();
+    const unblockDescriptor = { owner: { userId: randomUUID() }, action: "Provide the registry credentials" };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedRunId,
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
+      },
+      {
+        id: successorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:07:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue with a stale run lock",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+      unblockDescriptor,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked"], successorRunId);
+    expect(checkedOut.status).toBe("blocked");
+
+    const row = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+      checkoutRunId: successorRunId,
+      executionRunId: successorRunId,
+      startedAt: null,
+      statusVersion: 0,
+    });
+    expect(row.unblockDescriptor).toEqual(unblockDescriptor);
+
+    const entries = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+        ),
+      );
+    expect(entries.filter((entry) => entry.action.startsWith("issue.status"))).toEqual([]);
   });
 
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
