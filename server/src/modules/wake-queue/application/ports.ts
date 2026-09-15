@@ -417,7 +417,10 @@ export interface WakeAdmissionWriter {
     input: {
       companyId: string;
       activeExecutionRunId: string;
-      mergedContextSnapshot: Record<string, unknown>;
+      mergeContextSnapshot: (run: {
+        contextSnapshot: Record<string, unknown> | null;
+        status: string;
+      }) => Record<string, unknown>;
       durableReceipt?: DurableWakeAdmissionReceipt;
       agentId: string;
       source: string;

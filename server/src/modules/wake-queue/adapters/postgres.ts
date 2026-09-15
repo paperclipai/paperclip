@@ -1,3 +1,4 @@
+import { coalesceHeartbeatRun } from "../../../services/coalesce-heartbeat-run.js";
 import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
@@ -890,25 +891,11 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
     async coalesceIntoActiveExecutionRun(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       const now = new Date();
-      const mergedRun = await tx
-        .update(heartbeatRuns)
-        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
-        .where(
-          and(
-            eq(heartbeatRuns.id, input.activeExecutionRunId),
-            eq(heartbeatRuns.companyId, input.companyId),
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!mergedRun) {
-        // The compare-and-set write affected no row. Throw to roll the
-        // transaction back instead of recording a coalesced wake against a
-        // run this write never touched.
-        throw new Error(
-          "wake-queue: the coalesce target run was not found for this company",
-        );
-      }
+      const mergedRun = await coalesceHeartbeatRun(
+        tx,
+        { companyId: input.companyId, runId: input.activeExecutionRunId },
+        input.mergeContextSnapshot,
+      );
       await tx.insert(agentWakeupRequests).values({
         ...input.durableReceipt,
         companyId: input.companyId,

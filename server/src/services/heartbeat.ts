@@ -1,3 +1,4 @@
+import { coalesceHeartbeatRun } from "./coalesce-heartbeat-run.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
@@ -27668,24 +27669,18 @@ export function heartbeatService(
     );
 
     if (coalescedTargetRun) {
-      const mergedContextSnapshot = mergeCoalescedContextSnapshot(
-        coalescedTargetRun.contextSnapshot,
-        enrichedContextSnapshot,
-        {
-          preserveExistingInteractionContinuation:
-            coalescedTargetRun.status === "queued" ||
-            coalescedTargetRun.status === "scheduled_retry",
-        },
-      );
-      const mergedRun = await db
-        .update(heartbeatRuns)
-        .set({
-          contextSnapshot: mergedContextSnapshot,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
-        .returning()
-        .then((rows) => rows[0] ?? coalescedTargetRun);
+      const mergedRun = await db.transaction((tx) => coalesceHeartbeatRun(
+        tx,
+        { companyId: agent.companyId, runId: coalescedTargetRun.id },
+        (current) => mergeCoalescedContextSnapshot(
+          current.contextSnapshot,
+          enrichedContextSnapshot,
+          {
+            preserveExistingInteractionContinuation:
+              current.status === "queued" || current.status === "scheduled_retry",
+          },
+        ),
+      ));
 
       await db.insert(agentWakeupRequests).values({
         ...durableReceiptFields,

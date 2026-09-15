@@ -835,18 +835,17 @@ export function createAdmitWakeBehindIssueExecution(deps: {
 
     if (decision.kind === "coalesce") {
       const target = availableActiveExecutionRun!;
-      const mergedContextSnapshot = deps.helpers.mergeCoalescedContextSnapshot(
-        target.contextSnapshot,
-        input.contextSnapshot,
-        {
-          preserveExistingInteractionContinuation:
-            target.status === "queued" || target.status === "scheduled_retry",
-        },
-      );
       const run = await deps.writer.coalesceIntoActiveExecutionRun(scope, {
         companyId: input.companyId,
         activeExecutionRunId: target.id,
-        mergedContextSnapshot,
+        mergeContextSnapshot: (current) => deps.helpers.mergeCoalescedContextSnapshot(
+          current.contextSnapshot,
+          input.contextSnapshot,
+          {
+            preserveExistingInteractionContinuation:
+              current.status === "queued" || current.status === "scheduled_retry",
+          },
+        ),
         ...(input.durableReceipt
           ? { durableReceipt: input.durableReceipt }
           : {}),

@@ -550,6 +550,56 @@ type DerivedIssueCommentAttribution = {
  * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
  * missing/invalid ids so an unknown run id never 500s a comment insert.
  */
+
+async function bindHeartbeatRunToCheckedOutIssue(
+  db: Db,
+  input: { companyId: string; runId: string | null; agentId: string; issueId: string },
+) {
+  if (!input.runId) return;
+  const runId = input.runId;
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId} for update`,
+    );
+    const run = await tx
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!run) return;
+    const context = run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
+      ? { ...(run.contextSnapshot as Record<string, unknown>) }
+      : {};
+    const currentIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
+    const currentTaskId = typeof context.taskId === "string" ? context.taskId.trim() : "";
+    if (currentIssueId && currentIssueId !== input.issueId) return;
+    if (currentTaskId && currentTaskId !== input.issueId) return;
+    if (currentIssueId === input.issueId && currentTaskId === input.issueId) return;
+    await tx
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          ...context,
+          issueId: input.issueId,
+          taskId: input.issueId,
+        },
+        updatedAt: new Date(),
+      })
+      .where(sql`
+        ${heartbeatRuns.id} = ${run.id}
+        and coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', '') in ('', ${input.issueId})
+        and coalesce(${heartbeatRuns.contextSnapshot}->>'taskId', '') in ('', ${input.issueId})
+      `);
+  });
+}
+
 async function resolveCommentCreatedByRun(
   dbOrTx: any,
   companyId: string,
@@ -2458,11 +2508,12 @@ export async function heartbeatRunIsTerminalOrMissing(
   runId: string,
 ): Promise<boolean> {
   const run = await dbOrTx
-    .select({ status: heartbeatRuns.status })
+    .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId))
-    .then((rows: Array<{ status: string }>) => rows[0] ?? null);
+    .then((rows: Array<{ status: string; finishedAt: Date | null }>) => rows[0] ?? null);
   if (!run) return true;
+  if (run.finishedAt) return true;
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
 }
 
@@ -7406,20 +7457,24 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
       const stale =
-        !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+        !existingRun ||
+        Boolean(existingRun.finishedAt) ||
+        TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
       const actorLive =
-        actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+        Boolean(actorRun) &&
+        !actorRun.finishedAt &&
+        !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
@@ -7478,12 +7533,17 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
       const actorRun = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, input.actorRunId))
         .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status))
+      if (
+        !actorRun ||
+        actorRun.finishedAt ||
+        TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)
+      ) {
         return null;
+      }
 
       const now = new Date();
       const adopted = await tx
@@ -7536,12 +7596,7 @@ export function issueService(db: Db) {
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.executionRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!(await isTerminalOrMissingHeartbeatRun(issue.executionRunId, tx))) return false;
 
       const updated = await tx
         .update(issues)
@@ -7587,12 +7642,7 @@ export function issueService(db: Db) {
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.checkoutRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!(await isTerminalOrMissingHeartbeatRun(issue.checkoutRunId, tx))) return false;
 
       if (
         issue.executionRunId &&
@@ -7601,16 +7651,7 @@ export function issueService(db: Db) {
         await tx.execute(
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
-        const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, issue.executionRunId))
-          .then((rows) => rows[0] ?? null);
-        if (
-          executionRun &&
-          !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)
-        )
-          return false;
+        if (!(await isTerminalOrMissingHeartbeatRun(issue.executionRunId, tx))) return false;
       }
 
       const updated = await tx
@@ -11232,6 +11273,15 @@ export function issueService(db: Db) {
         kind: "work",
       });
 
+      const bindCheckoutRun = async () => {
+        await bindHeartbeatRunToCheckedOutIssue(db, {
+          companyId: issueCompany.companyId,
+          runId: checkoutRunId,
+          agentId,
+          issueId: id,
+        });
+      };
+
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         issueCompany.companyId,
@@ -11323,6 +11373,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        await bindCheckoutRun();
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -11370,7 +11421,10 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) {
+          await bindCheckoutRun();
+          return adopted;
+        }
       }
 
       if (
@@ -11387,11 +11441,8 @@ export function issueService(db: Db) {
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (staleAdoption.adopted) {
-          const row = await db
-            .select()
-            .from(issues)
-            .where(eq(issues.id, id))
-            .then((rows) => rows[0] ?? null);
+          await bindCheckoutRun();
+          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
           return enriched;
@@ -11441,6 +11492,7 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (adopted) {
+            await bindCheckoutRun();
             const [enriched] = await withIssueLabels(db, [adopted]);
             return enriched;
           }
@@ -11460,6 +11512,7 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
+        await bindCheckoutRun();
         return enriched;
       }
 
@@ -11664,6 +11717,26 @@ export function issueService(db: Db) {
               issueId: existing.id,
               assigneeAgentId: existing.assigneeAgentId,
               checkoutRunId: existing.checkoutRunId,
+              actorRunId: actorRunId ?? null,
+            });
+          }
+        }
+
+        if (
+          actorAgentId &&
+          existing.status === "in_progress" &&
+          existing.assigneeAgentId === actorAgentId &&
+          existing.executionRunId &&
+          !sameRunLock(existing.executionRunId, actorRunId ?? null)
+        ) {
+          await tx.execute(
+            sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${existing.executionRunId} for update`,
+          );
+          if (!(await isTerminalOrMissingHeartbeatRun(existing.executionRunId, tx))) {
+            throw conflict("Only execution run can release issue", {
+              issueId: existing.id,
+              assigneeAgentId: existing.assigneeAgentId,
+              executionRunId: existing.executionRunId,
               actorRunId: actorRunId ?? null,
             });
           }

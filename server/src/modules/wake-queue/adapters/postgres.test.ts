@@ -776,7 +776,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
           await writer.coalesceIntoActiveExecutionRun(scope, {
             companyId: otherCompanyId,
             activeExecutionRunId: runId,
-            mergedContextSnapshot: { taskKey: "issue-1", commentId: "c1" },
+            mergeContextSnapshot: () => ({ taskKey: "issue-1", commentId: "c1" }),
             agentId,
             source: "on_demand",
             triggerDetail: null,
