@@ -293,9 +293,7 @@ describe("budgetService", () => {
       }),
     );
     // Agent must NOT be paused -- execution can continue at the 80% warning threshold
-    expect(dbStub.updateSet).not.toHaveBeenCalledWith(
-      expect.objectContaining({ status: "paused" }),
-    );
+    expect(dbStub.updateSet).not.toHaveBeenCalled();
     expect(cancelWorkForScope).not.toHaveBeenCalled();
   });
 
