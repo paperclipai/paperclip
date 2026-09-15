@@ -43,6 +43,25 @@ describe("Cloud UI snippet", () => {
     })).toBe(html.replace("</body>", `${snippet}\n</body>`));
   });
 
+  it("wraps a bare script body that carries no markup in a <script> element", () => {
+    const body = '(()=>{window.__feedback=true;})();';
+    const wrapped = `<script>${body}</script>`;
+    expect(injectCloudUiSnippet(html, { PAPERCLIP_MANAGED_CONFIG: "{}", PAPERCLIP_CLOUD_UI_SNIPPET: body }))
+      .toBe(html.replace("</body>", `${wrapped}\n</body>`));
+    expect(injectCloudUiSnippet(html, {
+      PAPERCLIP_MANAGED_CONFIG: "{}",
+      PAPERCLIP_CLOUD_UI_SNIPPET_B64: Buffer.from(body, "utf-8").toString("base64"),
+    })).toBe(html.replace("</body>", `${wrapped}\n</body>`));
+  });
+
+  it("preserves literal replacement tokens when wrapping a bare script body", () => {
+    const body = 'console.log("$&", "$`", "$\'");';
+    const result = injectCloudUiSnippet(html, {
+      PAPERCLIP_MANAGED_CONFIG: "{}", PAPERCLIP_CLOUD_UI_SNIPPET: body,
+    });
+    expect(result).toContain(`<script>${body}</script>`);
+  });
+
   it("prefers the plain snippet when both variables are set", () => {
     const other = Buffer.from("<script>other()</script>", "utf-8").toString("base64");
     const result = injectCloudUiSnippet(html, {

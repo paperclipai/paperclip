@@ -17,11 +17,29 @@ export function injectCloudUiSnippet(html: string, env: CloudInstanceEnv = proce
  */
 function resolveCloudUiSnippet(env: CloudInstanceEnv): string | null {
   const plain = env.PAPERCLIP_CLOUD_UI_SNIPPET;
-  if (plain !== undefined) return plain.trim() ? plain : null;
+  if (plain !== undefined) return asInjectableMarkup(plain);
   const encoded = env.PAPERCLIP_CLOUD_UI_SNIPPET_B64?.replace(/\s+/g, "");
   if (!encoded) return null;
   const decoded = decodeBase64(encoded);
-  return decoded?.trim() ? decoded : null;
+  return decoded !== null ? asInjectableMarkup(decoded) : null;
+}
+
+/**
+ * A configured value that already looks like markup (it starts with `<`) is
+ * injected verbatim, preserving the original bytes. A value that does not is
+ * treated as a bare script body and wrapped in a `<script>` element.
+ *
+ * The bare-body form exists for the WAF case above: even base64 no longer
+ * carries raw script markup past every provider firewall, because some now
+ * base64-decode the value before matching. A body with no `<script` marker
+ * clears them, and the tenant restores the element here — the one place the
+ * value is trusted app-origin HTML rather than a provider API payload.
+ * Blank in either form stays disabled.
+ */
+function asInjectableMarkup(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.startsWith("<") ? value : `<script>${value}</script>`;
 }
 
 /**
