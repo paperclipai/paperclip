@@ -1044,6 +1044,54 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     ))).resolves.toHaveLength(1);
   });
 
+  it("keeps a successful personal setup when the grant-creating retry later fails", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "public" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const first = await service.connectGalleryApp(company.id, {
+      link: MCP_URL, name: "Personal retry rollback", grantKind: "user",
+    }, actor);
+    const retryInput = { link: MCP_URL, grantKind: "user" as const, resumeConnectionId: first.connectionId };
+    await service.connectGalleryApp(company.id, retryInput, actor);
+    await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId));
+    await db.update(toolConnections).set({ status: "archived" }).where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications).set({ status: "archived", archivedAt: new Date() }).where(eq(toolApplications.id, first.application.id));
+    fixture.fetchMock.mockRestore();
+    let calls = 0;
+    let catalogStarted!: () => void;
+    const catalogPending = new Promise<void>((resolve) => { catalogStarted = resolve; });
+    let failCatalog!: () => void;
+    const releaseCatalog = new Promise<void>((resolve) => { failCatalog = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) {
+        // The first retry has created its grant but has not finished setup.
+        catalogStarted();
+        await releaseCatalog;
+        throw new Error("first retry catalog unavailable");
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: FIXTURE_TOOLS } });
+    });
+    const failure = service.connectGalleryApp(company.id, {
+      link: MCP_URL, name: "Personal retry rollback", grantKind: "user",
+    }, actor).then(() => null, (error: unknown) => error);
+    await Promise.race([catalogPending, failure.then((error) => { throw error ?? new Error("Retry finished before the catalog probe"); })]);
+    try {
+      const successfulRetry = await service.connectGalleryApp(company.id, retryInput, actor);
+      expect(successfulRetry.connectionId).toBe(first.connectionId);
+    } finally {
+      failCatalog();
+    }
+    expect(await failure).toMatchObject({ status: 502 });
+    await expect(db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId)))
+      .resolves.toEqual([expect.objectContaining({ kind: "user", subjectUserId: actor.actorId, status: "active", credentialSecretRefs: [] })]);
+    await expect(service.getConnection(first.connectionId)).resolves.toMatchObject({ status: "draft", credentialPolicy: "per_user" });
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, first.application.id));
+    expect(application.status).toBe("draft");
+    await expect(service.checkHealth(first.connectionId, actor)).resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+  });
+
   it("creates an empty user grant after a personal public URL probe succeeds", async () => {
     // Use a real loopback MCP server here: neither fetch nor the transport is mocked.
     const receivedMethods: string[] = [];

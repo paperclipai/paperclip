@@ -12803,6 +12803,7 @@ export function toolAccessService(
       previous: typeof connectionGrants.$inferSelect | null;
       current: typeof connectionGrants.$inferSelect;
     } | null = null;
+    let personalPublicSetupEstablished = false;
 
     try {
       const credentialFields =
@@ -13318,35 +13319,37 @@ export function toolAccessService(
         throw error;
       }
       if (unauthenticatedPersonalProbe) {
-        const [grant] = await db
-          .insert(connectionGrants)
-          .values({
-            companyId,
-            connectionId: connectionRow.id,
-            kind: "user",
-            subjectUserId: personalIdentityUserId!,
-            credentialSecretRefs: [],
-            status: "active",
-            isDefault: false,
-            createdByUserId: personalIdentityUserId!,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (grant) {
-          if (revivedConnectionPrevious) {
-            revivedGrantMutation = { previous: null, current: grant };
+        const personalConnectionId = connectionRow.id;
+        const grant = await db.transaction(async (tx) => {
+          const [createdGrant] = await tx
+            .insert(connectionGrants)
+            .values({
+              companyId,
+              connectionId: personalConnectionId,
+              kind: "user",
+              subjectUserId: personalIdentityUserId!,
+              credentialSecretRefs: [],
+              status: "active",
+              isDefault: false,
+              createdByUserId: personalIdentityUserId!,
+            })
+            .onConflictDoNothing()
+            .returning();
+          if (createdGrant) {
+            await tx.insert(toolAccessAuditEvents).values({
+              companyId,
+              connectionId: personalConnectionId,
+              actorType: "user",
+              actorId: personalIdentityUserId!,
+              action: "connection_grant.created",
+              outcome: "success",
+              reasonCode: "personal_identity_created",
+              details: { kind: "user", credentialSecretRefCount: 0 },
+            });
           }
-          await db.insert(toolAccessAuditEvents).values({
-            companyId,
-            connectionId: connectionRow.id,
-            actorType: "user",
-            actorId: personalIdentityUserId!,
-            action: "connection_grant.created",
-            outcome: "success",
-            reasonCode: "personal_identity_created",
-            details: { kind: "user", credentialSecretRefCount: 0 },
-          });
-        } else {
+          return createdGrant;
+        });
+        if (!grant) {
           // Another setup attempt may have created this user's grant while
           // both probes were in flight. Reuse only an active personal grant;
           // never overwrite credentials, revive a revoked grant, or claim its
@@ -13356,6 +13359,10 @@ export function toolAccessService(
             throw conflict("The personal credential changed during setup. Please try again.");
           }
         }
+        // A successful public probe establishes this identity, like OAuth
+        // consent does. Keep its draft and grant if catalog/default discovery
+        // later fails: another retry may already be using the committed grant.
+        personalPublicSetupEstablished = true;
       }
       if (galleryEntry?.slug === COMPOSIO_GALLERY_KEY) {
         const [application] = await db
@@ -13397,6 +13404,7 @@ export function toolAccessService(
             },
       };
     } catch (error) {
+      if (personalPublicSetupEstablished) throw error;
       let identityRollbackError: unknown = null;
       let preserveConcurrentRevival = false;
       if (connectionRow && revivedConnectionPrevious) {

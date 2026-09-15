@@ -54,6 +54,9 @@ For **Just me**, the first probe of a new URL with no supplied credentials runs
 before a personal authorization exists. If the server requires OAuth, Paperclip
 creates the personal grant only after sign-in succeeds. If the server is public,
 Paperclip creates a personal grant with no credentials after the probe succeeds.
+That successful public probe saves the draft identity and its grant. A later
+catalog-refresh failure leaves them available for retry instead of undoing a
+grant that another setup attempt may already be using.
 Later health checks still require the user's authorization and return an
 actionable `422` error when it is missing.
 
