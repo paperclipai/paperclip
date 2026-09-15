@@ -61,7 +61,15 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     authorize,
     /repos\/paperclipai\/paperclip-evals\/commits\/\$EVALS_SHA/u,
   );
-  assert.match(authorize, /COMMITPERCLIP_KEY/u);
+  assert.match(
+    authorize,
+    /GITHUB_APP_ID: \$\{\{ vars\.PAPERCLIP_EVALS_APP_ID \}\}/u,
+  );
+  assert.match(
+    authorize,
+    /GITHUB_APP_PRIVATE_KEY: \$\{\{ secrets\.PAPERCLIP_EVALS_APP_PRIVATE_KEY \}\}/u,
+  );
+  assert.doesNotMatch(workflow, /COMMITPERCLIP_KEY/u);
   assert.match(authorize, /GH_REPO: paperclipai\/paperclip-evals/u);
   assert.match(
     authorize,
@@ -91,6 +99,16 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
   ];
   assert.equal(privateTokenSteps.length, 4);
   for (const tokenStep of privateTokenSteps) {
+    assert.match(
+      tokenStep.groups.body,
+      /^ {10}GITHUB_APP_ID: \$\{\{ vars\.PAPERCLIP_EVALS_APP_ID \}\}$/mu,
+      "every private-eval token must use the dedicated eval app ID",
+    );
+    assert.match(
+      tokenStep.groups.body,
+      /^ {10}GITHUB_APP_PRIVATE_KEY: \$\{\{ secrets\.PAPERCLIP_EVALS_APP_PRIVATE_KEY \}\}$/mu,
+      "every private-eval token must use the dedicated eval app key",
+    );
     assert.match(
       tokenStep.groups.body,
       /^ {10}GH_REPO: paperclipai\/paperclip-evals$/mu,
