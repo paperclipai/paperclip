@@ -6496,8 +6496,40 @@ export function issueService(db: Db) {
       .from(issues)
       .where(eq(issues.id, id))
       .then((rows) => rows[0] ?? null);
-    if (!row) return null;
-    const [enriched] = await withIssueLabels(db, [row]);
+    if (row) {
+      const [enriched] = await withIssueLabels(db, [row]);
+      return enriched;
+    }
+
+    // Mitigation for transient Postgres index visibility issues:
+    // The PK B-tree index can transiently miss rows that are visible
+    // via secondary indexes (e.g. issues_identifier_idx) due to
+    // VACUUM/HOT pruning or connection-pool MVCC snapshot skew.
+    // Retry once after a brief delay to allow visibility to stabilize.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const retryRow = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (retryRow) {
+      logger.warn({ issueId: id }, "issue found by id only after retry; possible transient Postgres visibility issue");
+      const [enriched] = await withIssueLabels(db, [retryRow]);
+      return enriched;
+    }
+
+    // Last-resort fallback: a text-cast condition avoids the PK index and
+    // forces a different scan. This only helps when the index entry itself is
+    // stale; heap-level MVCC visibility rules still apply to any scan.
+    const fallbackRow = await db
+      .select()
+      .from(issues)
+      .where(sql`${issues.id}::text = ${id}::text`)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!fallbackRow) return null;
+    logger.warn({ issueId: id }, "issue found by id only via text-cast fallback; possible stale PK index entry");
+    const [enriched] = await withIssueLabels(db, [fallbackRow]);
     return enriched;
   }
 
