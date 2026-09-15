@@ -487,6 +487,54 @@ describe("buildSentryInitOptions serverName", () => {
 
     vi.doUnmock("node:os");
   });
+
+  const SENTRY_NAME_ENV = "SENTRY_NAME";
+  let originalSentryName: string | undefined;
+
+  beforeEach(() => {
+    originalSentryName = process.env[SENTRY_NAME_ENV];
+  });
+
+  afterEach(() => {
+    if (originalSentryName === undefined) delete process.env[SENTRY_NAME_ENV];
+    else process.env[SENTRY_NAME_ENV] = originalSentryName;
+  });
+
+  it("uses SENTRY_NAME as serverName when the variable holds a non-empty string", async () => {
+    process.env[SENTRY_NAME_ENV] = "opaque-operator-id";
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe("opaque-operator-id");
+  });
+
+  it("uses the host name as serverName when SENTRY_NAME is absent", async () => {
+    delete process.env[SENTRY_NAME_ENV];
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe(os.hostname());
+  });
+
+  it("uses the host name as serverName when SENTRY_NAME is an empty string", async () => {
+    process.env[SENTRY_NAME_ENV] = "";
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe(os.hostname());
+  });
 });
 
 describe("with @sentry/node mocked", () => {

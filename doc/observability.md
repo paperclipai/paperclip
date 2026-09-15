@@ -381,7 +381,8 @@ integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
   The `@sentry/node` client already sets this value by default when the
   operator does not pass a `serverName` option; this feature passes the
   value directly, so the server keeps sending it even if a later SDK
-  version changes its default.
+  version changes its default. To send a different value in place of the
+  host name, set the environment variable `SENTRY_NAME` to that value.
 
 **Server events this feature adds**
 

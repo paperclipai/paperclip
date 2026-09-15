@@ -22,6 +22,11 @@
 // existing default explicit instead of changing captured event content. An
 // explicit value stays correct if a future SDK version changes its default.
 //
+// An operator can still send a different value in place of the host name.
+// When the environment variable `SENTRY_NAME` holds a non-empty string, the
+// initializer uses that value instead. This keeps the same order the
+// `@sentry/node` client itself uses when the caller omits `serverName`.
+//
 // Default-integration privacy note: `sendDefaultPii: false` filters values
 // by name, inside the `RequestData` integration only. Three other default
 // integrations copy raw values past that filter, so the initializer removes
@@ -226,7 +231,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
-    serverName: os.hostname(),
+    serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
         (integration) =>
