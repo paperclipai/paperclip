@@ -442,6 +442,27 @@ describe("issue validators", () => {
     expect(document.body).toBe("# Plan\n\nShip it");
   });
 
+  it("preserves escaped newlines inside a JSON document body byte-for-byte", () => {
+    // Regression test for SPC-39026: a document body that is itself a JSON
+    // string (e.g. `json.dumps(brief, indent=2)`) must round-trip exactly —
+    // the `\n` inside the `narrative` value is a required JSON string escape,
+    // not literal text a client failed to turn into a line break, so it must
+    // not be rewritten into a raw control character.
+    const jsonBody = JSON.stringify(
+      { narrative: "Line 1\n\nLine 2", note: "keep\\nliteral" },
+      null,
+      2,
+    );
+
+    const document = upsertIssueDocumentSchema.parse({
+      format: "markdown",
+      body: jsonBody,
+    });
+
+    expect(document.body).toBe(jsonBody);
+    expect(() => JSON.parse(document.body)).not.toThrow();
+  });
+
   it("clamps oversized requestDepth values on create", () => {
     const parsed = createIssueSchema.parse({
       title: "Clamp request depth",
