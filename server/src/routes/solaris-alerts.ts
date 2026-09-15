@@ -5,15 +5,20 @@ import {
   alertNotes,
   incidentActivityLog,
   incidentChatMessages,
+  responderStatusUpdates,
+  webPushSubscriptions,
   solarisAlerts,
   solarisOrgs,
   companyMemberships,
   authUsers,
 } from "@paperclipai/db";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
 import { translateAlertForAllLocales, SUPPORTED_LOCALES } from "../services/alert-translation.js";
 import { publishLiveEvent } from "../services/live-events.js";
+
+const RESPONDER_STATUSES = ["acknowledged", "en_route", "on_scene", "cleared"] as const;
+type ResponderStatus = (typeof RESPONDER_STATUSES)[number];
 
 const ALERT_SEVERITIES = ["critical", "warning", "info"] as const;
 const SUPPORTED_LANGUAGES = ["en", ...SUPPORTED_LOCALES] as const;
@@ -545,6 +550,139 @@ export function solarisAlertRoutes(db: Db) {
       );
 
     res.json({ members: rows });
+  });
+
+  // ── Responder Status ─────────────────────────────────────────────────────────
+
+  /** POST /solaris/alerts/:alertId/responder-status — advance responder status */
+  router.post("/solaris/alerts/:alertId/responder-status", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const status = typeof body["status"] === "string" ? body["status"].trim() : null;
+    if (!status || !(RESPONDER_STATUSES as readonly string[]).includes(status)) {
+      throw badRequest(`status must be one of: ${RESPONDER_STATUSES.join(", ")}`);
+    }
+
+    const actor = getActorInfo(req);
+    const responderId = typeof body["responderId"] === "string" ? body["responderId"].trim() : actor.actorId;
+    const responderName = typeof body["responderName"] === "string" ? body["responderName"].trim() : null;
+    const note = typeof body["note"] === "string" ? body["note"].trim() : null;
+
+    const [update] = await db
+      .insert(responderStatusUpdates)
+      .values({
+        alertId,
+        companyId: existing.companyId,
+        status: status as ResponderStatus,
+        responderId,
+        responderName,
+        note: note || null,
+      })
+      .returning();
+
+    publishLiveEvent({
+      companyId: existing.companyId,
+      type: "solaris.alert.responder_status",
+      payload: { alertId, update },
+    });
+
+    res.status(201).json(update);
+  });
+
+  /** GET /solaris/alerts/:alertId/responder-status?responderId=&limit= — status history */
+  router.get("/solaris/alerts/:alertId/responder-status", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const limit = Math.min(parseInt(String(req.query["limit"] ?? "50"), 10) || 50, 200);
+    const responderId = typeof req.query["responderId"] === "string" ? req.query["responderId"].trim() : null;
+
+    const conditions = [eq(responderStatusUpdates.alertId, alertId)];
+    if (responderId) conditions.push(eq(responderStatusUpdates.responderId, responderId));
+
+    const updates = await db
+      .select()
+      .from(responderStatusUpdates)
+      .where(and(...conditions))
+      .orderBy(asc(responderStatusUpdates.createdAt))
+      .limit(limit);
+
+    const latest = updates.length > 0 ? updates[updates.length - 1] : null;
+    res.json({ updates, latestStatus: latest?.status ?? null });
+  });
+
+  // ── Web Push Subscriptions ───────────────────────────────────────────────────
+
+  /** POST /solaris/push/subscribe?companyId= — register a VAPID push subscription */
+  router.post("/solaris/push/subscribe", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query["companyId"] === "string" ? req.query["companyId"].trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const endpoint = typeof body["endpoint"] === "string" ? body["endpoint"].trim() : null;
+    const p256dh = typeof body["p256dh"] === "string" ? body["p256dh"].trim() : null;
+    const auth = typeof body["auth"] === "string" ? body["auth"].trim() : null;
+    const responderId = typeof body["responderId"] === "string" ? body["responderId"].trim() : null;
+
+    if (!endpoint || !p256dh || !auth || !responderId) {
+      throw badRequest("endpoint, p256dh, auth, and responderId are required");
+    }
+
+    const [existing] = await db
+      .select()
+      .from(webPushSubscriptions)
+      .where(and(eq(webPushSubscriptions.responderId, responderId), eq(webPushSubscriptions.endpoint, endpoint)));
+
+    if (existing) {
+      const [updated] = await db
+        .update(webPushSubscriptions)
+        .set({ p256dh, auth, updatedAt: new Date() })
+        .where(eq(webPushSubscriptions.id, existing.id))
+        .returning();
+      return res.json(updated);
+    }
+
+    const [sub] = await db
+      .insert(webPushSubscriptions)
+      .values({ companyId, responderId, endpoint, p256dh, auth })
+      .returning();
+
+    res.status(201).json(sub);
+  });
+
+  /** DELETE /solaris/push/subscribe/:subscriptionId — remove a push subscription */
+  router.delete("/solaris/push/subscribe/:subscriptionId", async (req, res) => {
+    assertBoard(req);
+    const { subscriptionId } = req.params;
+
+    const [sub] = await db
+      .select()
+      .from(webPushSubscriptions)
+      .where(eq(webPushSubscriptions.id, subscriptionId));
+    if (!sub) throw notFound("Subscription not found");
+    assertCompanyAccess(req, sub.companyId);
+
+    await db.delete(webPushSubscriptions).where(eq(webPushSubscriptions.id, subscriptionId));
+    res.status(204).end();
+  });
+
+  /** GET /solaris/push/vapid-public-key — serve the VAPID public key for client subscription */
+  router.get("/solaris/push/vapid-public-key", async (req, res) => {
+    assertBoard(req);
+    const vapidPublicKey = process.env["VAPID_PUBLIC_KEY"] ?? null;
+    res.json({ vapidPublicKey });
   });
 
   return router;

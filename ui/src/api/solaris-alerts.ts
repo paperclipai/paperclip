@@ -38,6 +38,15 @@ export interface SolarisAlert {
   capIdentifier: string | null;
   incidentArea: string | null;
   createdBy: string | null;
+  // CAD dispatch fields (IUN-2751)
+  incidentId: string | null;
+  incidentName: string | null;
+  incidentType: string | null;
+  reportedAt: string | null;
+  source: string;
+  // Triage fields (IUN-2885)
+  assigneeId: string | null;
+  assigneeName: string | null;
   createdAt: string;
   updatedAt: string;
 }

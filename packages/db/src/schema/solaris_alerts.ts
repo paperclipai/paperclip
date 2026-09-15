@@ -2,6 +2,9 @@ import { boolean, index, jsonb, pgEnum, pgTable, text, timestamp, uuid, varchar 
 import { companies } from "./companies.js";
 
 
+export const responderStatusEnum = pgEnum("responder_status", ["acknowledged", "en_route", "on_scene", "cleared"]);
+
+
 export const alertSeverityEnum = pgEnum("alert_severity", ["critical", "warning", "info"]);
 export const alertDispatchStatusEnum = pgEnum("alert_dispatch_status", ["pending", "translating", "ready", "failed"]);
 
@@ -116,5 +119,45 @@ export const incidentActivityLog = pgTable(
   },
   (t) => ({
     alertCreatedIdx: index("incident_activity_log_alert_idx").on(t.alertId, t.createdAt),
+  }),
+);
+
+export const responderStatusUpdates = pgTable(
+  "responder_status_updates",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    alertId: uuid("alert_id")
+      .notNull()
+      .references(() => solarisAlerts.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    status: responderStatusEnum("status").notNull(),
+    responderId: text("responder_id"),
+    responderName: text("responder_name"),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    alertCreatedIdx: index("responder_status_alert_idx").on(t.alertId, t.createdAt),
+  }),
+);
+
+export const webPushSubscriptions = pgTable(
+  "web_push_subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    responderId: text("responder_id").notNull(),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    companyIdx: index("web_push_subscriptions_company_idx").on(t.companyId),
   }),
 );

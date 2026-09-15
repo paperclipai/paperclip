@@ -103,7 +103,7 @@ export { journalEntries } from "./journal_entries.js";
 export { meditationLogs } from "./meditation_logs.js";
 export { habitDefinitions, habitCompletions } from "./habits.js";
 export { annotations, annotationTypeEnum, annotationSeverityEnum, annotationVisibilityEnum } from "./annotations.js";
-export { solarisOrgs, solarisAlerts, alertNotes, incidentChatMessages, incidentActivityLog, alertSeverityEnum, alertDispatchStatusEnum } from "./solaris_alerts.js";
+export { solarisOrgs, solarisAlerts, alertNotes, incidentChatMessages, incidentActivityLog, responderStatusUpdates, webPushSubscriptions, alertSeverityEnum, alertDispatchStatusEnum, responderStatusEnum } from "./solaris_alerts.js";
 export {
   irwinExportQueue,
   irwinExportStatusEnum,

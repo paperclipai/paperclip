@@ -49,6 +49,7 @@ import { Estate } from "./pages/Estate";
 import { Health } from "./pages/Health";
 import { Habits } from "./pages/Habits";
 import { Solaris } from "./pages/Solaris";
+import { ResponderApp } from "./pages/ResponderApp";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -172,6 +173,7 @@ function boardRoutes() {
       <Route path="health/environmental-score" element={<Health />} />
       <Route path="habits" element={<Habits />} />
       <Route path="solaris" element={<Solaris />} />
+      <Route path="responder" element={<ResponderApp />} />
       <Route path="estate" element={<Estate />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />

@@ -640,3 +640,196 @@ describe("GET /solaris/team/members", () => {
     expect(res.body.members[0].name).toBe("Alice Nguyen");
   });
 });
+
+// ── Responder status ──────────────────────────────────────────────────────────
+
+describe("POST /solaris/alerts/:alertId/responder-status", () => {
+  it("returns 404 when alert not found", async () => {
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([]) })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/alerts/nonexistent/responder-status")
+      .send({ status: "acknowledged" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 for invalid status value", async () => {
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/alerts/alert-1/responder-status")
+      .send({ status: "invalid_status" });
+    expect(res.status).toBe(400);
+  });
+
+  it("creates a responder status update and publishes live event", async () => {
+    const statusUpdate = {
+      id: "rsu-1",
+      alertId: "alert-1",
+      companyId: "company-1",
+      status: "acknowledged",
+      responderId: "user-1",
+      responderName: "Alice",
+      note: null,
+      createdAt: new Date().toISOString(),
+    };
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+      insert: vi.fn().mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([statusUpdate]),
+        }),
+      }),
+    } as unknown as Db;
+    const { publishLiveEvent } = await import("../services/live-events.js");
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/alerts/alert-1/responder-status")
+      .send({ status: "acknowledged", responderName: "Alice" });
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe("acknowledged");
+    expect(publishLiveEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "solaris.alert.responder_status" }),
+    );
+  });
+});
+
+describe("GET /solaris/alerts/:alertId/responder-status", () => {
+  it("returns 404 when alert not found", async () => {
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([]) })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).get("/solaris/alerts/nonexistent/responder-status");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns status history and latestStatus", async () => {
+    const updates = [
+      { id: "r1", alertId: "alert-1", companyId: "company-1", status: "acknowledged", responderId: "u1", responderName: "Alice", note: null, createdAt: new Date().toISOString() },
+      { id: "r2", alertId: "alert-1", companyId: "company-1", status: "en_route", responderId: "u1", responderName: "Alice", note: null, createdAt: new Date().toISOString() },
+    ];
+    let selectCallCount = 0;
+    const db = {
+      select: vi.fn(() => {
+        selectCallCount++;
+        if (selectCallCount === 1) {
+          return { from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) };
+        }
+        const resolved = Promise.resolve(updates);
+        return {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockReturnValue(resolved),
+        };
+      }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).get("/solaris/alerts/alert-1/responder-status");
+    expect(res.status).toBe(200);
+    expect(res.body.updates).toHaveLength(2);
+    expect(res.body.latestStatus).toBe("en_route");
+  });
+});
+
+// ── Web push subscriptions ────────────────────────────────────────────────────
+
+describe("POST /solaris/push/subscribe", () => {
+  it("returns 400 when required fields are missing", async () => {
+    const db = {} as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/push/subscribe?companyId=company-1")
+      .send({ endpoint: "https://push.example.com/123" });
+    expect(res.status).toBe(400);
+  });
+
+  it("creates a new subscription when none exists", async () => {
+    const sub = {
+      id: "sub-1",
+      companyId: "company-1",
+      responderId: "u1",
+      endpoint: "https://push.example.com/123",
+      p256dh: "key123",
+      auth: "auth123",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([]) })),
+      insert: vi.fn().mockReturnValue({
+        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([sub]) }),
+      }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/push/subscribe?companyId=company-1")
+      .send({ responderId: "u1", endpoint: sub.endpoint, p256dh: "key123", auth: "auth123" });
+    expect(res.status).toBe(201);
+    expect(res.body.endpoint).toBe(sub.endpoint);
+  });
+
+  it("updates an existing subscription", async () => {
+    const existing = {
+      id: "sub-1",
+      companyId: "company-1",
+      responderId: "u1",
+      endpoint: "https://push.example.com/123",
+      p256dh: "oldkey",
+      auth: "oldauth",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const updated = { ...existing, p256dh: "newkey", auth: "newauth" };
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([existing]) })),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updated]) }),
+        }),
+      }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/push/subscribe?companyId=company-1")
+      .send({ responderId: "u1", endpoint: existing.endpoint, p256dh: "newkey", auth: "newauth" });
+    expect(res.status).toBe(200);
+    expect(res.body.p256dh).toBe("newkey");
+  });
+});
+
+describe("DELETE /solaris/push/subscribe/:subscriptionId", () => {
+  it("returns 404 when subscription not found", async () => {
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([]) })),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).delete("/solaris/push/subscribe/nonexistent");
+    expect(res.status).toBe(404);
+  });
+
+  it("deletes subscription and returns 204", async () => {
+    const sub = {
+      id: "sub-1",
+      companyId: "company-1",
+      responderId: "u1",
+      endpoint: "https://push.example.com/123",
+      p256dh: "key",
+      auth: "auth",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([sub]) })),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app).delete("/solaris/push/subscribe/sub-1");
+    expect(res.status).toBe(204);
+  });
+});

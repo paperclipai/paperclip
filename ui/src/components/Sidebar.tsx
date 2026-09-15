@@ -17,6 +17,7 @@ import {
   Heart,
   CheckSquare,
   Satellite,
+  Radio,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -119,6 +120,7 @@ export function Sidebar() {
 
         <SidebarSection label="Solaris">
           <SidebarNavItem to="/solaris" label="Map" icon={Satellite} />
+          <SidebarNavItem to="/responder" label="Responder" icon={Radio} />
         </SidebarSection>
 
         <SidebarSection label="Health">
