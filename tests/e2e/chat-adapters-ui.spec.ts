@@ -2431,12 +2431,25 @@ test.describe("Board send delivery refresh", () => {
     );
     const sends: Record<string, unknown>[] = [];
     let attachmentId = "";
+    let privateComment: { id: string } | undefined;
     await page.route(
       `**/api/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
       async (route) => {
         const input = bodyOf(route);
         sends.push(input);
-        if (sends.length === 1) return route.abort("connectionreset");
+        if (sends.length === 1) {
+          expect(input.attachmentIds).toEqual([attachmentId]);
+          // Consume the file only after the browser has captured its send.
+          // Binding it before Send lets live refresh remove it from the draft,
+          // making the mocked rejection inconsistent with the actual request.
+          privateComment = await json<{ id: string }>(
+            await request.post(`/api/issues/${issue.id}/comments`, {
+              data: { body: "Private Board file", attachmentIds: [attachmentId] },
+            }),
+            "bind selected file to private comment",
+          );
+          return route.abort("connectionreset");
+        }
         if (sends.length === 2)
           return fulfill(
             route,
@@ -2483,15 +2496,8 @@ test.describe("Board send delivery refresh", () => {
       "read selected file",
     );
     attachmentId = file!.id;
-    // A concurrent ordinary Board comment consumes the file. The browser
-    // fixture emulates the precise durable rejection; real TX/idempotency
-    // and delete/retry behavior are covered in the PostgreSQL integration test.
-    const privateComment = await json<{ id: string }>(
-      await request.post(`/api/issues/${issue.id}/comments`, {
-        data: { body: "Private Board file", attachmentIds: [attachmentId] },
-      }),
-      "bind selected file to private comment",
-    );
+    // The first intercepted send binds the file to a concurrent Board comment.
+    // The real TX/idempotency and delete/retry behavior are covered in PostgreSQL.
     const draft =
       "Share the verified result, without the private Board comment.";
     await banner.getByRole("textbox", { name: "Board update" }).fill(draft);
@@ -2551,7 +2557,7 @@ test.describe("Board send delivery refresh", () => {
     expect(attachments).toEqual([
       expect.objectContaining({
         id: attachmentId,
-        issueCommentId: privateComment.id,
+        issueCommentId: privateComment!.id,
       }),
     ]);
   });
