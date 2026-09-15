@@ -67,7 +67,6 @@ export function ProcessConfigFields({
                   v ? parseCommaArgs(v) : undefined,
                 )
           }
-          immediate
           className={inputClass}
           placeholder="e.g. script.js, --flag"
         />
