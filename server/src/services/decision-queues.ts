@@ -360,6 +360,58 @@ function itemIssueId(item: AttentionItem) {
   return typeof metadataIssueId === "string" ? metadataIssueId : null;
 }
 
+/**
+ * The issue fields a decision-request event carries so a subscriber can name the
+ * work instead of only reporting that something arrived. The queue item records a
+ * source rather than an issue, so the caller passes what it has already resolved
+ * and this decides which of those fields are worth publishing.
+ */
+function queueItemIssueDetails(
+  issueId: string | null,
+  identity: { identifier: string | null; title: string } | null,
+): Record<string, unknown> {
+  if (!issueId) return {};
+  return {
+    issueId,
+    ...(identity?.identifier ? { identifier: identity.identifier } : {}),
+    ...(identity?.title ? { title: identity.title } : {}),
+  };
+}
+
+/**
+ * Resolve the issue a queue item points at when only its source is known. An
+ * interaction belongs to exactly one issue, so the source row answers it; any
+ * other source kind is left unresolved rather than guessed.
+ */
+async function resolveSourceIssueIdentity(
+  db: Db,
+  companyId: string,
+  sourceKind: string,
+  sourceId: string,
+): Promise<{ issueId: string; identifier: string | null; title: string } | null> {
+  const issueId =
+    sourceKind === "issue"
+      ? sourceId
+      : await db
+          .select({ issueId: issueThreadInteractions.issueId })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, companyId),
+              eq(issueThreadInteractions.id, sourceId),
+            ),
+          )
+          .then((rows) => rows[0]?.issueId ?? null);
+  if (!issueId) return null;
+  const issue = await db
+    .select({ identifier: issues.identifier, title: issues.title })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) return null;
+  return { issueId, identifier: issue.identifier, title: issue.title };
+}
+
 export function decisionQueueService(db: Db) {
   async function getQueue(companyId: string, key: string) {
     return db.select().from(decisionQueues)
@@ -518,12 +570,22 @@ export function decisionQueueService(db: Db) {
             action: "queue_item.added",
             ...eventActorColumns(input.actor),
           });
+          const addedIdentity = await resolveSourceIssueIdentity(
+            txDb,
+            input.companyId,
+            input.sourceKind,
+            input.sourceId,
+          );
           await recordActivity(txDb, input.actor, {
             companyId: input.companyId,
             action: "decision_queue_item.added",
             entityType: "decision_queue",
             entityId: queue.id,
-            details: { sourceKind: input.sourceKind, sourceId: input.sourceId },
+            details: {
+              sourceKind: input.sourceKind,
+              sourceId: input.sourceId,
+              ...queueItemIssueDetails(addedIdentity?.issueId ?? null, addedIdentity),
+            },
           });
         }
         return { item: toQueueItem(row), created: Boolean(inserted[0]) };
@@ -694,6 +756,19 @@ export function decisionQueueService(db: Db) {
           inArray(issueWorkProducts.issueId, issueIds),
         )).then((rows) => rows.map((row) => row.issueId)));
 
+      // One lookup for every issue these items point at, so each seeded request
+      // can be published with the identifier and title it belongs to.
+      const issueIdentityById = new Map<string, { identifier: string | null; title: string }>();
+      if (issueIds.length > 0) {
+        const identityRows = await db
+          .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+        for (const row of identityRows) {
+          issueIdentityById.set(row.id, { identifier: row.identifier, title: row.title });
+        }
+      }
+
       const matches = new Map<string, AttentionItem[]>();
       for (const item of items) {
         if (prIssueIds.has(itemIssueId(item) ?? "")) {
@@ -763,12 +838,21 @@ export function decisionQueueService(db: Db) {
               ...eventActorColumns(SYSTEM_ACTOR),
               details: { seedKey: seed.key },
             });
+            const seededIssueId = itemIssueId(item);
             await recordActivity(txDb, SYSTEM_ACTOR, {
               companyId,
               action: "decision_queue_item.seeded",
               entityType: "decision_queue",
               entityId: queue.id,
-              details: { sourceKind: item.sourceKind, sourceId: item.subject.id, seedKey: seed.key },
+              details: {
+                sourceKind: item.sourceKind,
+                sourceId: item.subject.id,
+                seedKey: seed.key,
+                ...queueItemIssueDetails(
+                  seededIssueId,
+                  seededIssueId ? issueIdentityById.get(seededIssueId) ?? null : null,
+                ),
+              },
             });
           }
           if (insertedAnyItem) {

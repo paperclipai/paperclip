@@ -25,6 +25,14 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   budget_soft_threshold_crossed: "budget.incident.opened",
   budget_hard_threshold_crossed: "budget.incident.opened",
   budget_incident_resolved: "budget.incident.resolved",
+  // The Decisions Desk raises its requests through the decision queue, not only
+  // through the decision entity: a rule seeds a queue item when an issue needs an
+  // answer. Those two actions are what an operator actually sees appear, so they
+  // publish as `decision.created` — the declared event whose meaning ("someone has
+  // to make a decision") is the same — instead of being dropped for want of a
+  // declared name of their own.
+  decision_queue_item_seeded: "decision.created",
+  decision_queue_item_added: "decision.created",
 };
 
 let _pluginEventBus: PluginEventBus | null = null;
@@ -37,7 +45,14 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
-function eventTypeForActivityAction(action: string): PluginEventType | null {
+/**
+ * Resolve the plugin event type for a logged activity action.
+ *
+ * Exported for direct testing, following `resolveResponsibleUserIdForActivity`:
+ * the mapping is the contract plugins subscribe against, and a silent regression
+ * here is invisible at runtime (the event is simply never delivered).
+ */
+export function eventTypeForActivityAction(action: string): PluginEventType | null {
   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
 }

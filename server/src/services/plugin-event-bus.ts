@@ -69,6 +69,10 @@ function matchesPattern(eventType: string, pattern: string): boolean {
  * Returns true if the event passes all fields of the filter.
  * A `null` or empty filter object passes all events.
  *
+ * Exported for tests: this is the rule a producer has to satisfy for a filtered
+ * subscriber to receive its event, and it fails silently when it does not — the
+ * subscriber simply never hears anything.
+ *
  * **Resolution strategy per field:**
  *
  * - `projectId` — checked against `event.entityId` when `entityType === "project"`,
@@ -86,7 +90,7 @@ function matchesPattern(eventType: string, pattern: string): boolean {
  *
  * Multiple filter fields are ANDed — all specified fields must match.
  */
-function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
+export function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
   if (!filter) return true;
 
   const payload = event.payload as Record<string, unknown> | null;
