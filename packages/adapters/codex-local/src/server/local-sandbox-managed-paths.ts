@@ -26,5 +26,19 @@ export async function resolveCodexLocalSandboxManagedPaths(input: {
   if (!managedAuthTarget || managedAuthTarget !== sharedAuthTarget) return managedPaths;
 
   managedPaths.push({ path: managedAuthTarget, access: "ro" });
+
+  // If the shared auth.json path itself goes through a symlink, the managed
+  // link still names that path, which the fresh root would otherwise lack.
+  // Bind it only when the managed link points exactly at the known shared path.
+  const resolvedSharedAuthPath = path.resolve(sharedAuthPath);
+  if (resolvedSharedAuthPath !== managedAuthTarget) {
+    const managedAuthLink = await fs.readlink(managedAuthPath).catch(() => null);
+    if (
+      managedAuthLink &&
+      path.resolve(path.dirname(managedAuthPath), managedAuthLink) === resolvedSharedAuthPath
+    ) {
+      managedPaths.push({ path: resolvedSharedAuthPath, access: "ro" });
+    }
+  }
   return managedPaths;
 }

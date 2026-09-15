@@ -37,6 +37,25 @@ describe("Codex local sandbox managed paths", () => {
     ]);
   });
 
+  it("also mounts the shared auth path when it is itself a symlink", async () => {
+    const { root, effectiveCodexHome, sharedCodexHome } = await makeHomes();
+    const realAuthPath = path.join(root, "real-auth.json");
+    const sharedAuthPath = path.join(sharedCodexHome, "auth.json");
+    await fs.writeFile(realAuthPath, "{}\n", { mode: 0o600 });
+    await fs.symlink(realAuthPath, sharedAuthPath);
+    await fs.symlink(sharedAuthPath, path.join(effectiveCodexHome, "auth.json"));
+
+    await expect(resolveCodexLocalSandboxManagedPaths({
+      effectiveCodexHome,
+      sharedCodexHome,
+      filesystemScope: "workspace",
+    })).resolves.toEqual([
+      { path: effectiveCodexHome, access: "rw" },
+      { path: realAuthPath, access: "ro" },
+      { path: sharedAuthPath, access: "ro" },
+    ]);
+  });
+
   it("does not add a host path for a regular managed auth file", async () => {
     const { effectiveCodexHome, sharedCodexHome } = await makeHomes();
     await fs.writeFile(path.join(effectiveCodexHome, "auth.json"), "{}\n", { mode: 0o600 });
