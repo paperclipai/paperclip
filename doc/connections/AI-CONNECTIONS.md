@@ -288,15 +288,17 @@ inside the task. Connecting installs access for that agent and resumes the pendi
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-Concurrent runs using the same subscription wait through scheduled retries while
-the credential lease is held. They do not request new credentials or consume the
-provider-failure retry allowance. Each retry revalidates the account and existing
-run-dispatch rules still suppress cancelled, reassigned, or otherwise ineligible work.
-Assignee retries must retain execution-lock ownership at scheduling, promotion, and dispatch.
+A fresh task execution cannot enter this wait; no credential lease exists to
+hold it. A run that entered the wait before this change still uses scheduled
+retries. It does not request new credentials or consume the provider-failure
+retry allowance. Each retry revalidates the account, and existing run-dispatch
+rules still suppress cancelled, reassigned, or otherwise ineligible work. An
+assignee retry must still keep execution-lock ownership at scheduling,
+promotion, and dispatch.
 
 `server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
 both providers and methods, approval gates, native provider mapping, shared access
-boundaries, and subscription contention. The opt-in
+boundaries, and concurrent runs of one subscription for both providers. The opt-in
 [`tests/hiring-ai-connections/README.md`](../../tests/hiring-ai-connections/README.md)
 describes real browser hiring, subtask, connection, and automatic-resume checks on
 local and Daytona environments, plus the production component Storybook checks.
