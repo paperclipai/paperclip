@@ -35,7 +35,7 @@ scan_file() {
   files_scanned=$((files_scanned + 1))
   if grep -qE "$PATTERN" "$f" 2>/dev/null; then
     echo "FAIL: $f still references Pipedream MCP" >&2
-    grep -nE "$PATTERN" "$f" >&2 | head -10
+    grep -m 10 -nE "$PATTERN" "$f" >&2
     fail=1
   fi
 }
