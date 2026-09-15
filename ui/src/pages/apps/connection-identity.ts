@@ -15,13 +15,17 @@ import type {
  * card cannot drift into three different names for the same thing.
  */
 
-export type ConnectionTypeLabel = "Personal" | "Company";
+export type ConnectionTypeLabel = "Personal" | "Dedicated agent" | "Company";
 
 /** The two connection types shown throughout the product. */
 export function connectionTypeLabel(
   credentialPolicy: ToolConnectionCredentialPolicy,
 ): ConnectionTypeLabel {
-  return credentialPolicy === "per_user" ? "Personal" : "Company";
+  return credentialPolicy === "per_user"
+    ? "Personal"
+    : credentialPolicy === "per_agent"
+      ? "Dedicated agent"
+      : "Company";
 }
 
 const COMPANY_NAME_SUFFIX = " for the company";
@@ -93,6 +97,7 @@ export function grantAccountLabel(
   const tenantName = grant?.providerTenant?.name?.trim();
   if (tenantName) return tenantName;
   if (grant?.kind === "user") return options.subjectLabel?.trim() || "Connected account";
+  if (grant?.kind === "agent") return options.subjectLabel?.trim() || "Dedicated account";
   return "Shared credential";
 }
 

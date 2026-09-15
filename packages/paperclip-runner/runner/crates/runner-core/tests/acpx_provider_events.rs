@@ -202,6 +202,49 @@ fn maps_bounded_plan_and_completion_state() {
 }
 
 #[test]
+fn preserves_usage_counters_across_sidecar_payload_redaction() {
+    let mut scope = AcpxEventScope::new("run-1").unwrap();
+    scope.bind_turn("turn-1").unwrap();
+    let decoded = decode_acpx_event(
+        &scope,
+        &AcpxSidecarEvent {
+            sequence: 1,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeEvent,
+            run_id: Some("run-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            payload: json!({
+                "type":"status", "tag":"usage_update",
+                "breakdown":{
+                    "inputTokens":12, "outputTokens":7, "thoughtTokens":0,
+                    "cachedReadTokens":2, "cachedWriteTokens":0, "totalTokens":21
+                },
+                "accessToken":"provider-secret",
+                "cost":{"amount":0.25,"currency":"USD"}
+            }),
+        },
+    )
+    .unwrap();
+    let AcpxEventPayload::Runtime {
+        kind,
+        tool_operation,
+        payload,
+        ..
+    } = decoded
+    else {
+        panic!("runtime usage must decode as a runtime payload");
+    };
+    assert_eq!(payload["accessToken"], "[REDACTED]");
+    assert_eq!(payload["breakdown"]["totalTokens"], 21);
+    let events =
+        normalize_acpx_runtime_event(kind, &payload, tool_operation, "event-7", "turn-1", 3);
+    assert_eq!(events[0].payload["runDeltaAvailable"], true);
+    assert_eq!(events[0].payload["runDelta"]["inputTokens"], 12);
+    assert_eq!(events[0].payload["runDelta"]["outputTokens"], 7);
+    assert_eq!(events[0].payload["runDelta"]["cacheReadTokens"], 2);
+    assert_eq!(events[0].payload["runDelta"]["cacheWriteTokens"], 0);
+}
+
+#[test]
 fn maps_usage_and_review_status_but_ignores_inventory_updates() {
     let usage = normalize(
         AcpxRuntimeEventKind::Status,

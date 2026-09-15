@@ -23,6 +23,7 @@ import {
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
 
 export interface PaperclipControlPlaneBinding {
@@ -38,7 +39,10 @@ export interface PaperclipControlPlaneBinding {
 }
 
 function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
-  return "schema" in value && value.schema === "paperclip.prp.event.v1";
+  return "schema" in value && [
+    "paperclip.prp.event.v1",
+    "paperclip.prp.event.v2",
+  ].includes(value.schema);
 }
 
 function isCompleteInput(value: NativeRunResult | CompleteControlPlaneRunInput): value is CompleteControlPlaneRunInput {
@@ -205,6 +209,14 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       },
     });
     if (persisted.disposition === "committed") {
+      publishChatPublicationCommitSignal({
+        companyId: this.#binding.companyId,
+        issueId: this.#binding.issueId,
+        runId: this.#binding.runId,
+        agentId: this.#binding.agentId,
+        seq: persisted.row.seq,
+        eventType: event.eventType,
+      });
       await this.#onCommittedEvent?.(event);
     } else {
       // A recovered runner may replay the event whose durable side effects

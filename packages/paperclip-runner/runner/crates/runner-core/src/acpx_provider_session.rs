@@ -63,6 +63,7 @@ pub struct AcpxProviderSessionConfig {
     pub permission_mode: AcpxPermissionMode,
     pub permission_mode_pinned: bool,
     pub system_instructions: String,
+    pub runtime_context: Value,
     pub tool_set: AuthorizedToolSet,
     pub expected_identity: Option<AcpxProviderSessionIdentity>,
 }
@@ -79,7 +80,7 @@ impl AcpxProviderSessionConfig {
                 ))
             }
         };
-        if self.model != qualified_model {
+        if self.agent != "claude" && self.model != qualified_model {
             return Err(LocalRunnerError::invalid(format!(
                 "ACPX {} profile requires exact model {qualified_model}",
                 self.agent
@@ -267,6 +268,24 @@ impl AcpxProviderSession {
 
     pub fn catalog_revision(&self) -> u64 {
         self.catalog_revision
+    }
+
+    /// Session controls are independent of a prompt's receipt epoch.
+    pub fn goal_control(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        payload: Value,
+    ) -> Result<Value, LocalRunnerError> {
+        self.ensure_open()?;
+        if !matches!(
+            command,
+            GeneratedAcpxSidecarCommand::SessionGoalGet
+                | GeneratedAcpxSidecarCommand::SessionGoalSet
+                | GeneratedAcpxSidecarCommand::SessionGoalClear
+        ) {
+            return Err(LocalRunnerError::invalid("not an ACPX goal control"));
+        }
+        self.transport.request(command, payload)
     }
 
     pub fn start_turn(
@@ -974,7 +993,7 @@ fn bootstrap(
             "permissionMode": config.permission_mode,
             "permissionModePinned": config.permission_mode_pinned,
             "systemInstructions": config.system_instructions,
-            "runtimeContext": Value::Null,
+            "runtimeContext": config.runtime_context,
             "tools": &sidecar_tools,
             "expectedIdentity": config.expected_identity,
         }),

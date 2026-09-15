@@ -56,7 +56,10 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
       "Allow explicitly configured local Codex, OpenCode, and qualified ACPX agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required. Onboarding remains on legacy adapters.",
     tier: "managed",
     cloudDefault: false,
-    selfHostedDefault: false,
+    // On by default for self-hosted instances. Requires a Rust toolchain (or
+    // PAPERCLIP_RUNNER_BINARY) for `pnpm dev`, which builds runnerd whenever
+    // this is on.
+    selfHostedDefault: true,
   },
   enableManagedSandboxOnly: {
     title: "Managed Environment Only",
@@ -70,6 +73,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Isolated Workspaces",
     description:
       "Show execution workspace controls in project configuration and allow isolated workspace behavior for task runs.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableIsolatedWorkspacesByDefault: {
+    title: "Isolated Workspaces By Default",
+    description:
+      "Treat a project that has no execution workspace policy of its own as if it selected isolated workspaces, so its tasks get a per-task worktree instead of sharing the project checkout. Requires Isolated Workspaces. A project that carries its own policy keeps it.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -97,6 +108,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
+  enableChatConnectors: {
+    title: "Chat connectors",
+    description:
+      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; GitHub and other tool connectors are unaffected.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enablePipelines: {
     title: "Pipelines",
     description: "Enable pipeline definitions and pipeline-driven case production surfaces.",
@@ -108,6 +127,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Cases",
     description:
       "Durable work products that tasks create and iterate on. Adds the Cases tab and the agent case API.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableAgentChat: {
+    title: "Agent Chat",
+    description: "Persistent task-backed conversations that clarify goals and hand work off to tasks.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -282,6 +308,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "Let the scheduler execute runs inside an isolated git-worktree preview instance for tasks created after activation.",
     tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableFirstTaskPlanProposal: {
+    title: "First task: propose with a plan document",
+    description:
+      "When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped.",
+    tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
   },

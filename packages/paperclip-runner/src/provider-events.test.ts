@@ -33,6 +33,22 @@ function envelope(
 }
 
 describe("provider-neutral events", () => {
+  it("preserves Codex notice summaries with legacy and empty-message fallbacks", () => {
+    for (const method of ["configWarning", "deprecationNotice", "warning"]) {
+      for (const [params, expected] of [
+        [{ summary: "Repository is not trusted", message: "old message" }, "Repository is not trusted"],
+        [{ summary: " ", message: "Legacy warning" }, "Legacy warning"],
+        [{ details: "Additional warning details" }, "Additional warning details"],
+        [{}, "Provider notice"],
+      ] as const) {
+        const [event] = canonicalProviderEventsFromCodex(method, params);
+        expect(event.eventType).toBe("provider.notice.recorded");
+        expect(event.payload.summary).toBe(expected);
+        expect(validatePrpEvent(envelope(event)).ok).toBe(true);
+      }
+    }
+  });
+
   it("classifies the complete qualified 18-variant Codex ThreadItem inventory", () => {
     expect(Object.keys(CODEX_THREAD_ITEM_CLASSIFICATION)).toEqual([
       "userMessage",

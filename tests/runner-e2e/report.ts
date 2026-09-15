@@ -1,3 +1,4 @@
+import { discoverReportCatalog } from "./report-catalog.js";
 import path from "node:path";
 import {
   copyFile,
@@ -15,6 +16,7 @@ import {
   upgradeRunnerResult,
 } from "./history.js";
 import { resolveRunnerE2ESource } from "./source.js";
+import { runnerE2ESummaryLinks } from "./summary-links.js";
 import type { RunnerE2EResult } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -118,8 +120,8 @@ async function stageDashboardBrandAssets(output: string) {
   await mkdir(assets, { recursive: true });
   await Promise.all([
     copyFile(
-      path.join(repositoryRoot, "ui/public/favicon.svg"),
-      path.join(assets, "favicon.svg"),
+      path.join(repositoryRoot, "ui/public/favicon-32x32.png"),
+      path.join(assets, "favicon-32x32.png"),
     ),
     copyFile(
       path.join(repositoryRoot, "ui/public/fonts/InterVariable.woff2"),
@@ -187,6 +189,13 @@ async function main() {
     ]);
   }
 
+  const reportCatalog = discoverReportCatalog({
+    catalog: runnerMatrix,
+    expected,
+    results: [...candidates.values()].flatMap((entries) =>
+      entries.map((entry) => entry.result),
+    ),
+  });
   const selected: AggregatedResult[] = [];
   for (const executionId of expected) {
     const attempts = (candidates.get(executionId) ?? []).sort((left, right) => {
@@ -204,9 +213,9 @@ async function main() {
     });
     if (attempts.length === 0) {
       const now = new Date().toISOString();
-      const execution = runnerMatrix.find(
+      const execution = reportCatalog.find(
         (candidate) => candidate.id === executionId,
-      );
+      )!;
       const missing: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2",
         executionId,
@@ -296,11 +305,33 @@ async function main() {
     writeFile(path.join(output, "index.html"), dashboard, "utf8"),
   ]);
 
+  const summaryLinks = runnerE2ESummaryLinks({
+    campaignId: normalized.campaignId,
+    workflowRunUrl: normalized.source.workflowRunUrl,
+    historyPublicBaseUrl:
+      process.env.PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL,
+    historyPrefix: process.env.PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX,
+  });
+  const publicCampaignUrl = summaryLinks.find(
+    (link) => link.kind === "campaign",
+  )?.url;
+
   const summaryLines = [
     "# Runner Full-Stack E2E",
     "",
     `Passed: ${normalized.passed}/${selected.length}`,
     "",
+    ...(summaryLinks.length > 0
+      ? [
+          "## View results",
+          "",
+          ...summaryLinks.map(
+            (link) =>
+              `- [${link.label}](${link.url})${link.note ? ` — ${link.note}` : ""}`,
+          ),
+          "",
+        ]
+      : []),
     `Tokens: ${billing.llm.inputTokens} input / ${billing.llm.outputTokens} output / ${billing.llm.cachedInputTokens} cached`,
     "",
     `Provider-reported LLM cost: $${billing.reportedLlmCostUsd.toFixed(6)} (${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs priced)`,
@@ -314,7 +345,10 @@ async function main() {
       const resolved = resolvedResults[index]!;
       const cellBilling = resolved.billing!;
       const runtimeCost = cellBilling.runtime.estimatedListCostUsd;
-      return `| ${resolved.executionId} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens} | $${cellBilling.reportedCostUsd.toFixed(6)} (${cellBilling.llm.costStatus}) | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
+      const cell = publicCampaignUrl
+        ? `[${resolved.executionId}](${publicCampaignUrl}#execution-${encodeURIComponent(resolved.executionId)})`
+        : resolved.executionId;
+      return `| ${cell} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens} | $${cellBilling.reportedCostUsd.toFixed(6)} (${cellBilling.llm.costStatus}) | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
     }),
     "",
   ];

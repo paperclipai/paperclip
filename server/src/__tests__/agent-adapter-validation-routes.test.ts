@@ -337,6 +337,25 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
+  it("selects and refreshes the runner provider catalog independently", async () => {
+    const adapters = await import("../adapters/index.js");
+    const list = vi.spyOn(adapters, "listAdapterModels").mockImplementation(async (type) => [{ id: type, label: type }]);
+    const refresh = vi.spyOn(adapters, "refreshAdapterModels").mockImplementation(async (type) => [{ id: `${type}-fresh`, label: type }]);
+    try {
+      const app = await createApp();
+      for (const [provider, adapter] of [["acpx", "claude_local"], ["codex", "codex_local"], ["opencode", "opencode_local"]]) {
+        const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}`));
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual([{ id: adapter, label: adapter }]);
+        const refreshed = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}&refresh=true`));
+        expect(refreshed.status).toBe(200);
+        expect(refreshed.body).toEqual([{ id: `${adapter}-fresh`, label: adapter }]);
+      }
+      const invalid = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx_codex"));
+      expect(invalid.status).toBe(422);
+    } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
   it("creates agents for dynamically registered external adapter types", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
@@ -515,6 +534,52 @@ describe("agent routes adapter validation", () => {
     const env = adapterConfig.env as Record<string, unknown>;
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+  });
+
+  it("restores a saved agent's redacted CODEX_HOME before testing its adapter", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const storedHome = "/paperclip/companies/company-1/agents/agent-1/codex-home";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      id: agentId,
+      adapterType: "external_test",
+      adapterConfig: { env: { CODEX_HOME: storedHome } },
+    });
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId,
+          adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } } },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      { env: { CODEX_HOME: storedHome } },
+      expect.objectContaining({ adapterType: "external_test" }),
+    );
+  });
+
+  it("rejects redacted-value restoration from an incompatible saved agent", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId: "11111111-1111-4111-8111-111111111111",
+          adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } } },
+        }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
@@ -719,7 +784,7 @@ describe("agent routes adapter validation", () => {
     );
   });
 
-  it("rejects conversion from an unsupported provider family", async () => {
+  it("converts Claude to ACPX Claude while retaining its model", async () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
     const existing = await mockAgentService.getById();
     mockAgentService.getById.mockResolvedValue({
@@ -739,11 +804,8 @@ describe("agent routes adapter validation", () => {
         }),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(res.body.details).toMatchObject({
-      code: "paperclip_runner_adapter_conversion_unsupported",
-    });
-    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" });
   });
 
   it("accepts qualified local and managed providers on fresh runner agents and hires", async () => {
@@ -902,7 +964,7 @@ describe("agent routes adapter validation", () => {
     },
   );
 
-  it("rejects provider changes but preserves edits to historical runner agents", async () => {
+  it("defaults ACPX provider changes to Claude and preserves ordinary historical edits", async () => {
     const existing = await mockAgentService.getById();
     mockAgentService.getById.mockResolvedValue({
       ...existing,
@@ -922,10 +984,8 @@ describe("agent routes adapter validation", () => {
     );
 
     expect(ordinaryEdit.status, JSON.stringify(ordinaryEdit.body)).toBe(200);
-    expect(providerChange.status, JSON.stringify(providerChange.body)).toBe(422);
-    expect(providerChange.body.details).toMatchObject({
-      code: "paperclip_runner_acpx_agent_unavailable",
-    });
+    expect(providerChange.status, JSON.stringify(providerChange.body)).toBe(200);
+    expect(providerChange.body.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "historical" });
   });
 
   it.each([

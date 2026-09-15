@@ -1,7 +1,8 @@
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Archive, Eye, Flag } from "lucide-react";
+import { Archive, Flag } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -19,7 +20,6 @@ import {
   type RecoveryLivenessContext,
 } from "../lib/recovery-lineage";
 import { StatusIcon } from "./StatusIcon";
-import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 import { Badge } from "@/components/ui/badge";
@@ -47,6 +47,8 @@ export interface IssueRowProps {
   desktopMetaLeading?: ReactNode;
   desktopLeadingSpacer?: boolean;
   mobileMeta?: ReactNode;
+  /** Compact mobile timestamp beside the title in canonical task lists. */
+  mobileTitleMeta?: ReactNode;
   desktopTrailing?: ReactNode;
   /**
    * Optional pre-fetched external-object summary. Renders a compact severity
@@ -129,6 +131,7 @@ export function IssueRow({
   desktopMetaLeading,
   desktopLeadingSpacer = false,
   mobileMeta,
+  mobileTitleMeta,
   desktopTrailing,
   externalObjectSummary,
   trailingMeta,
@@ -188,19 +191,6 @@ export function IssueRow({
   );
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
-  const productivityReview = issue.productivityReview ?? null;
-  const productivityReviewIndicator = productivityReview ? (
-    <span
-      className={cn(
-        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300",
-        selected ? "border-muted-foreground text-muted-foreground" : null,
-      )}
-      title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
-      aria-label="Productivity review open"
-    >
-      <Eye className="h-2.5 w-2.5" aria-hidden />
-    </span>
-  ) : null;
   const hasChecklistStep = checklistStepNumber !== null;
   const checklistStep = hasChecklistStep ? (
     <span className="shrink-0 font-mono text-xs text-muted-foreground" aria-hidden="true">
@@ -210,7 +200,7 @@ export function IssueRow({
   const recoveryAction = issue.activeRecoveryAction ?? null;
   // The row already carries the issue's own scheduled retry, so the chip can tell a retry the
   // scheduler is actually running from one whose due time simply passed.
-  const recoveryIndicator = recoveryAction
+  const recoveryIndicator = recoveryAction && !requiresExecutionReconciliation(recoveryAction.cause)
     ? renderRecoveryChip(recoveryAction, selected, { scheduledRetry: issue.scheduledRetry ?? null })
     : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
@@ -232,7 +222,8 @@ export function IssueRow({
         data-slot="task-row"
         data-unread={isUnread ? "true" : undefined}
         className={cn(
-          "group relative flex min-w-0 items-start gap-2 rounded-lg py-2.5 pl-4 pr-2 text-sm no-underline text-inherit sm:items-center sm:py-2",
+          "group relative flex min-w-0 items-start gap-2 rounded-lg py-2.5 pr-2 text-sm no-underline text-inherit sm:items-center sm:py-2",
+          showUnreadSlot ? "pl-4" : "pl-2 sm:pl-4",
           "[&_button]:relative [&_button]:z-10",
           selected ? "bg-accent/50 hover:bg-accent/50" : "hover:bg-accent/50",
           checklistCurrentStep && "bg-primary/5",
@@ -262,7 +253,7 @@ export function IssueRow({
           </span>
         ) : null}
 
-        <span data-slot="task-row-leading" className="flex shrink-0 items-center gap-1 pt-px sm:pt-0">
+        <span data-slot="task-row-leading" className="flex shrink-0 items-start self-stretch gap-1 pt-px sm:items-center sm:pt-0">
           {treeGuides > 0
             ? Array.from({ length: treeGuides }, (_, level) => {
               const gapForChevron = chevronInGuide && level === treeGuides - 1;
@@ -271,7 +262,7 @@ export function IssueRow({
                   key={`task-guide-${level}`}
                   data-slot="task-row-tree-guide"
                   aria-hidden="true"
-                  className="relative hidden w-4 shrink-0 self-stretch sm:block"
+                  className="relative block w-4 shrink-0 self-stretch"
                 >
                   <span
                     data-slot="task-row-tree-connector"
@@ -300,12 +291,11 @@ export function IssueRow({
               className={selectedStatusClass}
             />
           )}
-          {productivityReviewIndicator}
           {parkedBlockerIndicator}
         </span>
 
         <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-          <span data-slot="task-row-title-cluster" className="flex min-w-0 flex-1 items-start gap-1.5 sm:items-center">
+          <span data-slot="task-row-title-cluster" className="flex min-w-0 flex-1 items-baseline gap-1.5 sm:items-center">
             <span
               data-slot="task-row-title"
               className={cn(
@@ -317,6 +307,11 @@ export function IssueRow({
               {issue.title}{titleSuffix}
             </span>
             {recoveryIndicator}
+            {mobileTitleMeta ? (
+              <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
+                {mobileTitleMeta}
+              </span>
+            ) : null}
           </span>
           {checklistDependencyChips ? (
             <span className="flex flex-wrap gap-1">{checklistDependencyChips}</span>
@@ -391,7 +386,6 @@ export function IssueRow({
       </Link>
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
-        {productivityReviewIndicator}
         {parkedBlockerIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
@@ -465,7 +459,6 @@ export function IssueRow({
             <>
               <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
                 <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />
-                {productivityReviewIndicator}
               </span>
               {checklistStep}
               <span className="shrink-0 font-mono text-xs text-muted-foreground">

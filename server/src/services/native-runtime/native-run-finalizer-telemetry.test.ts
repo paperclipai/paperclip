@@ -27,10 +27,23 @@ const mockTelemetryClient = vi.hoisted(() => ({
 }));
 vi.mock("../../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../../sentry.ts", async () => {
+  const actual = await vi.importActual<typeof import("../../sentry.ts")>("../../sentry.ts");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 function agentTaskRunCalls(fromIndex: number) {
   return mockTelemetryClient.track.mock.calls
     .slice(fromIndex)
     .filter((call) => call[0] === "agent.task_run");
+}
+
+function captureRunFailureCallsFrom(fromIndex: number) {
+  return mockCaptureRunFailure.mock.calls.slice(fromIndex);
 }
 
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
@@ -166,6 +179,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     await driveToCompleteResult(fixture);
 
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -183,9 +197,11 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       .where(eq(heartbeatRuns.id, fixture.runId))
       .then((rows) => rows[0]);
     expect(run?.status).toBe("succeeded");
+    // "succeeded" is not a failure status, so it never reports to Sentry.
+    expect(captureRunFailureCallsFrom(captureCallsBefore)).toHaveLength(0);
   });
 
-  it("emits zero events when a repeat finalize call's conditional native write matches no row", async () => {
+  it("emits zero events when a repeat finalize call preserves the succeeded terminal state", async () => {
     const fixture = await seedNativeRun();
     await driveToCompleteResult(fixture);
     await finalizeNativeRun({
@@ -197,9 +213,9 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
 
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
     // The coordinator is already "committed", so this second call takes the
-    // projectCommittedRun short-circuit. The run's status is already terminal
-    // ("succeeded"), which sits outside projectCommittedRun's WHERE
-    // (queued/running/failed), so the write matches no row.
+    // projectCommittedRun short-circuit. A succeeded row is eligible so stale
+    // cleanup errors can be projected separately; an unchanged terminal state
+    // must still never emit a second agent.task_run event.
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -208,6 +224,197 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     });
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
   });
+
+  it("repairs a stale succeeded-run error once without duplicate telemetry or destroying retained owner evidence", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture);
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        errorCode: "adapter_failed",
+        error: "provider_transport_failed: retained cleanup evidence",
+        processPid: 987654,
+        runnerProfileJson: { sessionCheckpoint: { retainedEvidence: "keep" } },
+      })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+    const [recovered] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    expect(recovered).toMatchObject({
+      status: "succeeded",
+      error: null,
+      errorCode: null,
+      processPid: 987654,
+      runnerProfileJson: { sessionCheckpoint: { retainedEvidence: "keep" } },
+      resultJson: {
+        recoveredExecutionFailure: {
+          schema: "paperclip.recovered_execution_failure.v1",
+          errorCode: "adapter_failed",
+          error: "provider_transport_failed: retained cleanup evidence",
+        },
+      },
+    });
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+    const [replayed] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    expect(replayed.resultJson?.recoveredExecutionFailure).toEqual(
+      recovered.resultJson?.recoveredExecutionFailure,
+    );
+    expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+  });
+
+  it.each([
+    "native_execution_ownership_unverified",
+    "native_adopted_runner_authentication_timeout",
+  ])(
+    "does not project through retained ownership guard %s",
+    async (errorCode) => {
+      const fixture = await seedNativeRun();
+      await driveToCompleteResult(fixture);
+      await finalizeNativeRun({
+        db,
+        runId: fixture.runId,
+        workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true,
+      });
+      const [held] = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          finishedAt: null,
+          nativePhase: "terminal_failure",
+          errorCode,
+          error: "Retained owner must remain fenced",
+          processPid: 987654,
+        })
+        .where(eq(heartbeatRuns.id, fixture.runId))
+        .returning();
+      const callsBefore = mockTelemetryClient.track.mock.calls.length;
+      await finalizeNativeRun({
+        db,
+        runId: fixture.runId,
+        workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true,
+      });
+      const [after] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      expect(after).toEqual(held);
+      expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+    },
+  );
+
+  it.each([null, "Earlier diagnostic"])(
+    "preserves the current-row diagnostic when it changes after finalizer admission (prior=%s)",
+    async (priorError) => {
+      const fixture = await seedNativeRun();
+      await driveToCompleteResult(fixture);
+      await finalizeNativeRun({
+        db,
+        runId: fixture.runId,
+        workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true,
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          error: priorError,
+          errorCode: priorError ? "adapter_failed" : null,
+        })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      const select = db.select.bind(db);
+      let changed = false;
+      // Hold the persisted-result read inside projectCommittedRun, after its
+      // caller captured the run but before the terminal UPDATE. This models
+      // a late heartbeat cleanup diagnostic without changing production APIs.
+      const wrap = (query: any): any =>
+        new Proxy(query, {
+          get(target, key) {
+            const value = Reflect.get(target, key, target);
+            if (key === "then")
+              return async (fulfilled: any, rejected: any) => {
+                if (!changed) {
+                  changed = true;
+                  await db
+                    .update(heartbeatRuns)
+                    .set({
+                      error: "Latest cleanup diagnostic",
+                      errorCode: "provider_transport_failed",
+                      resultJson: {
+                        concurrentMarker: "keep",
+                        nativeCommittedChatResponse: {
+                          resultId: "retain-selector",
+                        },
+                      },
+                    })
+                    .where(eq(heartbeatRuns.id, fixture.runId));
+                }
+                return value.call(target, fulfilled, rejected);
+              };
+            return typeof value === "function"
+              ? (...args: any[]) => wrap(value.apply(target, args))
+              : value;
+          },
+        });
+      const spy = vi.spyOn(db, "select").mockImplementation(((
+        selection: any,
+      ) => {
+        const query = select(selection);
+        return selection?.resultJson === nativeRunResults.resultJson
+          ? wrap(query)
+          : query;
+      }) as typeof db.select);
+      try {
+        await finalizeNativeRun({
+          db,
+          runId: fixture.runId,
+          workspaceFinalizeStatus: "succeeded",
+          projectRunStatus: true,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(changed).toBe(true);
+      const [after] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      expect(after).toMatchObject({
+        error: null,
+        errorCode: null,
+        resultJson: {
+          concurrentMarker: "keep",
+          nativeCommittedChatResponse: { resultId: "retain-selector" },
+          recoveredExecutionFailure: {
+            error: "Latest cleanup diagnostic",
+            errorCode: "provider_transport_failed",
+          },
+        },
+      });
+    },
+  );
 
   it("emits zero events when a reconciliation replay commits the same failed terminal result again", async () => {
     const fixture = await seedNativeRun();
@@ -219,6 +426,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     // workspaceFinalizeStatus reports whether the workspace finalization
     // step itself succeeded, independent of the run's own terminal state
     // (runTerminalState below), which is what actually failed here.
+    const captureCallsBeforeFirstFinalize = mockCaptureRunFailure.mock.calls.length;
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -231,14 +439,23 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       .where(eq(heartbeatRuns.id, fixture.runId))
       .then((rows) => rows[0]);
     expect(run?.status).toBe("failed");
+    // The first write is a genuine transition into "failed": it reports
+    // exactly one Sentry event.
+    const firstFinalizeCaptures = captureRunFailureCallsFrom(captureCallsBeforeFirstFinalize);
+    expect(firstFinalizeCaptures).toHaveLength(1);
+    expect(firstFinalizeCaptures[0]?.[0]).toMatchObject({
+      runId: fixture.runId,
+      runStatus: "failed",
+    });
 
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    const captureCallsBeforeReplay = mockCaptureRunFailure.mock.calls.length;
     // The coordinator is already "committed" with a "failed" terminal
-    // result, and the run row is already "failed" — unlike the "succeeded"
-    // case above, "failed" sits INSIDE projectCommittedRun's WHERE clause
-    // (queued/running/failed), so a reconciliation replay's write still
+    // result, and the run row is already "failed". Like "succeeded",
+    // "failed" sits inside projectCommittedRun's WHERE clause, so its write
     // matches the row. The write changes nothing (failed -> failed), so it
-    // must not emit a second event for the same committed result.
+    // must not emit a second event for the same committed result, and it
+    // must not report a second Sentry event either.
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -246,6 +463,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       projectRunStatus: true,
     });
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+    expect(captureRunFailureCallsFrom(captureCallsBeforeReplay)).toHaveLength(0);
   });
 
   it("emits zero events when a retryable-failure write's conditional status spread is omitted", async () => {
@@ -277,6 +495,93 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       .where(eq(heartbeatRuns.id, fixture.runId))
       .then((rows) => rows[0]);
     expect(run?.status).toBe("running");
+  });
+
+  it("bounds workspace-only retries without consuming the provider attempt", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId,
+      companyId,
+      issueId: fixture.issueId,
+      phase: "observed",
+      attempt: 1,
+    });
+
+    for (
+      let expectedAttempt = 1;
+      expectedAttempt <= 3;
+      expectedAttempt += 1
+    ) {
+      await recordNativeFinalizationFailure({
+        db,
+        runId: fixture.runId,
+        error: new Error("native_workspace_sync_out_failed"),
+        projectRunStatus: true,
+        failureScope: "workspace",
+      });
+      const coordinator = await db
+        .select()
+        .from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId))
+        .then((rows) => rows[0]!);
+      expect(coordinator.attempt).toBe(1);
+      expect(coordinator.failureDetail).toMatchObject({
+        workspaceFinalizeAttempt: expectedAttempt,
+      });
+      expect(coordinator.phase).toBe(
+        expectedAttempt === 3 ? "terminal_failure" : "retryable_failure",
+      );
+    }
+
+    await expect(
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("failed");
+  });
+
+  it("blocks immediately when the sandbox with unexported changes is gone", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId,
+      companyId,
+      issueId: fixture.issueId,
+      phase: "workspace_finalizing",
+      attempt: 1,
+      resultId: null,
+    });
+
+    const failure = await recordNativeFinalizationFailure({
+      db,
+      runId: fixture.runId,
+      error: new Error("native_workspace_sync_out_unrecoverable"),
+      projectRunStatus: true,
+      failureScope: "workspace",
+      permanent: true,
+    });
+
+    expect(failure).toMatchObject({
+      phase: "terminal_failure",
+      failureCode: "native_workspace_sync_out_unrecoverable",
+      nextAttemptAt: null,
+      attempt: 1,
+    });
+    await expect(
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("failed");
+    await expect(
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, fixture.issueId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("blocked");
   });
 
   it("emits exactly one event for a cancel_continuations write (trap 2: :685/:518 overlap)", async () => {
@@ -329,7 +634,10 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       toStatus: "cancelled",
       reasonCode: "cancellation_issue_authorized",
       unblockDescriptor: null,
-      effects: [{ kind: "release_checkout" }, { kind: "cancel_continuations" }],
+      effects: [
+        { kind: "release_checkout" },
+        { kind: "cancel_continuations" },
+      ],
     };
 
     const callsBefore = mockTelemetryClient.track.mock.calls.length;

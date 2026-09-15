@@ -1,24 +1,20 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
-import { StatusBadge } from "./StatusBadge";
+import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
-import { goalsApi } from "../api/goals";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Loader2, Plus, Trash2, X } from "lucide-react";
-import { GithubIcon } from "@/components/icons/github-icon";
+import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Loader2, Trash2 } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
@@ -26,16 +22,9 @@ import { InlineEditor } from "./InlineEditor";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 import { Badge } from "@/components/ui/badge";
 
-const PROJECT_STATUSES = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
-];
-
 interface ProjectPropertiesProps {
   project: Project;
+  repositories?: ReactNode;
   onUpdate?: (data: Record<string, unknown>) => void;
   onFieldUpdate?: (field: ProjectConfigFieldKey, data: Record<string, unknown>) => void;
   getFieldSaveState?: (field: ProjectConfigFieldKey) => ProjectFieldSaveState;
@@ -147,42 +136,6 @@ function PropertyRow({
   );
 }
 
-function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (status: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const colorClass = statusBadge[status] ?? statusBadgeDefault;
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          className={cn(
-            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer hover:opacity-80 transition-opacity",
-            colorClass,
-          )}
-        >
-          {status.replace("_", " ")}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
-        {PROJECT_STATUSES.map((s) => (
-          <Button
-            key={s.value}
-            variant="ghost"
-            size="sm"
-            className={cn("w-full justify-start gap-2 text-xs", s.value === status && "bg-accent")}
-            onClick={() => {
-              onChange(s.value);
-              setOpen(false);
-            }}
-          >
-            {s.label}
-          </Button>
-        ))}
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 function ArchiveDangerZone({
   project,
   onArchive,
@@ -248,14 +201,12 @@ function ArchiveDangerZone({
   );
 }
 
-export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
+export function ProjectProperties({ project, repositories, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
-  const [goalOpen, setGoalOpen] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
-  const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<"local" | null>(null);
   const [workspaceCwd, setWorkspaceCwd] = useState("");
-  const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   const commitField = (field: ProjectConfigFieldKey, data: Record<string, unknown>) => {
@@ -267,11 +218,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   };
   const fieldState = (field: ProjectConfigFieldKey): ProjectFieldSaveState => getFieldSaveState?.(field) ?? "idle";
 
-  const { data: allGoals } = useQuery({
-    queryKey: queryKeys.goals.list(selectedCompanyId!),
-    queryFn: () => goalsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -307,24 +253,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
 
-  const linkedGoalIds = project.goalIds.length > 0
-    ? project.goalIds
-    : project.goalId
-      ? [project.goalId]
-      : [];
-
-  const linkedGoals = project.goals.length > 0
-    ? project.goals
-    : linkedGoalIds.map((id) => ({
-        id,
-        title: allGoals?.find((g) => g.id === id)?.title ?? id.slice(0, 8),
-      }));
-
-  const availableGoals = (allGoals ?? []).filter((g) => !linkedGoalIds.includes(g.id));
   const workspaces = project.workspaces ?? [];
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
-  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id);
+  const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id && !workspace.metadata?.githubRepositoryId);
   const executionWorkspacePolicy = project.executionWorkspacePolicy ?? null;
   const executionWorkspacesEnabled = executionWorkspacePolicy?.enabled === true;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
@@ -373,7 +305,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     mutationFn: (data: Record<string, unknown>) => projectsApi.createWorkspace(project.id, data),
     onSuccess: () => {
       setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
       setWorkspaceMode(null);
       setWorkspaceError(null);
       invalidateProject();
@@ -384,7 +315,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     mutationFn: (workspaceId: string) => projectsApi.removeWorkspace(project.id, workspaceId),
     onSuccess: () => {
       setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
       setWorkspaceMode(null);
       setWorkspaceError(null);
       invalidateProject();
@@ -395,23 +325,11 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       projectsApi.updateWorkspace(project.id, workspaceId, data),
     onSuccess: () => {
       setWorkspaceCwd("");
-      setWorkspaceRepoUrl("");
       setWorkspaceMode(null);
       setWorkspaceError(null);
       invalidateProject();
     },
   });
-
-  const removeGoal = (goalId: string) => {
-    if (!onUpdate && !onFieldUpdate) return;
-    commitField("goals", { goalIds: linkedGoalIds.filter((id) => id !== goalId) });
-  };
-
-  const addGoal = (goalId: string) => {
-    if ((!onUpdate && !onFieldUpdate) || linkedGoalIds.includes(goalId)) return;
-    commitField("goals", { goalIds: [...linkedGoalIds, goalId] });
-    setGoalOpen(false);
-  };
 
   const updateExecutionWorkspacePolicy = (patch: Record<string, unknown>) => {
     if (!onUpdate && !onFieldUpdate) return;
@@ -428,17 +346,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
 
-  const looksLikeRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol !== "https:") return false;
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      return segments.length >= 2;
-    } catch {
-      return false;
-    }
-  };
-
   const isSafeExternalUrl = (value: string | null | undefined) => {
     if (!value) return false;
     try {
@@ -446,20 +353,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       return parsed.protocol === "http:" || parsed.protocol === "https:";
     } catch {
       return false;
-    }
-  };
-
-  const formatRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      if (segments.length < 2) return parsed.host;
-      const owner = segments[0];
-      const repo = segments[1]?.replace(/\.git$/i, "");
-      if (!owner || !repo) return parsed.host;
-      return `${parsed.host}/${owner}/${repo}`;
-    } catch {
-      return value;
     }
   };
 
@@ -509,21 +402,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     persistCodebase({ cwd });
   };
 
-  const submitRepoWorkspace = () => {
-    const repoUrl = workspaceRepoUrl.trim();
-    if (!repoUrl) {
-      setWorkspaceError(null);
-      persistCodebase({ repoUrl: null });
-      return;
-    }
-    if (!looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
-      return;
-    }
-    setWorkspaceError(null);
-    persistCodebase({ repoUrl });
-  };
-
   const clearLocalWorkspace = () => {
     const confirmed = window.confirm(
       codebase.repoUrl
@@ -532,24 +410,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     );
     if (!confirmed) return;
     persistCodebase({ cwd: null });
-  };
-
-  const clearRepoWorkspace = () => {
-    const hasLocalFolder = Boolean(codebase.localFolder);
-    const confirmed = window.confirm(
-      hasLocalFolder
-        ? "Clear repo from this workspace?"
-        : "Delete this workspace repo?",
-    );
-    if (!confirmed) return;
-    if (primaryCodebaseWorkspace && hasLocalFolder) {
-      updateWorkspace.mutate({
-        workspaceId: primaryCodebaseWorkspace.id,
-        data: { repoUrl: null, repoRef: null, defaultRef: null, sourceType: deriveSourceType(codebase.localFolder, null) },
-      });
-      return;
-    }
-    persistCodebase({ repoUrl: null });
   };
 
   return (
@@ -589,83 +449,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </p>
           )}
         </PropertyRow>
-        <PropertyRow label={<FieldLabel label="Status" state={fieldState("status")} />}>
-          {onUpdate || onFieldUpdate ? (
-            <ProjectStatusPicker
-              status={project.status}
-              onChange={(status) => commitField("status", { status })}
-            />
-          ) : (
-            <StatusBadge status={project.status} />
-          )}
-        </PropertyRow>
-        {project.leadAgentId && (
-          <PropertyRow label="Lead">
-            <span className="text-sm font-mono">{project.leadAgentId.slice(0, 8)}</span>
-          </PropertyRow>
-        )}
-        <PropertyRow
-          label={<FieldLabel label="Goals" state={fieldState("goals")} />}
-          alignStart
-          valueClassName="space-y-2"
-        >
-          {linkedGoals.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {linkedGoals.map((goal) => (
-                <span
-                  key={goal.id}
-                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
-                >
-                  <Link to={`/goals/${goal.id}`} className="hover:underline break-words min-w-0">
-                    {goal.title}
-                  </Link>
-                  {(onUpdate || onFieldUpdate) && (
-                    <button
-                      className="text-muted-foreground hover:text-foreground"
-                      type="button"
-                      onClick={() => removeGoal(goal.id)}
-                      aria-label={`Remove goal ${goal.title}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  )}
-                </span>
-              ))}
-            </div>
-          )}
-          {(onUpdate || onFieldUpdate) && (
-            <Popover open={goalOpen} onOpenChange={setGoalOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className={cn("h-6 w-fit px-2", linkedGoals.length > 0 && "ml-1")}
-                  disabled={availableGoals.length === 0}
-                >
-                  <Plus className="h-3 w-3 mr-1" />
-                  Goal
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-56 p-1" align="start">
-                {availableGoals.length === 0 ? (
-                  <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                    All goals linked.
-                  </div>
-                ) : (
-                  availableGoals.map((goal) => (
-                    <button
-                      key={goal.id}
-                      className="flex items-center w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => addGoal(goal.id)}
-                    >
-                      {goal.title}
-                    </button>
-                  ))
-                )}
-              </PopoverContent>
-            </Popover>
-          )}
-        </PropertyRow>
+        {repositories ?? <ProjectRepositories key={project.id} project={project} />}
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
           alignStart
@@ -673,6 +457,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         >
           <div className="space-y-2">
             <EnvironmentVariablesEditor
+              footerHint={null}
               value={project.env ?? {}}
               secrets={availableSecrets}
               userSecretDefinitions={userSecretDefinitions}
@@ -682,13 +467,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               }}
               onChange={(env) => commitField("env", { env: env ?? null })}
             />
-            <p className="text-(length:--text-micro) text-muted-foreground">
-              Applied to all runs for tasks in this project. Project values override agent env on key conflicts.
-            </p>
+
           </div>
-        </PropertyRow>
-        <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
-          <span className="text-sm">{formatDate(project.createdAt)}</span>
         </PropertyRow>
         <PropertyRow label={<FieldLabel label="Updated" state="idle" />}>
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
@@ -703,7 +483,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       <Separator className="my-4" />
 
       <div className="space-y-1 py-4">
-        <div className="space-y-2">
+        {(!hideHostPaths || (primaryCodebaseWorkspace?.runtimeServices?.length ?? 0) > 0) && <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>Codebase</span>
             <Tooltip>
@@ -724,69 +504,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </Tooltip>
           </div>
           <div className="space-y-2 rounded-md border border-border/70 p-3">
-            <div className="space-y-1">
-              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Repo</div>
-              {codebase.repoUrl ? (
-                <div className="flex items-center justify-between gap-2">
-                  {isSafeExternalUrl(codebase.repoUrl) ? (
-                    <a
-                      href={codebase.repoUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
-                    >
-                      <GithubIcon className="h-3 w-3 shrink-0" />
-                      <span className="break-all min-w-0">{formatRepoUrl(codebase.repoUrl)}</span>
-                      <ExternalLink className="h-3 w-3 shrink-0" />
-                    </a>
-                  ) : (
-                    <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                      <GithubIcon className="h-3 w-3 shrink-0" />
-                      <span className="break-all min-w-0">{codebase.repoUrl}</span>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="outline"
-                      size="xs"
-                      className="h-6 px-2"
-                      onClick={() => {
-                        setWorkspaceMode("repo");
-                        setWorkspaceRepoUrl(codebase.repoUrl ?? "");
-                        setWorkspaceError(null);
-                      }}
-                    >
-                      Change repo
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={clearRepoWorkspace}
-                      aria-label="Clear repo"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs text-muted-foreground">Not set.</div>
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="h-6 px-2"
-                    onClick={() => {
-                      setWorkspaceMode("repo");
-                      setWorkspaceRepoUrl(codebase.repoUrl ?? "");
-                      setWorkspaceError(null);
-                    }}
-                  >
-                    Set repo
-                  </Button>
-                </div>
-              )}
-            </div>
-
             {/*
               The local folder is an absolute path on the execution host. Under
               the managed-sandbox-only policy every agent runs in the
@@ -939,39 +656,6 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             </div>
           )}
-          {workspaceMode === "repo" && (
-            <div className="space-y-1.5 rounded-md border border-border p-2">
-              <input
-                className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                value={workspaceRepoUrl}
-                onChange={(e) => setWorkspaceRepoUrl(e.target.value)}
-                placeholder="https://github.com/org/repo"
-              />
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className="h-6 px-2"
-                  disabled={(!workspaceRepoUrl.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
-                  onClick={submitRepoWorkspace}
-                >
-                  Save
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  className="h-6 px-2"
-                  onClick={() => {
-                    setWorkspaceMode(null);
-                    setWorkspaceRepoUrl("");
-                    setWorkspaceError(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
           {workspaceError && (
             <p className="text-xs text-destructive">{workspaceError}</p>
           )}
@@ -984,7 +668,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           {updateWorkspace.isError && (
             <p className="text-xs text-destructive">Failed to update workspace.</p>
           )}
-        </div>
+        </div>}
 
         {isolatedWorkspacesEnabled ? (
           <>
@@ -1324,6 +1008,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           </div>
         </>
       )}
+        <PropertyRow label={<FieldLabel label="Created" state="idle" />}>
+          <span className="text-sm">{formatDate(project.createdAt)}</span>
+        </PropertyRow>
     </div>
   );
 }

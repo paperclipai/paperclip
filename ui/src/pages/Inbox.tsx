@@ -21,6 +21,7 @@ import {
   type BlockedInboxSort,
 } from "../lib/blockedInbox";
 import { useCompany } from "../context/CompanyContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -801,6 +802,7 @@ function StreamlinedInbox() {
   const { openNewIssue } = useDialogActions();
   const { isMobile } = useSidebar();
   const navigate = useNavigate();
+  const { pushToast } = useToastActions();
   const location = useLocation();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1789,22 +1791,11 @@ function StreamlinedInbox() {
 
   const retryRunMutation = useMutation({
     mutationFn: async (run: HeartbeatRun) => {
-      const payload: Record<string, unknown> = {};
-      const context = run.contextSnapshot as Record<string, unknown> | null;
-      if (context) {
-        if (typeof context.issueId === "string" && context.issueId) payload.issueId = context.issueId;
-        if (typeof context.taskId === "string" && context.taskId) payload.taskId = context.taskId;
-        if (typeof context.taskKey === "string" && context.taskKey) payload.taskKey = context.taskKey;
-      }
-      const result = await agentsApi.wakeup(run.agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: "retry_failed_run",
-        payload,
-      });
-      if (!("id" in result)) {
-        throw new Error(result.message ?? "Retry was skipped.");
-      }
+      const result = await agentsApi.retryFailedRun(
+        run.agentId,
+        run.id,
+        run.companyId,
+      );
       return { newRun: result, originalRun: run };
     },
     onMutate: (run) => {
@@ -1813,7 +1804,16 @@ function StreamlinedInbox() {
     onSuccess: ({ newRun, originalRun }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
-      navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
+      if (newRun.runId)
+        navigate(`/agents/${originalRun.agentId}/runs/${newRun.runId}`);
+      else if (newRun.issueId) navigate(`/issues/${newRun.issueId}`);
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Run retry failed",
+        body: error instanceof Error ? error.message : "Unable to retry run",
+        tone: "error",
+      });
     },
     onSettled: (_data, _error, run) => {
       if (!run) return;
@@ -2689,6 +2689,7 @@ function StreamlinedInbox() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
+        <div className="-mx-2 sm:mx-0">
         <BlockedInboxView
           companyId={selectedCompanyId!}
           searchQuery={searchQuery}
@@ -2707,6 +2708,7 @@ function StreamlinedInbox() {
           showUpdatedColumn={visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated")}
           presentation={streamlinedUiEnabled ? "task" : "legacy"}
         />
+        </div>
       ) : null}
 
       {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
@@ -2736,7 +2738,7 @@ function StreamlinedInbox() {
           <div>
             <div
               ref={listRef}
-              className="overflow-hidden"
+              className="-mx-2 overflow-hidden sm:mx-0"
               onPointerDownCapture={noteInboxSortInteraction}
               onWheelCapture={noteInboxSortInteraction}
             >
@@ -2816,7 +2818,7 @@ function StreamlinedInbox() {
                           <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                         </button>
                       ) : streamlinedUiEnabled ? (
-                        <span data-slot="task-row-disclosure-spacer" className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        <span data-slot="task-row-disclosure-spacer" className={cn("h-4 w-4 shrink-0", !nestingEnabled && "hidden sm:block")} aria-hidden="true" />
                       ) : undefined}
                       statusSlot={streamlinedUiEnabled ? rowStatusIcon : undefined}
                       metadata={streamlinedUiEnabled ? (
@@ -2868,7 +2870,8 @@ function StreamlinedInbox() {
                           ({childCount} sub-task{childCount !== 1 ? "s" : ""})
                         </span>
                       ) : undefined}
-                      mobileMeta={issueActivityText(issue).toLowerCase()}
+                      mobileTitleMeta={streamlinedUiEnabled ? issueActivityTimestamp(issue) : undefined}
+                      mobileMeta={streamlinedUiEnabled ? undefined : issueActivityText(issue).toLowerCase()}
                       mobileLeading={!streamlinedUiEnabled ? (
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button

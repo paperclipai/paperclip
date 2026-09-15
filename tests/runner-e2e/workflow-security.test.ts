@@ -3,8 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const ordinaryPrTrustedWorkflowRevision =
-  "a0a78ee60946a5f79f85b2bd0584fc766fae43bb";
+// PR #13470 uses the code-owner-reviewed default branch for this first-party workflow.
+const ordinaryPrTrustedWorkflowRevision = "master";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
@@ -13,14 +13,14 @@ const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
 
 describe("public repository paid workflow security", () => {
-  it("pins ordinary PR CI to the trusted Node-before-pnpm workflow", async () => {
+  it("uses the reviewed master branch for the first-party trusted PR workflow", async () => {
     const ordinaryPrWorkflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/pr.yml"),
       "utf8",
     );
     const trustedWorkflowCalls = [
       ...ordinaryPrWorkflow.matchAll(
-        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([0-9a-f]{40})$/gmu,
+        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([^\s#]+)$/gmu,
       ),
     ];
 
@@ -46,7 +46,9 @@ describe("public repository paid workflow security", () => {
         .split(/\n(?= {6}- )/u)
         .filter((step) => step.includes("uses: pnpm/action-setup@"));
 
-      expect(pnpmSetupSteps, workflowName).toHaveLength(7);
+      expect(pnpmSetupSteps, workflowName).toHaveLength(
+        workflowName === "pr-trusted.yml" ? 8 : 7,
+      );
       for (const step of pnpmSetupSteps) {
         expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
         expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
@@ -75,7 +77,8 @@ describe("public repository paid workflow security", () => {
       },
       {
         name: "pr-trusted.yml",
-        expectedCachedSetupNodeSteps: 7,
+        // PR #13300 restores shared stores directly without setup-node cache writes.
+        expectedCachedSetupNodeSteps: 0,
       },
     ];
 
@@ -89,7 +92,9 @@ describe("public repository paid workflow security", () => {
         step.includes("uses: pnpm/action-setup@") ? [index] : [],
       );
 
-      expect(pnpmSetupStepIndexes, name).toHaveLength(7);
+      expect(pnpmSetupStepIndexes, name).toHaveLength(
+        name === "pr-trusted.yml" ? 8 : 7,
+      );
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
         const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
@@ -113,7 +118,7 @@ describe("public repository paid workflow security", () => {
         );
       }
 
-      expect(workflow.match(/^\s+cache: pnpm$/gmu), name).toHaveLength(
+      expect(workflow.match(/^\s+cache: pnpm$/gmu) ?? [], name).toHaveLength(
         expectedCachedSetupNodeSteps,
       );
     }
@@ -121,15 +126,18 @@ describe("public repository paid workflow security", () => {
 
   it("gates every provider-secret job with stable actor IDs", async () => {
     const workflows = await Promise.all(
-      ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(
-        async (name) => ({
-          name,
-          contents: await readFile(
-            path.join(repositoryRoot, ".github/workflows", name),
-            "utf8",
-          ),
-        }),
-      ),
+      [
+        "runner-full-stack-e2e.yml",
+        "runner-live-evals.yml",
+        "runner-protocol-live-evals.yml",
+        "e2e.yml",
+      ].map(async (name) => ({
+        name,
+        contents: await readFile(
+          path.join(repositoryRoot, ".github/workflows", name),
+          "utf8",
+        ),
+      })),
     );
 
     for (const { name, contents } of workflows) {
@@ -352,6 +360,30 @@ describe("public repository paid workflow security", () => {
     );
     expect(daytonaImageJob).toContain('echo "source_revision="');
     expect(daytonaImageJob).toContain('echo "content_id="');
+    expect(daytonaImageJob).toContain(
+      "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
+    );
+    expect(daytonaImageJob).toContain(
+      "TARGET_REF: ${{ needs.authorize.outputs.target_ref }}",
+    );
+    expect(daytonaImageJob).toContain(
+      "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+    );
+    const cacheRead = daytonaImageJob.indexOf(
+      '--cache-from "type=registry,ref=${IMAGE_CACHE}"',
+    );
+    const trustedTargetCheck = daytonaImageJob.indexOf(
+      'if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then',
+    );
+    const cacheWrite = daytonaImageJob.indexOf(
+      '--cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"',
+    );
+    expect(cacheRead).toBeGreaterThan(0);
+    expect(trustedTargetCheck).toBeGreaterThan(cacheRead);
+    expect(cacheWrite).toBeGreaterThan(trustedTargetCheck);
+    expect(daytonaImageJob.slice(trustedTargetCheck, cacheWrite)).not.toContain(
+      "secrets.",
+    );
     const targetCodeJobs = [
       fullStack.slice(
         fullStack.indexOf("  catalog:"),
@@ -458,6 +490,7 @@ describe("public repository paid workflow security", () => {
       "e2e.yml",
       "runner-full-stack-e2e.yml",
       "runner-live-evals.yml",
+      "runner-protocol-live-evals.yml",
     ]);
     const names = (await readdir(workflowDirectory)).filter((name) =>
       /\.ya?ml$/.test(name),
@@ -484,7 +517,11 @@ describe("public repository paid workflow security", () => {
 
   it("runs paid scheduled campaigns only on Sundays", async () => {
     const workflows = await Promise.all(
-      ["runner-full-stack-e2e.yml", "runner-live-evals.yml"].map((name) =>
+      [
+        "runner-full-stack-e2e.yml",
+        "runner-live-evals.yml",
+        "runner-protocol-live-evals.yml",
+      ].map((name) =>
         readFile(path.join(repositoryRoot, ".github/workflows", name), "utf8"),
       ),
     );
@@ -639,6 +676,12 @@ describe("public repository paid workflow security", () => {
     expect(report).toContain(
       "PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e",
     );
+    expect(report).toContain(
+      "PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}",
+    );
+    expect(report).toContain(
+      "PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}",
+    );
     expect(
       report.indexOf("Select latest workflow attempt per cell"),
     ).toBeLessThan(report.indexOf("Collect blob reports"));
@@ -670,12 +713,24 @@ describe("public repository paid workflow security", () => {
     expect(publisher).not.toMatch(/AWS_(?:ACCESS|SECRET)_KEY/);
     expect(publisher).not.toMatch(/aws s3 (?:rm|sync .*--delete)/);
     expect(workflow).toContain("history_source_ready");
+    expect(workflow).toContain("Verify normalized history source report");
+    expect(workflow).not.toContain("sanitized_screenshot=");
     expect(workflow).toContain(
-      "Verify history source report and private screenshot evidence",
+      "Publish S3 history and Pages bundle with declared screenshots",
     );
-    expect(workflow).toContain("private_screenshot=");
-    expect(workflow).toContain("Publish pruned immutable history");
-    expect(workflow).toContain("Publish latest structured dashboard");
+    expect(workflow).toContain(
+      "Publish trusted summary and declared screenshots to public bundles",
+    );
+    expect(publisher).toContain(
+      "pnpm exec playwright install --with-deps --only-shell chromium",
+    );
+    expect(workflow).toContain(
+      "Package pruned dashboard with declared screenshots for GitHub Pages",
+    );
+    expect(workflow).toContain("path: runner-e2e-merged-report/pages");
+    expect(workflow).toContain(
+      "Publish latest dashboard with declared screenshots",
+    );
     expect(workflow).not.toContain("dashboard_ready");
     expect(workflow).not.toContain("Publish latest screenshot dashboard");
     expect(

@@ -54,6 +54,10 @@ import {
 } from "./workspace-file-reference.js";
 
 const LIVE_SESSION_SCHEMA = "paperclip.capability.live-session.v1" as const;
+const LIVE_COMPLETION_CONTRACT = Object.freeze({
+  revision: "paperclip-capability-live-v1",
+  criterionIds: ["objective"],
+});
 const LIVE_BASE_INSTRUCTIONS = [
   "You are operating one mock Paperclip issue through typed semantic tools.",
   "Use only the tools exposed in this thread; never call a Paperclip REST API.",
@@ -920,9 +924,9 @@ export class CapabilityLiveSessionService {
               ? "aws_agentcore_harness_api"
           : input.provider === "acpx" ? "acpx_runtime" : "codex_app_server",
         providerVersion: input.provider === "opencode"
-          ? "1.18.17"
+          ? "1.18.29"
           : input.provider === "claude_managed"
-            ? input.managedProfile!.betaVersion
+            ? input.managedProfile!.agentVersion
             : input.provider === "aws_agentcore"
               ? input.agentCoreProfile!.qualificationRevision
           : input.provider === "acpx" ? acpxProfile!.acpxVersion : null,
@@ -1546,7 +1550,6 @@ export class CapabilityLiveSession {
     // Arm the provider timeout only after bounded preflight succeeds. The
     // admission token excludes concurrent sends before this point.
     const terminal = this.#armTurnWaiter();
-    void terminal.catch(() => undefined);
     try {
       response = await admission.transport.request("turn/start", {
         threadId: this.#providerThreadId,
@@ -1992,7 +1995,7 @@ export class CapabilityLiveSession {
 
   #armTurnWaiter(): Promise<Omit<CapabilityLiveTurnResult, "snapshot">> {
     if (this.#turnWaiter !== null) throw new Error("Capability live session already has a turn waiter");
-    return new Promise<Omit<CapabilityLiveTurnResult, "snapshot">>((resolve, reject) => {
+    const terminal = new Promise<Omit<CapabilityLiveTurnResult, "snapshot">>((resolve, reject) => {
       const timer = setTimeout(() => {
         const waiter = this.#turnWaiter;
         this.#turnWaiter = null;
@@ -2007,6 +2010,13 @@ export class CapabilityLiveSession {
       }, this.#config.turnTimeoutMs);
       this.#turnWaiter = { resolve, reject, timer, assistantText: "", draftId: null };
     });
+    // A caller may await this promise only after another `await` of its own
+    // (see `reconcileActiveTurn`). The timer above can reject before that
+    // point, so attach a no-op handler here, at creation, on every call
+    // site. `.catch()` returns a new promise; the original stays rejected
+    // and a later `await terminal` still observes it.
+    terminal.catch(() => undefined);
+    return terminal;
   }
 
   /** Interrupts and durably reconciles a checkpointed active turn after restart. */
@@ -2269,6 +2279,15 @@ export class CapabilityLiveSession {
     const transportBundle = this.#transportFactory({
       ...this.#transportOptions,
       provider,
+      ...(provider === "opencode"
+        ? {
+            // Capability-live sessions expose only governed semantic tools and
+            // use approvalPolicy=never. Keep OpenCode's ambient shell/file
+            // tools fail-closed instead of brokering broader permissions.
+            opencodePermissionMode:
+              this.#transportOptions.opencodePermissionMode ?? "deny",
+          }
+        : {}),
       ...(provider === "acpx" && this.#config.acpxAgent ? {
         acpxAgent: this.#config.acpxAgent,
       } : {}),
@@ -2369,7 +2388,8 @@ export class CapabilityLiveSession {
         config: createSkilllessCodexThreadConfig(this.#config.workingDirectory),
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
-        baseInstructions: LIVE_BASE_INSTRUCTIONS,
+        baseInstructions:
+          this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
         persistExtendedHistory: true,
       });
       const resumedThread = record(resumed.thread);
@@ -2394,7 +2414,9 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         approvalPolicy: "never",
-        baseInstructions: LIVE_BASE_INSTRUCTIONS,
+        baseInstructions:
+          this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
+        completionContract: LIVE_COMPLETION_CONTRACT,
         dynamicTools: [
           ...tools.map(dynamicToolSpec),
           ...((this.#config.toolExposure ?? "eager") === "lazy" ? discoveryToolSpecs() : []),
@@ -2554,7 +2576,15 @@ export class CapabilityLiveSession {
       this.#recordTerminalFact(this.#durableReplayTurnId(turnId), "completed");
     }
     await this.#persist();
-    return this.#codexToolResponse(result);
+    // The durable provider bridge correlates the outer semantic result with
+    // the exact dynamic tool Codex called. Keep the dispatched operation in
+    // evidence, but preserve the discovery gateway identity on the response
+    // envelope returned to runnerd.
+    const providerResult =
+      operationId === INVOKE_DISCOVERED_TOOL
+        ? { ...result, operationId, callId }
+        : result;
+    return this.#codexToolResponse(providerResult);
   }
 
   #isDurableTerminalReplay(turnId: string, input: unknown): boolean {
@@ -2579,7 +2609,7 @@ export class CapabilityLiveSession {
     return `${interruptedTurnId}:durable-duplicate-replay`;
   }
 
-  #codexToolResponse(result: CapabilitySemanticToolResult): Record<string, unknown> {
+  #codexToolResponse(result: { readonly ok: boolean }): Record<string, unknown> {
     return {
       success: result.ok,
       contentItems: [{

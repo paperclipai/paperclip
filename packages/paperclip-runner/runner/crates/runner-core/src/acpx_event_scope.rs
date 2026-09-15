@@ -134,6 +134,7 @@ impl AcpxEventScope {
             event.event_type,
             GeneratedAcpxSidecarEventType::RuntimeProcess
                 | GeneratedAcpxSidecarEventType::RuntimeDiagnostic
+                | GeneratedAcpxSidecarEventType::RuntimeGoal
         );
 
         match event.run_id.as_deref() {

@@ -20,6 +20,7 @@ import { BUNDLED_PLUGIN_CATALOG } from "../services/bundled-plugins.js";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
 const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker.yml"), "utf8");
+const cloudWorkflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker-cloud.yml"), "utf8");
 
 function parseList(source: string, pattern: RegExp, label: string): string[] {
   const match = source.match(pattern);
@@ -35,7 +36,7 @@ const dockerfileDefault = parseList(
   "Dockerfile",
 );
 const workflowArg = parseList(
-  workflow,
+  cloudWorkflow,
   /^\s*CLOUD_BUNDLED_PLUGINS=(.*)$/m,
   "docker workflow",
 );
@@ -77,16 +78,17 @@ describe("cloud image bundled plugins", () => {
   });
 
   it("publishes the cloud image in its own job with no needs coupling", () => {
-    // The cloud publish runs as its own top-level job so the stock/production
-    // publish can never gate, delay, or skip it. Both jobs share only the
-    // single top-level concurrency slot; there is deliberately no `needs:`
-    // between them, so a failure in one is never coupled to the other.
-    const jobsSection = workflow.slice(workflow.indexOf("\njobs:\n"));
+    const caller = workflow.split("  build-and-push-cloud:")[1]?.split("  promote_canary_channel:")[0];
+    expect(caller, "tag and manual builds must call the cloud workflow").toContain("uses: ./.github/workflows/docker-cloud.yml");
+    expect(caller, "the reusable caller must also remain independent of production").not.toMatch(/^\s*needs:/m);
+    // The reusable cloud workflow owns its job and SHA concurrency group.
+    // Production publication must not gate, delay, or skip the cloud build.
+    const jobsSection = cloudWorkflow.slice(cloudWorkflow.indexOf("\njobs:\n"));
     const headers = [...jobsSection.matchAll(/^ {2}([\w-]+):[^\n]*$/gm)];
     expect(
       headers.length,
-      "docker.yml must declare at least two jobs under jobs:",
-    ).toBeGreaterThanOrEqual(2);
+      "docker-cloud.yml must declare a cloud build job under jobs:",
+    ).toBeGreaterThanOrEqual(1);
 
     // Locate the job block that carries the cloud build (target: cloud) and
     // assert it declares no `needs:` — coupling it to another job would

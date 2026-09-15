@@ -319,7 +319,12 @@ function newConnectionHref({
   const params = new URLSearchParams({ applicationId, name: appName, new: "1" });
   if (previousConnection) {
     params.set("reconnect", previousConnection.id);
-    params.set("identity", previousConnection.credentialPolicy === "per_user" ? "user" : "organization");
+    params.set("identity",
+      previousConnection.credentialPolicy === "per_user"
+        ? "user"
+        : previousConnection.credentialPolicy === "per_agent"
+          ? "agent"
+          : "organization");
   }
   if (sourceSlug) params.set("source", sourceSlug);
   else params.set("byo", "1");

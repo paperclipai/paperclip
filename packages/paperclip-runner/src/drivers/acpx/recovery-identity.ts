@@ -307,6 +307,18 @@ export async function resolveAcpxRuntimeRoot(
     throw new Error("ACPX runtime directory must be a directory");
   if (root === dirname(root))
     throw new Error("ACPX runtime directory must not be a filesystem root");
+  return join(
+    resolve(root),
+    "acpx",
+    acpxRuntimeSessionDirectoryName(sessionId),
+  );
+}
+
+/**
+ * Return the stable, filesystem-safe directory name used for one normalized
+ * ACPX session below the runtime's `acpx` namespace.
+ */
+export function acpxRuntimeSessionDirectoryName(sessionId: string): string {
   const readable = sessionId
     .replace(/[^a-zA-Z0-9._-]/g, "_")
     .replace(/^\.+$/, "session")
@@ -315,7 +327,7 @@ export async function resolveAcpxRuntimeRoot(
     .update(sessionId)
     .digest("hex")
     .slice(0, 16);
-  return join(resolve(root), "acpx", `${readable || "session"}-${suffix}`);
+  return `${readable || "session"}-${suffix}`;
 }
 
 function validateIdentity(

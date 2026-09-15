@@ -24,6 +24,15 @@ describe("trust-policy-ui low-trust boundary helpers", () => {
     expect(restored.trustPreset).toBe("standard");
   });
 
+  it("clears containment across a JSON permissions patch when restoring standard trust", () => {
+    const lowTrust = setSingleLowTrustBoundaryTarget(null, "company-1", { type: "root_issue", id: "issue-1" });
+    const patch = JSON.parse(JSON.stringify(buildPermissionsForTrustPreset(lowTrust, "standard")));
+    const persisted = { ...lowTrust, ...patch };
+    expect(persisted.trustPreset).toBe("standard");
+    expect(persisted.authorizationPolicy).toEqual({});
+    expect(getLowTrustBoundary(persisted)).toBeNull();
+  });
+
   it("writes one project boundary with mode and company id", () => {
     const permissions = setSingleLowTrustBoundaryTarget(null, "company-1", {
       type: "project",

@@ -75,6 +75,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
@@ -384,12 +385,12 @@ export interface PluginDefinition {
   /** Called when a run finishes and the provider lease can be released. */
   onEnvironmentReleaseLease?(
     params: PluginEnvironmentReleaseLeaseParams,
-  ): Promise<void>;
+  ): Promise<PluginEnvironmentTerminationReceipt | void>;
 
   /** Called when the host needs to force-destroy provider state. */
   onEnvironmentDestroyLease?(
     params: PluginEnvironmentDestroyLeaseParams,
-  ): Promise<void>;
+  ): Promise<PluginEnvironmentTerminationReceipt | void>;
 
   /** Called to materialize the run workspace inside the provider lease. */
   onEnvironmentRealizeWorkspace?(

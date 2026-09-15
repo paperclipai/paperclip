@@ -14,7 +14,7 @@ on:
         type: boolean
         default: true
       group:
-        description: "Comma-separated groups (AND semantics: legacy,native,local,daytona,core,breadth)"
+        description: "Comma-separated groups (AND semantics: legacy,native,local,daytona,warm,core,breadth)"
         type: string
         required: false
       suite:
@@ -409,7 +409,10 @@ jobs:
           NEEDS_DAYTONA: ${{ needs.catalog.outputs.needs_daytona }}
           IMAGE_CONTENT_ID: ${{ needs.catalog.outputs.daytona_image_content_id }}
           IMAGE_TAG: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${{ needs.catalog.outputs.daytona_image_content_id }}
+          IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           if [ "$NEEDS_DAYTONA" != true ]; then
@@ -425,12 +428,24 @@ jobs:
           if docker buildx imagetools inspect "$IMAGE_TAG" >/dev/null 2>&1; then
             digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           else
+            cache_args=(
+              --cache-from "type=registry,ref=${IMAGE_CACHE}"
+            )
+            if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+              cache_args+=(
+                --cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"
+              )
+              echo '::notice title=Daytona image cache::Publishing cache from the trusted default-branch target'
+            else
+              echo '::notice title=Daytona image cache::Using the default-branch cache without publishing development-branch layers'
+            fi
             docker buildx build \
               --platform linux/amd64 \
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
               --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
+              "${cache_args[@]}" \
               --push \
               .
             digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
@@ -953,6 +968,40 @@ jobs:
             sleep "$((attempt * 10))"
           done
 
+      # This definition executes only from the authorized default-branch workflow.
+      # Provision host policy before credentials reach target-controlled tests.
+      - name: Provision Codex sandbox on the disposable trusted runner
+        if: matrix.environmentId == 'local' && matrix.profileId == 'runner-codex'
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { createHash } from "node:crypto";
+          import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+          import { createRequire } from "node:module";
+          import path from "node:path";
+          if (process.platform !== "linux") process.exit(0);
+          let restricted = "0";
+          try { restricted = readFileSync("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "utf8").trim(); } catch {}
+          if (restricted !== "1") process.exit(0);
+          const root = realpathSync(process.env.GITHUB_WORKSPACE);
+          const runnerRequire = createRequire(path.join(root, "packages/paperclip-runner/package.json"));
+          const acpRequire = createRequire(runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json"));
+          const codexRequire = createRequire(acpRequire.resolve("@openai/codex/package.json"));
+          const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : null;
+          if (!arch) throw new Error("Unsupported Codex CI architecture");
+          const platformPackage = codexRequire.resolve(`@openai/codex-linux-${arch}/package.json`);
+          const triple = arch === "x64" ? "x86_64-unknown-linux-musl" : "aarch64-unknown-linux-musl";
+          const suffix = `/vendor/${triple}/bin/codex`;
+          const binary = realpathSync(path.join(path.dirname(platformPackage), suffix));
+          if (!binary.startsWith(root + "/node_modules/.pnpm/") || !binary.endsWith(suffix) || !/^[/A-Za-z0-9_.@+\-]+$/.test(binary)) {
+            throw new Error("Codex executable is outside the resolved dependency tree");
+          }
+          const name = `paperclip-e2e-codex-${createHash("sha256").update(binary).digest("hex").slice(0,16)}`;
+          const profilePath = path.join(process.env.RUNNER_TEMP, "paperclip-codex-userns.apparmor");
+          writeFileSync(profilePath, `abi <abi/4.0>,\ninclude <tunables/global>\nprofile ${name} "${binary}" flags=(unconfined) {\n  userns,\n}\n`, {mode:0o600, flag:"wx"});
+          execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], {timeout:15000, stdio:"pipe"});
+          NODE
+
       - name: Run paid cell
         env:
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
@@ -1087,6 +1136,8 @@ jobs:
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
+          PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}
+          PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}
         run: |
           set +e
           pnpm test:e2e:runner:report
@@ -1104,21 +1155,20 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Verify history source report and private screenshot evidence
+      - name: Verify normalized history source report
         id: history_source_ready
         if: always()
         run: |
           set -euo pipefail
           dashboard_root="runner-e2e-merged-report/normalized"
-          private_screenshot="$(find "$dashboard_root" -type f -name '*.png' -print -quit 2>/dev/null || true)"
-          if [ -f "$dashboard_root/index.html" ] && [ -n "$private_screenshot" ]; then
+          if [ -f "$dashboard_root/index.html" ] && [ -f "$dashboard_root/normalized-results.json" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
   publish_history:
-    name: Publish pruned immutable history and landing site
+    name: Publish S3 history and Pages bundle with declared screenshots
     needs: [authorize, catalog, report]
     if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
@@ -1154,6 +1204,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Install publisher-only Chromium
+        run: pnpm exec playwright install --with-deps --only-shell chromium
+
       - name: Download access-controlled normalized campaign
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1166,7 +1219,7 @@ jobs:
           role-to-assume: ${{ vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_E2E_HISTORY_AWS_REGION }}
 
-      - name: Prune private evidence and publish immutable campaign history
+      - name: Publish trusted summary and declared screenshots to public bundles
         env:
           PAPERCLIP_RUNNER_E2E_REPORT_DIR: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           RUNNER_E2E_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
@@ -1179,15 +1232,15 @@ jobs:
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         run: echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
-      - name: Package pruned structured dashboard for GitHub Pages
+      - name: Package pruned dashboard with declared screenshots for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           name: ${{ steps.pages_artifact_name.outputs.name }}
-          path: runner-e2e-merged-report/normalized
+          path: runner-e2e-merged-report/pages
 
   pages:
-    name: Publish latest structured dashboard
+    name: Publish latest dashboard with declared screenshots
     needs: [report, publish_history]
     if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
     runs-on: ubuntu-latest

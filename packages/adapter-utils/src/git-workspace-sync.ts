@@ -15,7 +15,11 @@ export interface GitWorkspaceSnapshot {
   overlayPaths: string[];
   deletedPaths: string[];
   ignoredPaths: string[];
+  /** Managed, editable repositories inside the task workspace. */
+  repositories?: Array<{ path: string; snapshot: GitWorkspaceSnapshot }>;
 }
+
+export const PROJECT_REPOSITORIES_DIR = ".paperclip-repositories";
 
 export interface ExpensiveWorkspaceGitInput {
   localDir: string;
@@ -136,70 +140,110 @@ async function runExpensiveWorkspaceGit(
   return await runLocalGit(localDir, args, options);
 }
 
-export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWorkspaceSnapshot | null> {
+export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true): Promise<GitWorkspaceSnapshot | null> {
+  const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
+  if (includeRepositories) {
+    const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
+    const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (rootStat) {
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
+      for (const entry of (await fs.readdir(root, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
+        const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
+        const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false);
+        if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
+        repositories.push({ path: relative, snapshot });
+      }
+    }
+  }
+  // Only repository discovery may report an ordinary directory. A failed
+  // snapshot of a confirmed repository must never fall back to directory sync.
+  let insideWorkTree: GitCommandResult;
   try {
-    const insideWorkTree = await runLocalGit(localDir, ["rev-parse", "--is-inside-work-tree"], {
+    insideWorkTree = await runLocalGit(localDir, ["rev-parse", "--is-inside-work-tree"], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
     });
-    if (insideWorkTree.stdout.trim() !== "true") {
-      return null;
-    }
-
-    const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
-      runLocalGit(localDir, ["rev-parse", "HEAD"], {
-        timeout: 10_000,
-        maxBuffer: 16 * 1024,
-      }),
-      runLocalGit(localDir, ["rev-parse", "--abbrev-ref", "HEAD"], {
-        timeout: 10_000,
-        maxBuffer: 16 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], "adapter_sync.overlay_diff", {
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["ls-files", "--others", "--exclude-standard", "-z"], "adapter_sync.untracked_files", {
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], "adapter_sync.deleted_files", {
-        timeout: 10_000,
-        maxBuffer: 256 * 1024,
-      }),
-      runExpensiveWorkspaceGit(localDir, ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"], "adapter_sync.ignored_files", {
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      }),
-    ]);
-
-    const branchName = branchResult.stdout.trim();
-    // `-z` already delimits each record with a NUL byte, so a leading or
-    // trailing space in a record is part of the path itself, not padding to
-    // remove — trimming it would resolve to a path that does not exist. A
-    // length check finds the one genuinely empty record `-z` appends after
-    // the last NUL, without eating a real path's own leading or trailing
-    // whitespace. This applies to all four NUL-delimited outputs below (the
-    // overlay diff, the untracked list, the deleted list, and the ignored
-    // list); `branchName` and `headCommit` come from non-`-z` commands and
-    // keep their own `.trim()` above and below, which is safe.
-    const splitNul = (value: string) => value.split("\0").filter((entry) => entry.length > 0);
-    return {
-      headCommit: headCommitResult.stdout.trim(),
-      branchName: branchName && branchName !== "HEAD" ? branchName : null,
-      overlayPaths: [...new Set([...splitNul(overlayDiffResult.stdout), ...splitNul(untrackedResult.stdout)])]
-        .sort((left, right) => left.localeCompare(right)),
-      deletedPaths: [...new Set(splitNul(deletedResult.stdout))]
-        .sort((left, right) => left.localeCompare(right)),
-      ignoredPaths: splitNul(ignoredResult.stdout)
-        .filter((entry) => entry.startsWith("!! "))
-        .map((entry) => entry.slice(3).replace(/\/+$/, ""))
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right)),
-    };
-  } catch {
+  } catch (error) {
+    if (repositories.length === 0 && isNotAGitRepositoryError(error)) return null;
+    throw error;
+  }
+  if (insideWorkTree.stdout.trim() !== "true") {
     return null;
   }
+
+  const toplevelResult = await runLocalGit(localDir, ["rev-parse", "--show-toplevel"], {
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  });
+  // Git discovers a parent repository from a nested project directory, but
+  // that directory is not a fetch source. Keep the selected workspace
+  // boundary: subfolders use directory sync instead of importing the parent.
+  const [workspacePath, repositoryPath] = await Promise.all([
+    fs.realpath(localDir),
+    fs.realpath(toplevelResult.stdout.trim()),
+  ]);
+  if (workspacePath !== repositoryPath) return null;
+
+  const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
+    runLocalGit(localDir, ["rev-parse", "HEAD"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    }),
+    runLocalGit(localDir, ["rev-parse", "--abbrev-ref", "HEAD"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    }),
+    runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], "adapter_sync.overlay_diff", {
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    }),
+    runExpensiveWorkspaceGit(localDir, ["ls-files", "--others", "--exclude-standard", "-z"], "adapter_sync.untracked_files", {
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    }),
+    runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], "adapter_sync.deleted_files", {
+      timeout: 10_000,
+      maxBuffer: 256 * 1024,
+    }),
+    // Collapse ignored directories instead of walking their contents, and
+    // avoid producing unrelated tracked/untracked status records.
+    runExpensiveWorkspaceGit(localDir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], "adapter_sync.ignored_files", {
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    }),
+  ]);
+
+  const branchName = branchResult.stdout.trim();
+  // `-z` already delimits each record with a NUL byte, so a leading or
+  // trailing space in a record is part of the path itself, not padding to
+  // remove — trimming it would resolve to a path that does not exist. A
+  // length check finds the one genuinely empty record `-z` appends after
+  // the last NUL, without eating a real path's own leading or trailing
+  // whitespace. This applies to all four NUL-delimited outputs below (the
+  // overlay diff, the untracked list, the deleted list, and the ignored
+  // list); `branchName` and `headCommit` come from non-`-z` commands and
+  // keep their own `.trim()` above and below, which is safe.
+  const splitNul = (value: string) => value.split("\0").filter((entry) => entry.length > 0);
+  return {
+    headCommit: headCommitResult.stdout.trim(),
+    branchName: branchName && branchName !== "HEAD" ? branchName : null,
+    overlayPaths: [...new Set([...splitNul(overlayDiffResult.stdout), ...splitNul(untrackedResult.stdout),
+      ...repositories.flatMap((repo) => repo.snapshot.overlayPaths.map((entry) => `${repo.path}/${entry}`))])]
+      .sort((left, right) => left.localeCompare(right)),
+    deletedPaths: [...new Set([...splitNul(deletedResult.stdout),
+      ...repositories.flatMap((repo) => repo.snapshot.deletedPaths.map((entry) => `${repo.path}/${entry}`))])]
+      .sort((left, right) => left.localeCompare(right)),
+    ignoredPaths: [...splitNul(ignoredResult.stdout)
+      .map((entry) => entry.replace(/\/+$/, ""))
+      .filter((entry) => Boolean(entry) && !(repositories.length > 0 && entry === PROJECT_REPOSITORIES_DIR)),
+      ...repositories.flatMap((repo) => repo.snapshot.ignoredPaths.map((entry) => `${repo.path}/${entry}`))]
+      .sort((left, right) => left.localeCompare(right)),
+    ...(repositories.length > 0 ? { repositories } : {}),
+  };
 }
 
 /** The `git ls-files --others --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
@@ -278,6 +322,15 @@ async function runHardenedReadOnlyGit(
  * surface as a failure and never look like "no Git tree here".
  */
 function isNotAGitRepositoryError(error: unknown): boolean {
+  // The host scheduler keeps bounded subprocess diagnostics under details.
+  // Only a completed Git exit may establish that no repository exists.
+  if (error && typeof error === "object" && "code" in error &&
+      typeof error.code === "string" && error.code.startsWith("workspace_git_scan_")) {
+    const details = "details" in error && error.details && typeof error.details === "object"
+      ? error.details as Record<string, unknown> : {};
+    return error.code === "workspace_git_scan_failed" && details.exitCode === 128 && details.signal === null &&
+      typeof details.stderr === "string" && /not a git repository/i.test(details.stderr);
+  }
   const stderr = error && typeof error === "object" && "stderr" in error ? String((error as { stderr: unknown }).stderr) : "";
   const message = error instanceof Error ? error.message : String(error);
   return /not a git repository/i.test(stderr) || /not a git repository/i.test(message);
@@ -535,6 +588,17 @@ export async function withShallowGitWorkspaceClone<T>(
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    for (const repository of input.snapshot.repositories ?? []) {
+      await withShallowGitWorkspaceClone({
+        localDir: path.join(input.localDir, repository.path),
+        snapshot: repository.snapshot,
+      }, async (nestedClone) => {
+        await fs.cp(nestedClone, path.join(cloneDir, repository.path), { recursive: true });
+      });
+    }
+    if (input.snapshot.repositories?.length) {
+      await fs.appendFile(path.join(cloneDir, ".git/info/exclude"), `\n/${PROJECT_REPOSITORIES_DIR}/\n`);
+    }
     return await fn(cloneDir);
   } finally {
     await runLocalGit(input.localDir, ["update-ref", "-d", tempRef], {

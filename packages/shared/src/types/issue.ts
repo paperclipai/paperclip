@@ -1,3 +1,4 @@
+import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadataRowType,
@@ -536,22 +537,6 @@ export interface IssueUnblockDescriptor {
   action: string;
 }
 
-export type IssueProductivityReviewTrigger =
-  | "no_comment_streak"
-  | "long_active_duration"
-  | "high_churn";
-
-export interface IssueProductivityReview {
-  reviewIssueId: string;
-  reviewIdentifier: string | null;
-  status: IssueStatus;
-  priority: IssuePriority;
-  trigger: IssueProductivityReviewTrigger | null;
-  noCommentStreak: number | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 export interface IssueRecoveryAction {
   id: string;
   companyId: string;
@@ -783,6 +768,14 @@ export interface IssueChangeReceiptEntry {
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+  conversationState?: "active" | "waiting" | null;
+  conversationSessionGeneration?: number;
+  conversationBoundaryCommentId?: string | null;
+  activeRun?: { id: string; status: string; agentId: string; invocationSource: string;
+    triggerDetail: string | null; startedAt: Date | string | null; finishedAt: Date | string | null;
+    createdAt: Date | string; execution?: ExecutionProjection } | null;
   id: string;
   companyId: string;
   projectId: string | null;
@@ -811,6 +804,8 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  originIdentityContextId?: string | null;
+  continuationIdentityContextId?: string | null;
   originFingerprint?: string | null;
   requestDepth: number;
   billingCode: string | null;
@@ -840,9 +835,9 @@ export interface Issue {
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
-  productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  executionBlocker?: ExecutionBlocker | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
@@ -855,6 +850,8 @@ export interface Issue {
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
+  /** Present when this task is the durable counterpart of an external chat conversation. */
+  externalChannelBinding?: import("./chat-channels.js").ExternalChannelBindingSummary | null;
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
@@ -910,7 +907,6 @@ export type CompactIssue = Pick<
   blockerAttention?: IssueBlockerAttention;
   reviewAttention?: IssueReviewAttention;
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
-  productivityReview?: IssueProductivityReview | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
   myLastTouchAt?: Date | null;
@@ -942,6 +938,8 @@ export type IssueCommentDerivedAuthorSource =
   | "run_log_comment_post";
 
 export interface IssueComment {
+  clientRequestId?: string | null;
+  conversationSessionGeneration?: number | null;
   id: string;
   companyId: string;
   issueId: string;
@@ -998,6 +996,8 @@ export interface IssueQueuedCommentQueue {
   protocol: IssueQueuedCommentProtocol;
   steeringDisposition: IssueQueuedCommentSteeringDisposition;
   entries: IssueQueuedCommentEntry[];
+  /** Current admission condition for a saved user continuation. */
+  executionWait?: { reason: string; message: string } | null;
 }
 
 interface IssueCommentMetadataRowBase {
@@ -1057,7 +1057,10 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  /** Inbound channel attribution; never an authorization input. */
+  sourceChannel?: "imessage-photon";
   sourceRunId?: string | null;
+  sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
   sections: IssueCommentMetadataSection[];
 }
@@ -1260,7 +1263,8 @@ export interface RequestConfirmationToolActionPayload {
   connectionId: string | null;
   applicationId: string | null;
   appDisplayName: string | null;
-  risk: "write" | "destructive";
+  risk: "read" | "write" | "destructive";
+  rememberActionScope?: string;
   previewMarkdown: string;
   argumentsSummaryJson: string;
   argumentsHash: string;
@@ -1285,6 +1289,7 @@ export interface RequestConfirmationSecretProposalPayload {
  */
 export interface RequestConfirmationToolActionResult {
   version: 1;
+  rememberedAction?: boolean;
   status: "approved" | "executing" | "executed" | "failed" | "expired";
   errorCode?: string | null;
   errorMessage?: string | null;
@@ -1326,6 +1331,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  */
 export interface ConnectionIntentPayload {
   version: 1;
+  /** Runtime authentication requests cannot be satisfied by tool credentials. */
+  purpose?: "ai";
   serviceSlug: string;
   serviceName: string;
   serviceLogoUrl?: string | null;
@@ -1469,8 +1476,10 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   issueId: string;
   kind: IssueThreadInteractionKind;
   idempotencyKey?: string | null;
+  originCommentIds?: string[];
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
+  sourceIdentityContextId?: string | null;
   addresseeAgentId?: string | null;
   addresseeUserId?: string | null;
   title?: string | null;
@@ -1557,6 +1566,8 @@ export interface IssueAttachment {
   companyId: string;
   issueId: string;
   issueCommentId: string | null;
+  /** Immutable run attribution recorded when an agent uploads the attachment. */
+  originatingRunId?: string | null;
   assetId: string;
   provider: string;
   objectKey: string;

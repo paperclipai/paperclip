@@ -32,6 +32,7 @@ describe("normalizeIssueQueuedCommentQueue", () => {
         revision: "rev-1",
         protocol: "paperclip_runner_v1",
         steeringDisposition: "available",
+        executionWait: { reason: "remote_cleanup", message: "Waiting for the previous environment to stop." },
         entries: [
           {
             comment: { id: "second", body: "Second" },
@@ -66,6 +67,7 @@ describe("normalizeIssueQueuedCommentQueue", () => {
     expect(queue.queueId).toBe("wake-1");
     expect(queue.state).toBe("deferred");
     expect(queue.steeringDisposition).toBe("available");
+    expect(queue.executionWait?.reason).toBe("remote_cleanup");
   });
 
   it("fails closed for malformed protocol and steering data", () => {
@@ -122,6 +124,7 @@ describe("normalizeIssueQueuedCommentQueue", () => {
         revision: "rev-1",
         protocol: "paperclip_runner_v1",
         steeringDisposition: "available",
+        executionWait: { reason: "remote_cleanup", message: "Waiting for the previous environment to stop." },
         entries: [
           {
             comment: pending,
@@ -143,6 +146,7 @@ describe("normalizeIssueQueuedCommentQueue", () => {
 
     expect(queue?.queueId).toBe("wake-1");
     expect(queue?.steeringDisposition).toBe("available");
+    expect(queue?.executionWait?.reason).toBe("remote_cleanup");
     expect(queue?.entries.map((entry) => entry.comment.id)).toEqual([
       "comment-1",
     ]);

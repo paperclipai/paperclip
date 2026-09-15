@@ -427,3 +427,153 @@ export function resetCloudRuntimeIdentityForTests() {
   startupOrigin = null;
   currentIdentity = null;
 }
+
+// ---------------------------------------------------------------------------
+// Cloud control assertions
+//
+// A second, deliberately separate use of the same Cloud signing key: where the
+// runtime identity assertion above is a ONE-TIME origin claim applied at
+// bootstrap, a control assertion authorizes a single management call from the
+// Cloud control plane — today, only the task-drain admission hold, so Cloud
+// can stop new agent work and wait for quiescence before it restarts the
+// container for a deploy. The audience, JWS type, and claim shape are
+// disjoint from the runtime identity assertion, so neither token can ever be
+// replayed as the other, and the verifier binds each assertion to one exact
+// action so a "read status" token cannot start or stop a drain.
+// ---------------------------------------------------------------------------
+
+export const CLOUD_CONTROL_HEADER = "x-paperclip-cloud-control";
+export const CLOUD_CONTROL_AUDIENCE = "paperclip-cloud-control/v1";
+export const CLOUD_CONTROL_JWS_TYPE = "paperclip-cloud-control+jwt";
+export const CLOUD_CONTROL_ACTIONS = [
+  "task-drain:read",
+  "task-drain:start",
+  "task-drain:stop",
+] as const;
+export type CloudControlAction = (typeof CLOUD_CONTROL_ACTIONS)[number];
+
+/** Control calls are immediate; a stolen assertion should age out fast. */
+const CLOUD_CONTROL_MAX_LIFETIME_SECONDS = 5 * 60;
+
+/**
+ * Single-use fence: a verified assertion's requestId is consumed atomically
+ * (module state; JS execution is single-threaded per process) and a replay
+ * of the same id is rejected for as long as the original could still be
+ * alive. Process-local on purpose — the drain state this protects is
+ * itself process-local, so a restart clears both together. Entries prune
+ * lazily at their expiry.
+ */
+const consumedControlRequestIds = new Map<string, number>();
+
+function consumeControlRequestId(requestId: string, expSeconds: number, nowMs: number): boolean {
+  for (const [id, expiresAtMs] of consumedControlRequestIds) {
+    if (expiresAtMs <= nowMs) consumedControlRequestIds.delete(id);
+  }
+  if (consumedControlRequestIds.has(requestId)) {
+    return false;
+  }
+  consumedControlRequestIds.set(requestId, expSeconds * 1000);
+  return true;
+}
+
+/** Test seam: modules sharing a process must be able to reset the fence. */
+export function resetCloudControlReplayFenceForTests() {
+  consumedControlRequestIds.clear();
+}
+
+export type CloudControlClaims = {
+  v: 1;
+  iss: typeof CLOUD_RUNTIME_IDENTITY_ISSUER;
+  aud: typeof CLOUD_CONTROL_AUDIENCE;
+  sub: string;
+  action: CloudControlAction;
+  requestId: string;
+  iat: number;
+  exp: number;
+};
+
+/**
+ * Verify a Cloud control assertion for one exact action on this instance.
+ * Signed with the same key set as the runtime identity assertion
+ * (PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS) but under its own JWS type and
+ * audience. Instances without a Cloud stack identity reject every assertion —
+ * the feature is inert when self-hosted.
+ */
+export function verifyCloudControlAssertion(input: {
+  compactJws: string;
+  expectedAction: CloudControlAction;
+  env?: NodeJS.ProcessEnv;
+  now?: Date;
+}): CloudControlClaims {
+  const env = input.env ?? process.env;
+  const now = input.now ?? new Date();
+  const parts = input.compactJws.split(".");
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+    throw new Error("Cloud control assertion is not a compact JWS");
+  }
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  const header = decodeJsonPart(encodedHeader, "protected header");
+  if (
+    header.alg !== "EdDSA"
+    || header.typ !== CLOUD_CONTROL_JWS_TYPE
+    || typeof header.kid !== "string"
+    || !header.kid
+  ) {
+    throw new Error("Cloud control protected header is invalid");
+  }
+  const key = publicKeyForKid(env, header.kid);
+  const signature = Buffer.from(encodedSignature, "base64url");
+  const signingInput = Buffer.from(`${encodedHeader}.${encodedPayload}`, "ascii");
+  if (!verify(null, signingInput, key, signature)) {
+    throw new Error("Cloud control signature is invalid");
+  }
+
+  const payload = decodeJsonPart(encodedPayload, "payload");
+  const configuredStackId = nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID);
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  if (
+    payload.v !== 1
+    || payload.iss !== CLOUD_RUNTIME_IDENTITY_ISSUER
+    || payload.aud !== CLOUD_CONTROL_AUDIENCE
+    || typeof payload.sub !== "string"
+    || typeof payload.action !== "string"
+    || typeof payload.requestId !== "string"
+    || typeof payload.iat !== "number"
+    || !Number.isInteger(payload.iat)
+    || typeof payload.exp !== "number"
+    || !Number.isInteger(payload.exp)
+  ) {
+    throw new Error("Cloud control claims are incomplete");
+  }
+  if (!configuredStackId || payload.sub !== configuredStackId) {
+    throw new Error("Cloud control assertion stack does not match this instance");
+  }
+  if (
+    !(CLOUD_CONTROL_ACTIONS as readonly string[]).includes(payload.action)
+    || payload.action !== input.expectedAction
+  ) {
+    throw new Error("Cloud control assertion does not authorize this action");
+  }
+  if (
+    !payload.requestId
+    || payload.requestId.trim() !== payload.requestId
+    || payload.requestId.length > 256
+  ) {
+    throw new Error("Cloud control assertion request id is invalid");
+  }
+  if (
+    payload.exp <= nowSeconds
+    || payload.iat > nowSeconds + MAX_CLOCK_SKEW_SECONDS
+    || payload.exp <= payload.iat
+    || payload.exp - payload.iat > CLOUD_CONTROL_MAX_LIFETIME_SECONDS
+  ) {
+    throw new Error("Cloud control assertion is expired or has an invalid lifetime");
+  }
+  // Consumed LAST, only after every other check passed: a rejected
+  // assertion must not burn its request id, or an attacker could deny a
+  // legitimate call by replaying a mangled copy of it first.
+  if (!consumeControlRequestId(payload.requestId, payload.exp + MAX_CLOCK_SKEW_SECONDS, now.getTime())) {
+    throw new Error("Cloud control assertion has already been used");
+  }
+  return payload as CloudControlClaims;
+}

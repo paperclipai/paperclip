@@ -1283,7 +1283,14 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
-      { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      {
+        claudeLogin: {
+          storedSessionId: null,
+          ownerUserId: "board-user",
+          applyExistingWithoutClaim: false,
+          inheritedFromAgentId: null,
+        },
+      },
     );
   });
 

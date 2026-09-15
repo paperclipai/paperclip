@@ -125,14 +125,21 @@ describe("SidebarAccountMenu", () => {
     expect(accountSurface?.className).not.toContain("border-border");
     const accountTrigger = container.querySelector('button[aria-label="Open account menu"]');
     expect(accountTrigger?.classList).toContain("rounded-lg");
-    expect(accountTrigger?.classList).toContain("hover:bg-background");
+    expect(accountTrigger?.classList).toContain("hover:bg-sidebar-accent");
+    expect(accountTrigger?.classList).toContain("hover:text-sidebar-accent-foreground");
+    expect(accountTrigger?.classList).not.toContain("hover:bg-background");
 
     const feedbackButton = container.querySelector<HTMLAnchorElement>(
       'a[aria-label="Share feedback"]',
     );
     expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
     expect(feedbackButton?.getAttribute("target")).toBe("_blank");
-    expect(feedbackButton?.classList).toContain("hover:bg-background");
+    expect(feedbackButton?.classList).toContain("text-muted-foreground/50");
+    expect(feedbackButton?.classList).not.toContain("text-border");
+    expect(feedbackButton?.classList).not.toContain("text-muted-foreground");
+    expect(feedbackButton?.classList).toContain("hover:bg-sidebar-accent");
+    expect(feedbackButton?.classList).toContain("hover:text-sidebar-accent-foreground");
+    expect(feedbackButton?.classList).not.toContain("hover:bg-background");
     expect(feedbackButton?.querySelector("svg")?.classList).toContain("lucide-flag");
     expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
     expect(feedbackButton?.hasAttribute("title")).toBe(false);
@@ -166,6 +173,9 @@ describe("SidebarAccountMenu", () => {
     );
     expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
     expect(feedbackButton?.getAttribute("target")).toBe("_blank");
+    expect(feedbackButton?.classList).toContain("text-muted-foreground/50");
+    expect(feedbackButton?.classList).not.toContain("text-border");
+    expect(feedbackButton?.classList).not.toContain("text-muted-foreground");
     expect(feedbackButton?.classList).toContain("hover:bg-accent/50");
     expect(feedbackButton?.querySelector("svg")?.classList).toContain("lucide-flag");
     expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
@@ -204,6 +214,7 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
     await flushReact();
 
+    expect(container.querySelector('a[aria-label="Share feedback"]')).not.toBeNull();
     expect(container.textContent).toContain("Jane Example");
     expect(container.textContent).not.toContain("jane@example.com");
 
@@ -235,7 +246,15 @@ describe("SidebarAccountMenu", () => {
     expect(popover?.textContent).not.toContain("Paperclip v");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("w-(--sz-277px)");
+      .toContain("w-(--profile-popover-width)");
+    expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
+      .toContain("rounded-xl");
+    expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
+      .toContain("min-h-(--profile-popover-min-height)");
+    expect(document.body.querySelector('a[href="/company/settings"]')?.className)
+      .not.toContain("bg-muted");
+    expect(document.body.textContent).not.toContain("Manage company and instance settings.");
+    expect(document.body.textContent).not.toContain("Open your activity, task, and usage ledger.");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
     expect(document.body.querySelector('a[href="/company/settings"]')).not.toBeNull();
 
@@ -256,7 +275,7 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
-  it("navigates cloud-managed sign-out through the harness without calling local auth", async () => {
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("hides cloud feedback and signs out through the harness (%#)", async (AccountMenu) => {
     const root = createRoot(container);
     const onOpenChange = vi.fn();
     const queryClient = new QueryClient({
@@ -277,7 +296,7 @@ describe("SidebarAccountMenu", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <SidebarAccountMenu
+            <AccountMenu
               deploymentMode="authenticated"
               open
               onOpenChange={onOpenChange}
@@ -287,6 +306,8 @@ describe("SidebarAccountMenu", () => {
       );
     });
     await flushReact();
+
+    expect(container.querySelector('a[aria-label="Share feedback"]')).toBeNull();
 
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Sign out"),

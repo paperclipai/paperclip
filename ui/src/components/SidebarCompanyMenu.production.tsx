@@ -30,7 +30,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
@@ -51,16 +50,20 @@ interface SidebarCompanyMenuProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-const WORKSPACE_ICON_CLASS = "size-5 shrink-0 rounded-md text-(length:--text-micro)";
-const WORKSPACE_BADGE_CLASS =
-  "shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground";
+const TRIGGER_WORKSPACE_ICON_CLASS = "size-5 shrink-0 rounded-md text-(length:--text-micro)";
+const POPOVER_WORKSPACE_ICON_CLASS =
+  "size-(--organization-popover-avatar-size) shrink-0 rounded-lg text-(length:--text-micro)";
+const ORGANIZATION_ROW_CLASS =
+  "h-(--organization-popover-company-row-height) min-w-0 gap-(--organization-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) focus:bg-accent/50 focus:text-foreground";
+const ORGANIZATION_ACTION_CLASS =
+  "h-(--organization-popover-action-row-height) gap-(--organization-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--organization-popover-action-line-height) text-foreground focus:bg-accent/50 focus:text-foreground";
 
-function WorkspaceIcon({ company }: { company: Company }) {
+function WorkspaceIcon({ company, inPopover = false }: { company: Company; inPopover?: boolean }) {
   return (
     <CompanyPatternIcon
       companyName={company.name}
       logoUrl={company.logoUrl}
-      className={WORKSPACE_ICON_CLASS}
+      className={inPopover ? POPOVER_WORKSPACE_ICON_CLASS : TRIGGER_WORKSPACE_ICON_CLASS}
     />
   );
 }
@@ -71,7 +74,7 @@ function WorkspaceIcon({ company }: { company: Company }) {
  * uses — seeded by the display name, never fetched.
  */
 function StackIcon({ displayName }: { displayName: string }) {
-  return <CompanyPatternIcon companyName={displayName} className={WORKSPACE_ICON_CLASS} />;
+  return <CompanyPatternIcon companyName={displayName} className={POPOVER_WORKSPACE_ICON_CLASS} />;
 }
 
 /**
@@ -91,7 +94,7 @@ function CurrentStackIcon({
     <CompanyPatternIcon
       companyName={displayName}
       logoUrl={company?.logoUrl}
-      className={WORKSPACE_ICON_CLASS}
+      className={TRIGGER_WORKSPACE_ICON_CLASS}
     />
   );
 }
@@ -108,19 +111,26 @@ function CloudStackItem({
   return (
     <DropdownMenuItem
       onSelect={() => onSelect(stack)}
-      className={cn("min-w-0 gap-2 py-2", isSelected && "bg-accent text-accent-foreground")}
+      className={ORGANIZATION_ROW_CLASS}
     >
       <StackIcon displayName={stack.displayName} />
-      <span className="min-w-0 flex-1 truncate" title={stack.displayName}>
-        {stack.displayName}
+      <span className="min-w-0 flex-1">
+        <span
+          className="block truncate font-medium leading-(--organization-popover-name-line-height)"
+          title={stack.displayName}
+        >
+          {stack.displayName}
+        </span>
+        <span
+          className="block truncate text-(length:--text-nano) leading-(--organization-popover-prefix-line-height) text-muted-foreground"
+          title={stack.stackSlug}
+        >
+          {stack.stackSlug}
+        </span>
       </span>
-      {/* Company badges are 3-4 character issue prefixes, but stack slugs are
-          user-chosen and can be long enough to truncate the name to a single
-          letter — the name is the primary identifier, so the badge yields. */}
-      <span className={cn(WORKSPACE_BADGE_CLASS, "max-w-24 truncate")} title={stack.stackSlug}>
-        {stack.stackSlug}
+      <span className="flex size-5 shrink-0 items-center justify-center">
+        {isSelected ? <Check className="size-4 text-foreground" /> : null}
       </span>
-      {isSelected ? <Check className="size-4 shrink-0 text-muted-foreground" /> : null}
     </DropdownMenuItem>
   );
 }
@@ -162,20 +172,28 @@ function SortableCompanyItem({
         onSelect(company);
       }}
       className={cn(
-        "min-w-0 gap-2 py-2",
+        ORGANIZATION_ROW_CLASS,
         isEditing && "cursor-grab",
         isDragging && "opacity-80",
-        isSelected && "bg-accent text-accent-foreground",
       )}
     >
-      <WorkspaceIcon company={company} />
-      <span className="min-w-0 flex-1 truncate">{company.name}</span>
+      <WorkspaceIcon company={company} inPopover />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium leading-(--organization-popover-name-line-height)">
+          {company.name}
+        </span>
+        {isEditing ? null : (
+          <span className="block truncate text-(length:--text-nano) leading-(--organization-popover-prefix-line-height) text-muted-foreground">
+            {company.issuePrefix}
+          </span>
+        )}
+      </span>
       {isEditing ? (
         <button
           type="button"
           ref={setActivatorNodeRef}
           aria-label={`Reorder ${company.name}`}
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -186,10 +204,9 @@ function SortableCompanyItem({
           <GripVertical className="size-4" aria-hidden="true" />
         </button>
       ) : (
-        <>
-          <span className={WORKSPACE_BADGE_CLASS}>{company.issuePrefix}</span>
-          {isSelected ? <Check className="size-4 text-muted-foreground" /> : null}
-        </>
+        <span className="flex size-5 shrink-0 items-center justify-center">
+          {isSelected ? <Check className="size-4 text-foreground" /> : null}
+        </span>
       )}
     </DropdownMenuItem>
   );
@@ -384,10 +401,14 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
-        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-          <DropdownMenuLabel className="p-0 text-(length:--text-micro) font-semibold uppercase text-muted-foreground">
-            {isCloud ? "Switch organization" : "Switch company"}
+      <DropdownMenuContent
+        align="start"
+        sideOffset={8}
+        className="ml-2 w-(--organization-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
+      >
+        <div className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
+          <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
+            Organizations
           </DropdownMenuLabel>
           {/* Stack order is owned by cloud's own portfolio in v1, so the
               drag-to-reorder affordance stays self-hosted-only. */}
@@ -399,13 +420,13 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                 event.stopPropagation();
                 setIsEditingOrder((current) => !current);
               }}
-              className="rounded px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               {isEditingOrder ? "Done" : "Edit"}
             </button>
           )}
         </div>
-        <div className="max-h-96 overflow-y-auto">
+        <div className="flex max-h-96 flex-col gap-0.5 overflow-y-auto px-2.5 pb-2 pt-1">
           {isCloud ? (
             <>
               {stacks.map((stack) => (
@@ -474,54 +495,63 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             </>
           )}
         </div>
-        <DropdownMenuSeparator />
-        {/* A cloud instance without a configured cloud origin has nowhere to
-            send the user, so the row (and its separator) drop out entirely. */}
-        {isCloud && !createStackUrl ? null : (
-          <>
+        <div className="flex flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
+          {/* A cloud instance without a configured cloud origin has nowhere to
+              send the user, so the row drops out entirely. */}
+          {isCloud && !createStackUrl ? null : (
             <DropdownMenuItem
               onClick={addCompany}
-              className="gap-2 py-2 text-muted-foreground"
+              className={ORGANIZATION_ACTION_CLASS}
               disabled={isEditingOrder}
             >
-              <Plus className="size-4" />
-              <span>Create new organization...</span>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
-        )}
-        {showInvitePeople ? (
-          <DropdownMenuItem asChild disabled={isEditingOrder}>
-            <Link
-              to="/company/settings/invites"
-              onClick={(event) => {
-                if (isEditingOrder) {
-                  event.preventDefault();
-                  return;
-                }
-                closeNavigationChrome();
-              }}
-            >
-              <UserPlus className="size-4" />
-              <span className="truncate">
-                {currentName ? `Invite people to ${currentName}` : "Invite people"}
+              <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                <Plus className="size-4" />
               </span>
-            </Link>
-          </DropdownMenuItem>
-        ) : null}
-        {session?.session ? (
-          <>
-            <DropdownMenuSeparator />
+              <span className="min-w-0 flex-1 truncate">Create organization</span>
+            </DropdownMenuItem>
+          )}
+          {showInvitePeople ? (
             <DropdownMenuItem
-              variant="destructive"
+              asChild
+              disabled={isEditingOrder}
+              className={ORGANIZATION_ACTION_CLASS}
+            >
+              <Link
+                to="/company/settings/invites"
+                onClick={(event) => {
+                  if (isEditingOrder) {
+                    event.preventDefault();
+                    return;
+                  }
+                  closeNavigationChrome();
+                }}
+              >
+                <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                  <UserPlus className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1 truncate">
+                  {currentName
+                    ? `Invite people to ${currentName}`
+                    : "Invite people"}
+                </span>
+              </Link>
+            </DropdownMenuItem>
+          ) : null}
+          {session?.session ? (
+            <DropdownMenuItem
+              className={ORGANIZATION_ACTION_CLASS}
               onClick={() => signOutMutation.mutate()}
               disabled={isEditingOrder || signOutMutation.isPending}
             >
-              <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                <LogOut className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1 truncate">
+                {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+              </span>
             </DropdownMenuItem>
-          </>
-        ) : null}
+          ) : null}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

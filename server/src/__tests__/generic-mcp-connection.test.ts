@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { Writable } from "node:stream";
 import express from "express";
 import pino from "pino";
@@ -409,7 +411,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(profiles).toEqual([]);
   });
 
-  it("vaults a credential-bearing MCP URL and never returns or logs its token", async () => {
+  it.each(["organization", "user"] as const)("vaults a credential-bearing MCP URL for %s and never returns or logs its token", async (grantKind) => {
     const secretUrl = `${MCP_URL}?token=zapier-secret&region=us`;
     const publicUrl = `${MCP_URL}?region=us`;
     const requests: string[] = [];
@@ -432,7 +434,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     const response = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
-      .send({ link: secretUrl, name: "Token URL fixture" })
+      .send({ link: secretUrl, name: "Token URL fixture", grantKind })
       .expect(201);
 
     expect(requests).toContain(secretUrl);
@@ -448,8 +450,18 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       response.body.connectionId,
     ));
     expect(connection!.config.url).toBe(publicUrl);
-    expect(connection!.credentialSecretRefs).toEqual([
-      expect.objectContaining({ configPath: "remote.url", label: "MCP server URL" }),
+    const expectedRefs = [expect.objectContaining({ configPath: "remote.url", label: "MCP server URL" })];
+    expect(connection!.credentialSecretRefs).toEqual(grantKind === "user" ? [] : expectedRefs);
+    const grants = await db.select().from(connectionGrants).where(eq(
+      connectionGrants.connectionId,
+      response.body.connectionId,
+    ));
+    expect(grants).toEqual([
+      expect.objectContaining({
+        kind: grantKind,
+        credentialSecretRefs: expectedRefs,
+        ...(grantKind === "user" ? { subjectUserId: "board-user" } : {}),
+      }),
     ]);
     expect(await db.select().from(companySecrets)).toHaveLength(1);
     expect(JSON.stringify(await db.select().from(activityLog))).not.toContain("zapier-secret");
@@ -909,6 +921,281 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(connection!.config)).not.toContain("fixture-access-");
     expect(connection!.credentialSecretRefs.map((ref) => ref.configPath).sort())
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
+  });
+
+  it("discovers OAuth for a personal URL connection before its user grant exists", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: MCP_URL,
+        name: "Fixture personal OAuth",
+        grantKind: "user",
+      });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const connected = response.body;
+
+    expect(connected.auth).toMatchObject({
+      kind: "oauth",
+      issuer: ISSUER,
+      resource: MCP_URL,
+      startUrl: expect.any(String),
+    });
+    expect(fixture.requestsTo("/mcp")[0]!.headers.authorization).toBeUndefined();
+    await expect(
+      db
+        .select()
+        .from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, connected.connectionId)),
+    ).resolves.toHaveLength(0);
+
+    const authorizationUrl = new URL(connected.auth.startUrl);
+    const code = fixture.issueAuthorizationCode(connected.auth.startUrl);
+    await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Accept", "text/html")
+      .query({ state: authorizationUrl.searchParams.get("state")!, code, iss: ISSUER })
+      .expect(303);
+
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(grants).toEqual([
+      expect.objectContaining({
+        kind: "user",
+        subjectUserId: actor.actorId,
+        status: "active",
+      }),
+    ]);
+  });
+
+  it("does not let another user take over an archived personal URL connection", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const input = { link: MCP_URL, name: "Archived personal URL", grantKind: "user" as const };
+    const first = await service.connectGalleryApp(company.id, input, { actorType: "user", actorId: "board-user" });
+    await db.update(toolConnections).set({ status: "archived" }).where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications).set({ status: "archived" }).where(eq(toolApplications.id, first.application.id));
+    await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: "other-user", status: "active", membershipRole: "admin",
+    });
+    fixture.fetchMock.mockClear();
+
+    await expect(service.connectGalleryApp(company.id, input, {
+      actorType: "user", actorId: "other-user",
+    })).rejects.toMatchObject({ status: 403, message: "Only the existing personal identity can reconnect this connection" });
+
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+    await expect(db.select().from(connectionGrants)).resolves.toHaveLength(0);
+    await expect(service.getConnection(first.connectionId)).resolves.toMatchObject({
+      status: "archived", createdByUserId: "board-user",
+    });
+    const resumed = await service.connectGalleryApp(company.id, input, { actorType: "user", actorId: "board-user" });
+    expect(resumed.connectionId).toBe(first.connectionId);
+    expect(resumed.auth).toMatchObject({ kind: "oauth" });
+  });
+
+  it("creates one personal grant when two public URL setup retries probe concurrently", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "public" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const first = await service.connectGalleryApp(company.id, {
+      link: MCP_URL, name: "Concurrent personal URL", grantKind: "user",
+    }, actor);
+    await service.connectGalleryApp(company.id, {
+      link: MCP_URL, grantKind: "user", resumeConnectionId: first.connectionId,
+    }, actor);
+    // Model an interrupted draft with catalog/defaults but no personal grant.
+    // This isolates the grant race from first-time catalog/profile insertion.
+    await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId));
+    await db.delete(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, first.connectionId));
+    fixture.fetchMock.mockRestore();
+    let probes = 0;
+    let release!: () => void;
+    const bothProbed = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      probes += 1;
+      if (probes === 2) release();
+      await bothProbed;
+      return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: FIXTURE_TOOLS } });
+    });
+
+    const results = await Promise.allSettled([0, 1].map(() => service.connectGalleryApp(company.id, {
+      link: MCP_URL, grantKind: "user", resumeConnectionId: first.connectionId,
+    }, actor)));
+
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
+    }
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    await expect(db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId)))
+      .resolves.toEqual([expect.objectContaining({ kind: "user", subjectUserId: actor.actorId, status: "active", credentialSecretRefs: [] })]);
+    await expect(db.select().from(toolAccessAuditEvents).where(and(
+      eq(toolAccessAuditEvents.connectionId, first.connectionId),
+      eq(toolAccessAuditEvents.action, "connection_grant.created"),
+    ))).resolves.toHaveLength(1);
+  });
+
+  it("keeps a successful personal setup when the grant-creating retry later fails", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "public" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const first = await service.connectGalleryApp(company.id, {
+      link: MCP_URL, name: "Personal retry rollback", grantKind: "user",
+    }, actor);
+    const retryInput = { link: MCP_URL, grantKind: "user" as const, resumeConnectionId: first.connectionId };
+    await service.connectGalleryApp(company.id, retryInput, actor);
+    await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId));
+    await db.update(toolConnections).set({ status: "archived" }).where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications).set({ status: "archived", archivedAt: new Date() }).where(eq(toolApplications.id, first.application.id));
+    fixture.fetchMock.mockRestore();
+    let calls = 0;
+    let catalogStarted!: () => void;
+    const catalogPending = new Promise<void>((resolve) => { catalogStarted = resolve; });
+    let failCatalog!: () => void;
+    const releaseCatalog = new Promise<void>((resolve) => { failCatalog = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) {
+        // The first retry has created its grant but has not finished setup.
+        catalogStarted();
+        await releaseCatalog;
+        throw new Error("first retry catalog unavailable");
+      }
+      return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: FIXTURE_TOOLS } });
+    });
+    const failure = service.connectGalleryApp(company.id, {
+      link: MCP_URL, name: "Personal retry rollback", grantKind: "user",
+    }, actor).then(() => null, (error: unknown) => error);
+    await Promise.race([catalogPending, failure.then((error) => { throw error ?? new Error("Retry finished before the catalog probe"); })]);
+    try {
+      const successfulRetry = await service.connectGalleryApp(company.id, retryInput, actor);
+      expect(successfulRetry.connectionId).toBe(first.connectionId);
+    } finally {
+      failCatalog();
+    }
+    expect(await failure).toMatchObject({ status: 502 });
+    await expect(db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId)))
+      .resolves.toEqual([expect.objectContaining({ kind: "user", subjectUserId: actor.actorId, status: "active", credentialSecretRefs: [] })]);
+    await expect(service.getConnection(first.connectionId)).resolves.toMatchObject({ status: "draft", credentialPolicy: "per_user" });
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, first.application.id));
+    expect(application.status).toBe("draft");
+    await expect(service.checkHealth(first.connectionId, actor)).resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+  });
+
+  it("rolls back partial catalog and profile writes without removing the established public identity", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "public" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const input = { link: MCP_URL, name: "Personal atomic catalog", grantKind: "user" as const };
+    const first = await service.connectGalleryApp(company.id, input, actor);
+    const catalogBefore = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, first.connectionId));
+    await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId));
+    await db.update(toolConnections).set({ status: "archived" }).where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications).set({ status: "archived", archivedAt: new Date() }).where(eq(toolApplications.id, first.application.id));
+    fixture.fetchMock.mockRestore();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => jsonResponse({
+      jsonrpc: "2.0", id: "paperclip-catalog-refresh",
+      result: { tools: [...FIXTURE_TOOLS, { name: "new_tool", description: "Partial catalog addition" }] },
+    }));
+    await db.execute(sql`
+      CREATE FUNCTION test_personal_profile_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'personal profile fixture failure'; END $$
+    `);
+    await db.execute(sql`
+      CREATE TRIGGER test_personal_profile_failure BEFORE INSERT ON tool_profile_entries
+      FOR EACH ROW EXECUTE FUNCTION test_personal_profile_failure()
+    `);
+    try {
+      await expect(service.connectGalleryApp(company.id, input, actor)).rejects.toThrow();
+      await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, first.connectionId)))
+        .resolves.toEqual(catalogBefore);
+      await expect(db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).resolves.toHaveLength(0);
+      await expect(db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, company.id))).resolves.toHaveLength(0);
+      await expect(db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId)))
+        .resolves.toEqual([expect.objectContaining({ kind: "user", status: "active", credentialSecretRefs: [] })]);
+      await expect(service.getConnection(first.connectionId)).resolves.toMatchObject({ status: "draft", credentialPolicy: "per_user" });
+    } finally {
+      await db.execute(sql`DROP TRIGGER test_personal_profile_failure ON tool_profile_entries`);
+      await db.execute(sql`DROP FUNCTION test_personal_profile_failure()`);
+    }
+    const retry = await service.connectGalleryApp(company.id, { ...input, resumeConnectionId: first.connectionId }, actor);
+    expect(retry.catalog).toHaveLength(3);
+    await expect(db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).resolves.toHaveLength(1);
+    await expect(db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, company.id))).resolves.toHaveLength(1);
+  });
+
+  it("creates an empty user grant after a personal public URL probe succeeds", async () => {
+    // Use a real loopback MCP server here: neither fetch nor the transport is mocked.
+    const receivedMethods: string[] = [];
+    const mcpServer = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      receivedMethods.push(body.method);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: FIXTURE_TOOLS } }));
+    });
+    mcpServer.listen(0, "127.0.0.1");
+    await once(mcpServer, "listening");
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Missing MCP fixture port");
+    try {
+      const company = await createCompany(db);
+      const app = createRouteApp(db, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+      });
+      const actor = { actorType: "user" as const, actorId: "board-user" };
+
+      const response = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({
+          link: `http://127.0.0.1:${address.port}/mcp`,
+          name: "Fixture personal public",
+          grantKind: "user",
+        });
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      const connected = response.body;
+      expect(receivedMethods).toContain("tools/list");
+
+      expect(connected.connection).toMatchObject({
+        status: "draft",
+        credentialPolicy: "per_user",
+      });
+      expect(connected.catalog.map((entry: { toolName: string }) => entry.toolName).sort()).toEqual([
+        "create_insight",
+        "list_insights",
+      ]);
+      await expect(
+        db
+          .select()
+          .from(connectionGrants)
+          .where(eq(connectionGrants.connectionId, connected.connectionId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          kind: "user",
+          subjectUserId: actor.actorId,
+          credentialSecretRefs: [],
+          status: "active",
+        }),
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        mcpServer.close((error) => error ? reject(error) : resolve());
+        mcpServer.closeAllConnections();
+      });
+    }
   });
 
   it("completes organization OAuth with a single database connection", async () => {

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +25,8 @@ import {
   findSecretLeakInJsonValues,
   findSecretLeakInDirectory,
   isEphemeralCodexRuntimeAuthFile,
+  isEphemeralPostgresPidFile,
+  isEphemeralPostgresScanFile,
   redactText,
   sanitizeJson,
 } from "./redaction.js";
@@ -35,6 +38,7 @@ import {
 } from "./ports.js";
 import {
   acceptedPlanSessionResetFailures,
+  hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
   isOpenRouterDeepSeekHelloTerminalVariance,
@@ -106,14 +110,34 @@ describe("runner E2E local binary resolution", () => {
       resolvePaperclipRemoteRunnerBinaryForHarness(
         [remoteNativeExecution],
         runnerBinary,
+        undefined,
+        "linux",
       ),
     ).toBe(runnerBinary);
     expect(
       resolvePaperclipRemoteRunnerBinaryForHarness(
         [localNativeExecution],
         runnerBinary,
+        undefined,
+        "linux",
       ),
     ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        undefined,
+        "darwin",
+      ),
+    ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        "/cross-compiled/paperclip-runnerd",
+        "darwin",
+      ),
+    ).toBe("/cross-compiled/paperclip-runnerd");
   });
 });
 
@@ -149,6 +173,16 @@ describe("runner E2E provider environment", () => {
         ),
       ).toEqual({ KEEP_ME: "yes" });
     }
+  });
+});
+
+describe("hiring capability opt-in", () => {
+  it("enables API tools only when the manual hiring story is selected", () => {
+    const hire = runnerMatrix.find((e) => e.suite.id === "everyday-workflows" && e.task.id === "hire-reuse")!;
+    const delegate = runnerMatrix.find((e) => e.suite.id === "everyday-workflows" && e.task.id === "delegate-feedback")!;
+    expect(buildRunnerE2EProcessEnvironment({}, [hire]).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBe("true");
+    expect(buildRunnerE2EProcessEnvironment({}, [delegate]).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBeUndefined();
+    expect(buildRunnerE2EProcessEnvironment({}, []).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBeUndefined();
   });
 });
 
@@ -340,6 +374,23 @@ describe("runner E2E matchers", () => {
     expect(result?.detail).toContain("observed 2");
   });
 
+  it("matches finalized workspace files byte-for-byte", async () => {
+    const [matched, extraLine] = await evaluateMatchers(
+      [
+        { kind: "file_exact", path: "continuity.txt", expected: "T1\nT2\n" },
+        { kind: "file_exact", path: "duplicate.txt", expected: "T1\nT2\n" },
+      ],
+      {
+        files: {
+          "continuity.txt": "T1\nT2\n",
+          "duplicate.txt": "T1\nT2\nT2\n",
+        },
+      },
+    );
+    expect(matched?.passed).toBe(true);
+    expect(extraLine?.passed).toBe(false);
+  });
+
   it("normalizes ordered fragments and evaluates nested JSON Schema", async () => {
     const results = await evaluateMatchers(
       [
@@ -373,6 +424,45 @@ describe("runner E2E matchers", () => {
 });
 
 describe("runner E2E run observations", () => {
+  it("retries only terminal Plan confirmations missing a revision-bound target", () => {
+    const observation = {
+      runs: [{ status: "succeeded" }],
+      interactions: [
+        {
+          kind: "request_confirmation",
+          status: "pending",
+          payload: { version: 1, prompt: "Approve the Plan?" },
+        },
+      ],
+      minimumRunCount: 1,
+    };
+
+    expect(hasTerminalMalformedPlanConfirmation(observation)).toBe(true);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        runs: [{ status: "running" }],
+      }),
+    ).toBe(false);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        interactions: [
+          {
+            ...observation.interactions[0],
+            payload: {
+              target: {
+                type: "issue_document",
+                key: "plan",
+                revisionId: "revision-1",
+              },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("retries only the zero-marker DeepSeek hello terminal emission variance", () => {
     const expectedMarker = "PC_H_nonce-1";
     const observation = {
@@ -606,6 +696,35 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it.each([
+    "native_session_close_unrecoverable: provider transport failed",
+    "Provider connection closed: runner did not durably suspend before checkpoint",
+    "native_session_close_unrecoverable: provider transport timed out; runner did not durably suspend before checkpoint",
+  ])("does not retry controller session-close defects: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("candidate_failure");
+    expect(shouldRetryFailure(failureClass)).toBe(false);
+  });
+
+  it.each([
+    'native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=unclassified)"},"status":"failed"}',
+    "native_session_recovery_failed: provider transport failed\nACPX sidecar command session.open was rejected (retryable = false, classification=session_not_found)",
+  ])("does not retry explicit non-retryable ACPX recovery rejection: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("candidate_failure");
+    expect(shouldRetryFailure(failureClass)).toBe(false);
+  });
+
+  it.each([
+    'native_session_recovery_failed: PRP run.attach failed: {"message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=true, classification=network)","status":"failed"}',
+    'native_session_recovery_failed: PRP run.attach failed: {"message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected","status":"failed"}',
+    "native_session_recovery_failed: failed to start ACPX provider: ECONNRESET",
+  ])("retains transient ACPX recovery retries: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("transient_infrastructure");
+    expect(shouldRetryFailure(failureClass)).toBe(true);
+  });
+
   it("retries only transient infrastructure failures", () => {
     expect(
       classifyFailure(new Error("Daytona preview connection timed out")),
@@ -799,6 +918,24 @@ describe("runner E2E evidence redaction", () => {
     expect(sanitizeJson({ nested: [secret] }, [secret])).toEqual({
       nested: ["[REDACTED]"],
     });
+    expect(
+      sanitizeJson(
+        {
+          metadata: {
+            apiKey: "opaque-provider-issued-value",
+            access_token: "opaque-access-token",
+            apiKeyRef: "DAYTONA_API_KEY",
+          },
+        },
+        [],
+      ),
+    ).toEqual({
+      metadata: {
+        apiKey: "[REDACTED]",
+        access_token: "[REDACTED]",
+        apiKeyRef: "DAYTONA_API_KEY",
+      },
+    });
     expect(sanitizeJson("paperclip.runner-e2e.evidence/v1", [secret])).toBe(
       "paperclip.runner-e2e.evidence/v1",
     );
@@ -833,6 +970,89 @@ describe("runner E2E evidence redaction", () => {
     await expect(
       findSecretLeakInDirectory(root, [secret]),
     ).resolves.toMatchObject({ reason: "exact secret value" });
+  });
+
+  it("tolerates only the embedded PostgreSQL PID disappearing during shutdown and keeps scanning", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-race-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    const persistedFile = path.join(path.dirname(pidFile), "z-persisted.bin");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, "1234\n");
+    await writeFile(persistedFile, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => {
+        if (file === pidFile) unlinkSync(file); // Removed after directory enumeration.
+        return false;
+      },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).resolves.toEqual({ file: persistedFile, reason: "exact secret value" });
+    expect(isEphemeralPostgresPidFile(root, path.join(root, "workspace", "postmaster.pid"))).toBe(false);
+    expect(isEphemeralPostgresPidFile(root, path.join(root, "instances", "test", "db", "records.bin"))).toBe(false);
+  });
+
+  it("handles a removed PostgreSQL relation but scans existing relation bytes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-relation-race-"));
+    cleanupDirectories.push(root);
+    const relation = path.join(root, "instances", "test", "db", "base", "16384", "16824");
+    const persisted = path.join(path.dirname(relation), "16825");
+    await mkdir(path.dirname(relation), { recursive: true });
+    await writeFile(relation, "old relation"); await writeFile(persisted, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: file => { if(file === relation)unlinkSync(file); return false; },
+      allowDisappearedFile: file => isEphemeralPostgresScanFile(root, file),
+    })).resolves.toEqual({file:persisted,reason:"exact secret value"});
+    expect(isEphemeralPostgresScanFile(root,path.join(root,"workspace","base","16384","16824"))).toBe(false);
+    expect(isEphemeralPostgresScanFile(root,path.join(root,"instances","test","db","base","records.json"))).toBe(false);
+  });
+
+  it("still detects secrets in an existing PostgreSQL PID file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-secret-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).resolves.toEqual({ file: pidFile, reason: "exact secret value" });
+  });
+
+  it("fails when required persisted state disappears during scanning", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-required-file-race-"));
+    cleanupDirectories.push(root);
+    const requiredFile = path.join(root, "records.json");
+    await writeFile(requiredFile, "{}");
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => { unlinkSync(file); return false; },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not suppress other I/O failures for the ephemeral PID path", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-io-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, "1234\n");
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => { unlinkSync(file); mkdirSync(file); return false; },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).rejects.toMatchObject({ code: "EISDIR" });
+  });
+
+  it("still reports missing mandatory pass evidence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-required-evidence-"));
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    await mkdir(privateDir);
+    const packaged = await packageEvidence({
+      privateDir,
+      uploadDir: path.join(root, "upload"),
+      secrets: [secret],
+      expectPassScreenshot: true,
+    });
+    expect(packaged.missing).toContain("result.json");
+    expect(packaged.missing).toContain("final-state.png");
   });
 
   it("can ignore fake key shapes while scanning persisted package state", async () => {
@@ -941,6 +1161,23 @@ describe("runner E2E evidence redaction", () => {
     await expect(
       readFile(path.join(uploadDir, "database.sqlite")),
     ).rejects.toThrow();
+  });
+
+  it("retains the two reviewed chat plan captures without admitting arbitrary chat PNGs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-chat-captures-"));
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    const uploadDir = path.join(root, "upload");
+    await mkdir(privateDir, { recursive: true });
+    for (const file of ["chat-plan-draft.png", "chat-plan-revised.png", "chat-secret.png", "chat-plan-extra.png"]) {
+      await writeFile(path.join(privateDir, file), "fixture raster");
+    }
+    const packaged = await packageEvidence({ privateDir, uploadDir, secrets: [secret], expectPassScreenshot: false });
+    expect(packaged.files.sort()).toEqual(["chat-plan-draft.png", "chat-plan-revised.png", "evidence-manifest.json"]);
+    expect(packaged.leaks).toEqual([]);
+    for (const file of packaged.files.filter((file) => file.endsWith(".png"))) {
+      expect(await readFile(path.join(uploadDir, file), "utf8")).toBe("fixture raster");
+    }
   });
 
   it("keeps raster evidence private to CI and rejects active SVG content", async () => {

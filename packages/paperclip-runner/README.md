@@ -41,10 +41,49 @@ route/service authorities; it does not copy those rules into this package.
 
 ## Quick start
 
+Native provider debug-trace correlation uses an incremental index owned by its transport. Pending
+event lookups read only newly appended bytes, with a 1 MiB read budget per lookup;
+they retry until the observed suffix is indexed. Partial records remain pending,
+and trace replacement or truncation invalidates the index. Closing a transport
+clears its index. Other active transports cannot evict its progress. Records over
+64 KiB are skipped by the correlation index without buffering or parsing their
+full contents; the original trace file retains them. Do not restore a full
+synchronous trace scan for each pending event: it blocks event delivery and can
+leave the board showing an active run after the provider turn has already ended.
+
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
 stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
 validates the exact model, session identity, tool catalog, structured input,
 and terminal settlement at the process boundary. Pi remains unavailable.
+
+Native Claude skill assignments travel in the runtime-context snapshot through
+runnerd to the ACPX sidecar. After acquiring the provider lifetime lease, the
+host materializes the assigned bundles under the isolated Claude home's
+`skills/` directory before launch. Reopening a provider refreshes that snapshot;
+project and ambient host settings remain excluded. This path is separate from
+the legacy `claude_local` adapter's remote skill staging.
+
+The isolated Claude settings pin both `model` and `availableModels` to the
+user's requested ID. This keeps ACP from replacing an exact ID with a picker
+alias during selection and verification. Users can keep selecting models from
+the normal Claude catalog or entering custom IDs; unavailable models still fail
+at the provider rather than silently falling back.
+
+For ACPX Claude, `approve-reads` is shown as **Allow Paperclip reads**. The host
+intersects the run's public tools with the implementation catalog's read effects
+and writes exact MCP permission rules into the isolated Claude settings. The
+`paperclip` connection is always the runner's authenticated tool bridge; ambient
+MCP configuration is excluded. Tool hints and provider permission metadata cannot
+grant access. Unassigned tools, writes, external tools, and provider-native
+operations do not receive automatic read permission. Protocol completion and
+task-delivery controls keep their existing separate allowance.
+
+This runtime has no interactive permission handler. An operation that still
+requires approval stops the turn with `approval_required`. The server marks the
+task blocked, exposes the permission action to the operator, and disables
+automatic retry. The operator must review the operation and the agent's
+permission setting before retrying. Company access checks still run when each
+Paperclip tool executes.
 
 Runnerd selects only qualified provider profiles. Claude Managed and AWS
 AgentCore receive immutable company-profile snapshots with explicit retention,
@@ -190,7 +229,25 @@ Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
 
-## Live, chaos, and AWS AgentCore operations
+## Direct live protocol qualification
+
+The canonical direct live protocol suite lives in the separate
+`paperclip-evals` repository under `evals/paperclip-runner/`. Its
+`live-mini.json` roster is the complete 35-case Codex qualification lane. Build
+this package's TypeScript output, release `paperclip-runnerd`, package tarball,
+and `dist-issue-thread` viewer, then use the roster runner documented in that
+repository. The package ships the required orchestration entry point as
+`paperclip-runner-eval-session` (`dist/cli/eval-session.js`). Evalbook owns the
+consistent HTML matrix and read-only attempt drill-down pages.
+
+The hosted full-campaign workflow, parallel matrix, credential boundaries,
+canonical report merge, and versioned S3 index are documented in
+[`docs/runner-protocol-live-evals.md`](docs/runner-protocol-live-evals.md).
+
+This direct protocol qualification is separate from the stress-derived Runner
+workflow schedule below and from the full-stack browser model E2E suite.
+
+## Stress-derived workflow, chaos, and AWS AgentCore operations
 
 The deterministic workflow scorer and the chaos schedule do not require
 provider credentials:
@@ -200,8 +257,8 @@ pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
 pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 ```
 
-`report:runner-live-evals` is a paid, provider-backed command. Native Codex and
-the ACPX Codex profile require `OPENAI_API_KEY`; ACPX Claude requires
+`report:runner-live-evals` is a paid, provider-backed command. Native Codex
+requires `OPENAI_API_KEY`; ACPX Claude requires
 `ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
 matrix admits no Pi profile and does not persist credential values. Set
 `PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD` to a positive finite number to bound
@@ -209,13 +266,22 @@ additional scheduling after the observed campaign total reaches that value:
 
 ```sh
 PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD=12 \
+  PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
   pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
+
+# Run two scheduled native Codex executions only.
+PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
+  pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals -- \
+  --candidate codex-luna --limit 2
 ```
 
 GitHub-hosted live campaigns additionally require the default branch, an
 allowlisted numeric actor ID, the protected `runner-e2e-paid` environment, and
-an explicit repository variable before scheduled runs are enabled. Uploaded
-reports contain redacted observations and trace digests, not raw provider
+an explicit repository variable before scheduled runs are enabled. Manual
+dispatches accept the same candidate, case, and execution-limit selectors. The
+paid job uses the reviewed RunsOn Fleet label when `RUNNER_E2E_AWS_ENABLED=true`
+and otherwise stays on `ubuntu-latest`. Uploaded reports contain redacted
+observations and trace digests, not raw provider
 frames, prompts, credentials, tool arguments, or hidden reasoning.
 
 The AgentCore proof-of-concept uses an AWS CLI v2 profile to provision a
@@ -233,6 +299,21 @@ pnpm --filter @paperclipai/paperclip-runner aws-agentcore:lab
 pnpm --filter @paperclipai/paperclip-runner smoke:capability:aws-agentcore
 pnpm --filter @paperclipai/paperclip-runner aws-agentcore:destroy -- --yes
 ```
+
+To admit the hosted direct-eval workflow, provision with the account-local
+GitHub Actions OIDC provider and keep the default exact repository and protected
+environment binding:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision -- \
+  --aws-profile paperclip-dev \
+  --github-oidc-provider-arn arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com
+```
+
+This adds only `repo:paperclipai/paperclip:environment:runner-e2e-paid` as a
+web-identity subject on the scoped invocation role. The generated nonsecret
+profile records that role as both the local invocation role and the hosted
+execution role.
 
 Provisioning can incur Bedrock, AgentCore Runtime/Memory, storage, and private
 networking charges. Provisioning refuses to modify a colliding stack unless its
@@ -256,8 +337,8 @@ recorded lab unless `--force` is also supplied.
 | `check:clean-consumers`                                 | Pack the runner and install its root, evals, and testing exports in a clean consumer.                                                       |
 | `test:eval-slice`                                       | Run the credential-free eval bundle, scoring, and behavior/fault slice.                                                                     |
 | `test:runner-workflow-evals`                            | Run the deterministic provider-neutral workflow matrix.                                                                                     |
-| `report:runner-workflow-evals`                          | Validate deterministic results and write local reports only when every scoreable result passes.                                             |
-| `report:runner-live-evals`                              | Execute the paid forty-execution provider schedule with qualification and campaign-cost guards.                                             |
+| `report:runner-workflow-evals`                          | Validate deterministic fail-closed results and write JSON, Markdown, JUnit, and GitHub-safe reports.                                        |
+| `report:runner-live-evals`                              | Execute the paid provider schedule and render its immutable attempts with the canonical `paperclip-evals` HTML grid.                        |
 | `report:runner-chaos-evals`                             | Write the credential-free eight-scenario chaos schedule.                                                                                    |
 | `test:aws-agentcore-provisioning`                       | Validate the AgentCore template and wrapper safety contracts without provisioning.                                                          |
 | `aws-agentcore:provision` / `probe` / `lab` / `destroy` | Manage the scoped AgentCore proof-of-concept lifecycle.                                                                                     |

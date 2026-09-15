@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { prepareRunnerE2EServerConfig } from "./server-config.js";
 import {
   assertIsolatedServerEnvironment,
   buildPaperclipServerEnvironment,
@@ -347,6 +348,13 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 }
 
 async function supervise() {
+  const databaseReservation = await prepareRunnerE2EServerConfig({
+    temporaryRoot,
+    configPath,
+    serverPort: Number(port),
+  });
+  // Postgres needs the socket itself; release immediately before child spawn.
+  await databaseReservation?.close();
   startServer();
   let lastRestartRequestId: string | null = null;
   while (!shutdownRequested()) {

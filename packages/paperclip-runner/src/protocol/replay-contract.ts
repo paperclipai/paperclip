@@ -3,25 +3,31 @@ import type { FromSchema } from "json-schema-to-ts";
 
 import {
   capabilitiesSchema,
+  capabilitiesV2Schema,
   commandSchema,
+  commandV2Schema,
   eventSchema,
+  eventV2Schema,
   identitySchema,
   questionSetSchema,
   requestSchema,
   resultSchema,
   semanticToolSchema,
+  sessionGoalSchema,
   stopReasonSchema,
   terminalSchema,
 } from "./generated/schema-bundle.js";
 import {
-  eventValidator as standaloneEventValidator,
+  eventValidator as standaloneEventV1Validator,
+  eventV2Validator as standaloneEventV2Validator,
   fixtureValidator as standaloneFixtureValidator,
   resultValidator as standaloneResultValidator,
 } from "./generated/standalone-validators.js";
 import { normalizeLegacyPrpStructuredRunResult } from "./result-normalization.js";
 
 export const PRP_PROTOCOL_NAME = "paperclip.runner";
-export const PRP_PROTOCOL_VERSION = 1;
+export const PRP_PROTOCOL_MIN_VERSION = 1;
+export const PRP_PROTOCOL_VERSION = 2;
 export const PRP_FIXTURE_SCHEMA = "paperclip.prp.fixture.v1";
 
 type TerminalReferences = [typeof stopReasonSchema];
@@ -31,9 +37,24 @@ type EventReferences = [
   typeof terminalSchema,
   typeof resultSchema,
 ];
+type EventV2References = [typeof sessionGoalSchema];
+type CapabilitiesV2References = [typeof sessionGoalSchema];
 export type PrpIdentity = FromSchema<typeof identitySchema>;
 export type PrpCapabilities = FromSchema<typeof capabilitiesSchema>;
-export type PrpCommand = FromSchema<typeof commandSchema>;
+export type PrpCapabilitiesV2 = FromSchema<
+  typeof capabilitiesV2Schema,
+  { references: CapabilitiesV2References }
+>;
+type PrpCommandV1 = FromSchema<typeof commandSchema>;
+type PrpCommandV2 = FromSchema<typeof commandV2Schema>;
+export interface PrpCommand {
+  schema: PrpCommandV1["schema"] | PrpCommandV2["schema"];
+  commandId: string;
+  controllerSeq: number;
+  type: PrpCommandV1["type"] | PrpCommandV2["type"];
+  issuedAt: string;
+  payload: Record<string, unknown>;
+}
 export type PrpSemanticToolEnvelope = FromSchema<typeof semanticToolSchema>;
 export type PrpStopReason = FromSchema<typeof stopReasonSchema>;
 export type PrpTerminalState = FromSchema<
@@ -43,19 +64,37 @@ export type PrpTerminalState = FromSchema<
 type RequestReferences = [typeof questionSetSchema];
 export type PrpRequest = FromSchema<typeof requestSchema, { references: RequestReferences }>;
 export type PrpStructuredRunResult = FromSchema<typeof resultSchema>;
-export type PrpEvent = FromSchema<
-  typeof eventSchema,
-  { references: EventReferences }
->;
+type PrpEventV1 = FromSchema<typeof eventSchema, { references: EventReferences }>;
+type PrpEventV2 = FromSchema<typeof eventV2Schema, { references: EventV2References }>;
+export interface PrpEvent {
+  schema: PrpEventV1["schema"] | PrpEventV2["schema"];
+  sourceEventId: string;
+  sourceSeq: number;
+  sourceInstanceId: string;
+  sourceKind: PrpEventV1["sourceKind"] | PrpEventV2["sourceKind"];
+  runId: string;
+  normalizedSessionId: string;
+  turnId?: string;
+  itemId?: string;
+  eventType: PrpEventV1["eventType"] | PrpEventV2["eventType"];
+  schemaVersion: 1 | 2;
+  priority: 0 | 1 | 2;
+  emittedAt: string;
+  observedAt?: string;
+  source?: string;
+  type?: never;
+  payload: Record<string, unknown>;
+  debug?: Record<string, unknown>;
+}
 /** Runtime-validated composition of the JSON-Schema-derived contract types. */
 export interface PrpFixture {
   schema: typeof PRP_FIXTURE_SCHEMA;
   fixtureVersion: 1;
-  protocolVersion: typeof PRP_PROTOCOL_VERSION;
+  protocolVersion: 1 | 2;
   name: string;
   description: string;
   identity: PrpIdentity;
-  capabilities: PrpCapabilities;
+  capabilities: PrpCapabilities | PrpCapabilitiesV2;
   commands: PrpCommand[];
   events: PrpEvent[];
   requests?: PrpRequest[];
@@ -88,7 +127,8 @@ export interface ProtocolVersionRange {
 // Keeping compilation out of the runtime lets strict CSP deployments retain
 // `script-src 'self'` without AJV attempting dynamic JavaScript evaluation.
 const fixtureValidator = standaloneFixtureValidator as ValidateFunction<PrpFixture>;
-const eventValidator = standaloneEventValidator as ValidateFunction<PrpEvent>;
+const eventV1Validator = standaloneEventV1Validator as ValidateFunction<PrpEvent>;
+const eventV2Validator = standaloneEventV2Validator as ValidateFunction<PrpEvent>;
 const resultValidator = standaloneResultValidator as ValidateFunction<PrpStructuredRunResult>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -118,10 +158,7 @@ function versionIssues(value: unknown): ProtocolValidationIssue[] {
   }
 
   const issues: ProtocolValidationIssue[] = [];
-  for (const [field, supported] of [
-    ["fixtureVersion", 1],
-    ["protocolVersion", PRP_PROTOCOL_VERSION],
-  ] as const) {
+  for (const [field, supported] of [["fixtureVersion", 1]] as const) {
     const actual = fixture[field];
     if (typeof actual === "number" && actual !== supported) {
       issues.push({
@@ -131,16 +168,27 @@ function versionIssues(value: unknown): ProtocolValidationIssue[] {
       });
     }
   }
+  const protocolVersion = fixture.protocolVersion;
+  if (
+    typeof protocolVersion === "number" &&
+    (protocolVersion < PRP_PROTOCOL_MIN_VERSION || protocolVersion > PRP_PROTOCOL_VERSION)
+  ) {
+    issues.push({
+      code: "unsupported_required_version",
+      path: "/protocolVersion",
+      message: `protocolVersion ${protocolVersion} is unsupported; this implementation supports ${PRP_PROTOCOL_MIN_VERSION}-${PRP_PROTOCOL_VERSION}`,
+    });
+  }
 
   if (Array.isArray(fixture.events)) {
     fixture.events.forEach((entry, index) => {
       const event = asRecord(entry);
       const actual = event?.schemaVersion;
-      if (typeof actual === "number" && actual !== 1) {
+      if (typeof actual === "number" && actual !== 1 && actual !== 2) {
         issues.push({
           code: "unsupported_required_version",
           path: `/events/${index}/schemaVersion`,
-          message: `event schemaVersion ${actual} is unsupported; this implementation requires 1`,
+          message: `event schemaVersion ${actual} is unsupported; this implementation supports 1-2`,
         });
       }
       const payload = asRecord(event?.payload);
@@ -420,7 +468,7 @@ export type EventValidationResult =
 export function validatePrpEvent(value: unknown): EventValidationResult {
   const record = asRecord(value);
   const schemaVersion = record?.schemaVersion;
-  if (typeof schemaVersion === "number" && schemaVersion !== 1) {
+  if (typeof schemaVersion === "number" && schemaVersion !== 1 && schemaVersion !== 2) {
     return {
       ok: false,
       event: null,
@@ -428,11 +476,12 @@ export function validatePrpEvent(value: unknown): EventValidationResult {
         {
           code: "unsupported_required_version",
           path: "/schemaVersion",
-          message: `event schemaVersion ${schemaVersion} is unsupported; this implementation requires 1`,
+          message: `event schemaVersion ${schemaVersion} is unsupported; this implementation supports 1-2`,
         },
       ],
     };
   }
+  const eventValidator = schemaVersion === 2 ? eventV2Validator : eventV1Validator;
   if (!eventValidator(value)) {
     return {
       ok: false,

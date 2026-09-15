@@ -43,6 +43,7 @@ export type TurnFinalizeInput<TTerminal> =
  * rejects.
  */
 export interface TurnSteps<TTerminal> {
+  readonly signal?: AbortSignal;
   /** The wall-clock timeout, in milliseconds, or undefined for no timeout. */
   readonly timeoutMs: number | undefined;
   /** The message the timeout cancel carries. */
@@ -72,11 +73,24 @@ export async function runTurn<TTerminal>(steps: TurnSteps<TTerminal>): Promise<T
   // `turnStarted` separates a pre-turn preparation failure from a running-turn
   // failure, so `turnFinalize` reports the right phase.
   let turnStarted = false;
+  let cancellation: Promise<void> | null = null;
+  const cancel = () => {
+    controller.abort(steps.signal?.reason);
+    if (started && !cancellation) {
+      cancellation = started.cancel("Paperclip operator stop");
+      // The result is observed below; do not create an unhandled rejection
+      // while the runtime drains its event stream.
+      void cancellation.catch(() => {});
+    }
+  };
+  steps.signal?.addEventListener("abort", cancel, { once: true });
   try {
+    steps.signal?.throwIfAborted();
     // Build the prompt and snapshot the pre-turn usage inside the failure
     // boundary. A failure here is a `prepare_turn` failure.
     await steps.promptBuild(controller.signal);
     await steps.preTurnUsage();
+    steps.signal?.throwIfAborted();
     // The sequence owns the wall-clock timer. On a timeout it marks the run timed
     // out, aborts the shared signal, and cancels the started turn. The cancel
     // no-ops before `turnStart` returns, because `started` is still null.
@@ -88,13 +102,17 @@ export async function runTurn<TTerminal>(steps: TurnSteps<TTerminal>): Promise<T
       }, steps.timeoutMs);
     }
     started = steps.turnStart(controller.signal, steps.timeoutMs);
+    if (steps.signal?.aborted) cancel();
     turnStarted = true;
     const terminal = await steps.eventRelay(started);
+    if (cancellation) await cancellation;
     if (timeout) clearTimeout(timeout);
     return await steps.turnFinalize({ kind: "terminal", terminal, timedOut });
   } catch (error) {
     if (timeout) clearTimeout(timeout);
     const phase: "prepare_turn" | "turn" = turnStarted ? "turn" : "prepare_turn";
     return await steps.turnFinalize({ kind: "error", error, phase, timedOut });
+  } finally {
+    steps.signal?.removeEventListener("abort", cancel);
   }
 }

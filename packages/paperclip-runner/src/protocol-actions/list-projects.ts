@@ -1,10 +1,11 @@
-/** Canonical definition and documentation for `list_projects`. */
+/** Canonical project discovery definition. */
 export const listProjectsAction = {
   "id": "list_projects",
   "canonical": {
     "operationId": "list_projects",
     "surfaces": [
-      "scenario"
+      "scenario",
+      "live"
     ],
     "placement": "optional_agent_tool",
     "optionalGroup": "discovery",
@@ -13,22 +14,23 @@ export const listProjectsAction = {
     ],
     "taskModes": [
       "standard",
+      "ask",
+      "planning",
       "skill_test"
     ],
     "sideEffectClass": "read",
     "idempotency": "none",
     "disabledByDefault": false,
-    "realBindingStatus": "scenario_mock",
-    "realServiceBinding": "unbound",
-    "prpEvidence": "read projection surfaced via a tool-result item event; no control-plane state diff",
-    "prpBindingStatus": "audit_pending",
-    "legacyAliases": [],
-    "note": "Scenario/eval-only discovery via mock extension; no live dispatcher binding yet."
+    "realBindingStatus": "live_codex",
+    "realServiceBinding": "PaperclipRunnerToolAuthority",
+    "prpEvidence": "Authenticated project tools, persisted projects and repository workspaces, and run-bound activity.",
+    "prpBindingStatus": "bound",
+    "legacyAliases": []
   },
   "documentation": {
-    "title": "List Projects",
-    "description": "List Projects through the Capability discovery capability set.",
-    "note": "Scenario/eval-only discovery via mock extension; no live dispatcher binding yet."
+    "title": "List projects",
+    "description": "Inspect available company projects before selecting a project for new work.",
+    "note": null
   },
   "examples": {
     "call": {
@@ -38,18 +40,40 @@ export const listProjectsAction = {
     "success": {
       "ok": true,
       "operationId": "list_projects",
-      "result": {
-        "schema": "paperclip.capability.tool-result.v1",
-        "ok": true,
-        "operationId": "list_projects",
-        "operationResultId": "example",
-        "value": "example",
-        "commandResult": "example",
-        "authorization": "example"
-      }
+      "result": {}
     }
   },
-  "live": null,
+  "live": {
+    "order": 45,
+    "descriptor": {
+      "schema": "paperclip.semantic-tool.v1",
+      "operationId": "list_projects",
+      "version": 1,
+      "title": "List projects",
+      "description": "Inspect available company projects before selecting a project for new work.",
+      "effect": "read",
+      "requiredClaims": [
+        "discovery:projects:read"
+      ],
+      "allowedModes": [
+        "standard",
+        "ask",
+        "planning",
+        "skill_test"
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "exposure": "optional"
+    }
+  },
   "scenario": {
     "order": 16,
     "descriptor": {
@@ -104,6 +128,8 @@ export const listProjectsAction = {
       ],
       "taskModes": [
         "standard",
+        "ask",
+        "planning",
         "skill_test"
       ],
       "sideEffectClass": "read",

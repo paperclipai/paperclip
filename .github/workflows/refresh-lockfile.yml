@@ -32,7 +32,9 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: pnpm
+          # Resolution-only installs do not populate the package store. Do not
+          # claim the shared cache key with an empty archive before full installs.
+          package-manager-cache: false
 
       - name: Refresh pnpm lockfile
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile

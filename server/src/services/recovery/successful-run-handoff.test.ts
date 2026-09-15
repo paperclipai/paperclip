@@ -437,6 +437,37 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue a corrective disposition run for a correlated chat wake", () => {
+    const chatRun = {
+      ...run,
+      contextSnapshot: {
+        issueId: "issue-1",
+        source: "chat:telegram",
+        wakeCommentId: "11111111-1111-4111-8111-111111111111",
+        wakeCommentIds: ["11111111-1111-4111-8111-111111111111"],
+      },
+    } as any;
+    expect(decide({
+      run: chatRun,
+      issue: { ...issue, originKind: "chat_channel" } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "chat conversation already owns the next action",
+    });
+
+    expect(decide({
+      run: chatRun,
+      issue: { ...issue, originKind: null } as any,
+    }).kind).toBe("enqueue");
+    expect(decide({
+      run: {
+        ...chatRun,
+        contextSnapshot: { issueId: "issue-1", source: "chat:telegram" },
+      } as any,
+      issue: { ...issue, originKind: "chat_channel" } as any,
+    }).kind).toBe("enqueue");
+  });
+
   it("uses a stable one-attempt idempotency key", () => {
     expect(buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: "issue-1",

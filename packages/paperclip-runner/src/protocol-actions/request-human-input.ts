@@ -27,7 +27,7 @@ export const requestHumanInputAction = {
   },
   "documentation": {
     "title": "Request structured human input",
-    "description": "Create a typed, durable interaction on the active mock task.",
+    "description": "Create a typed, durable interaction on the active task.",
     "note": null
   },
   "examples": {
@@ -74,7 +74,7 @@ export const requestHumanInputAction = {
       "operationId": "request_human_input",
       "version": 1,
       "title": "Request structured human input",
-      "description": "Create a typed, durable interaction on the active mock task.",
+      "description": "Create a typed, durable interaction on the active task.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -148,7 +148,7 @@ export const requestHumanInputAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -164,7 +164,7 @@ export const requestHumanInputAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

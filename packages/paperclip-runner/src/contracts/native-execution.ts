@@ -29,6 +29,7 @@ export interface StrictCompletionContractInput {
 export interface NativeInteractionResponseEnvelope {
   interactionId: string;
   kind:
+    | "connection_intent"
     | "suggest_tasks"
     | "ask_user_questions"
     | "request_confirmation"
@@ -228,6 +229,8 @@ export interface NativeSessionExecutionResult {
   nativeEventCount: number;
   highestContiguousSourceSeq: number;
   usage: Record<string, unknown> | null;
+  /** The active durable goal reached a safe turn boundary for run rollover. */
+  goalRolloverRequired?: boolean;
 }
 
 export class NativeExecutionInputError extends Error {
@@ -620,6 +623,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     const response = record(entry, `input.interactionResponses[${index}]`);
     exactKeys(response, ["interactionId", "kind", "response"], `input.interactionResponses[${index}]`);
     if (![
+      "connection_intent",
       "suggest_tasks",
       "ask_user_questions",
       "request_confirmation",

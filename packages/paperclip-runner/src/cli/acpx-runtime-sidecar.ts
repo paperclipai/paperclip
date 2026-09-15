@@ -10,6 +10,7 @@ import type {
 } from "acpx/runtime";
 
 import { createAcpxToolEventNormalizer } from "../provider-events.js";
+import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_TOOL_NAME,
@@ -23,6 +24,8 @@ import {
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
 import { openCodexAcpxRuntime } from "../drivers/acpx/codex-runtime-adapter.js";
+import { AcpxApprovalRequiredError } from "../drivers/acpx/permission-policy.js";
+import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 import { acpxProviderSessionIdentity } from "../drivers/acpx/recovery-identity.js";
 import {
   resolveQualifiedAcpxProfile,
@@ -51,6 +54,10 @@ import {
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
+import {
+  persistedAcpxTurnUsage,
+  qualifiedAcpxUsageBreakdown,
+} from "../drivers/acpx/usage-accounting.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import {
@@ -75,6 +82,10 @@ import {
 
 const MAX_PENDING_TOOLS = 512;
 const MAX_PENDING_INPUTS = 16;
+let goalSourceRevision = 0;
+function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
+  return { ...acpxGoalProjection(...args), providerRevision: ++goalSourceRevision };
+}
 
 function reportRetainedAcpxCleanupFailure(
   input: AcpxRetainedCleanupFailure,
@@ -252,11 +263,17 @@ async function dispatch(
         model: params.model,
         permissionMode: params.permissionMode,
         systemInstructions: params.systemInstructions,
+        runtimeContext: params.runtimeContext,
         environment: process.env,
         expectedIdentity: params.expectedIdentity,
         semanticTools: {
           tools: params.tools,
           handler: waitForTool,
+        },
+        onGoalUpdate: (goal) => {
+          // Admission can emit a snapshot before the verified host is assigned.
+          // session.goal.get publishes that snapshot after session.open instead.
+          if (host) emit("runtime.goal", observedGoalProjection(host.goalCapability(), goal, turnId !== null));
         },
       },
       {
@@ -314,7 +331,9 @@ async function dispatch(
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
     turnId = currentTurnId;
     let runtimeTurn: AcpxRuntimeTurn;
+    let usageBefore: unknown;
     try {
+      usageBefore = await readSidecarHostStatusWithin(activeHost);
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
         text: boundedText(request.params.message, "message", 1024 * 1024),
@@ -325,7 +344,7 @@ async function dispatch(
       turnId = null;
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore);
     return { turnId: currentTurnId };
   }
   if (request.command === "turn.cancel") {
@@ -427,6 +446,33 @@ async function dispatch(
       pendingInputCount: inputs.size,
     };
   }
+  if (request.command === "session.goal.get") {
+    const activeHost = requireHost();
+    return observedGoalProjection(activeHost.goalCapability(), activeHost.goalSnapshot(), turnId !== null);
+  }
+  if (request.command === "session.goal.set") {
+    const activeHost = requireHost();
+    if (Object.prototype.hasOwnProperty.call(request.params, "tokenBudget")) {
+      throw new Error("The negotiated ACP goal extension does not support token budget control");
+    }
+    const objective = text(request.params.objective).trim();
+    const status = text(request.params.status).trim();
+    const action = objective
+      ? "set"
+      : status === "paused"
+        ? "pause"
+        : status === "active"
+          ? "resume"
+          : null;
+    if (!action) throw new Error("session.goal.set requires an objective or active/paused status");
+    const goal = await activeHost.controlGoal(action, objective || undefined);
+    return observedGoalProjection(activeHost.goalCapability(), goal, turnId !== null);
+  }
+  if (request.command === "session.goal.clear") {
+    const activeHost = requireHost();
+    await activeHost.controlGoal("clear");
+    return observedGoalProjection(activeHost.goalCapability(), null, turnId !== null);
+  }
   if (request.command === "session.suspend") {
     if (turnId || tools.size > 0 || inputs.size > 0) {
       throw new Error("ACPX session is not at a safe suspension point");
@@ -479,6 +525,8 @@ async function dispatch(
 async function pumpTurn(
   currentTurnId: string,
   runtimeTurn: AcpxRuntimeTurn,
+  activeHost: AcpxRuntimeHost,
+  usageBefore: unknown,
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -496,11 +544,33 @@ async function pumpTurn(
       );
     }
     const result = await runtimeTurn.result;
+    try {
+      const usage = persistedAcpxTurnUsage(
+        usageBefore,
+        await readSidecarHostStatusWithin(activeHost),
+        runtimeTurn.requestId,
+      );
+      if (usage) {
+        emit(
+          "runtime.event",
+          sanitizeRuntimeEvent(usage as unknown as AcpRuntimeEvent),
+          currentTurnId,
+        );
+      }
+    } catch (error) {
+      // Missing usage must stay unknown, but an accounting read failure must
+      // not replace the provider's authoritative completed/cancelled result.
+      diagnostic("acpx_terminal_usage_unavailable", safeMessage(error));
+    }
     terminal = boundedSidecarValue(result);
   } catch (error) {
     terminal = {
       status: "failed",
-      error: { message: safeMessage(error), retryable: false },
+      error: {
+        ...(error instanceof AcpxApprovalRequiredError ? { code: error.code } : {}),
+        message: safeMessage(error),
+        retryable: false,
+      },
     };
   } finally {
     rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
@@ -868,7 +938,9 @@ function sanitizeRuntimeStatus(value: unknown): Record<string, unknown> {
 
 function safeUsage(cost: unknown, breakdown: unknown): Record<string, unknown> {
   const nativeCost = record(cost);
-  const nativeBreakdown = record(breakdown);
+  const nativeBreakdown = record(
+    qualifiedAcpxUsageBreakdown(initializedAgent, breakdown),
+  );
   return {
     cost:
       cost === undefined || cost === null
@@ -947,9 +1019,6 @@ function parseOpenParams(
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
   resolveQualifiedAcpxProfile(agent, model);
-  if (value.runtimeContext !== undefined && value.runtimeContext !== null) {
-    throw new Error("ACPX sidecar runtime context must be pre-materialized");
-  }
   if (
     value.providerSessionKey !== undefined &&
     value.providerSessionKey !== null
@@ -974,7 +1043,9 @@ function parseOpenParams(
       "systemInstructions",
       1024 * 1024,
     ),
-    runtimeContext: null,
+    runtimeContext: value.runtimeContext == null
+      ? null
+      : parseNativeRuntimeContext(value.runtimeContext),
     tools: parseTools(value.tools),
     ...(value.expectedIdentity === undefined || value.expectedIdentity === null
       ? {}

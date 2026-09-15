@@ -78,6 +78,15 @@ describe("TaskChatQueuedMessages", () => {
     return props;
   }
 
+  it("shows the saved message's wait reason and removes it when admission succeeds", () => {
+    const message = "Waiting for the previous environment to stop. Your message will start automatically.";
+    render({ queue: { ...queue, executionWait: { reason: "remote_cleanup", message } } });
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
+    expect(container.textContent).toContain("First queued message");
+    render();
+    expect(container.textContent).not.toContain(message);
+  });
+
   it("renders each queued message once as a compact one-line row", () => {
     render();
     const pane = container.querySelector(
@@ -284,11 +293,12 @@ describe("TaskChatQueuedMessages", () => {
     ).toBeNull();
   });
 
-  it("uses interrupt instead of steer for legacy runners and keeps the row queued", async () => {
+  it.each(["run-1", null])("delivers legacy queued messages with target %s", async (targetRunId) => {
     const onInterrupt = vi.fn().mockResolvedValue(undefined);
     render({
       queue: {
         ...queue,
+        targetRunId,
         protocol: "legacy",
         steeringDisposition: "unsupported",
       },
@@ -315,7 +325,7 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).not.toBeNull();
     expect(container.textContent).toContain(
-      "Active turn interrupted. Message remains queued.",
+      "Queued messages will be sent when the previous run has stopped.",
     );
   });
 });

@@ -12,6 +12,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -106,6 +107,7 @@ export function SidebarAccountMenu({
   open: controlledOpen,
   onOpenChange,
 }: SidebarAccountMenuProps) {
+  const isCloud = Boolean(useCloudInstance());
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -227,7 +229,7 @@ export function SidebarAccountMenu({
           </div>
         </PopoverContent>
         </Popover>
-        {!rail ? (
+        {!rail && !isCloud ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <a
@@ -235,7 +237,7 @@ export function SidebarAccountMenu({
                 target="_blank"
                 rel="noreferrer"
                 aria-label="Share feedback"
-                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>

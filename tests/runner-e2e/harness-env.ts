@@ -76,8 +76,15 @@ export function resolvePaperclipRunnerBinaryForHarness(
 export function resolvePaperclipRemoteRunnerBinaryForHarness(
   executions: readonly MatrixExecution[],
   runnerBinary: string | undefined,
+  configuredPath = process.env.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH,
+  platform: NodeJS.Platform = process.platform,
 ): string | undefined {
+  if (configuredPath?.trim()) return configuredPath;
   if (!runnerBinary) return undefined;
+  // Daytona runs Linux. A default debug binary built by a macOS developer is
+  // Mach-O and cannot be staged into that sandbox. Leave the remote override
+  // unset so the pinned Daytona image's verified runnerd is discovered instead.
+  if (platform !== "linux") return undefined;
   return executions.some(
     (execution) =>
       execution.profile.generation === "native" &&
@@ -98,6 +105,11 @@ export function buildRunnerE2EProcessEnvironment(
 ): NodeJS.ProcessEnv {
   const result = { ...source };
   delete result.OPENCODE_ALLOW_ALL_MODELS;
+  // Hiring needs the opt-in native API surface. Scope this to the explicit
+  // manual hiring story; production and other suites retain their defaults.
+  if (executions.some((e) => e.suite.id === "everyday-workflows" && e.task.id === "hire-reuse")) {
+    result.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+  }
   if (
     executions.length > 0 &&
     executions.every(

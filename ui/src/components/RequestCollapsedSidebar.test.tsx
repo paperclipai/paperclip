@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,18 +29,11 @@ function Harness({ onRoute }: { onRoute: boolean }) {
   );
 }
 
-async function flushReact() {
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-  flushSync(() => {});
-}
-
 async function render(onRoute: boolean): Promise<{ root: Root; host: HTMLDivElement }> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  flushSync(() => root.render(<Harness onRoute={onRoute} />));
-  await flushReact();
+  await act(async () => root.render(<Harness onRoute={onRoute} />));
   return { root, host };
 }
 
@@ -71,9 +65,9 @@ describe("RequestCollapsedSidebar", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (active) {
-      flushSync(() => active!.root.unmount());
+      await act(async () => active!.root.unmount());
       active.host.remove();
       active = null;
     }
@@ -100,8 +94,7 @@ describe("RequestCollapsedSidebar", () => {
     expect(capturedValue?.collapsed).toBe(false);
 
     // Navigate away: the route (and its <RequestCollapsedSidebar/>) unmounts.
-    flushSync(() => active!.root.render(<Harness onRoute={false} />));
-    await flushReact();
+    await act(async () => active!.root.render(<Harness onRoute={false} />));
     expect(capturedValue?.routeRequestsCollapsed).toBe(false);
     expect(capturedValue?.collapsed).toBe(false);
   });
@@ -111,8 +104,7 @@ describe("RequestCollapsedSidebar", () => {
     flushSync(() => capturedValue?.setCollapsed(true));
     expect(localStorage.getItem("paperclip.sidebar.collapsed")).toBeNull();
 
-    flushSync(() => active!.root.render(<Harness onRoute={false} />));
-    await flushReact();
+    await act(async () => active!.root.render(<Harness onRoute={false} />));
     expect(capturedValue?.routeRequestsCollapsed).toBe(false);
     expect(capturedValue?.collapsed).toBe(false);
   });

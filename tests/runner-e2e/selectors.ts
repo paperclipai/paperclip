@@ -157,6 +157,7 @@ export function selectRunnerExecutions(
 
   const selected = matrix.filter((execution) => {
     if (options.ids.length > 0) return options.ids.includes(execution.id);
+    if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
     if (
       options.all ||
       (options.list &&
@@ -196,7 +197,16 @@ export function buildMatrixJobs(
       credentialName: execution.profile.credential,
       environmentId: execution.environment.id,
       caseId: execution.task.id,
-      timeoutMinutes: execution.environment.id === "daytona" ? 40 : 25,
+      timeoutMinutes: Math.max(
+        execution.environment.id === "daytona" ? 40 : 25,
+        Math.ceil(
+          (2 *
+            (execution.task.attemptTimeoutMs[execution.environment.id] +
+              90_000) +
+            5 * 60_000) /
+            60_000,
+        ),
+      ),
       needsDaytona: execution.environment.id === "daytona",
     }))
     .sort((left, right) => left.executionId.localeCompare(right.executionId));

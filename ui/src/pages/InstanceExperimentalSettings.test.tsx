@@ -73,11 +73,14 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableNativeRunner: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
+    enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,
+    enableChatConnectors: false,
     enablePipelines: false,
     enableCases: false,
+    enableAgentChat: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
@@ -92,6 +95,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
+    enableFirstTaskPlanProposal: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
     enableWorkspaceBranchReconcileForward: true,
@@ -107,6 +111,12 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
 
 const WORKTREE_RUN_EXECUTION_TOGGLE_SELECTOR =
   'button[aria-label="Toggle worktree run execution setting"]';
+
+const ISOLATED_WORKSPACES_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle isolated workspaces experimental setting"]';
+
+const ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle isolated workspaces by default experimental setting"]';
 
 function setWorktreeRuntimeMeta(enabled: boolean) {
   const name = "paperclip-worktree-enabled";
@@ -197,6 +207,20 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(container.querySelector('button[aria-label="Toggle apps experimental setting"]')).toBeNull();
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle chat connectors experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Existing chat connections keep running");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableChatConnectors: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+      expect(currentExperimentalSettings.enableApps).toBe(true);
+    }
   });
 
   it("does not render the Conference Room Chat experimental setting for now", async () => {
@@ -380,6 +404,82 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableGoalsSidebarLink: true,
     });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("hides the isolated-workspaces-by-default toggle while isolated workspaces are off", async () => {
+    await renderPage();
+
+    expect(container.querySelector(ISOLATED_WORKSPACES_TOGGLE_SELECTOR)).not.toBeNull();
+    expect(
+      container.querySelector(ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("Use Isolated Workspaces By Default");
+  });
+
+  it("keeps the dependent toggle hidden even when its stored flag is already on", async () => {
+    // The operator default is inert without isolated workspaces, so the server
+    // ignores a stored `true`. The control must not imply otherwise.
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableIsolatedWorkspaces: false,
+      enableIsolatedWorkspacesByDefault: true,
+    };
+    await renderPage();
+
+    expect(
+      container.querySelector(ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR),
+    ).toBeNull();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("renders and patches the isolated-workspaces-by-default toggle on and off", async () => {
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableIsolatedWorkspaces: true,
+    };
+    await renderPage();
+
+    expect(container.textContent).toContain("Use Isolated Workspaces By Default");
+    expect(container.textContent).toContain("per-task worktree");
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableIsolatedWorkspacesByDefault: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
+      enableIsolatedWorkspacesByDefault: false,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("reflects a stored isolated-workspaces-by-default value as checked", async () => {
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+    };
+    await renderPage();
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR,
+    );
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
@@ -701,6 +801,43 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableSummaries: true,
     });
+  });
+
+  it("keeps a managed isolated-workspaces-by-default setting locked", async () => {
+    // The cloud overlay owns this key, so the tenant sees its value but cannot
+    // write it back and have the overlay immediately override the write.
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+      managedKeys: {
+        enableIsolatedWorkspacesByDefault: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(toggle?.disabled).toBe(true);
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+
+    await act(() => toggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("keeps a managed chat connectors setting locked", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: { enableChatConnectors: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle chat connectors experimental setting"]');
+    expect(toggle?.disabled).toBe(true);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+    await act(() => toggle?.click());
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("locks Status Cards when managed Summaries is disabled", async () => {

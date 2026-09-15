@@ -24,6 +24,12 @@ export interface ObservableMatcherResult {
   passed: boolean;
 }
 
+export interface ObservableInteraction {
+  kind?: string | null;
+  status?: string | null;
+  payload?: unknown;
+}
+
 export interface OpenRouterHelloTerminalVarianceObservation {
   suiteId: string;
   profileId: string;
@@ -80,6 +86,35 @@ export function isNonExecutingReviewFenceRun(run: ObservableRunState) {
     run.status === "cancelled" &&
     run.errorCode === "issue_continuation_waiting_on_review"
   );
+}
+
+export function hasTerminalMalformedPlanConfirmation(input: {
+  runs: readonly ObservableRunState[];
+  interactions: readonly ObservableInteraction[];
+  minimumRunCount: number;
+}) {
+  if (
+    input.runs.length < input.minimumRunCount ||
+    !input.runs.every((run) => run.status === "succeeded")
+  ) {
+    return false;
+  }
+
+  return input.interactions.some((interaction) => {
+    if (
+      interaction.kind !== "request_confirmation" ||
+      interaction.status !== "pending"
+    ) {
+      return false;
+    }
+    const target = record(record(interaction.payload).target);
+    return !(
+      target.type === "issue_document" &&
+      target.key === "plan" &&
+      typeof target.revisionId === "string" &&
+      target.revisionId.trim().length > 0
+    );
+  });
 }
 
 function normalizeMessage(value: string) {

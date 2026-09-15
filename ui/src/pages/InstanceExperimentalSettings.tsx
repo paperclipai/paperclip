@@ -201,8 +201,11 @@ export function InstanceExperimentalSettings() {
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
+  const enableChatConnectors = experimentalQuery.data?.enableChatConnectors === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableIsolatedWorkspacesByDefault =
+    experimentalQuery.data?.enableIsolatedWorkspacesByDefault === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableStreamlinedUi = experimentalQuery.data?.enableStreamlinedUi !== false;
@@ -229,6 +232,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enablePaperclipDeveloperMode === true;
   const enableSimplifiedEnglishInteractions =
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
+  const enableFirstTaskPlanProposal =
+    experimentalQuery.data?.enableFirstTaskPlanProposal === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   return (
@@ -309,6 +314,29 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle cases experimental setting"
         />
 
+        <ExperimentalToggleCard
+          title="Agent Chat"
+          description="Talk to each agent in one ongoing conversation. Clarify goals and create tasks for execution."
+          footnote="Turning this off preserves conversations and lets active runs finish, but prevents new messages."
+          checked={experimentalQuery.data?.enableAgentChat ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentChat: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAgentChat"
+          managed={managedKeys.enableAgentChat}
+          ariaLabel="Toggle agent chat experimental setting"
+        />
+        <ExperimentalToggleCard
+          title="Chat connectors"
+          description="Connect agents to Slack, GitHub, Discord, Microsoft Teams, and Telegram conversations."
+          footnote="Turning this off hides chat setup, channels, and connected-task controls. Existing chat connections keep running. GitHub and other tool connectors stay available."
+          checked={enableChatConnectors}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableChatConnectors: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableChatConnectors"
+          managed={managedKeys.enableChatConnectors}
+          ariaLabel="Toggle chat connectors experimental setting"
+        />
+
         {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (
           <ExperimentalToggleCard
             title="Conference Room Chat"
@@ -366,6 +394,21 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle isolated workspaces experimental setting"
         />
 
+        {enableIsolatedWorkspaces && (
+          <ExperimentalToggleCard
+            title="Use Isolated Workspaces By Default"
+            description="Treat a project that has no execution workspace policy of its own as if it selected isolated workspaces, so its tasks get a per-task worktree instead of sharing the project checkout. A project that carries its own policy keeps it."
+            checked={enableIsolatedWorkspacesByDefault}
+            onCheckedChange={(checked) =>
+              toggleMutation.mutate({ enableIsolatedWorkspacesByDefault: checked })
+            }
+            disabled={toggleMutation.isPending}
+            settingKey="enableIsolatedWorkspacesByDefault"
+            managed={managedKeys.enableIsolatedWorkspacesByDefault}
+            ariaLabel="Toggle isolated workspaces by default experimental setting"
+          />
+        )}
+
         <ExperimentalToggleCard
           title="Experimental File Viewer"
           description="Show task detail controls for browsing and previewing workspace files relative to a task."
@@ -401,6 +444,19 @@ export function InstanceExperimentalSettings() {
           settingKey="enableSimplifiedEnglishInteractions"
           managed={managedKeys.enableSimplifiedEnglishInteractions}
           ariaLabel="Toggle simplified english interactions experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="First task: propose with a plan document"
+          description="When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped."
+          checked={enableFirstTaskPlanProposal}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableFirstTaskPlanProposal: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableFirstTaskPlanProposal"
+          managed={managedKeys.enableFirstTaskPlanProposal}
+          ariaLabel="Toggle first task plan proposal experimental setting"
         />
 
         <ExperimentalToggleCard

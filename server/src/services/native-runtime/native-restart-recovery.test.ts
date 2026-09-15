@@ -8,9 +8,14 @@ import {
 } from "./native-restart-recovery.js";
 
 describe("native restart recovery classification", () => {
+  it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
+    const evidence = { runnerPidAlive: false, runnerGroupAlive: false, processStartMatches: false, hasCheckpoint: true, hasProviderEvidence: true };
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, checkpointFailed: true })).toMatchObject({ claimKind: null, reason: "provider_checkpoint_permanently_failed" });
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, providerAttempt: 3 })).toMatchObject({ claimKind: null, reason: "execution_recovery_budget_exhausted" });
+  });
   it("keeps controller-only recovery out of the provider retry budget", () => {
     expect(nextNativeProviderAttempt(2, "reattach_existing_runner")).toBe(2);
-    expect(nextNativeProviderAttempt(2, "bootstrap_incomplete")).toBe(2);
+    expect(nextNativeProviderAttempt(2, "bootstrap_incomplete")).toBe(3);
     expect(nextNativeProviderAttempt(2, "resume_dead_runner")).toBe(3);
   });
 
@@ -161,6 +166,22 @@ describe("native controller takeover fencing", () => {
     });
   });
 
+  it("does not treat a sub-second process-start precision difference as PID reuse", async () => {
+    await expect(
+      evaluateNativeControllerTakeover({
+        owner: owner({
+          controllerProcessStartedAt: new Date("2026-09-04T11:00:00.456Z"),
+        }),
+        now,
+        isProcessAlive: () => true,
+        readProcessStartedAt: async () => new Date("2026-09-04T11:00:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      allowed: false,
+      reason: "controller_still_alive",
+    });
+  });
+
   it("does not steal a live controller lease", async () => {
     const readStartedAt = vi.fn(async () => recordedStart);
     await expect(
@@ -186,6 +207,7 @@ describe("native controller takeover fencing", () => {
         }),
         now,
         isProcessAlive,
+        readProcessStartedAt: async () => recordedStart,
       }),
     ).resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
     expect(isProcessAlive).toHaveBeenCalledWith(123);
@@ -251,6 +273,26 @@ describe("native provider process fencing", () => {
         readProcessStartedAt: async () => recordedStart,
       }),
     ).resolves.toMatchObject({
+      livePids: [],
+      ambiguousLivePids: [456],
+      recycledPids: [],
+    });
+  });
+
+  it("fails closed on a sub-second provider process-start precision difference", async () => {
+    await expect(
+      evaluateNativeProviderProcesses({
+        identities: [
+          {
+            pid: 456,
+            processStartedAt: new Date("2026-09-04T11:00:00.456Z"),
+          },
+        ],
+        isProcessAlive: () => true,
+        readProcessStartedAt: async () => new Date("2026-09-04T11:00:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      knownPids: [456],
       livePids: [],
       ambiguousLivePids: [456],
       recycledPids: [],

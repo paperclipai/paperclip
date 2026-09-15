@@ -85,8 +85,18 @@ const mockAgentService = vi.hoisted(() => ({
     },
   })),
 }));
+const mockRunnerGoalService = vi.hoisted(() => ({
+  projection: vi.fn(async () => null),
+  act: vi.fn(),
+}));
 
 function registerModuleMocks() {
+  vi.doMock("../services/runner-goals.js", () => ({
+    runnerGoalService: () => mockRunnerGoalService,
+    RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+    RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1" })),

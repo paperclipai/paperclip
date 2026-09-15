@@ -60,7 +60,9 @@ export function AppLogo({
     ? localAssets?.light ?? (allowRemoteFallback ? logoUrl : null)
     : null;
   const resolvedDarkLogoUrl = localLookupComplete
-    ? localAssets?.dark ?? (allowRemoteFallback ? darkLogoUrl : null)
+    ? localAssets
+      ? localAssets.dark ?? localAssets.light
+      : (allowRemoteFallback ? darkLogoUrl : null)
     : null;
   const lightLogoUrlForRender = resolvedLogoUrl && !failedLogoUrls.has(resolvedLogoUrl)
     ? resolvedLogoUrl

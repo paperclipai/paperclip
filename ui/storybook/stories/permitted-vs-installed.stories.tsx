@@ -274,7 +274,7 @@ function SeededAccessStep({
   },
 }: {
   authKind: "oauth" | "api_key" | "none";
-  initialGrantKind: "user" | "organization";
+  initialGrantKind: "user" | "organization" | "agent";
   initialChoice: "specific" | "all";
   initialAgentIds: Set<string>;
   capabilities?: {
@@ -307,6 +307,7 @@ function SeededAccessStep({
           setInstallAgentIds={setIds}
           capabilities={capabilities}
           submitLabel={authKind === "oauth" ? "Continue to Gmail" : "Save and continue"}
+          continuesToProvider={authKind === "oauth"}
           onBack={() => {}}
           onContinue={() => {}}
         />

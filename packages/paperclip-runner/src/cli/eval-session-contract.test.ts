@@ -1,10 +1,21 @@
+import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import type { CapabilityLiveSessionSnapshot } from "../live/live-session.js";
 import {
   evalSessionUsage,
   parseEvalSessionRequest,
 } from "./eval-session-contract.js";
+import {
+  boundedEvalSessionUsage,
+  evalRuntimeSystemInstructions,
+  evalSessionProviderVersion,
+  prepareEvalRuntimeContext,
+} from "./eval-session.js";
 
 function request(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -51,6 +62,38 @@ function agentCoreProfile(overrides: Record<string, unknown> = {}) {
 }
 
 describe("eval-session request contract", () => {
+  it("materializes a production-v3 runtime context for direct live providers", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-eval-context-"));
+    let instructionRoot: string | null = null;
+    try {
+      const context = await prepareEvalRuntimeContext(workspace);
+      instructionRoot = context.instructions.bundle.rootPath;
+      expect(parseNativeRuntimeContext(context)).toEqual(context);
+      expect(context.skills).toEqual([]);
+      expect(context.mcp.assignmentSetId).toBe("paperclip-runner-direct-eval-v1");
+      expect(context.instructions.entryPath).toBe("AGENTS.md");
+      expect(await readFile(
+        join(context.instructions.bundle.rootPath, "AGENTS.md"),
+        "utf8",
+      )).toContain("Paperclip direct live evaluation");
+      const systemInstructions = evalRuntimeSystemInstructions(context);
+      expect(systemInstructions).toContain("Paperclip direct live evaluation");
+      expect(systemInstructions).toContain("Task-state changes in this mock control plane use finish_task and block_task");
+      expect(systemInstructions).toContain("The current user request defines the work for this turn");
+      expect(systemInstructions).toContain("Do not finish or block the mock task unless the current request asks for that state change");
+      expect(systemInstructions).toContain(
+        `Read-only instruction sibling root: ${context.instructions.bundle.rootPath}`,
+      );
+      expect((await stat(context.instructions.bundle.rootPath)).mode & 0o777)
+        .toBe(0o555);
+    } finally {
+      if (instructionRoot !== null) {
+        await chmod(instructionRoot, 0o700).catch(() => undefined);
+      }
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes the current local live-session provider contract", () => {
     expect(parseEvalSessionRequest(request())).toMatchObject({
       provider: "codex",
@@ -63,6 +106,43 @@ describe("eval-session request contract", () => {
       acpxAgent: "claude",
       model: "claude-sonnet-5",
     }))).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
+  });
+
+  it("accepts null optional fields from the original Evalbook v1 producer", () => {
+    const parsed = parseEvalSessionRequest(request({
+      acpxAgent: null,
+      agentCoreProfile: null,
+      opencodeVersion: null,
+    }));
+    expect(parsed).toMatchObject({
+      provider: "codex",
+      driver: "codex_app_server",
+    });
+    expect(parsed).not.toHaveProperty("acpxAgent");
+    expect(parsed).not.toHaveProperty("agentCoreProfile");
+    expect(parsed).not.toHaveProperty("opencodeVersion");
+  });
+
+  it("attributes managed providers to their immutable deployed revisions", () => {
+    expect(evalSessionProviderVersion(parseEvalSessionRequest(request({
+      provider: "aws_agentcore",
+      driver: "aws_agentcore_harness_api",
+      model: "global.anthropic.claude-sonnet-4-6",
+      agentCoreProfile: agentCoreProfile(),
+    })))).toBe("aws-agentcore-harness-context-v2");
+    expect(evalSessionProviderVersion(parseEvalSessionRequest(request({
+      provider: "claude_managed",
+      driver: "claude_managed_agents_api",
+      model: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-qualified",
+        anthropicAgentId: "agent-test",
+        agentVersion: "17",
+        environmentId: "environment-test",
+        betaVersion: "managed-agents-2026-04-01",
+        maxSessionListCostUsd: 1,
+      },
+    })))).toBe("17");
   });
 
   it("rejects Pi and accepts both qualified remote provider profiles", () => {
@@ -143,6 +223,41 @@ describe("eval-session request contract", () => {
 });
 
 describe("eval-session usage", () => {
+  it("retains durable failed turns even when their reported usage exceeds completed-turn limits", () => {
+    const parsed = parseEvalSessionRequest(request());
+    const snapshot = {
+      usageLedger: [{
+        receiptId: "receipt-failed",
+        attemptId: "attempt-1",
+        providerResponseId: "response-failed",
+        turnId: "turn-failed",
+        observedAt: "2026-09-05T00:00:00.000Z",
+        providerCalls: 2,
+        providerRequests: 2,
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cachedInputTokens: 0,
+        reasoningTokens: 0,
+        costNanodollars: 200_000_000,
+      }],
+    } as unknown as CapabilityLiveSessionSnapshot;
+    const failedTurn = {
+      turnId: "turn-failed",
+      status: "failed" as const,
+      assistantText: "",
+      snapshot,
+    };
+
+    expect(boundedEvalSessionUsage(parsed, failedTurn)).toMatchObject({
+      agentTurns: 2,
+      providerReportedCostNanodollars: 200_000_000,
+    });
+    expect(() => boundedEvalSessionUsage(parsed, {
+      ...failedTurn,
+      status: "completed",
+    })).toThrow("agent turn limit exceeded");
+  });
+
   it("deduplicates receipts and applies the versioned model price", () => {
     const receipt = {
       receiptId: "receipt-1",

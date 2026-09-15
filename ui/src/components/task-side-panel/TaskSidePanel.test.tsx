@@ -164,6 +164,54 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).toContain("Properties content");
   });
 
+  it("opens Artifacts on a new arrival, preserving manual selection until the next arrival", async () => {
+    await render(panel());
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Artifacts");
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    fixture.documents = [issueDocument("report", "Updated report")];
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+
+    await render(panel({ artifactsOpenRequestId: 2 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Artifacts");
+    expect(container.querySelectorAll('[data-side-panel-tab-target="artifacts"]')).toHaveLength(1);
+  });
+
+  it("reopens a dismissed Artifacts tab only for a new arrival", async () => {
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Artifacts"]')?.click());
+    await render(panel({ artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[data-side-panel-tab-target="artifacts"]')).toBeNull();
+    await render(panel({ artifactsOpenRequestId: 2 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Artifacts");
+  });
+
+  it("acknowledges an arrival so remounting the panel preserves a later manual selection", async () => {
+    const onArtifactsOpened = vi.fn();
+    await render(panel({ artifactsOpenRequestId: 1, onArtifactsOpened }));
+    expect(onArtifactsOpened).toHaveBeenCalledExactlyOnceWith(1);
+    await render(panel({ onArtifactsOpened }));
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    await render(null);
+    await render(panel({ onArtifactsOpened }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(onArtifactsOpened).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the workspace-file route when an arriving artifact selects Artifacts", async () => {
+    routeFixture.location.search = "?file=ui%2Fsrc%2FApp.tsx&workspace=project";
+    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
+    await render(panel({ fileTabsEnabled: true }));
+    await render(panel({ fileTabsEnabled: true, artifactsOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Artifacts");
+    expect(routeFixture.navigate).toHaveBeenCalledWith(
+      expect.objectContaining({ search: "" }), expect.anything(),
+    );
+  });
+
   it("uses the approved pre-rebase tab appearance for Streamlined UI", async () => {
     await render(panel({ streamlinedTabs: true }));
     const propertiesTab = container.querySelector<HTMLElement>('[data-side-panel-tab-target="properties"]');
@@ -193,6 +241,36 @@ describe("TaskSidePanel", () => {
 
     await act(async () => subtasksTab?.click());
     expect(container.textContent).toContain("Subtasks content: 2");
+  });
+
+  it("adds related tasks without children and preserves the selected plan", async () => {
+    fixture.plan = issueDocument("plan", "Plan");
+    fixture.documents = [fixture.plan];
+    await render(panel({
+      showSubtasksTab: true,
+      tasksTab: { count: 0, content: <div>No tasks yet</div> },
+    }));
+    expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).toBeNull();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+
+    await render(panel({
+      showSubtasksTab: true,
+      tasksTab: { count: 1, content: <div>Cross-project follow-up</div> },
+    }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+    const tasks = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="subtasks"]');
+    expect(tasks?.textContent?.trim()).toBe("Tasks");
+    await act(async () => tasks?.click());
+    expect(container.textContent).toContain("Cross-project follow-up");
+    expect(container.textContent).not.toContain("Subtasks content");
+  });
+
+  it("exposes failed task loading even when no task count is available", async () => {
+    await render(panel({ showSubtasksTab: true, tasksTab: { count: 0, hasError: true, content: <div role="alert">Could not load all tasks.</div> } }));
+    const tasks = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="subtasks"]');
+    expect(tasks?.textContent?.trim()).toBe("Tasks");
+    await act(async () => tasks?.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not load all tasks");
   });
 
   it("inserts Subtasks after Properties when child tasks load later", async () => {

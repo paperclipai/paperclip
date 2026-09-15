@@ -1,0 +1,90 @@
+name: Cloud migrator artifacts
+run-name: Cloud migrator artifacts ${{ github.sha }}
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: cloud-migrator-artifacts-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Install migrator build dependencies
+        run: pnpm install --ignore-scripts --no-frozen-lockfile --filter @paperclipai/db... --filter @paperclipai/shared...
+      - name: Build exact-source packages and dependency lockfile
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          node scripts/preview-artifacts.mjs pack . migrator-artifacts "$SOURCE_SHA"
+          node scripts/cloud-migrator-artifacts.mjs build migrator-artifacts "$SOURCE_SHA"
+          node scripts/cloud-migrator-artifacts.mjs verify-install migrator-artifacts "$SOURCE_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloud-migrator-bundle
+          path: |
+            migrator-artifacts/db.tgz
+            migrator-artifacts/shared.tgz
+            migrator-artifacts/package-lock.json
+            migrator-artifacts/manifest.json
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cloud-migrator-bundle
+          path: migrator-artifacts
+      - name: Validate the complete bundle before attestation
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/cloud-migrator-artifacts.mjs validate migrator-artifacts "$SOURCE_SHA"
+      - name: Attest the manifest and every content hash it pins
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: migrator-artifacts/manifest.json
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: arn:aws:iam::078455283791:role/paperclip-cloud-migrator-github
+          aws-region: us-east-1
+          role-duration-seconds: 900
+      - name: Publish immutable migrator and verify public downloads
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/cloud-migrator-artifacts.mjs publish migrator-artifacts "$SOURCE_SHA"

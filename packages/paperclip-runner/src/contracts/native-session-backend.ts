@@ -12,9 +12,12 @@ import type {
   HarnessRuntimeRequest,
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
+  HarnessGoalOperation,
+  HarnessThreadGoal,
   HarnessThreadLineageEntry,
   NativeRuntimeContextCapabilities,
   PersistedHarnessProviderIdentity,
+  PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "./harness-driver.js";
 
@@ -49,6 +52,8 @@ export interface PersistedNativeSession {
   providerSessionId?: string | null;
   /** Tagged provider-owned identity required for safe driver recovery. */
   providerIdentity?: PersistedHarnessProviderIdentity;
+  workingDirectory?: string;
+  codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
   providerRecoveryPolicy?:
     | "same_session_only"
     | "allow_replacement_after_governed_wait"
@@ -62,6 +67,7 @@ export interface PersistedNativeSession {
   dispositionOnlyRecoveryConsumed?: boolean;
   dispositionOnlyRecoveryTurnId?: string | null;
   pendingRuntimeRequests?: HarnessRuntimeRequest[];
+  goal?: HarnessThreadGoal | null;
   lineage?: HarnessThreadLineageEntry[];
 }
 
@@ -87,19 +93,75 @@ export interface NativeSessionSnapshotOptions {
   signal: AbortSignal;
 }
 
+/** The exact close owner has torn down its controller without proving suspension. */
+export class NativeSessionCloseUnrecoverableError extends Error {
+  readonly code = "native_session_close_unrecoverable";
+
+  constructor() {
+    super(
+      "provider_transport_failed: runner did not durably suspend before checkpoint",
+    );
+    this.name = "NativeSessionCloseUnrecoverableError";
+  }
+}
+
+/** An authenticated, exactly bound runner event failed permanent integrity checks. */
+export class NativeSessionProtocolIntegrityError extends Error {
+  readonly code = "native_event_replay_conflict";
+  readonly recovery = "operator_required";
+
+  constructor(
+    readonly reason:
+      | "semantic_input_digest_mismatch"
+      | "source_event_replay_conflict",
+  ) {
+    super(
+      reason === "semantic_input_digest_mismatch"
+        ? "native_event_replay_conflict: authenticated runner semantic input failed integrity validation; automatic recovery is stopped."
+        : "native_event_replay_conflict: authenticated runner event conflicts with committed history; automatic recovery is stopped.",
+    );
+    this.name = "NativeSessionProtocolIntegrityError";
+  }
+}
+
+/** Admission is blocked by a retained owner that has no safe automatic close retry. */
+export class NativeSessionCleanupQuarantinedError extends Error {
+  readonly code = "native_session_cleanup_quarantined";
+  readonly recovery = "operator_required";
+
+  constructor() {
+    super(
+      "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+    );
+    this.name = "NativeSessionCleanupQuarantinedError";
+  }
+}
+
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
   attachRun?(input: { identity: NativeRunIdentity }): Promise<void>;
+  /** Relinquish controller authority without suspending provider execution. */
+  detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
   startTurn(input: {
     message: NativeUserMessage;
     requestedCollaborationMode?: "default" | "plan";
-  }): Promise<{ turnId: string; effectiveCollaborationMode?: "default" | "plan" }>;
-  steer?(input: { turnId: string; message: NativeUserMessage; correlationId?: string }): Promise<void>;
+  }): Promise<{
+    turnId: string;
+    effectiveCollaborationMode?: "default" | "plan";
+  }>;
+  steer?(input: {
+    turnId: string;
+    message: NativeUserMessage;
+    correlationId?: string;
+  }): Promise<void>;
   interrupt?(input: { turnId?: string; reason?: string }): Promise<void>;
   /** Commit cancellation synchronously; the returned promise owns cleanup only. */
-  cancel?(input: { reason: string; signal: AbortSignal }): NativeSessionCancellation;
+  cancel?(input: {
+    reason: string;
+    signal: AbortSignal;
+  }): NativeSessionCancellation;
   resolveRuntimeRequest?(input: {
     requestId: string;
     turnId: string;
@@ -116,13 +178,16 @@ export interface NativeSession {
      */
     signal: AbortSignal;
   }): HarnessRuntimeRequestHandoff;
+  goal?(input: HarnessGoalOperation): Promise<HarnessThreadGoal | null>;
   result(): Promise<{
     result: PrpStructuredRunResult;
     terminal: PrpTerminalState;
     turnId: string | null;
   } | null>;
   usage?(): Promise<Record<string, unknown> | null>;
-  snapshot(options?: NativeSessionSnapshotOptions): Promise<PersistedNativeSession>;
+  snapshot(
+    options?: NativeSessionSnapshotOptions,
+  ): Promise<PersistedNativeSession>;
   /**
    * Idempotently stop provider work and release every pending `events().next()`
    * before this promise resolves. Implementations must settle every promise
@@ -148,4 +213,13 @@ export interface NativeSessionBackend {
     snapshot: PersistedNativeSession,
     options: NativeSessionRecoveryOptions,
   ): Promise<NativeSessionRecoveryResult>;
+}
+
+/** A provider failed terminal is not a missing completion proposal. */
+export class NativeProviderTerminalFailure extends Error {
+  readonly code = "native_provider_terminal_failed";
+  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal") {
+    super(message);
+    this.name = "NativeProviderTerminalFailure";
+  }
 }

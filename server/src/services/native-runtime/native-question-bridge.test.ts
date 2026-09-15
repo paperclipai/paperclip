@@ -86,7 +86,10 @@ describeEmbeddedPostgres("native question bridge", () => {
     `));
   });
 
-  afterAll(async () => temporary?.cleanup());
+  afterAll(async () => {
+    await heartbeat.drainActiveRunExecutions();
+    await temporary?.cleanup();
+  });
 
   async function seed() {
     companyId = randomUUID();
