@@ -2362,6 +2362,107 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 
+  it("deduplicates identical Sentry event retries but delivers distinct issue actions", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "github_hmac",
+      },
+      {},
+    );
+
+    const payload = {
+      action: "created",
+      data: {
+        issue: {
+          id: "7625432288",
+          shortId: "API-FX",
+          project: { slug: "api" },
+        },
+      },
+    };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const signature = createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(rawBody)
+      .digest("hex");
+    const request = {
+      sentrySignatureHeader: signature,
+      rawBody,
+      payload,
+    };
+
+    const resolvedPayload = {
+      ...payload,
+      action: "resolved",
+      actor: { type: "application", name: "Sentry" },
+    };
+    const resolvedRawBody = Buffer.from(JSON.stringify(resolvedPayload));
+    const resolvedRequest = {
+      sentrySignatureHeader: createHmac("sha256", secretMaterial!.webhookSecret)
+        .update(resolvedRawBody)
+        .digest("hex"),
+      rawBody: resolvedRawBody,
+      payload: resolvedPayload,
+    };
+
+    const first = await svc.firePublicTrigger(trigger.publicId!, request);
+    const retry = await svc.firePublicTrigger(trigger.publicId!, request);
+    const resolved = await svc.firePublicTrigger(trigger.publicId!, resolvedRequest);
+
+    expect(first).toMatchObject({ source: "webhook", status: "issue_created" });
+    expect(retry.id).toBe(first.id);
+    expect(retry.linkedIssueId).toBe(first.linkedIssueId);
+    expect(resolved.id).not.toBe(first.id);
+    expect(resolved.linkedIssueId).not.toBe(first.linkedIssueId);
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(2);
+    expect(
+      await db.select().from(issues).where(eq(issues.originId, routine.id)),
+    ).toHaveLength(2);
+  });
+
+  it("prefers a provider delivery id when deduplicating Sentry webhook retries", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "github_hmac" },
+      {},
+    );
+    const payload = {
+      action: "created",
+      data: { issue: { id: "7625432288", project: { slug: "api" } } },
+    };
+    const requestFor = (idempotencyKey: string, body: Record<string, unknown>) => {
+      const rawBody = Buffer.from(JSON.stringify(body));
+      return {
+        idempotencyKey,
+        sentrySignatureHeader: createHmac("sha256", secretMaterial!.webhookSecret)
+          .update(rawBody)
+          .digest("hex"),
+        rawBody,
+        payload: body,
+      };
+    };
+
+    const first = await svc.firePublicTrigger(
+      trigger.publicId!,
+      requestFor("sentry-delivery-1", payload),
+    );
+    const retry = await svc.firePublicTrigger(
+      trigger.publicId!,
+      requestFor("sentry-delivery-1", { ...payload, actor: { type: "application" } }),
+    );
+    const separateDelivery = await svc.firePublicTrigger(
+      trigger.publicId!,
+      requestFor("sentry-delivery-2", payload),
+    );
+
+    expect(retry.id).toBe(first.id);
+    expect(separateDelivery.id).not.toBe(first.id);
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(2);
+  });
+
   it("rejects invalid signature for github_hmac signing mode", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger } = await svc.createTrigger(
