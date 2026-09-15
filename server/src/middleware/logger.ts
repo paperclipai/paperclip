@@ -2,6 +2,7 @@ import pino from "pino";
 import type { Logger } from "pino";
 import { pinoHttp } from "pino-http";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
+import { createResilientDestination } from "./logger-destination.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive, stripSecretBearingUrlParts } from "./redact-sensitive.js";
 
@@ -14,10 +15,13 @@ const sharedOpts = {
 const isProduction = process.env.NODE_ENV === "production";
 export const logger = isProduction
   ? pino({ level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info", redact: [...HTTP_LOG_REDACT_PATHS] })
-  : pino({ level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug", redact: [...HTTP_LOG_REDACT_PATHS] }, pino.transport({
+  // The transport stays inside the ternary so production never spawns a
+  // pino-pretty worker thread at all. createResilientDestination keeps a dying
+  // worker from killing the server — see logger-destination.ts.
+  : pino({ level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug", redact: [...HTTP_LOG_REDACT_PATHS] }, createResilientDestination(pino.transport({
       target: "pino-pretty",
       options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-    }));
+    })));
 
 export function createHttpLogger(baseLogger: Logger) {
   return pinoHttp({
