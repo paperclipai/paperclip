@@ -1,8 +1,13 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
-import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
-import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+import {
+  isUuidLike,
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
+  type RunLivenessState,
+} from "@paperclipai/shared";
+import { withRecoveryContext } from "./status-only-context.js";
 import {
   agentLinkRow,
   issueLinkRow,
@@ -133,6 +138,7 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
   "open recovery issue owns the ambiguity",
   "issue is under an active pause hold",
   "corrective handoff wake already exists for this source run",
+  "chat conversation already owns the next action",
 ]);
 
 export function isSuccessfulRunHandoffValidPathSkip(
@@ -353,6 +359,26 @@ function isCommentDrivenWake(run: HeartbeatRunRow) {
     wakeReason === "issue_reopened_via_comment";
 }
 
+function isChatDrivenWake(run: HeartbeatRunRow, issue: IssueRow) {
+  if (issue.originKind !== "chat_channel") return false;
+  const context = readRecord(run.contextSnapshot);
+  const source = readString(context.source);
+  if (!source?.startsWith("chat:")) return false;
+  const wakeCommentId = readString(context.wakeCommentId);
+  const commentId = readString(context.commentId);
+  if (
+    (wakeCommentId && isUuidLike(wakeCommentId)) ||
+    (commentId && isUuidLike(commentId))
+  ) {
+    return true;
+  }
+  return Array.isArray(context.wakeCommentIds) &&
+    context.wakeCommentIds.some((value) => {
+      const id = readString(value);
+      return Boolean(id && isUuidLike(id));
+    });
+}
+
 function isProductiveSuccessfulRun(input: {
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
@@ -476,6 +502,7 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  if (isChatDrivenWake(run, issue)) return { kind: "skip", reason: "chat conversation already owns the next action" };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (isPluginManagedIssueLifecycle(issue)) {
     return { kind: "skip", reason: "issue lifecycle is owned by a plugin" };
@@ -512,7 +539,7 @@ export function decideSuccessfulRunHandoff(input: {
     nextAction: input.nextAction,
     detectedProgressSummary: input.detectedProgressSummary,
   });
-  const payload = withRecoveryModelProfileHint({
+  const payload = withRecoveryContext({
     issueId: issue.id,
     taskId: issue.id,
     sourceIssueId: issue.id,
@@ -540,7 +567,7 @@ export function decideSuccessfulRunHandoff(input: {
     }),
     payload,
     instruction,
-    contextSnapshot: withRecoveryModelProfileHint({
+    contextSnapshot: withRecoveryContext({
       ...payload,
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       livenessState: input.livenessState,

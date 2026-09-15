@@ -28,6 +28,7 @@ import {
 } from "node:path";
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
+import { claudeReadPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
   resolveAcpxRuntimeRoot,
@@ -324,6 +325,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
   binding: AcpxRecoveryBinding;
   agent: QualifiedAcpxAgent;
   environment?: NodeJS.ProcessEnv;
+  /** Public operations on the runner-owned Paperclip MCP bridge only. */
+  tools?: readonly Readonly<Record<string, unknown>>[];
 }): Promise<AcpxRuntimeSandbox> {
   const expectedRoot = input.binding.runtimeRoot;
   if (resolve(expectedRoot) !== expectedRoot) {
@@ -366,6 +369,21 @@ export async function prepareAcpxRuntimeSandbox(input: {
     workspaceRecordPath,
     `${input.binding.workspacePath}\n`,
   );
+  if (input.agent === "claude") {
+    // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
+    // picker aliases such as "sonnet". Its supported availableModels setting
+    // preserves our requested ID through selection and model verification.
+    await writePrivateFile(
+      join(agentHomeDirectory, "settings.json"),
+      `${JSON.stringify({
+        model: input.binding.requestedModel,
+        availableModels: [input.binding.requestedModel],
+        ...(input.binding.permissionMode === "approve-reads"
+          ? { permissions: { allow: claudeReadPermissionRules(input.tools ?? []) } }
+          : {}),
+      })}\n`,
+    );
+  }
   if (input.agent === "pi") {
     await writePrivateFile(
       join(agentHomeDirectory, "settings.json"),
@@ -374,6 +392,22 @@ export async function prepareAcpxRuntimeSandbox(input: {
         defaultProjectTrust: "never",
         enableInstallTelemetry: false,
       })}\n`,
+    );
+  }
+  if (input.agent === "codex") {
+    await writePrivateFile(
+      join(agentHomeDirectory, "config.toml"),
+      [
+        // Codex shell snapshots serialize the provider process environment.
+        // The ACPX sidecar receives a short-lived managed credential only so
+        // it can authenticate the provider; that value must never become
+        // durable runtime state. Keep this identical to the proven native
+        // Codex isolation policy: broader shell-environment filtering can
+        // also affect provider startup and belongs at the launch boundary.
+        "[features]",
+        "shell_snapshot = false",
+        "",
+      ].join("\n"),
     );
   }
 

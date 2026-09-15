@@ -130,17 +130,22 @@ describe("plugin worker manager duplex channel route", () => {
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           data: [{ chunk: "one" }, { chunk: "two" }, { chunk: "three" }],
+          exitCode: 0,
         }),
       );
-      // Wait so the three data notifications arrive and buffer before a listener
-      // attaches. The drain then delivers them in order.
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // The worker writes the three data notifications and the exit in one
+      // stdout write. The host reads worker stdout line by line, so it buffers
+      // all three data frames before it reads the exit. The exit settles the
+      // wait, so the wait is a deterministic barrier: once it resolves, the
+      // host holds all three frames and no listener has attached yet. This
+      // barrier replaces a fixed sleep, so the test does not race the
+      // subprocess start or the stdio latency.
+      await session.wait();
       const chunks: string[] = [];
       // The session streams raw `Uint8Array` chunks. Decode each one back to
       // text, so the assertion below compares the plain-text payload the
       // fixture directive scripted.
       session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
-      await vi.waitFor(() => expect(chunks.length).toBe(3));
       expect(chunks).toEqual(["one", "two", "three"]);
       await session.close();
     } finally {
@@ -213,11 +218,17 @@ describe("plugin worker manager duplex channel route", () => {
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           data: [{ chunk: "one" }, { chunk: "boom" }, { chunk: "three" }],
+          exitCode: 0,
         }),
       );
-      // Wait so the three data notifications arrive and buffer before a listener
-      // attaches. The drain then delivers them in order.
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // The worker writes the three data notifications and the exit in one
+      // stdout write. The host reads worker stdout line by line, so it buffers
+      // all three data frames before it reads the exit. The exit settles the
+      // wait, so the wait is a deterministic barrier for "the host holds every
+      // pre-bind frame and no listener has attached". This barrier replaces a
+      // fixed sleep, so the test does not race the subprocess start or the
+      // stdio latency.
+      await session.wait();
       const chunks: string[] = [];
       // The listener throws on one buffered chunk. The manager catches the throw
       // inside the drain, so it does not escape `onData` and every buffered chunk

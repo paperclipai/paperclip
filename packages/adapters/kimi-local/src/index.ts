@@ -65,7 +65,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt. Sibling files in the same directory (HEARTBEAT.md, SOUL.md, TOOLS.md) are made readable via --add-dir for local runs.
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Kimi model alias (provider/model). Defaults to kimi-code/kimi-for-coding.
-- effort (string, optional): thinking effort (low | medium | high | max). CLI lane only (engine=cli or the automatic fallback): forwarded as KIMI_MODEL_THINKING_EFFORT for effort-capable models (currently kimi-code/k3); "medium" maps to "high" since Kimi has no medium tier. Ignored for models without support_efforts, and NOT forwarded on the default ACP engine lane (Kimi ACP exposes a separate "thinking" option that is not wired yet) — pin engine=cli when effort control matters.
+- effort (string, optional): thinking effort (low | medium | high | max). CLI lane only (engine=cli): forwarded as KIMI_MODEL_THINKING_EFFORT for effort-capable models (currently kimi-code/k3); "medium" maps to "high" since Kimi has no medium tier. Ignored for models without support_efforts, and NOT forwarded on the default ACP engine lane (Kimi ACP exposes a separate "thinking" option that is not wired yet) — pin engine=cli when effort control matters.
 - command (string, optional): defaults to "kimi"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
@@ -75,7 +75,7 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- The adapter defaults to the ACP engine (\`kimi acp\`) and falls back to the headless CLI lane when ACP prerequisites are unavailable. Set \`engine\` to \`acp\` or \`cli\` to require a specific lane.
+- The adapter defaults to the ACP engine (\`kimi acp\`) and fails with a setup error when ACP prerequisites are unavailable. Set \`engine\` to \`acp\` or \`cli\` to require a specific lane.
 - CLI-lane runs use \`kimi -p\` with \`--output-format stream-json\` for non-interactive headless execution; the prompt is passed as an argument, not stdin.
 - The adapter sets a headless-safe environment (CI=1, NO_COLOR=1, KIMI_CODE_NO_AUTO_UPDATE=1) so unattended runs never wait on interactive prompts or update preflight.
 - Sessions resume with \`-r <session_id>\` when the stored session cwd matches the current cwd; the session id is captured from the trailing session.resume_hint meta event.

@@ -43,7 +43,8 @@
         "description": "Read spreadsheet values and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -73,7 +74,8 @@
         "description": "Read spreadsheet values and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -116,7 +118,8 @@
         "description": "Read and update spreadsheet values, formulas, and dimensions."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -148,7 +151,8 @@
         "description": "Read and update spreadsheet values, formulas, and dimensions."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

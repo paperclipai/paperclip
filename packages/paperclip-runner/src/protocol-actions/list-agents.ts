@@ -31,7 +31,7 @@ export const listAgentsAction = {
   },
   "documentation": {
     "title": "List company agents",
-    "description": "List redacted mock actor profiles.",
+    "description": "List redacted actor profiles.",
     "note": null
   },
   "examples": {
@@ -52,7 +52,7 @@ export const listAgentsAction = {
       "operationId": "list_agents",
       "version": 1,
       "title": "List company agents",
-      "description": "List redacted mock actor profiles.",
+      "description": "List redacted actor profiles.",
       "exposure": "optional",
       "requiredClaims": [
         "discovery:agents:read"

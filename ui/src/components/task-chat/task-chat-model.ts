@@ -100,6 +100,8 @@ export interface TaskChatTokenUsage {
 
 /** A human/agent/system message bubble. */
 export interface TaskChatMessageItem {
+  /** Stable UI identity through optimistic acknowledgement; id remains canonical. */
+  renderKey?: string;
   id: string;
   kind: "message";
   author: TaskChatAuthorKind;
@@ -107,6 +109,8 @@ export interface TaskChatMessageItem {
   text: string;
   /** Runner-authored output channel. Legacy adapters leave this unset. */
   channel?: "progress" | "final" | "unknown";
+  /** Transport attribution for an inbound human comment. */
+  sourceChannel?: IssueCommentMetadata["sourceChannel"];
   timestamp?: string;
   /** Show a streaming cursor and suppress collapse while true. */
   streaming?: boolean;
@@ -144,8 +148,10 @@ export interface TaskChatMessageItem {
   attachedTurn?: TaskChatTurnItem;
   /**
    * Structured system-notice fields (PAP-443), carried only for
-   * author === "system": the comment's server-authored presentation hints and
-   * metadata sections drive the collapsed one-line row + expandable detail.
+   * author === "system": either system attribution or an explicit
+   * system_notice presentation routes the comment here. The comment's
+   * server-authored presentation hints and metadata sections drive the
+   * collapsed one-line row + expandable detail.
    */
   presentation?: IssueCommentPresentation | null;
   metadata?: IssueCommentMetadata | null;
@@ -239,6 +245,13 @@ export interface TaskChatMarkerItem {
   variant: "session_start" | "interrupted" | "turn_boundary";
   label: string;
   detail?: string;
+  /** Renders the marker as a quiet disclosure row with detail beneath it. */
+  collapsible?: boolean;
+  /** Expected cancellation is neutral; unexpected failures remain destructive. */
+  tone?: "neutral" | "error";
+  runId?: string;
+  createdAtIso?: string;
+  runHref?: string;
 }
 
 /** A second-tier live token/cost readout (ACP UsageUpdate). */
@@ -299,6 +312,8 @@ export interface TaskChatPlanDocumentItem {
   id: string;
   kind: "plan_document";
   document: IssueDocument;
+  /** Distinguishes a proven semantic write boundary from lossless fallback. */
+  placement?: "write_boundary" | "fallback";
 }
 
 export interface TaskChatProtocolDetail {
@@ -424,6 +439,8 @@ export interface TaskChatRunResultItem {
     scope: "current_track" | "task_wide";
   } | null;
   artifacts: Array<{ kind: string; ref: string; title?: string }>;
+  /** Proven by accepted native result and same-run successful terminal events. */
+  acceptedResponseWake?: { runId: string; sourceEventId: string };
 }
 
 export interface TaskChatRunTerminalItem {
@@ -498,6 +515,8 @@ export interface TaskChatTurnItem {
   animateFold?: boolean;
   /** New-runner turns keep Worked/Stopped fixed above their ordered timeline. */
   standaloneHeader?: boolean;
+  /** This segment resumes the same native run after a steering input. */
+  continuedAfterSteering?: boolean;
   /** Durable response shown after the ordered Paperclip Runner timeline. */
   finalResponse?: TaskChatMessageItem;
   summary: {
@@ -513,7 +532,18 @@ export interface TaskChatTurnItem {
   };
 }
 
+export interface TaskChatProjectCreatedItem {
+  id: string;
+  kind: "project_created";
+  projectId: string;
+  name: string;
+  description?: string | null;
+  repositories: { id: string; name: string; url: string }[];
+  timestamp: string;
+}
+
 export type TaskChatItem =
+  | TaskChatProjectCreatedItem
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem

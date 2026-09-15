@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 
@@ -6,10 +7,20 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 // `auth.json`. Unlike Codex, a Grok `auth.json` has no fixed top-level key: it
 // holds exactly one key, and that key is a composite `<issuer>::<uuid>` value.
 // This module resolves the company-scoped home path and reads its usable-auth
-// shape. It never writes the file; {@link promoteGrokDeviceLoginCredential} in
-// `adapter-auth-promotion.ts` owns the write.
+// shape. It never writes to the managed home itself; {@link
+// promoteGrokDeviceLoginCredential} in `adapter-auth-promotion.ts` owns that
+// write. {@link stageGrokHomeForSync} writes only to a fresh, private staging
+// directory it creates for a sandbox run.
 
 const AUTH_FILE_NAME = "auth.json";
+
+/**
+ * The allowlist of managed `GROK_HOME` entries that the grok-local adapter
+ * stages into the sandbox `home` asset (see {@link stageGrokHomeForSync}).
+ * Paperclip writes instructions and skills under the workspace, not under the
+ * Grok home, so the credential file is the only entry a sandbox run needs.
+ */
+export const GROK_SYNC_ALLOWLIST = ["auth.json"] as const;
 
 // Matches the composite `<issuer>::<uuid>` top-level key. The issuer is a
 // non-empty string — an OIDC issuer URL such as `https://issuer.x.ai` holds
@@ -92,4 +103,66 @@ export function resolveManagedGrokHomeDir(
   return companyId
     ? path.resolve(instanceRoot, "companies", companyId, "grok-home")
     : path.resolve(instanceRoot, "grok-home");
+}
+
+export interface StageGrokHomeForSyncOptions {
+  /** Run id, used only to make the staged temp-dir name traceable in logs. */
+  runId?: string;
+}
+
+/**
+ * Reads `candidate` and dereferences a symlink to its target bytes. Returns
+ * null for a missing file or a dangling symlink (both resolve to `ENOENT`);
+ * any other read error propagates to the caller.
+ */
+async function readFileBytesIfPresent(candidate: string): Promise<Buffer | null> {
+  try {
+    return await fs.readFile(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
+ * Stages exactly {@link GROK_SYNC_ALLOWLIST} from `effectiveGrokHome` into a
+ * fresh private temp dir and returns its path, for registration as the sandbox
+ * `home` asset. Mirrors `stageCodexHomeForSync` in the codex-local adapter.
+ *
+ * - **The symlink is dereferenced to bytes** — the single-use `auth.json`
+ *   credential (a symlink into the shared source home) lands as a real file,
+ *   never a dangling link.
+ * - **A missing `auth.json` is not an error** — a company with no completed
+ *   device login yet stages an empty directory.
+ * - **`mkdtemp` guarantees the staged dir is `0700`** on POSIX, and the staged
+ *   `auth.json` is written `0600` (least privilege).
+ * - **Fail-closed** — any *unexpected* I/O error removes the partial temp dir
+ *   and re-throws, so a run never proceeds with a partial staged home.
+ *
+ * The caller owns removing the returned dir on run teardown.
+ */
+export async function stageGrokHomeForSync(
+  effectiveGrokHome: string,
+  options: StageGrokHomeForSyncOptions = {},
+): Promise<string> {
+  const runIdPart = nonEmpty(options.runId ?? undefined);
+  const stagedHome = await fs.mkdtemp(
+    path.join(os.tmpdir(), `paperclip-grok-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
+  );
+  try {
+    for (const entry of GROK_SYNC_ALLOWLIST) {
+      const bytes = await readFileBytesIfPresent(path.join(effectiveGrokHome, entry));
+      if (bytes === null) continue;
+      const target = path.join(stagedHome, entry);
+      await fs.writeFile(target, bytes, { mode: 0o600 });
+      // Explicit chmod so the mode is 0600 regardless of the process umask.
+      await fs.chmod(target, 0o600);
+    }
+    return stagedHome;
+  } catch (error) {
+    // Fail-closed: never hand back a partial staged home. Remove the temp dir
+    // we created before propagating the failure.
+    await fs.rm(stagedHome, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 }

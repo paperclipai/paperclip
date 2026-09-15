@@ -20,7 +20,8 @@ use tungstenite::{accept_hdr_with_config, client_tls_with_config, Connector, Mes
 
 use super::state::{open_private_regular_file, Command, DurableState};
 use super::{
-    BootstrapTicket, DurableRunnerConfig, DurableRunnerError, Secret, PROTOCOL, PROTOCOL_VERSION,
+    BootstrapTicket, DurableRunnerConfig, DurableRunnerError, Secret, PROTOCOL,
+    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
@@ -213,6 +214,39 @@ impl RunnerTransportEndpoint {
             return Ok(Self::Listen { listener, path });
         }
         Ok(Self::Dial(ResolvedWsTarget::resolve(input)?))
+    }
+
+    /// Advance a run-bound transport endpoint without needlessly rebinding the
+    /// fixed provider-ingress listener. `run.attach` changes the WebSocket path
+    /// for the next run while retaining the same sandbox listener. Constructing
+    /// a second `TcpListener` before dropping the first one fails with
+    /// `EADDRINUSE`, which would terminate an otherwise healthy warm runner.
+    pub(crate) fn rotate(&mut self, input: &str, run_id: &str) -> Result<(), DurableRunnerError> {
+        if let Some(remainder) = input.strip_prefix("listen://") {
+            if let Self::Listen { path, .. } = self {
+                let (authority, next_path) = remainder.split_once('/').ok_or_else(|| {
+                    DurableRunnerError::invalid(
+                        "runner_ingress_bind_conflict: listener path is required",
+                    )
+                })?;
+                if authority != "0.0.0.0:43127" {
+                    return Err(DurableRunnerError::invalid(
+                        "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
+                    ));
+                }
+                let next_path = format!("/{next_path}");
+                validate_listener_path(&next_path)?;
+                if next_path != format!("/api/runner/v1/connect/{run_id}") {
+                    return Err(DurableRunnerError::invalid(
+                        "runner listener path does not match the configured run",
+                    ));
+                }
+                *path = next_path;
+                return Ok(());
+            }
+        }
+        *self = Self::new(input, run_id)?;
+        Ok(())
     }
 
     fn open(
@@ -676,6 +710,7 @@ pub(crate) struct LeaseCredential {
     pub(crate) expires_at_unix_ms: u64,
     pub(crate) revocation_epoch: u64,
     token: Secret,
+    pub(crate) renewal_requested: bool,
 }
 
 impl LeaseCredential {
@@ -686,6 +721,7 @@ impl LeaseCredential {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConnectionMetadata {
+    pub(crate) protocol_version: u64,
     pub(crate) connection_id: String,
     pub(crate) lease_id: String,
     pub(crate) expires_at_unix_ms: u64,
@@ -698,6 +734,10 @@ pub(crate) struct Welcome {
     pub(crate) lease: Option<LeaseCredential>,
     pub(crate) acked_source_seq: Option<u64>,
     pub(crate) pending_commands: Vec<Command>,
+    pub(crate) warm_transition_version: Option<u64>,
+    pub(crate) lease_renewal_version: Option<u64>,
+    pub(crate) warm_transition: Option<Value>,
+    pub(crate) warm_transition_phase: Option<String>,
 }
 
 struct SecureChannel {
@@ -947,33 +987,38 @@ impl AuthenticatedTransport {
 
         let authenticate = || -> Result<(Self, Welcome), DurableRunnerError> {
             let client_nonce = random_nonce()?;
+            let mut hello = json!({
+                "protocol": PROTOCOL,
+                "version": PROTOCOL_VERSION,
+                "kind": "auth_hello",
+                "payload": {
+                    "credentialId": credential.credential_id,
+                    "credentialKind": credential_kind,
+                    "clientNonce": client_nonce,
+                    "protocolMin": PROTOCOL_MIN_VERSION,
+                    "protocolMax": PROTOCOL_VERSION,
+                    "warmTransitionVersion": 1,
+                    "runnerInstanceId": state.runner_instance_id,
+                    "environmentLeaseId": state.environment_lease_id,
+                    "runId": state.run_id,
+                    "normalizedSessionId": state.normalized_session_id,
+                    "turnId": state.turn_id,
+                    "itemId": state.item_id,
+                    "runnerVersion": config.runner_version,
+                    "runnerDigest": config.runner_digest,
+                    "resume": {
+                        "lastControllerCommandSeq": state.last_controller_command_seq,
+                        "nextSourceEventSeq": state.next_source_seq,
+                        "ackedSourceSeq": state.acked_source_seq,
+                    },
+                },
+            });
+            if let Some(transition) = &state.warm_transition {
+                hello["payload"]["warmTransitionId"] = json!(transition.receipt.transition_id);
+            }
             send_auth_plain(
                 &mut socket,
-                &json!({
-                    "protocol": PROTOCOL,
-                    "version": PROTOCOL_VERSION,
-                    "kind": "auth_hello",
-                    "payload": {
-                        "credentialId": credential.credential_id,
-                        "credentialKind": credential_kind,
-                        "clientNonce": client_nonce,
-                        "protocolMin": PROTOCOL_VERSION,
-                        "protocolMax": PROTOCOL_VERSION,
-                        "runnerInstanceId": state.runner_instance_id,
-                        "environmentLeaseId": state.environment_lease_id,
-                        "runId": state.run_id,
-                        "normalizedSessionId": state.normalized_session_id,
-                        "turnId": state.turn_id,
-                        "itemId": state.item_id,
-                        "runnerVersion": config.runner_version,
-                        "runnerDigest": config.runner_digest,
-                        "resume": {
-                            "lastControllerCommandSeq": state.last_controller_command_seq,
-                            "nextSourceEventSeq": state.next_source_seq,
-                            "ackedSourceSeq": state.acked_source_seq,
-                        },
-                    },
-                }),
+                &hello,
                 config.max_frame_bytes,
                 connect_deadline,
             )?;
@@ -981,7 +1026,6 @@ impl AuthenticatedTransport {
             let challenge_deadline = socket.configure_auth_timeouts(connect_deadline)?;
             let challenge_value =
                 receive_plain_until(&mut socket, config.max_frame_bytes, challenge_deadline)?;
-            validate_envelope_kind(&challenge_value, "auth_challenge")?;
             let challenge: AuthChallenge = serde_json::from_value(
                 challenge_value
                     .get("payload")
@@ -991,6 +1035,11 @@ impl AuthenticatedTransport {
             .map_err(|error| {
                 DurableRunnerError::invalid(format!("invalid auth challenge: {error}"))
             })?;
+            validate_envelope_kind_version(
+                &challenge_value,
+                "auth_challenge",
+                challenge.selected_version,
+            )?;
             validate_challenge(
                 &challenge,
                 state,
@@ -1016,7 +1065,7 @@ impl AuthenticatedTransport {
                 &mut socket,
                 &json!({
                     "protocol": PROTOCOL,
-                    "version": PROTOCOL_VERSION,
+                    "version": challenge.selected_version,
                     "kind": "auth_response",
                     "payload": {
                         "credentialId": credential.credential_id,
@@ -1057,8 +1106,13 @@ impl AuthenticatedTransport {
             let mut welcome_value = transport
                 .receive_json_until(Some(welcome_deadline))?
                 .ok_or_else(|| DurableRunnerError::invalid("authenticated welcome timed out"))?;
-            let welcome =
-                validate_welcome(&mut welcome_value, state, credential_kind, expected_lease)?;
+            let welcome = validate_welcome(
+                &mut welcome_value,
+                state,
+                credential_kind,
+                expected_lease,
+                challenge.selected_version,
+            )?;
             // Authentication can wait longer for control-plane validation, but
             // the steady-state runner loop must return to provider polling
             // promptly when no control message is available.
@@ -1125,6 +1179,10 @@ struct AuthChallenge {
     credential_lease_id: Option<String>,
     revocation_epoch: u64,
     server_proof: String,
+    #[serde(default)]
+    warm_transition_version: Option<u64>,
+    #[serde(default)]
+    warm_transition_id: Option<String>,
 }
 
 fn validate_challenge(
@@ -1184,17 +1242,29 @@ fn validate_challenge(
         }
     }
     if challenge.server_nonce.is_empty()
-        || challenge.selected_version != PROTOCOL_VERSION
+        || !(PROTOCOL_MIN_VERSION..=PROTOCOL_VERSION).contains(&challenge.selected_version)
         || challenge.credential_expires_at_unix_ms <= current_unix_ms()?
     {
         return Err(DurableRunnerError::invalid(
             "authentication challenge is expired or selected an unsupported protocol",
         ));
     }
+    if state.warm_transition.as_ref().is_some_and(|transition| {
+        challenge.warm_transition_version != Some(1)
+            || challenge.warm_transition_id.as_deref()
+                != Some(transition.receipt.transition_id.as_str())
+    }) {
+        return Err(DurableRunnerError::invalid(
+            "warm transition capability or receipt was not authenticated",
+        ));
+    }
     match expected_lease {
         Some(lease)
             if challenge.credential_lease_id.as_deref() == Some(lease.lease_id.as_str())
-                && challenge.credential_expires_at_unix_ms == lease.expires_at_unix_ms
+                && (challenge.credential_expires_at_unix_ms == lease.expires_at_unix_ms
+                    || (lease.renewal_requested
+                        && state.warm_transition.is_none()
+                        && challenge.credential_expires_at_unix_ms > lease.expires_at_unix_ms))
                 && challenge.revocation_epoch == lease.revocation_epoch => {}
         None if challenge.credential_lease_id.is_none() => {}
         _ => {
@@ -1207,7 +1277,7 @@ fn validate_challenge(
 }
 
 fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
-    canonical_json(&json!({
+    let mut body = json!({
         "credentialId": challenge.credential_id,
         "credentialKind": challenge.credential_kind,
         "clientNonce": challenge.client_nonce,
@@ -1225,8 +1295,14 @@ fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
         "credentialExpiresAt": challenge.credential_expires_at,
         "credentialExpiresAtUnixMs": challenge.credential_expires_at_unix_ms,
         "revocationEpoch": challenge.revocation_epoch,
-    }))
-    .into_bytes()
+    });
+    if let Some(version) = challenge.warm_transition_version {
+        body["warmTransitionVersion"] = json!(version);
+    }
+    if let Some(id) = &challenge.warm_transition_id {
+        body["warmTransitionId"] = json!(id);
+    }
+    canonical_json(&body).into_bytes()
 }
 
 fn canonical_json(value: &Value) -> String {
@@ -1266,15 +1342,16 @@ fn validate_welcome(
     state: &DurableState,
     credential_kind: &str,
     expected_lease: Option<&LeaseCredential>,
+    selected_version: u64,
 ) -> Result<Welcome, DurableRunnerError> {
-    validate_control_identity(value, state, None)?;
-    validate_envelope_kind(value, "welcome")?;
+    validate_control_identity_version(value, state, None, selected_version)?;
+    validate_envelope_kind_version(value, "welcome", selected_version)?;
     let connection_id = required_string(value, "connectionId")?.to_owned();
     let connection_lease_id = required_string(value, "connectionLeaseId")?.to_owned();
     let payload = value
         .get_mut("payload")
         .ok_or_else(|| DurableRunnerError::invalid("welcome payload is required"))?;
-    if payload.get("selectedVersion").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
+    if payload.get("selectedVersion").and_then(Value::as_u64) != Some(selected_version)
         || payload.get("connectionLeaseId").and_then(Value::as_str)
             != Some(connection_lease_id.as_str())
     {
@@ -1297,7 +1374,10 @@ fn validate_welcome(
         .ok_or_else(|| DurableRunnerError::invalid("welcome revocation epoch is required"))?;
     if let Some(expected) = expected_lease {
         if connection_lease_id != expected.lease_id
-            || expires_at_unix_ms != expected.expires_at_unix_ms
+            || (expires_at_unix_ms != expected.expires_at_unix_ms
+                && !(expected.renewal_requested
+                    && state.warm_transition.is_none()
+                    && expires_at_unix_ms > expected.expires_at_unix_ms))
             || revocation_epoch != expected.revocation_epoch
         {
             return Err(DurableRunnerError::invalid(
@@ -1313,6 +1393,7 @@ fn validate_welcome(
                 expires_at_unix_ms,
                 revocation_epoch,
                 token: Secret::new(token),
+                renewal_requested: false,
             })
         }
         None | Some(Value::Null) if credential_kind == "lease" => None,
@@ -1340,6 +1421,7 @@ fn validate_welcome(
         .unwrap_or_default();
     Ok(Welcome {
         connection: ConnectionMetadata {
+            protocol_version: selected_version,
             connection_id,
             lease_id: connection_lease_id,
             expires_at_unix_ms,
@@ -1348,6 +1430,15 @@ fn validate_welcome(
         lease,
         acked_source_seq: payload.get("ackedSourceSeq").and_then(Value::as_u64),
         pending_commands,
+        warm_transition_version: payload.get("warmTransitionVersion").and_then(Value::as_u64),
+        lease_renewal_version: payload
+            .get("connectionLeaseRenewalVersion")
+            .and_then(Value::as_u64),
+        warm_transition: payload.get("warmTransition").cloned(),
+        warm_transition_phase: payload
+            .get("warmTransitionPhase")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -1356,8 +1447,20 @@ pub(crate) fn validate_control_identity(
     state: &DurableState,
     connection: Option<&ConnectionMetadata>,
 ) -> Result<(), DurableRunnerError> {
+    let protocol_version = connection
+        .map(|connection| connection.protocol_version)
+        .unwrap_or(PROTOCOL_VERSION);
+    validate_control_identity_version(value, state, connection, protocol_version)
+}
+
+fn validate_control_identity_version(
+    value: &Value,
+    state: &DurableState,
+    connection: Option<&ConnectionMetadata>,
+    protocol_version: u64,
+) -> Result<(), DurableRunnerError> {
     if value.get("protocol").and_then(Value::as_str) != Some(PROTOCOL)
-        || value.get("version").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
+        || value.get("version").and_then(Value::as_u64) != Some(protocol_version)
     {
         return Err(DurableRunnerError::invalid(
             "control envelope protocol identity is invalid",
@@ -1390,13 +1493,17 @@ pub(crate) fn validate_control_identity(
     Ok(())
 }
 
-fn validate_envelope_kind(value: &Value, kind: &str) -> Result<(), DurableRunnerError> {
+fn validate_envelope_kind_version(
+    value: &Value,
+    kind: &str,
+    protocol_version: u64,
+) -> Result<(), DurableRunnerError> {
     if value.get("protocol").and_then(Value::as_str) != Some(PROTOCOL)
-        || value.get("version").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
+        || value.get("version").and_then(Value::as_u64) != Some(protocol_version)
         || value.get("kind").and_then(Value::as_str) != Some(kind)
     {
         return Err(DurableRunnerError::invalid(format!(
-            "expected a PRP v1 {kind} envelope"
+            "expected a PRP v{protocol_version} {kind} envelope"
         )));
     }
     Ok(())
@@ -1627,6 +1734,8 @@ mod tests {
             item_id: "item_1".to_owned(),
             runner_version: "0.0.0".to_owned(),
             runner_digest: "sha256:test".to_owned(),
+            acpx_launch_profile: None,
+            opencode_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
@@ -1678,6 +1787,8 @@ mod tests {
             credential_lease_id: server_credential.lease_id.map(str::to_owned),
             revocation_epoch: server_credential.revocation_epoch,
             server_proof: String::new(),
+            warm_transition_version: None,
+            warm_transition_id: None,
         };
         let signing = challenge_signing_bytes(&challenge);
         challenge.server_proof = hex_encode(&hmac_domain(
@@ -2160,6 +2271,7 @@ mod tests {
         let state = test_state(&config);
         let mut envelope = control(&state, "connection_1", "ack", json!({"ackedSourceSeq": 0}));
         let connection = ConnectionMetadata {
+            protocol_version: PROTOCOL_VERSION,
             connection_id: "connection_1".to_owned(),
             lease_id: "lease_1".to_owned(),
             expires_at_unix_ms: current_unix_ms().unwrap() + 60_000,
@@ -2205,6 +2317,8 @@ mod tests {
                 credential_lease_id: None,
                 revocation_epoch: 0,
                 server_proof: String::new(),
+                warm_transition_version: None,
+                warm_transition_id: None,
             };
             let signing = challenge_signing_bytes(&challenge);
             challenge.server_proof = hex_encode(&hmac_domain(
@@ -2309,6 +2423,15 @@ mod tests {
 
     #[test]
     fn reconnect_replays_unacked_events_and_not_command_effects() {
+        reconnect_without_reexecuting(false);
+    }
+
+    #[test]
+    fn lost_renewal_reply_reconnects_without_restarting_the_provider() {
+        reconnect_without_reexecuting(true);
+    }
+
+    fn reconnect_without_reexecuting(renewal_reply_lost: bool) {
         struct EventExecutor {
             session_open_calls: Arc<AtomicUsize>,
             shutdown_calls: Arc<AtomicUsize>,
@@ -2346,13 +2469,14 @@ mod tests {
         let mut config = config(port);
         config.max_runtime = Duration::from_secs(5);
         let directory = std::env::temp_dir().join(format!(
-            "paperclip-runner-reconnect-fault-{}",
+            "paperclip-runner-reconnect-fault-{}-{renewal_reply_lost}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&directory);
         config.state_dir = directory.clone();
         let state = test_state(&config);
-        let expires = current_unix_ms().unwrap() + 60_000;
+        let mut expires =
+            current_unix_ms().unwrap() + if renewal_reply_lost { 2_000 } else { 60_000 };
         let open_command = json!({
             "schema": "paperclip.prp.command.v1",
             "commandId": "command_open",
@@ -2387,23 +2511,32 @@ mod tests {
                     revocation_epoch: 0,
                 },
             );
-            send_secure(
-                &mut first,
-                &mut first_secure,
-                &server_config,
-                &welcome(
-                    &server_state,
-                    "connection_1",
-                    Some("lease-secret"),
-                    expires,
-                    0,
-                    vec![server_open.clone()],
-                ),
+            let mut greeting = welcome(
+                &server_state,
+                "connection_1",
+                Some("lease-secret"),
+                expires,
+                0,
+                vec![server_open.clone()],
             );
+            if renewal_reply_lost {
+                greeting["payload"]["connectionLeaseRenewalVersion"] = json!(1);
+            }
+            send_secure(&mut first, &mut first_secure, &server_config, &greeting);
             let first_result = receive_secure(&mut first, &mut first_secure, &server_config);
             let first_event = receive_secure(&mut first, &mut first_secure, &server_config);
             assert_eq!(first_result["kind"], "command_result");
             assert_eq!(first_event["kind"], "event");
+            if renewal_reply_lost {
+                let renewal = receive_secure(&mut first, &mut first_secure, &server_config);
+                assert_eq!(renewal["kind"], "lease_renew");
+                assert_eq!(
+                    renewal["payload"]["connectionLeaseExpiresAtUnixMs"],
+                    json!(expires)
+                );
+                // Commit a new expiry but lose the reply before the runner sees it.
+                expires = current_unix_ms().unwrap() + 60_000;
+            }
             drop(first);
 
             let (second_stream, _) = listener.accept().unwrap();
@@ -2456,6 +2589,22 @@ mod tests {
             );
             let shutdown_result = receive_secure(&mut second, &mut second_secure, &server_config);
             assert_eq!(shutdown_result["kind"], "command_result");
+            send_secure(
+                &mut second,
+                &mut second_secure,
+                &server_config,
+                &control(
+                    &server_state,
+                    "connection_2",
+                    "command_result_ack",
+                    json!({
+                        "commandId": "command_shutdown",
+                        "commandType": "runner.shutdown",
+                        "controllerSeq": 2,
+                        "status": "completed",
+                    }),
+                ),
+            );
         });
 
         let session_open_calls = Arc::new(AtomicUsize::new(0));
@@ -2477,6 +2626,7 @@ mod tests {
         let final_state: DurableState = serde_json::from_slice(&state_bytes).unwrap();
         assert_eq!(final_state.acked_source_seq, 1);
         assert!(final_state.outbox.is_empty());
+        assert!(final_state.pending_terminal_delivery.is_none());
         assert_eq!(final_state.reconnect_count, 1);
         std::fs::remove_dir_all(directory).unwrap();
     }

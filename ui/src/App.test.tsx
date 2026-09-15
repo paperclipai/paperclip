@@ -245,10 +245,13 @@ describe("Skill Studio routes", () => {
 });
 
 describe("Apps routes", () => {
-  it("uses browse as the Apps landing page and gives connections a canonical URL", () => {
+  it("uses one connector landing page and redirects retired browse, connections, and audit URLs", () => {
     expect(appSource).toContain('<Route path="apps" element={<Browse />} />');
     expect(appSource).toContain('<Route path="apps/browse" element={<Navigate to="/apps" replace />} />');
-    expect(appSource).toContain('<Route path="apps/connections" element={<Connections />} />');
+    expect(appSource).toContain('<Route path="apps/connections" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/audit" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/run-your-own" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).not.toContain('import { Connections }');
     expect(appSource).toContain('<Route path="apps/byo" element={<AppsConnect byoOnly />} />');
     expect(appSource).toContain('path="apps/vercel-connect"');
     expect(appSource).toContain('<AppsConnectEntryRoute credentialSource="vercel_connect" />');
@@ -259,7 +262,7 @@ describe("Apps routes", () => {
   });
 
   it("redirects legacy Rules and Health links to the remaining developer surfaces", () => {
-    expect(appSource).toContain('if (tab === "runtime") return "/apps/connections";');
+    expect(appSource).toContain('if (tab === "runtime" || tab === "audit") return "/apps";');
     expect(appSource).toContain('if (tab === "policies") return "/apps/advanced/profiles";');
   });
 });

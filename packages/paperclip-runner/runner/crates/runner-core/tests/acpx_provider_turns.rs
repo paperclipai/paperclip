@@ -32,6 +32,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],
+            verified_launch: None,
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         },
@@ -45,6 +46,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         permission_mode: AcpxPermissionMode::ApproveReads,
         permission_mode_pinned: true,
         system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
         expected_identity: None,
     }

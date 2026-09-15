@@ -72,22 +72,30 @@ function appearsBinary(content: Buffer): boolean {
  * dependency/VCS directories are excluded, symlinks are never followed, and
  * hard limits make this safe to run around an interactive turn.
  */
-export async function capturePaperclipWorkspace(root: string): Promise<PaperclipWorkspaceSnapshot> {
+export async function capturePaperclipWorkspace(
+  root: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<PaperclipWorkspaceSnapshot> {
   const result: PaperclipWorkspaceSnapshot = new Map();
   let retainedBytes = 0;
   let visitedDirectories = 0;
+  const throwIfAborted = () => options.signal?.throwIfAborted();
 
   async function visit(directory: string): Promise<void> {
+    throwIfAborted();
     if (result.size >= MAX_FILES || retainedBytes >= MAX_TOTAL_BYTES || visitedDirectories >= MAX_DIRECTORIES) return;
     visitedDirectories += 1;
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
     } catch {
+      throwIfAborted();
       return;
     }
+    throwIfAborted();
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
+      throwIfAborted();
       if (result.size >= MAX_FILES || retainedBytes >= MAX_TOTAL_BYTES) return;
       if (IGNORED_DIRECTORY_NAMES.has(entry.name)) continue;
       const absolutePath = join(directory, entry.name);
@@ -98,8 +106,9 @@ export async function capturePaperclipWorkspace(root: string): Promise<Paperclip
       if (!entry.isFile()) continue;
       let bytes: Buffer;
       try {
-        bytes = await readFile(absolutePath);
+        bytes = await readFile(absolutePath, { signal: options.signal });
       } catch {
+        throwIfAborted();
         continue;
       }
       const binary = appearsBinary(bytes);

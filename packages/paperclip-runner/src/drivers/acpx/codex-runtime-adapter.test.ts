@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
@@ -27,6 +28,46 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
+  it("stops a turn with an actionable error when approval has no handler", async () => {
+    const runtime = fakeRuntime();
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let signal: AbortSignal | undefined;
+    let settle!: () => void;
+    const finished = new Promise<void>((resolve) => { settle = resolve; });
+    vi.mocked(runtime.startTurn).mockImplementation((input) => {
+      signal = input.signal;
+      signal?.addEventListener("abort", settle, { once: true });
+      return {
+        requestId: "permission-test",
+        promptStarted: Promise.resolve(),
+        events: (async function* () { await finished; })(),
+        result: finished.then(() => ({ status: "cancelled" as const })),
+        cancel: async () => settle(),
+        closeStream: async () => settle(),
+      } as ReturnType<AcpRuntime["startTurn"]>;
+    });
+    const options = openOptions(fakeCommand());
+    options.permissionMode = "approve-reads";
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      createRuntime: (created) => { runtimeOptions = created; return runtime; },
+    });
+    const turn = port.startTurn({ text: "Attempt a write.", requestId: "permission-test" });
+    try {
+      await runtimeOptions!.onPermissionRequest!({
+        sessionId: "backend-1", inferredKind: "write", raw: {},
+      }, { signal: new AbortController().signal });
+      expect(signal?.aborted).toBe(true);
+      await expect(turn.result).rejects.toThrow("Approval required");
+      await expect((async () => { for await (const _event of turn.events) { /* drain */ } })())
+        .rejects.toThrow("Approval required");
+    } finally {
+      settle();
+      await port.close({ reason: "permission failure verified" });
+    }
+  });
+
   it("rejects a pre-aborted admission before constructing or spawning ACPX", async () => {
     const cancellation = new Error("runtime admission cancelled");
     const controller = new AbortController();
@@ -101,9 +142,9 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
-  it.each([["claude" as const, "claude-sonnet-5"]])(
+  it.each([["claude" as const, "claude-sonnet-5", "claude-sonnet-5"]])(
     "opens the qualified %s session through the verified lease",
-    async (agent, model) => {
+    async (agent, model, providerModel) => {
       const runtime = fakeRuntime();
       const command = fakeCommand();
       const options = openOptions(command);
@@ -114,7 +155,7 @@ describe("Codex ACPX runtime adapter", () => {
       await openCodexAcpxRuntime(options, {
         createRegistry: ({ overrides }) => {
           expect(overrides).toEqual({
-            [agent]: ["paperclip-verified-acpx-command"],
+            [agent]: [agent === "claude" ? "/paperclip-verified/claude-agent-acp" : "paperclip-verified-acpx-command"],
           });
           return registry();
         },
@@ -128,13 +169,40 @@ describe("Codex ACPX runtime adapter", () => {
       expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
         PATH: "/verified/bin",
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "",
       });
       expect(runtime.ensureSession).toHaveBeenCalledWith(
         expect.objectContaining({
           agent,
-          sessionOptions: expect.objectContaining({ model }),
+          sessionOptions: expect.objectContaining({ model: providerModel }),
         }),
       );
+    },
+  );
+
+  it.each(["runner-owned", "unowned", "absent"])(
+    "pins Claude completion authority to the %s task bridge",
+    async (binding) => {
+      const options = openOptions(fakeCommand());
+      options.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+      options.launchEnvironment = { PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "http://untrusted.invalid/mcp" };
+      options.mcpServers = binding === "absent" ? [] : [{
+        name: "paperclip", url: "http://127.0.0.1:3210/mcp",
+        bearerToken: "bridge-secret", runnerOwned: binding === "runner-owned",
+      }];
+      let runtimeOptions: AcpRuntimeOptions | undefined;
+      await openCodexAcpxRuntime(options, {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        createRuntime: (created) => {
+          runtimeOptions = created;
+          return fakeRuntime();
+        },
+      });
+      expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
+        PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
+      });
     },
   );
 
@@ -199,26 +267,45 @@ describe("Codex ACPX runtime adapter", () => {
     expect(assertWorkspaceHeld).toHaveBeenCalledOnce();
     expect(command.spawn).not.toHaveBeenCalled();
   });
-  it("maps status, model selection, and state-preserving close", async () => {
+  it("reads verified status from durable state without draining live updates", async () => {
     const runtime = fakeRuntime();
-    vi.mocked(runtime.getStatus!).mockResolvedValue({
-      models: {
-        currentModelId: "gpt-5.6-sol",
-        availableModelIds: ["gpt-5.6-sol"],
+    vi.mocked(runtime.getStatus!).mockReturnValue(new Promise(() => {}));
+    const durableRecord = {
+      acpxRecordId: "record-1",
+      acpSessionId: "backend-1",
+      agentSessionId: "agent-1",
+      lastRequestId: "run:turn-1",
+      request_token_usage: { prompt: { input_tokens: 12, output_tokens: 30 } },
+      cumulative_cost: { amount: 0.1, currency: "USD" },
+      acpx: {
+        current_model_id: "gpt-5.6-sol",
+        available_models: ["gpt-5.6-sol"],
       },
-    });
+    } as never;
+    const durableStore: AcpSessionStore = {
+      load: vi.fn(async () => structuredClone(durableRecord)),
+      save: vi.fn(),
+    };
     const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
-      createStore: () => store(),
+      createStore: () => durableStore,
       createRuntime: () => runtime,
     });
 
-    expect(await port.getStatus()).toEqual({
+    expect(await port.getStatus()).toMatchObject({
+      acpxRecordId: "record-1",
+      backendSessionId: "backend-1",
+      agentSessionId: "agent-1",
+      lastRequestId: "run:turn-1",
+      requestTokenUsage: { prompt: { input_tokens: 12, output_tokens: 30 } },
+      usageCost: { amount: 0.1, currency: "USD" },
       models: {
         currentModelId: "gpt-5.6-sol",
         availableModelIds: ["gpt-5.6-sol"],
       },
     });
+    expect(durableStore.load).toHaveBeenCalledWith("record-1");
+    expect(runtime.getStatus).not.toHaveBeenCalled();
     await port.setModel?.("gpt-5.6-sol");
     expect(runtime.setConfigOption).toHaveBeenCalledWith({
       handle: HANDLE,
@@ -592,9 +679,7 @@ describe("Codex ACPX runtime adapter", () => {
       await finalObserver;
       expect(runtime.close).toHaveBeenCalledTimes(4);
 
-      rejectFinalReconciliation(
-        new Error("final reconciliation failed late"),
-      );
+      rejectFinalReconciliation(new Error("final reconciliation failed late"));
       await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(5));
       expect(runtime.close).toHaveBeenLastCalledWith({
         handle: HANDLE,
@@ -1050,9 +1135,7 @@ describe("Codex ACPX runtime adapter", () => {
         settled = true;
       },
     );
-    await vi.waitFor(() =>
-      expect(child.kill).toHaveBeenCalledWith("SIGTERM"),
-    );
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"));
     await Promise.resolve();
 
     expect(child.signalCode).toBe("SIGTERM");
@@ -1277,22 +1360,188 @@ describe("Codex ACPX runtime adapter", () => {
     const signal = new AbortController().signal;
     const onElicitation = vi.fn();
 
-    expect(
-      port.startTurn({
-        text: "Complete the task.",
-        requestId: "turn-1",
-        signal,
-        onElicitation,
-      }),
-    ).toBe(turn);
+    const admittedTurn = port.startTurn({
+      text: "Complete the task.",
+      requestId: "turn-1",
+      signal,
+      onElicitation,
+    });
+    expect(admittedTurn.requestId).toBe(turn.requestId);
+    await expect(admittedTurn.promptStarted).resolves.toBeUndefined();
+    await expect(admittedTurn.result).resolves.toEqual({ status: "completed" });
     expect(runtime.startTurn).toHaveBeenCalledWith({
       handle: HANDLE,
       text: "Complete the task.",
       mode: "prompt",
       requestId: "turn-1",
-      signal,
+      signal: expect.any(AbortSignal),
       onElicitation,
     });
+  });
+
+  it("observes prompt admission rejection when the sidecar consumes only events and the result", async () => {
+    const runtime = fakeRuntime();
+    const failure = new Error("Recovered provider could not start the prompt");
+    vi.mocked(runtime.startTurn).mockImplementation(() => ({
+      requestId: "turn-recovered-failure",
+      promptStarted: Promise.reject(failure),
+      events: { async *[Symbol.asyncIterator]() { throw failure; } },
+      result: Promise.reject(failure),
+      cancel: vi.fn(),
+      closeStream: vi.fn(),
+    }));
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    });
+    const turn = port.startTurn({ text: "Resume", requestId: "turn-recovered-failure" });
+    const eventDrain = (async () => { for await (const _event of turn.events) { /* drain */ } })();
+    await expect(eventDrain).rejects.toBe(failure);
+    // The sidecar does not await promptStarted. Leave it unconsumed across a
+    // full event-loop turn so an unobserved derived rejection fails this test.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // Observing internally must not replace failure with successful admission.
+    await expect(turn.result).rejects.toBe(failure);
+    await expect(turn.promptStarted).rejects.toBe(failure);
+    await port.close({ reason: "test complete" });
+  });
+
+  it("verifies a lazy recovered provider spawned by model selection before returning", async () => {
+    const runtime = fakeRuntime();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(fakeChild());
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let acknowledgeOwnership!: () => void;
+    const ownership = new Promise<void>((resolve) => { acknowledgeOwnership = resolve; });
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
+      await Promise.resolve();
+      runtimeOptions?.spawnAgent?.({ command: "ignored", args: ["--stdio"], options: {} });
+    });
+    const port = await openCodexAcpxRuntime(openOptions(command), {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: () => ownership,
+      awaitProviderExit: providerOwnershipEstablished,
+      createRuntime: (options) => { runtimeOptions = options; return runtime; },
+    });
+    let admitted = false;
+    const selection = port.setModel!("gpt-5.6-sol").then(() => { admitted = true; });
+    void selection.catch(() => undefined);
+    await vi.waitFor(() => expect(command.spawn).toHaveBeenCalledOnce());
+    expect(admitted).toBe(false);
+    acknowledgeOwnership();
+    await selection;
+    expect(admitted).toBe(true);
+    expect(() => runtimeOptions?.spawnAgent?.({ command: "ignored", args: [], options: {} }))
+      .toThrow("provider spawned after ownership admission was sealed");
+    await port.close({ reason: "test complete" });
+  });
+
+  it("uses a fresh single-use command after a cold model control consumes its launch", async () => {
+    const runtime = fakeRuntime();
+    const freshCommand = () => {
+      const command = fakeCommand();
+      vi.mocked(command.spawn).mockReturnValueOnce(fakeChild()).mockImplementation(() => {
+        throw new Error("Verified ACPX command lease is closed");
+      });
+      return command;
+    };
+    const first = freshCommand();
+    const second = freshCommand();
+    const openCommand = vi.fn(async () => second);
+    const owner = createAcpxCommandLeaseOwner(first, openCommand);
+    let runtimeOptions: AcpRuntimeOptions;
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
+      runtimeOptions.spawnAgent!({ command: "ignored", args: [], options: {} });
+    });
+    vi.mocked(runtime.startTurn).mockImplementation(() => {
+      runtimeOptions.spawnAgent!({ command: "ignored", args: [], options: {} });
+      return {
+        requestId: "cold-turn",
+        promptStarted: Promise.resolve(),
+        events: { async *[Symbol.asyncIterator]() {} },
+        result: Promise.resolve({ status: "completed" }),
+        cancel: vi.fn(),
+        closeStream: vi.fn(),
+      };
+    });
+    const port = await openCodexAcpxRuntime(
+      {
+        ...openOptions(owner.command),
+        refreshConsumedCommand: owner.refreshConsumedCommand,
+      },
+      {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
+        createRuntime: (options) => {
+          runtimeOptions = options;
+          return runtime;
+        },
+      },
+    );
+    await port.setModel!("gpt-5.6-sol");
+    expect(openCommand).toHaveBeenCalledOnce();
+    const turn = port.startTurn({ text: "Resume", requestId: "cold-turn" });
+    await expect(turn.result).resolves.toMatchObject({ status: "completed" });
+    expect(first.spawn).toHaveBeenCalledOnce();
+    expect(second.spawn).toHaveBeenCalledOnce();
+    await port.close({ reason: "test complete" });
+    await owner.command.close();
+  });
+
+  it("admits a verified provider that starts with the first recovered turn", async () => {
+    const runtime = fakeRuntime();
+    const child = fakeChild();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(child);
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let resolvePromptStarted: (() => void) | undefined;
+    const promptStarted = new Promise<void>((resolve) => {
+      resolvePromptStarted = resolve;
+    });
+    const rawTurn = {
+      requestId: "turn-recovered",
+      promptStarted,
+      events: { async *[Symbol.asyncIterator]() {} },
+      result: new Promise<never>(() => undefined),
+      cancel: vi.fn(),
+      closeStream: vi.fn(),
+    };
+    vi.mocked(runtime.startTurn).mockImplementation(() => {
+      queueMicrotask(() => {
+        runtimeOptions?.spawnAgent?.({
+          command: "ignored",
+          args: ["--stdio"],
+          options: {},
+        });
+        resolvePromptStarted?.();
+      });
+      return rawTurn;
+    });
+    const port = await openCodexAcpxRuntime(openOptions(command), {
+      createRegistry: () => registry(),
+      createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
+      createRuntime: (options) => {
+        runtimeOptions = options;
+        return runtime;
+      },
+    });
+
+    const turn = port.startTurn({
+      text: "Resume the task.",
+      requestId: "turn-recovered",
+    });
+    await expect(turn.promptStarted).resolves.toBeUndefined();
+    expect(command.spawn).toHaveBeenCalledTimes(1);
+    expect(() =>
+      runtimeOptions?.spawnAgent?.({
+        command: "ignored",
+        args: ["--stdio"],
+        options: {},
+      }),
+    ).toThrow("provider spawned after ownership admission was sealed");
   });
 
   it("projects only ephemeral MCP bindings and applies fail-closed permissions", async () => {
@@ -1355,7 +1604,7 @@ describe("Codex ACPX runtime adapter", () => {
     await port.close({ reason: "complete" });
   });
 
-  it("delegates permissions that require an unavailable coordinator", async () => {
+  it("rejects permissions that require an unavailable coordinator", async () => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
     const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
@@ -1376,30 +1625,88 @@ describe("Codex ACPX runtime adapter", () => {
         },
         { signal: new AbortController().signal },
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ outcome: "reject_once" });
     await port.close({ reason: "complete" });
   });
 
-  it("fails closed and closes the session when ACPX omits recovery identity", async () => {
-    const runtime = fakeRuntime({ ...HANDLE, agentSessionId: undefined });
-    await expect(
-      openCodexAcpxRuntime(openOptions(fakeCommand()), {
+  it.each([
+    ["codex", "gpt-5.6-sol", "approve-all", { outcome: "allow_once" }],
+    ["codex", "gpt-5.6-sol", "approve-reads", { outcome: "reject_once" }],
+    ["codex", "gpt-5.6-sol", "deny-all", { outcome: "reject_once" }],
+    ["claude", "claude-sonnet-5", "approve-all", { outcome: "allow_once" }],
+    ["claude", "claude-sonnet-5", "approve-reads", { outcome: "reject_once" }],
+    ["claude", "claude-sonnet-5", "deny-all", { outcome: "reject_once" }],
+  ] as const)(
+    "applies the %s/%s ACPX profile's %s mode without an implicit prompt bridge",
+    async (agent, model, permissionMode, expected) => {
+      const runtime = fakeRuntime();
+      let runtimeOptions: AcpRuntimeOptions | undefined;
+      const options = openOptions(fakeCommand());
+      options.profile = resolveQualifiedAcpxProfile(agent, model);
+      options.permissionMode = permissionMode;
+      const port = await openCodexAcpxRuntime(options, {
         createRegistry: () => registry(),
         createStore: () => store(),
-        createRuntime: () => runtime,
-      }),
-    ).rejects.toThrow("ACPX runtime omitted agentSessionId");
-    expect(runtime.close).toHaveBeenCalledWith({
-      handle: { ...HANDLE, agentSessionId: undefined },
-      reason: "ACPX runtime identity validation failed",
-      discardPersistentState: false,
+        createRuntime: (createdOptions) => {
+          runtimeOptions = createdOptions;
+          return runtime;
+        },
+      });
+
+      expect(runtimeOptions?.nonInteractivePermissions).toBe("fail");
+      await expect(
+        runtimeOptions?.onPermissionRequest?.(
+          {
+            sessionId: "session-1",
+            inferredKind: "write",
+            raw: {},
+          },
+          { signal: new AbortController().signal },
+        ),
+      ).resolves.toEqual(expected);
+      await port.close({ reason: "permission policy verified" });
+    },
+  );
+
+  it("uses the real ACP session when no second agent identity is advertised", async () => {
+    const runtime = fakeRuntime({ ...HANDLE, agentSessionId: undefined });
+    const durableStore: AcpSessionStore = {
+      load: vi.fn(async () =>
+        structuredClone({
+          acpxRecordId: "record-1",
+          acpSessionId: "backend-1",
+          acpx: { current_model_id: "gpt-5.6-sol" },
+        } as never),
+      ),
+      save: vi.fn(),
+    };
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(),
+      createStore: () => durableStore,
+      createRuntime: () => runtime,
     });
+
+    await expect(port.identity()).resolves.toEqual({
+      acpxRecordId: "record-1",
+      backendSessionId: "backend-1",
+      agentSessionId: "backend-1",
+    });
+    await expect(port.getStatus()).resolves.toMatchObject({
+      backendSessionId: "backend-1",
+      agentSessionId: "backend-1",
+      models: { currentModelId: "gpt-5.6-sol" },
+    });
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("bounds invalid-identity cleanup before terminating the provider", async () => {
     vi.useFakeTimers();
     try {
-      const runtime = fakeRuntime({ ...HANDLE, agentSessionId: undefined });
+      const runtime = fakeRuntime({
+        ...HANDLE,
+        backendSessionId: undefined,
+        agentSessionId: undefined,
+      });
       vi.mocked(runtime.close).mockImplementation(
         () => new Promise<void>(() => undefined),
       );
@@ -1418,7 +1725,11 @@ describe("Codex ACPX runtime adapter", () => {
               args: ["--stdio"],
               options: {},
             });
-            return { ...HANDLE, agentSessionId: undefined };
+            return {
+              ...HANDLE,
+              backendSessionId: undefined,
+              agentSessionId: undefined,
+            };
           }),
         }),
       });
@@ -2029,6 +2340,7 @@ describe("Codex ACPX runtime adapter", () => {
         },
       }),
     ).rejects.toBe(failure);
+    expect(failure).toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED" });
     expect(runtime.close).toHaveBeenCalledOnce();
     const recoveredClose = vi.mocked(runtime.close).mock.calls[0]![0];
     expect(recoveredClose).toMatchObject({
@@ -2434,7 +2746,6 @@ describe("Codex ACPX runtime adapter", () => {
     expect(retainCleanup).toHaveBeenCalledTimes(4);
     await retainCleanup.mock.calls[3]?.[0];
   });
-
 });
 
 function openOptions(

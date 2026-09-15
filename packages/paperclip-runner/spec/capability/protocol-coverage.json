@@ -7,10 +7,86 @@
     "src/scenarios/scenario-plan.ts"
   ],
   "counts": {
-    "actions": 41,
+    "actions": 45,
     "legacyRequirements": 106
   },
   "actions": [
+    {
+      "id": "create_project",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:create_project",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::create_project has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:create_project"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::create_project has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "list_project_repositories",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:list_project_repositories",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::list_project_repositories has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:list_project_repositories"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::list_project_repositories has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "search_api",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:search_api",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::search_api has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:search_api"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::search_api has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "call_api",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:call_api",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::call_api has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:call_api"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::call_api has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
     {
       "id": "administer_company",
       "ownership": "optional_agent_tool",
@@ -875,7 +951,8 @@
       "id": "list_projects",
       "ownership": "optional_agent_tool",
       "surfaces": [
-        "scenario"
+        "scenario",
+        "live"
       ],
       "legacyAliases": [],
       "contractCase": "protocol-action:list_projects",
@@ -3561,7 +3638,7 @@
     {
       "id": "transcript-accounting",
       "requirement": "assistant transcript capture, token usage, and cost inputs",
-      "deterministicOwner": "src/live/live-session.test.ts"
+      "deterministicOwner": "src/live/live-session.test.ts; src/cli/eval-session.ts"
     },
     {
       "id": "state-reconstruction",

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IssueReviewAttention } from "@paperclipai/shared";
-import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+import { withRecoveryContext } from "./status-only-context.js";
 
 export const ISSUE_REVIEW_PATH_LOST_WAKE_REASON = "issue_review_path_lost";
 export const REVIEW_PATH_RECOVERY_INSTRUCTION =
@@ -100,7 +100,7 @@ export function decideIssueReviewPathRecovery(input: {
   });
   if (input.existingWake) return { kind: "skip", reason: "review-path recovery wake already exists" };
 
-  const payload = withRecoveryModelProfileHint({
+  const payload = withRecoveryContext({
     issueId: input.issueId,
     taskId: input.issueId,
     sourceIssueId: input.issueId,
@@ -116,7 +116,7 @@ export function decideIssueReviewPathRecovery(input: {
     kind: "enqueue",
     idempotencyKey,
     payload,
-    contextSnapshot: withRecoveryModelProfileHint({
+    contextSnapshot: withRecoveryContext({
       ...payload,
       wakeReason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
       source: readNonEmptyString(context.source) ?? "heartbeat.review_path_disposition",

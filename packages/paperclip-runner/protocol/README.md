@@ -1,8 +1,8 @@
-# PRP v1 Contract
+# PRP v1/v2 Contract
 
 The JSON Schema files in `schemas/` are the language-neutral source of truth for
-Paperclip Runner Protocol version 1. The fixtures in `fixtures/` define accepted
-and rejected compatibility cases.
+Paperclip Runner Protocol versions 1 and 2. The fixtures in `fixtures/` define
+accepted and rejected compatibility cases.
 
 ## Compatibility
 
@@ -15,9 +15,37 @@ and rejected compatibility cases.
   it meaning.
 - A required field, enum value, or typed structured-input field is not optional.
 - Question and answer identifiers are stable across the provider boundary.
+- Peers negotiate the highest mutually supported protocol version. Existing v1
+  runners remain compatible but cannot receive v2-only session-goal commands.
 
 The `unknown-optional-fields.json` fixture must be accepted. The
 `unsupported-required-version.json` fixture must be rejected.
+
+## Session goals (v2)
+
+PRP v2 adds a provider-neutral durable session-goal lifecycle. Every v2
+capability snapshot includes `sessionGoals`, even when its availability is
+`unsupported` or `policy_disabled`. Paperclip sends controls only when the
+negotiated capability advertises the corresponding action.
+
+Commands:
+
+- `session.goal.get`
+- `session.goal.set` for objective, status, and optional token budget changes
+- `session.goal.clear`
+
+Events:
+
+- `session.capabilities.updated`
+- `session.goal.snapshot`
+- `session.goal.updated`
+- `session.goal.cleared`
+
+Goal state is separate from Paperclip's company/business goal hierarchy. The
+snapshot distinguishes the durable status from `workingNow`, because an active
+goal can be idle between autonomous turns. A runner emits the full capability
+and authoritative snapshot after every session open or resume. Missing v1
+capability is unsupported; clients do not infer support from an adapter name.
 
 ## Scope
 

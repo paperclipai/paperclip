@@ -37,8 +37,10 @@ export type WorkspaceAccessNotice = {
   action: WorkspaceAccessAction;
 };
 
+export type WorkspaceAccessDisplayState = WorkspaceReadinessState | "stopped";
+
 export type WorkspaceAccessState = {
-  state: WorkspaceReadinessState;
+  state: WorkspaceAccessDisplayState;
   title: string;
   description: string;
   action: WorkspaceAccessAction;
@@ -147,6 +149,9 @@ export function resolveWorkspaceAccessState(input: {
   const servingService = runtimeServices.find(
     (service) => service.status === "running" && service.healthStatus === "healthy" && service.url,
   );
+  const startingService = runtimeServices.find(
+    (service) => service.status === "provisioning" || service.status === "starting",
+  );
   const repairFinishedAt = timestampMs(repair?.finishedAt);
   const servingServiceStartedAt = timestampMs(servingService?.startedAt);
   const provisionFinishedAt = timestampMs(provision?.finishedAt);
@@ -227,9 +232,9 @@ export function resolveWorkspaceAccessState(input: {
   // runtime rows, because it is the only signal that looked inside the clone.
   const staleNotReadyFailure = failure?.reason === "workspace_not_ready" && readinessConfirmsServing;
   if (failure && !staleNotReadyFailure) {
-    if (failure.reason === "runtime_not_running" && !servingService) {
+    if (failure.reason === "runtime_not_running" && !servingService && !startingService) {
       return {
-        state: "provisioning",
+        state: "stopped",
         title: "Workspace is not running",
         description: "Start the workspace runtime to publish its board.",
         action: { kind: "start", label: "Start workspace" },
@@ -266,6 +271,16 @@ export function resolveWorkspaceAccessState(input: {
     }
   }
 
+  if (startingService) {
+    return {
+      state: "provisioning",
+      title: "Workspace is starting",
+      description: "Paperclip is starting the workspace runtime and waiting for its board URL.",
+      action: { kind: "wait", label: "Starting workspace" },
+      handoffAvailable,
+    };
+  }
+
   if (servingService) {
     return {
       state: "ready",
@@ -292,7 +307,7 @@ export function resolveWorkspaceAccessState(input: {
   }
 
   return {
-    state: "provisioning",
+    state: "stopped",
     title: "Workspace is not running",
     description: "Start the workspace runtime to publish its board.",
     action: { kind: "start", label: "Start workspace" },

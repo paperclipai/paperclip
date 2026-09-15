@@ -18,19 +18,34 @@
   "properties": {
     "schema": { "const": "paperclip.prp.fixture.v1" },
     "fixtureVersion": { "const": 1 },
-    "protocolVersion": { "const": 1 },
+    "protocolVersion": { "enum": [1, 2] },
     "name": { "type": "string", "minLength": 1, "maxLength": 120 },
     "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
     "identity": { "$ref": "https://paperclip.dev/schemas/prp/v1/identity.schema.json" },
-    "capabilities": { "$ref": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json" },
+    "capabilities": {
+      "oneOf": [
+        { "$ref": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json" },
+        { "$ref": "https://paperclip.dev/schemas/prp/v2/capabilities.schema.json" }
+      ]
+    },
     "commands": {
       "type": "array",
-      "items": { "$ref": "https://paperclip.dev/schemas/prp/v1/command.schema.json" }
+      "items": {
+        "oneOf": [
+          { "$ref": "https://paperclip.dev/schemas/prp/v1/command.schema.json" },
+          { "$ref": "https://paperclip.dev/schemas/prp/v2/command.schema.json" }
+        ]
+      }
     },
     "events": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "https://paperclip.dev/schemas/prp/v1/event.schema.json" }
+      "items": {
+        "oneOf": [
+          { "$ref": "https://paperclip.dev/schemas/prp/v1/event.schema.json" },
+          { "$ref": "https://paperclip.dev/schemas/prp/v2/event.schema.json" }
+        ]
+      }
     },
     "requests": {
       "type": "array",

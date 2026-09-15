@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskMessageScroller } from "./TaskMessageScroller";
+import { TaskChatScrollNavigation } from "./scroll-navigation";
 
 const PILL_SELECTOR = 'button[aria-label="Scroll to latest"]';
 
@@ -124,6 +125,39 @@ describe("TaskMessageScroller", () => {
     vi.unstubAllGlobals();
   });
 
+  it("applies same-task hash changes and restores each history entry without remounting", async () => {
+    let initialized = false;
+    function navigate(key: string, hash: string, restore = false) {
+      flushSync(() => root.render(
+        <TaskChatScrollNavigation.Provider value={{ key, hash, restore }}>
+          <TaskMessageScroller contentKey="unchanged">
+            <div ref={(node) => {
+              if (node && !initialized) {
+                fakeGeometry(node.parentElement!);
+                initialized = true;
+              }
+            }}>
+              {[100, 500].map((top, index) => <div key={index} id={`nav-comment-${index}`} data-thread-anchor={`nav-comment-${index}`} ref={(node) => {
+                if (node) node.getBoundingClientRect = () => ({ top: top - scroller().scrollTop, bottom: top + 100 - scroller().scrollTop, height: 100 } as DOMRect);
+              }}>Comment {index}</div>)}
+            </div>
+          </TaskMessageScroller>
+        </TaskChatScrollNavigation.Provider>,
+      ));
+    }
+    navigate("desktop-entry-one", "#nav-comment-0");
+    const viewport = scroller();
+    expect(viewport.scrollTop).toBe(100);
+    await scrollTo(viewport, 150);
+    navigate("desktop-entry-two", "#nav-comment-1");
+    expect(scroller()).toBe(viewport);
+    expect(viewport.scrollTop).toBe(500);
+    navigate("desktop-entry-one", "#nav-comment-0", true);
+    expect(viewport.scrollTop).toBe(150);
+    navigate("desktop-entry-one", "#nav-comment-1", true);
+    expect(viewport.scrollTop).toBe(500);
+  });
+
   it("renders children inside the scroll container, pill hidden, scrolled to bottom on mount", () => {
     render();
     const el = scroller();
@@ -133,11 +167,17 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
 
-  it("keeps the scrollbar at the full-width thread viewport edge", () => {
+  it("extends only the streamlined scroll box through the page gutter", () => {
     render();
-    const frame = scroller().parentElement;
+    const el = scroller();
+    const frame = el.parentElement;
 
     expect(frame?.className).toBe("relative min-h-0 flex-1");
+    expect(el.classList).toContain("-right-4");
+    expect(el.classList).toContain("pr-4");
+    expect(el.classList).toContain("md:-right-6");
+    expect(el.classList).toContain("md:pr-6");
+    expect(el.classList).not.toContain("right-0");
   });
 
   it("shows the scrollbar only while scroll activity is recent", () => {
@@ -158,6 +198,13 @@ describe("TaskMessageScroller", () => {
     expect(el.getAttribute("data-scroll-active")).toBe("true");
     vi.advanceTimersByTime(1);
     expect(el.getAttribute("data-scroll-active")).toBeNull();
+  });
+
+  it("contains horizontal overflow so no scrollbar appears above the composer", () => {
+    render();
+
+    expect(scroller().classList).toContain("overflow-x-hidden");
+    expect(scroller().classList).toContain("overflow-y-auto");
   });
 
   it("auto-follows content instantly while pinned", async () => {
@@ -181,6 +228,8 @@ describe("TaskMessageScroller", () => {
     expect(btn).not.toBeNull();
     expect(btn!.className).toContain("tc-scroll-pill-in");
     expect(btn!.className).toContain("size-8");
+    expect(btn!.className).toContain("bottom-7");
+    expect(btn!.className).not.toContain("bottom-3");
     expect(btn!.className).not.toContain("-translate-x-1/2");
     // Icon-only: no visible text.
     expect(btn!.textContent).toBe("");
@@ -251,6 +300,7 @@ describe("TaskMessageScroller", () => {
   });
 
   it("clicking the pill smooth-scrolls, ignores intermediate scroll events, re-pins on arrival", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     render(1);
     const el = scroller();
     fakeGeometry(el);
@@ -272,6 +322,7 @@ describe("TaskMessageScroller", () => {
 
     // Arrival within the threshold re-pins and hides the pill (immediately
     // here: no matchMedia in jsdom → reduced-motion/unmount-now path).
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
     await scrollTo(el, 600);
     expect(pill()).toBeNull();
 
@@ -280,7 +331,23 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(1000);
   });
 
+  it("finishes following at the new bottom when content changes during the latest glide", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
+    render(1);
+    const el = scroller();
+    fakeGeometry(el);
+    el.scrollTo = vi.fn() as unknown as typeof el.scrollTo;
+    await scrollTo(el, 100);
+    await waitForPill(true);
+    pill()!.click();
+    await flushEvents();
+    await scrollTo(el, 250);
+    render(2);
+    expect(el.scrollTop).toBe(1000);
+  });
+
   it("a wheel gesture during the glide cancels easing and stays unpinned", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     render(1);
     const el = scroller();
     fakeGeometry(el);

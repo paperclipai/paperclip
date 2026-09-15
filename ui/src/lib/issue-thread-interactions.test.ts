@@ -313,6 +313,38 @@ describe("issue thread interaction helpers", () => {
     })).toBe("Selection expired after target changed");
   });
 
+  it("uses a confirmation's explicit rejection action in its receipt", () => {
+    const base = {
+      id: "interaction-confirmation",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation" as const,
+      status: "rejected" as const,
+      continuationPolicy: "wake_assignee" as const,
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:01:00.000Z",
+      result: { version: 1 as const, outcome: "rejected" as const },
+    };
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      payload: {
+        version: 1 as const,
+        prompt: "Is this task ready to complete?",
+        rejectLabel: "Continue work",
+      },
+    })).toBe("Selected “Continue work”");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      payload: {
+        version: 1 as const,
+        prompt: "Proceed?",
+      },
+    })).toBe("Declined request");
+  });
+
   it("maps selected checkbox option ids back to labels", () => {
     const labels = getCheckboxConfirmationSelectedLabels({
       payload: {

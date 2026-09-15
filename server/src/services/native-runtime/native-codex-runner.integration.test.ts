@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -59,7 +58,8 @@ const fakeCodexBinary = resolve(
 );
 
 function ensureRunnerTestBinaries(): void {
-  if (existsSync(runnerBinary) && existsSync(fakeCodexBinary)) return;
+  // Cargo's freshness check is necessary even when the files exist: an older
+  // fake provider can otherwise exercise a different protocol than the source.
   execFileSync("cargo", [
     "build",
     "--release",
@@ -73,7 +73,10 @@ function ensureRunnerTestBinaries(): void {
   ], {
     cwd: runnerWorkspace,
     stdio: "inherit",
-    timeout: 180_000,
+    // A clean release build includes every qualified managed-provider SDK.
+    // Keep this below the CI job deadline while allowing that cold compile to
+    // finish on GitHub-hosted runners.
+    timeout: 600_000,
   });
 }
 
@@ -102,7 +105,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
     setupRunnerPrpWebSocketServer(server, {
       apiUrl: `http://127.0.0.1:${address.port}`,
     });
-  }, 240_000);
+  }, 660_000);
 
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();

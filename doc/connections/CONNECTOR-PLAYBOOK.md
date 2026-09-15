@@ -5,6 +5,8 @@ and shipping Paperclip app connections.
 
 Status: canonical end-to-end authoring guide for Apps v2 catalog connections.
 
+For connector artwork, follow [Connector icons](./CONNECTOR-ICONS.md): fixed gray Paperclip frames, authentic vendor artwork, explicit theme variants, optical fit and exact provenance. Brand-library additions do not activate connectors. Use the shared registry/resolver and branding generator; do not introduce per-screen logos or outer-surface overrides.
+
 This runbook is the repeatable, agent-executable procedure for adding a vendor
 to the Apps catalog as data, not as a plugin. It follows the accepted
 connections framework in [PAP-13211](/PAP/issues/PAP-13211), the first-30
@@ -35,6 +37,13 @@ Paperclip resolves short-lived tokens at invocation time. Before writing a
 connector, read [Identity vs. connections](./README.md#identity-vs-connections)
 for the P1/P2/P3 boundary and the D7 standing rule.
 
+AI provider credentials use the same vault, applications, grants, installations,
+and delegation model with `connectionPurpose: ai` and `transport: runtime_auth`.
+They authenticate provider execution and never enter MCP discovery or tool/channel
+execution. Extend the provider's existing catalog entry with typed AI methods;
+reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
+for compatibility, personal defaults, resolver isolation, and legacy adoption.
+
 ## Contents
 
 - [Mental model and support matrix](#mental-model-five-independent-axes)
@@ -42,6 +51,7 @@ for the P1/P2/P3 boundary and the D7 standing rule.
 - [Secret storage and lifecycle](#secret-storage-and-lifecycle)
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
+- [Connection UX and user journeys](#connection-ux-and-user-journeys)
 - [AppDefinition field reference](#appdefinition-field-reference)
 - [Troubleshooting](#troubleshooting-and-failure-classification)
 - [Definition of done](#definition-of-done)
@@ -79,7 +89,7 @@ scripts/ingest-app-definitions.mjs                # human-authored definition so
 packages/shared/src/app-definitions/<slug>.json  # generated definition
 packages/shared/src/app-definitions.generated.ts # generated registry
 ui/public/brands/apps/<slug>.svg                  # official, sanitized mark
-ui/public/brands/apps/manifest.json               # branding provenance
+ui/public/brands/apps/manifest.json               # runtime branding paths
 packages/shared/src/app-definitions.test.ts       # manifest/provider assertions
 ```
 
@@ -107,7 +117,7 @@ chooses all five axes below.
 | Authentication | `oauth`, `api_key`, `none` | How does the provider authorize requests? |
 | OAuth client ownership | `dcr`, `customer`, `platform_shared`, `platform_provisioned` | Who supplies and controls the OAuth client registration? |
 | Credential source | `paperclip_vault`, reviewed `vercel_connect` | Where does durable provider credential material live? |
-| Grant identity | `organization`, `user` | Does the credential act for the company or one person? |
+| Grant identity | `organization`, `user`, `agent` | Does the credential act for the company, one person, or one dedicated agent? |
 
 These axes produce combinations such as:
 
@@ -119,6 +129,8 @@ These axes produce combinations such as:
 - Remote MCP + no auth + required tenant field: Shopify.
 - Remote MCP + Paperclip-managed OAuth client + per-user grant: Google
   Workspace MCP previews.
+- Remote MCP + Paperclip-managed OAuth client + personal or dedicated-agent
+  grant: GitHub. See [GitHub managed connection](./GITHUB.md).
 - Local stdio MCP + approved command template: the Google Sheets robot flow and
   development fixtures.
 - REST API parent + provider-specific child-session bridge: Composio. This is a
@@ -135,6 +147,14 @@ These axes produce combinations such as:
 `api_key` in a method means an authentication mode; it does not mean the
 transport is a REST API. Most current API-key catalog entries authenticate a
 remote MCP server.
+
+Anthropic accounts use the `runtime_auth` AI connection methods. Its obsolete
+`api-key` REST tool method is no longer offered. Existing unsupported REST tool
+connections fail health and catalog checks with HTTP 422 and
+`tool_connection_transport_unsupported`; they never use local stdio templates
+or report a successful MCP probe. Add the provider through its supported account
+flow, then remove the obsolete connection. This does not transfer credentials
+or grants automatically.
 
 For `mcp_remote`, header credentials and secret-bearing generated URLs have the
 complete generic runtime path. The schema also names `query`, `body_json`, and
@@ -274,17 +294,23 @@ The current product behavior is encoded by `recommendedDefaultsForApp` in
 `packages/shared/src/app-definitions.ts`:
 
 - Every discovered action is enabled during successful setup.
-- S1-S3 methods default their actions to **Allowed**, including writes.
-- S4 methods default `write` and `destructive` actions to **Ask first**.
+- Every active action defaults to **Allowed**, including `write` and
+  `destructive` actions, for every connection method.
 - Permanently blocked provider actions stay disabled.
 - Provider/schema-specific changed-tool quarantine remains a separate catalog
   concern; do not turn writes Off as a substitute for correct risk
   classification.
 
-If a destructive provider cannot be safe with those defaults, classify the
-method S4 or add a narrowly reviewed provider policy with tests. Do not hide a
-dangerous tool by misclassifying it as read, and do not silently change global
-defaults in a provider PR.
+This is an opt-in restriction model. Finishing a connection is still limited to
+a board user with connection-configuration access, commits the selected action
+IDs to an auditable profile, and leaves **Ask first** available for any action.
+The open default changes the initial policy; it does not create a route around a
+policy the operator has applied.
+
+If a destructive provider cannot be safe with those defaults, add a narrowly
+reviewed provider policy with tests. Do not hide a dangerous tool by
+misclassifying it as read, and do not silently change global defaults in a
+provider PR.
 
 ## Golden-Path Agent Tutorial
 
@@ -417,6 +443,122 @@ connection work or enforce a real tenant boundary. Follow these rules:
   label is not enforcement. The provider, gateway, wrapper, or managed header/
   query projection must enforce the boundary.
 
+#### Connector-provided skills and tools
+
+Connectors may contribute bundled skills with optional native tools. Keep provider-specific
+instructions out of the universal Paperclip skill and provider-specific tools
+out of the universal runner catalog. Use the trusted connector contribution
+registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
+consumer. This registry describes bundled server implementations, not executable
+code or skill URLs supplied by a credential or external message.
+
+For each contribution, declare its connector key, bundled skill, namespaced tool
+definitions, resource-assignment resolver, and execution handler. Use names such
+as `agentmail_send` rather than extending core tools with provider-specific
+branches. Existing MCP connectors continue to use their normal MCP tool catalog;
+they do not need a duplicate native wrapper just to supply a skill.
+
+**Resolve eligibility from current assignments and access.** An AgentMail account
+credential alone does not give an agent email capabilities. An active inbox
+assigned to that agent does, provided both the inbox connection and saved
+credential access remain authorized and the experimental chat-connector flag is
+on. Other connectors must define an equally concrete assignment rule. Keep every
+lookup company-scoped. Revoked grants, disabled connections, removed assignments,
+and experimental gates must remove the contribution. Fail closed on lookup errors.
+
+**Install skills transparently through the existing runtime skill path.** Merge
+system-managed contributions with the agent's chosen skills for each run, without
+writing them into its saved skill preferences. Deduplicate multiple resources
+from the same connector into one skill. Include only authorized resource context,
+never provider secrets; treat resource values as data. Supply the short skill
+description for discovery and keep detailed instructions in the skill. The same
+resolved set must reach local CLI adapters, sandbox adapters, and native runners.
+Adapters with isolated skill delivery receive the bundle. Adapters that install
+into shared user directories receive the same assigned skill in the run prompt,
+including resumed turns, without writing connector files into that directory.
+Manual skill-sync operations must also exclude automatic connector bundles.
+The agent Skills page should identify automatic contributions and explain that
+assignment controls them; they are not independently enabled/disabled there.
+
+**Bind tools to the same resolved skill assignment.** Native sessions advertise
+only contributions present in their pinned runtime skill bundle. Include skill
+content, resource assignments, and tool revisions in session compatibility so a
+changed assignment cannot reuse stale declarations. Revalidate live assignment,
+company/task/run authority, and configured action policy on every execution.
+Removing a tool from discovery alone is not revocation enforcement. Retained
+provider sessions and previously issued calls must fail after access is revoked.
+
+**Avoid shared runtime contamination.** Do not install assignment-specific skills
+into a company-wide or user-wide runtime home. Use immutable skill bundles and
+scoped runtime directories. Codex CLI connector runs use a separate home per
+agent and connector-skill revision, seeded from the selected model credential
+home. Disconnecting returns to a runtime without those skills; another agent must
+never inherit them. Preserve explicit model identity and normal session recovery.
+
+Required tests cover no assignment, credential access without a resource,
+authorized assignment, multiple resources with one skill, cross-company access,
+revocation during a retained run, disabled flags/connections, and reassignment.
+Verify skill installation and removal in both CLI/sandbox and native execution,
+including tool discovery, runtime cache changes, and absence of provider secrets.
+Exercise an actual connector operation through the contributed tool, not just
+its declaration. Record which runtime paths were tested live versus deterministically.
+
+#### Connection UX and user journeys
+
+Design the whole journey, from finding the app to doing useful work with an
+agent. A successful credential exchange is only one step. Describe who the
+user is, where they start, what they want to accomplish, and where they will
+see the result. Walk through first use, returning use, and recovery from a
+failed action. For messaging connections, cover both agent-initiated work and
+incoming messages that start or continue work.
+
+**Separate connecting from assigning an agent a resource.** First configure
+who can use the connection and authenticate with the provider. If the feature
+also assigns a resource to a specific agent, offer a second wizard from the
+connection's Permissions view after the connection is saved. Give its entry
+point a prominent, concrete action name. For example, AgentMail uses “Give an
+agent an email address,” followed by Agent → Email address → Review. Reuse the
+saved credential; do not ask for the API key again. Use the existing numbered
+step pattern, sensible defaults, Back and Cancel, and a clear completion state.
+Do not add a second wizard when there is no separate assignment to configure.
+
+Let the operator search eligible company agents, including agents not yet on
+the connection's allowed list. When assigning a resource also grants connection
+access, make that consequence clear and persist the grant through the existing
+access machinery. Respect the operator's authority to grant access, and show
+the selected agent's avatar and name.
+
+**Use the minimum text needed to make the next action clear.** Prefer familiar
+controls and precise labels over explanatory paragraphs. Remove repeated
+headings, redundant access summaries, implementation details, and reassurance
+that does not help the user decide or act. Keep necessary warnings, meaningful
+consequences, and actionable errors. Put optional expert settings under a
+collapsed Advanced disclosure. Link to provider-owned administration, such as
+AgentMail allowlists, rather than rebuilding it in Paperclip.
+
+**Keep ongoing interactions in Paperclip tasks.** Connections are where users
+set up access and configuration; tasks are where they work with agents. Design
+what happens after setup: how an agent invokes the connection, where incoming
+work lands, how follow-ups stay associated with that work, and how users see
+success or recover from failure. Avoid introducing a separate mailbox or
+provider dashboard as the primary interaction surface.
+
+Use rich cards in the task feed when they make external activity easier to
+understand. An email card, for example, can show the sender, recipients, body,
+attachments, and delivery state. Keep external activity distinguishable from
+internal discussion; a task comment or agent progress update must not imply
+that an external action occurred. Reuse existing task-feed components and
+preserve one visible record per external event.
+
+**Make interactive Storybooks for setup and actual use.** Include the catalog
+card, access and credential steps, any agent-resource wizard, and the task
+journeys after setup. Provide a clickable walkthrough plus focused stories for
+important steps, loading, errors, and recovery. Use realistic fixtures and
+clearly label simulated actions. Reuse production components as implementation
+lands, and replace obsolete stories so the examples describe the current
+experience. Storybooks support design review and deterministic interaction
+tests; they do not replace a real-provider browser test.
+
 ### Phase 4: Add official branding before exposing the app
 
 Every store-visible provider needs an official local mark. A letter tile is
@@ -431,15 +573,15 @@ only a runtime image-failure fallback.
    external executable content, or unsafe references.
 5. Save assets under `ui/public/brands/apps/`. Add a `-dark` variant only when
    the normal mark loses contrast in dark mode.
-6. Add the provider to `ui/public/brands/apps/manifest.json` with slug, local
-   asset, optional dark asset, official source URL, exact upstream asset URL,
-   asset type, visibility, and dark-variant requirement.
+6. Add the provider to `ui/public/brands/apps/manifest.json` with slug, name,
+   local asset, optional dark asset, visibility, and optional aliases. Keep source
+   URLs and verification notes in the review record, outside the public manifest.
 7. Let the ingestion script derive `branding.logoUrl` and `darkLogoUrl` from the
-   provenance manifest.
+   runtime manifest.
 
 The manifest test decodes PNG headers, requires at least 128 by 128 pixels,
 sanity-checks SVG markup, verifies files exist, and requires store-visible
-definitions and visible provenance entries to match exactly.
+definitions and visible manifest entries to match exactly.
 
 ### Phase 5: Author the definition at the durable source
 
@@ -681,7 +823,11 @@ At minimum, add or update tests in these layers:
   declared.
 - Finish setup resumes the exact draft using `resumeConnectionId`.
 - Optional customer OAuth details stay folded when automatic OAuth exists.
-- Setup success leads to the connection's Test page.
+- Setup success leads to the connection's Test page, or to Permissions when a
+  separate agent-resource assignment is the next step. Follow the
+  [connection UX guidance](#connection-ux-and-user-journeys).
+- Interactive Storybooks cover setup and ongoing task interactions, including
+  relevant failure states; the walkthrough matches the implemented journey.
 - Missing images fall back at runtime, while manifest acceptance still fails
   missing branding.
 
@@ -742,13 +888,17 @@ Walk the user path:
    it returns to
    `?source=<slug>&resume=<connection-id>` without creating another draft.
 7. Complete setup. Confirm the connection is active/healthy and opens
-   `/<company-prefix>/apps/<connection-id>/test`.
+   `/<company-prefix>/apps/<connection-id>/permissions`, then use the action's
+   **Test** button.
 
 For OAuth, the instance callback must be browser-reachable and must match the
 provider registration. Loopback HTTP is acceptable only when provider and
-Paperclip redirect policies permit it. A worktree exposed through HTTPS needs a
-unique, correct `PAPERCLIP_PUBLIC_URL`; internal service hostnames are not valid
-browser callback origins.
+Paperclip redirect policies permit it. Browser-started setup on an authenticated
+private instance automatically uses the same-origin HTTPS address that served
+the setup page, including a Tailscale Serve address; the request must pass the
+hostname and board-mutation guards. An explicit `PAPERCLIP_PUBLIC_URL` remains
+available for non-browser starts and unusual proxy topologies. Internal service
+hostnames are not valid browser callback origins.
 
 Use the browser signed-in session only for an explicitly authorized live proof.
 Do not inspect cookies, storage, saved passwords, or unrelated account data.
@@ -953,7 +1103,7 @@ Suggested PR verification block:
 | `consoleLinks` | Official registration, key, settings, and docs destinations. |
 | `warnings` | Plan, preview, admin, financial, production-data, or destructive-action caveats. |
 | `variants` | Legacy/simple variant metadata. Prefer explicit methods plus `capabilityProfile` for materially different endpoints/auth. |
-| `riskTier` | S1-S4 provider/method sensitivity. Drives recommended policy defaults. |
+| `riskTier` | S1-S4 provider/method sensitivity used for review and validation. |
 | `requiredResourceFilters` | Reviewed resource boundaries. Must be backed by enforcement, not only copy. |
 | `credentialSources.vercelConnect` | Reviewed services, principal modes, scopes, and header projection for the Vercel exception. |
 
@@ -1146,7 +1296,7 @@ Capture:
   `requiredResourceFilters` only when their documented semantics apply.
 - `setupPrerequisite`, `warnings`, `guidanceMd`, and `consoleLinks`: everything
   the operator must know before credentials or consent.
-- `riskTier`: the method-level S1-S4 tier that drives central access defaults.
+- `riskTier`: the method-level S1-S4 tier used for review and validation.
 - `availability`: whether the connection is usable on this instance and the
   precise reason when it is not.
 
@@ -1187,8 +1337,8 @@ Risk classes:
 | Risk | Examples | Default |
 | --- | --- | --- |
 | `read` | Search, list, fetch metadata/content inside allowed resources. | Active when profile includes the app or read risk level. |
-| `write` | Create issue, add comment, update status, append block, trigger redeploy. | Allowed for S1-S3 under the current product default; ask-first for S4. |
-| `destructive` | Delete, refund, cancel production deployment, send external message, broad tenant mutation. | Allowed for S1-S3 and ask-first for S4 under the current default. A provider with meaningful destructive capability should normally be S4 or receive a reviewed explicit policy. |
+| `write` | Create issue, add comment, update status, append block, trigger redeploy. | Allowed under the current new-connection default. Operators may narrow individual actions. |
+| `destructive` | Delete, refund, cancel production deployment, send external message, broad tenant mutation. | Allowed under the current new-connection default. A provider with meaningful destructive capability should receive an explicit security review and may receive a narrower provider policy. |
 
 Changed-action quarantine is available when a connection sets
 `quarantineNewEntries: true`. Use it for providers whose catalog can change
@@ -1200,6 +1350,11 @@ connection actually enables it.
 ### Step 7: Select The Wizard Path
 
 The wizard path comes from auth mode and transport:
+
+These paths describe authentication and provisioning. Apply the
+[connection UX guidance](#connection-ux-and-user-journeys) to the user-facing
+sequence: choose access before authentication, then configure any per-agent
+resource through a separate wizard on the saved connection.
 
 | Auth mode | Operator path | Stored result |
 | --- | --- | --- |
@@ -1236,8 +1391,8 @@ Recommended defaults for a new catalog entry:
 
 - Use the central `recommendedDefaultsForApp` policy. Do not invent a provider
   default in UI code.
-- S1-S3 actions default Allowed. S4 writes and destructive actions default Ask
-  first.
+- All active actions default Allowed for every method tier. Operators can move
+  individual actions to Ask first or Off after setup.
 - Classify a method S4 when its normal catalog includes payments, external
   sends, refunds, production deployment, deletion, tenant-wide administration,
   or comparable high-impact mutations.
@@ -1254,7 +1409,8 @@ Recommended defaults for a new catalog entry:
 - Catalog discovery produces the expected actions and the declared changed-tool
   behavior.
 - An allowed read call succeeds through the gateway.
-- A write call matches the method tier: Allowed for S1-S3, Ask first for S4.
+- A write call is Allowed by the new-connection default unless an explicit
+  provider or operator policy narrows it.
 - A blocked/quarantined action, when declared, cannot be listed or invoked by
   an agent.
 - Revocation removes tools and blocks execution immediately.
@@ -1508,7 +1664,7 @@ Copy this section into a connector proposal or implementation issue.
 - Connect evidence:
 - Catalog evidence:
 - Allowed read:
-- Governed write (Allowed for S1-S3, Ask first for S4):
+- Governed write (Allowed by default; operator policy may narrow it):
 - Denied/quarantined case:
 - Revoke:
 - Audit:
@@ -1782,8 +1938,8 @@ plain-HTTP non-loopback origins.
   loopback HTTP (Notion's redirect-URI rule). A plain-HTTP non-loopback origin
   gets "This provider requires an HTTPS or loopback origin. Configure TLS
   before connecting." — add TLS first (e.g. a tailscale cert, as
-  paperclip-dev did). The `enableApps` experimental setting must be on for
-  `/apps/*` routes. The connecting user must be allowed to install
+  paperclip-dev did). Apps is a standard product surface and `/apps/*` routes
+  are always available. The connecting user must be allowed to install
   integrations in their Notion workspace.
 - How to verify: visit `/PAP/apps/connect?source=notion`, complete the Notion
   consent flow, and land on the wizard's actions step listing `notion-*`

@@ -64,6 +64,7 @@ export interface AcpxExpectedSessionIdentity {
   requestedModel: string;
   effectiveModel: string;
   permissionMode?: NativeAcpxPermissionMode;
+  providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
 export function parseAcpxSidecarRequest(value: unknown): AcpxSidecarRequest {

@@ -181,7 +181,18 @@ export class CapabilitySemanticDispatcher {
     return {
       ...createCapabilitySemanticPolicyContext(
         context,
-        scenario,
+        {
+          ...scenario,
+          // These descriptors belong to the server's authenticated project
+          // authority. This mock command port has no project/repository binding;
+          // it must neither advertise nor accept them merely for lacking claims.
+          denyOperations: [...new Set([
+            ...(scenario.denyOperations ?? []),
+            "create_project" as const,
+            "list_project_repositories" as const,
+            "list_projects" as const,
+          ])],
+        },
         this.options.explicitClaims ?? context.capabilities,
       ),
       runId,

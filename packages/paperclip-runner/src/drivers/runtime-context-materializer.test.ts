@@ -149,6 +149,7 @@ describe("runtime context materialization", () => {
     const config = await readFile(join(codexHome, "config.toml"), "utf8");
     expect(config).toContain("shell_snapshot = false");
     expect(config).toContain("paperclip-assigned");
+    expect(config).toContain('default_tools_approval_mode = "approve"');
     expect(config).toContain("Bearer ");
     expect(config).not.toContain("unassigned");
   });

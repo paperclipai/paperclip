@@ -1213,7 +1213,7 @@ Duplicate headings receive stable suffixes.
     expect(markup).not.toContain("Permissions are stored but not enforced");
   });
 
-  it("renders distillation settings with assigned-agent model selection and cheap path without budget controls", () => {
+  it("renders distillation settings with assigned-agent execution without budget controls", () => {
     mockPathname = "/PAP/wiki/settings/distillation";
     mockDistillationOverviewData = {
       counts: { cursors: 1, runningRuns: 0, failedRuns24h: 0, reviewRequired: 0 },
@@ -1236,8 +1236,6 @@ Duplicate headings receive stable suffixes.
     expect(markup).toContain("Agent execution");
     expect(markup).toContain("Assigned maintainer");
     expect(markup).toContain("Wiki Maintainer · claude local");
-    expect(markup).toContain("Cheap path");
-    expect(markup).toContain("assigneeAdapterOverrides.modelProfile = cheap");
     expect(markup).toContain("All sections — apply when source hash matches and confidence");
     expect(markup).not.toContain("Per-task budget");
     expect(markup).not.toContain("Project total budget");
@@ -2279,12 +2277,11 @@ Duplicate headings receive stable suffixes.
     await plugin.definition.setup(harness.ctx);
     const result = await harness.performAction<{
       status: string;
-      operation: { issue: { originKind: string; billingCode: string | null; assigneeAgentId: string | null; assigneeAdapterOverrides: { modelProfile?: string } | null; description: string | null } };
+      operation: { issue: { originKind: string; billingCode: string | null; assigneeAgentId: string | null; assigneeAdapterOverrides: Record<string, unknown> | null; description: string | null } };
       workItem: { kind: string; workItemId: string };
     }>("distill-paperclip-now", {
       companyId: COMPANY_ID,
       autoApply: false,
-      useCheapModelProfile: true,
       includeSupportingPages: false,
     });
 
@@ -2293,7 +2290,7 @@ Duplicate headings receive stable suffixes.
     expect(result.operation.issue.originKind).toBe(`${OPERATION_ORIGIN_KIND}:distill`);
     expect(result.operation.issue.billingCode).toBe("plugin-llm-wiki:default");
     expect(result.operation.issue.assigneeAgentId).toBe(wikiMaintainerAgent().id);
-    expect(result.operation.issue.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
+    expect(result.operation.issue.assigneeAdapterOverrides).toBeNull();
     expect(result.operation.issue.description).toContain("Prompt source: LLM Wiki plugin action `distill-paperclip-now`");
     expect(result.operation.issue.description).toContain(`Required skill: use the installed \`${PAPERCLIP_DISTILL_SKILL_KEY}\` skill`);
     expect(result.operation.issue.description).toContain("Do not hardcode a single project");

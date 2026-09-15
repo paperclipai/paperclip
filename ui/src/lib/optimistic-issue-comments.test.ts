@@ -127,6 +127,7 @@ describe("optimistic issue comments", () => {
     );
 
     expect(merged.map((comment) => comment.id)).toEqual(["comment-1"]);
+    expect(merged[0]).toMatchObject({ clientId: optimistic.clientId });
   });
 
   it("reconciles repeated identical comments one-for-one", () => {

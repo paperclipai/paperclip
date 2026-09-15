@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
+import { readCompletedAssistantMessageCandidate, resolveHeartbeatRunResponse, selectHeartbeatRunFinalAgentMessage } from "../heartbeat-run-summary.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -40,6 +41,10 @@ import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { materializeRuntimeQuestionFallback } from "./native-session-executor.js";
+import {
+  subscribeAllCompanyLiveEvents,
+  subscribeCompanyLiveEvents,
+} from "../live-events.js";
 
 describe("PaperclipControlPlanePort conformance", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -333,17 +338,193 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect.objectContaining({ phase: "committed" }),
     ]);
     await expect(db.select().from(issues).where(eq(issues.id, identity.issueId))).resolves.toEqual([
-      expect.objectContaining({ status: "in_review", statusVersion: 1 }),
+      expect.objectContaining({ status: "in_progress", statusVersion: 1 }),
     ]);
     await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, identity.runId))).resolves.toEqual([
       expect.objectContaining({ phase: "committed" }),
     ]);
     await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, identity.issueId))).resolves.toEqual([
-      expect.objectContaining({ toStatus: "in_review", reasonCode: "external_verification_required", applicationState: "applied" }),
+      expect.objectContaining({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete", applicationState: "applied" }),
     ]);
     await expect(db.select().from(activityLog).where(eq(activityLog.entityId, identity.issueId))).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]),
     );
+  });
+
+  it("signals committed safe progress after row visibility without forwarding its payload", async () => {
+    const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
+    const issueId = "40000000-0000-4000-8000-000000000042";
+    const runId = "41000000-0000-4000-8000-000000000042";
+    const sessionId = "42000000-0000-4000-8000-000000000042";
+    const runnerInstanceId = "43000000-0000-4000-8000-000000000042";
+    const localContractId = "44000000-0000-4000-8000-000000000042";
+    const localContractSha = "safe-progress-signal-contract";
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: identity.companyId,
+      title: "Signal committed safe progress",
+      status: "in_progress",
+      assigneeAgentId: identity.agentId,
+      workMode: "standard",
+    });
+    await db.insert(completionContracts).values({
+      id: localContractId,
+      companyId: identity.companyId,
+      issueId,
+      revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1",
+      policyVersion: "phase6-v1",
+      risk: "standard",
+      completionAuthority: "server_arbiter",
+      incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: {
+        revision: "phase6-v1",
+        objective: "Signal committed safe progress",
+        criteria: [{ id: "objective", requirement: "Signal progress" }],
+      },
+      canonicalSha256: localContractSha,
+      createdByActorType: "system",
+      createdByActorId: "test",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: identity.companyId,
+      agentId: identity.agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      nativeSessionId: sessionId,
+      runnerInstanceId,
+      completionContractId: localContractId,
+      completionContractSha256: localContractSha,
+      contextSnapshot: { issueId },
+    });
+    const observerDb = createDb(temporary!.connectionString);
+    const observed: Array<Record<string, unknown>> = [];
+    const committedCallbacks: string[] = [];
+    let visibilityCheck: Promise<Array<{ eventType: string }>> | null = null;
+    const unsubscribe = subscribeAllCompanyLiveEvents((event) => {
+      if (
+        event.companyId !== identity.companyId ||
+        event.type !== "heartbeat.run.event" ||
+        event.payload.runId !== runId
+      ) return;
+      observed.push(event.payload);
+      visibilityCheck = observerDb
+        .select({ eventType: heartbeatRunEvents.eventType })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId));
+    });
+    const port = new PaperclipControlPlanePort(db, {
+      companyId: identity.companyId,
+      issueId,
+      runId,
+      agentId: identity.agentId,
+      sessionId,
+      completionContractId: localContractId,
+      completionContractSha256: localContractSha,
+      sourceInstanceId: runnerInstanceId,
+      controlPlaneSourceInstanceId: `safe-progress-control-${runId}`,
+    }, {
+      onCommittedEvent: async (event) => {
+        committedCallbacks.push(event.sourceEventId);
+      },
+    });
+    await port.openRun({
+      identity: { ...identity, issueId, runId, sessionId },
+      backendKind: "mock",
+      sourceInstanceId: runnerInstanceId,
+    });
+    const progressEvent: PrpEvent = {
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: "safe-progress-signal:1",
+      sourceSeq: 1,
+      sourceInstanceId: runnerInstanceId,
+      sourceKind: "runner",
+      runId,
+      normalizedSessionId: sessionId,
+      turnId: "safe-progress-signal-turn",
+      eventType: "tool.execution.started",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-09-08T10:30:00.000Z",
+      payload: {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "safe-progress-execution",
+        transport: "builtin",
+        operation: "execute",
+        name: "must-not-cross-live-signal",
+        target: null,
+        namespace: null,
+        readOnly: false,
+        status: "running",
+        durationMs: null,
+        exitCode: null,
+        progress: null,
+        output: "must-not-cross-live-signal",
+        outputBytes: 26,
+        outputTruncated: false,
+        outputDigest: `sha256:${"a".repeat(64)}`,
+      },
+    };
+    try {
+      await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
+        disposition: "committed",
+      });
+      await expect(visibilityCheck).resolves.toEqual([
+        { eventType: "tool.execution.started" },
+      ]);
+      expect(observed).toEqual([{
+        runId,
+        agentId: identity.agentId,
+        issueId,
+        seq: 1,
+        eventType: "tool.execution.started",
+      }]);
+      expect(JSON.stringify(observed)).not.toContain("must-not-cross-live-signal");
+
+      await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
+        disposition: "duplicate",
+      });
+      expect(observed).toHaveLength(1);
+
+      const unsubscribeThrowingListener = subscribeCompanyLiveEvents(
+        identity.companyId,
+        () => {
+          throw new Error("simulated_live_listener_failure");
+        },
+      );
+      try {
+        await expect(port.appendEvent({
+          ...progressEvent,
+          sourceEventId: "safe-progress-signal:2",
+          sourceSeq: 2,
+        })).resolves.toMatchObject({ disposition: "committed" });
+      } finally {
+        unsubscribeThrowingListener();
+      }
+      expect(committedCallbacks).toEqual([
+        "safe-progress-signal:1",
+        "safe-progress-signal:2",
+      ]);
+      expect(observed).toHaveLength(1);
+
+      await expect(port.appendEvent({
+        ...progressEvent,
+        sourceEventId: "safe-progress-signal:3",
+        sourceSeq: 3,
+        eventType: "turn.started",
+        payload: {},
+      })).resolves.toMatchObject({ disposition: "committed" });
+      expect(observed).toHaveLength(1);
+      expect(committedCallbacks).toEqual([
+        "safe-progress-signal:1",
+        "safe-progress-signal:2",
+        "safe-progress-signal:3",
+      ]);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("recovers a runtime question when the event commits before its callback", async () => {
@@ -495,7 +676,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     ]);
   });
 
-  it("completes one selected Paperclip task through the public package session contract", async () => {
+  it("persists a delayed final answer and replay before resolving the selected task response", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const sessionId = taskSessionId;
     const evidenceRef = `work_product:${taskWorkProductId}`;
@@ -519,9 +700,13 @@ describe("PaperclipControlPlanePort conformance", () => {
       emittedAt: `2026-08-09T02:59:0${sourceSeq}.000Z`,
       payload,
     });
+    const finalText = "The launch has two stages. Source: https://example.invalid/launch/STREAM-42";
+    const finalAnswer = event(2, "item.completed", { kind: "agentMessage", channel: "final", text: finalText });
     const events = [
       event(1, "run.result.proposed", taskResult),
-      event(2, "turn.completed", {}),
+      finalAnswer,
+      finalAnswer, // Exact replay must not create another stored answer.
+      event(3, "turn.completed", {}),
     ];
     const backend: NativeSessionBackend = {
       async descriptor() {
@@ -537,9 +722,13 @@ describe("PaperclipControlPlanePort conformance", () => {
         return {
           identity: () => input.identity,
           async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
-          async *events() { yield* events; },
+          async *events() {
+            yield events[0]!;
+            await new Promise((resolve) => setTimeout(resolve, 6_000));
+            yield* events.slice(1);
+          },
           async startTurn() { return { turnId: "turn-phase6-paperclip-task" }; },
-          cancel() { return { cleanup: Promise.resolve() }; },
+          cancel() { throw new Error("A completion report must not interrupt the provider"); },
           async result() { return { result: taskResult, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId: "turn-phase6-paperclip-task" }; },
           async snapshot() { return { backendKind: "mock", sessionId, identity: input.identity, providerSessionId: "provider-phase6-paperclip-task" }; },
           async close() {},
@@ -606,6 +795,23 @@ describe("PaperclipControlPlanePort conformance", () => {
       controlPlaneInstanceId: "phase6-control-plane",
     });
     expect(completed.terminal.runTerminalState).toBe("succeeded");
+    const stored = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, taskRunId)).orderBy(asc(heartbeatRunEvents.seq));
+    const answers = stored.filter((row) => row.eventType === "item.completed");
+    expect(answers).toHaveLength(1);
+    const finalAgentMessage = selectHeartbeatRunFinalAgentMessage({
+      candidates: answers.flatMap((row) => {
+        const candidate = readCompletedAssistantMessageCandidate({ seq: row.seq, prpEvent: row.payload?.prpEvent });
+        return candidate ? [candidate] : [];
+      }),
+    });
+    const response = resolveHeartbeatRunResponse({
+      resultJson: { nativeResult: taskResult }, finalAgentMessage,
+    });
+    expect(resolveHeartbeatRunResponse({ resultJson: { nativeResult: taskResult } }).text).toBe(taskResult.summary);
+    expect(response.text).toBe(finalText);
+    expect(response.decision.chosenSource).toBe("final_agent_message");
+    expect(stored.findIndex((row) => row.eventType === "run.result.accepted"))
+      .toBeGreaterThan(stored.findIndex((row) => row.eventType === "item.completed"));
     await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" });
     await expect(port.completeRun({
       result: taskResult,
@@ -831,7 +1037,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       backendKind: "mock",
       sourceInstanceId: runnerInstanceId,
     });
-    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const };
+    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }, { kind: "review" as const, summary: "Review release notes", ownerClass: "human" as const }] };
     await port.completeRun({
       result,
       terminal: { ...CONTROL_PLANE_CONFORMANCE_TERMINAL, reportedWorkDisposition: "needs_review" },
@@ -861,8 +1067,44 @@ describe("PaperclipControlPlanePort conformance", () => {
       { userId: "reviewer-24" },
     );
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
+      expect.objectContaining({ status: "in_review" }),
+    ]);
+    const remaining = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+    expect(remaining).toHaveLength(2);
+    const secondReview = remaining.find((entry) => entry.status === "pending")!;
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+      secondReview.id, {}, { userId: "reviewer-24" },
+    );
+    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
       expect.objectContaining({ status: "done" }),
     ]);
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    const newRevision = "review-round-two";
+    const reviews = [];
+    for (const key of ["one", "two"]) {
+      reviews.push(await issueThreadInteractionService(db).create(
+        { id: issueId, companyId: identity.companyId },
+        { kind: "request_confirmation", title: `Review ${key}`, addresseeUserId: "reviewer-24",
+          resolverPolicy: "human_only", continuationPolicy: "wake_assignee", sourceRunId: runId,
+          payload: { version: 1, prompt: `Approve ${key}`, acceptLabel: "Approve", rejectLabel: "Decline", allowDeclineReason: true,
+            target: { type: "custom", key: "native_completion_review", revisionId: newRevision } } },
+        { systemId: "test-multiple-reviewers", runId },
+      ));
+    }
+    await issueThreadInteractionService(db).rejectInteraction(
+      { id: issueId, companyId: identity.companyId }, reviews[0]!.id,
+      { reason: "Needs another change" }, { userId: "reviewer-24" },
+    );
+    // Even if another actor puts the task back in review, a declined decision
+    // in the same review round must not be erased by another reviewer's approval.
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+      reviews[1]!.id, {}, { userId: "reviewer-24" },
+    );
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
+
   });
 
   it("completes DOT-29-style low-risk work with an environment caveat and no corrective run", async () => {
@@ -1202,7 +1444,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       {
         suffix: 20,
         failpoint: "interaction_materialization",
-        result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" },
+        result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review", attentionRequests: [{ kind: "approval", summary: "Approve publication", ownerClass: "human" }] },
       },
       {
         suffix: 21,

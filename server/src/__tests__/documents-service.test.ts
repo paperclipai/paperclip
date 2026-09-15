@@ -113,6 +113,41 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     }));
   });
 
+  it("explains the revision guard and rejects missing or stale update revisions without changing the document", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const current = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+    const update = {
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown" as const,
+      body: "# Revised plan",
+    };
+
+    await expect(svc.upsertIssueDocument(update)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("set baseRevisionId to that latestRevisionId"),
+      details: { currentRevisionId: current.latestRevisionId },
+    });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: current.body,
+      latestRevisionId: current.latestRevisionId,
+    });
+
+    const saved = await svc.upsertIssueDocument({ ...update, baseRevisionId: current.latestRevisionId });
+    expect(saved.document.body).toBe(update.body);
+    expect(saved.document.latestRevisionNumber).toBe(current.latestRevisionNumber + 1);
+    await expect(svc.upsertIssueDocument({
+      ...update,
+      body: "# Stale replacement",
+      baseRevisionId: current.latestRevisionId,
+    })).rejects.toMatchObject({ status: 409, message: "Document was updated by someone else" });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: saved.document.body,
+      latestRevisionId: saved.document.latestRevisionId,
+    });
+  });
+
   it("locks and unlocks issue documents", async () => {
     const { issueId } = await createIssueWithDocuments();
 

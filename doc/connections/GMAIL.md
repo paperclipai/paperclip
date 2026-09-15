@@ -217,7 +217,7 @@ sequenceDiagram
     U->>P: Return to exact enrolled instance URL
     P->>C: Signed one-time claim
     C-->>P: Instance-encrypted token response
-    P->>V: Encrypt tokens and bind them to the user's grant
+    P->>V: Encrypt tokens and bind them to the chosen user or organization grant
 ```
 
 Before an instance can create a session:
@@ -232,8 +232,11 @@ Before an instance can create a session:
    initiating administrator must complete the return callback.
 3. Paperclip Cloud binds the account, opaque instance id, both public keys,
    deployment environment, and exact allowed browser return origins.
-4. Tailscale HTTPS origins are allowed only when explicitly enrolled. Loopback
-   HTTP is development-only. Other plaintext origins are rejected.
+4. On authenticated private instances, the setup request supplies its verified
+   same-origin HTTPS address and enrollment binds it automatically. This makes a
+   Tailscale HTTPS setup config-free while still rejecting a bare or mismatched
+   `Host` header. Loopback HTTP is development-only; other plaintext origins are
+   rejected.
 5. Create, claim, refresh, and supported revoke requests are signed, audience-bound,
    timestamped, and protected by a one-time `jti` replay cache.
 
@@ -296,9 +299,11 @@ keys before they deploy a binary that enables the Cloud connector.
 
 ## Paperclip access defaults
 
-The first Gmail release is personal-only:
+Gmail uses the same credential ownership choice as the rest of the Apps setup:
 
-- **Just me** is the only credential ownership choice.
+- **Just me** stores the Gmail credential on the connecting user's grant.
+- **Any human in the company** stores it on the default organization grant so a
+  deliberately shared mailbox or Workspace account can back company-wide use.
 - The disclosure states that Gmail access can search/read mail and create
   drafts. Sending mail is not enabled.
 - A user grant does not automatically authorize an agent. The user must also

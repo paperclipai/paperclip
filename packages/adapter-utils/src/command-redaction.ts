@@ -1,17 +1,23 @@
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
-const SECRET_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+const SECRET_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
-  String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` + "`" + String.raw`]+(\2)`,
+  String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` +
+    "`" +
+    String.raw`]+(\2)`,
   "gi",
 );
 const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
-  String.raw`(\b${SECRET_NAME_PATTERN}\s*=\s*)(?:(["'])([^"'` + "`" + String.raw`\r\n]*)\2|([^\s"'` + "`" + String.raw`]+))`,
+  String.raw`(\b${SECRET_NAME_PATTERN}\s*=\s*)(?:(\\["'])([\s\S]*?)\2|(["'])([^"'` +
+    "`" +
+    String.raw`\r\n]*)\4|([^\s"'` +
+    "`" +
+    String.raw`]+))`,
   "gi",
 );
-const COMMAND_AUTHORIZATION_BEARER_RE = /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
+const COMMAND_AUTHORIZATION_BEARER_RE =
+  /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
 const COMMAND_JWT_RE =
@@ -39,18 +45,34 @@ const COMMAND_SECRET_HINTS = [
 
 function maybeContainsSecretText(command: string) {
   const lower = command.toLowerCase();
-  return COMMAND_SECRET_HINTS.some((hint) => lower.includes(hint)) || command.includes(".");
+  return (
+    COMMAND_SECRET_HINTS.some((hint) => lower.includes(hint)) ||
+    command.includes(".")
+  );
 }
 
-export function redactCommandText(command: string, redactedValue = REDACTED_COMMAND_TEXT_VALUE): string {
+export function redactCommandText(
+  command: string,
+  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
+): string {
   if (!maybeContainsSecretText(command)) return command;
   return command
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
     .replace(
       COMMAND_ENV_SECRET_ASSIGNMENT_RE,
-      (_match, prefix: string, quote: string | undefined) =>
-        quote ? `${prefix}${quote}${redactedValue}${quote}` : `${prefix}${redactedValue}`,
+      (
+        _match,
+        prefix: string,
+        escapedQuote: string | undefined,
+        _escapedValue: string | undefined,
+        rawQuote: string | undefined,
+      ) => {
+        const quote = escapedQuote ?? rawQuote;
+        return quote
+          ? `${prefix}${quote}${redactedValue}${quote}`
+          : `${prefix}${redactedValue}`;
+      },
     )
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
@@ -85,7 +107,10 @@ const JSON_ESCAPED_SECRET_FIELD_RE = new RegExp(
  * `{"token":"opaque-value"}`. The caller must still bound the length after this
  * step.
  */
-export function redactDiagnosticText(text: string, redactedValue = REDACTED_COMMAND_TEXT_VALUE): string {
+export function redactDiagnosticText(
+  text: string,
+  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
+): string {
   return redactCommandText(text, redactedValue)
     .replace(JSON_ESCAPED_SECRET_FIELD_RE, `$1${redactedValue}$2`)
     .replace(JSON_SECRET_FIELD_RE, `$1${redactedValue}$2`);

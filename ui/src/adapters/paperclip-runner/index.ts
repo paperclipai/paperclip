@@ -226,10 +226,10 @@ function parseItemEvent(
       const summary = structuredResultSummary(value);
       if (summary) {
         state.resultSummaries.add(summary);
-        return [{ kind: "assistant", ts, text: summary, channel: "final" }];
+        return [{ kind: "assistant", ts, text: summary, channel: "final", itemId: id }];
       }
     }
-    return [{ kind: "assistant", ts, text: value, channel: resolvedChannel === "final" ? "final" : resolvedChannel === "progress" ? "progress" : "unknown" }];
+    return [{ kind: "assistant", ts, text: value, channel: resolvedChannel === "final" ? "final" : resolvedChannel === "progress" ? "progress" : "unknown", itemId: id }];
   }
   if (type === "reasoning") {
     const value = itemText(item, payload);
@@ -240,6 +240,7 @@ function parseItemEvent(
       text: value && !state.reasoningDeltaItemIds.has(id) ? value : "",
       lifecycle: phase,
       channel: resolvedChannel === "detail" ? "detail" : resolvedChannel === "summary" ? "summary" : "unknown",
+      itemId: id,
     }];
   }
   if (type === "commandexecution") {
@@ -279,11 +280,11 @@ function parseDeltaEvent(
       state.structuredFinalItemIds.add(id);
       return [];
     }
-    return [{ kind: "assistant", ts, text: value, delta: true, channel: channel === "final" ? "final" : channel === "progress" ? "progress" : "unknown" }];
+    return [{ kind: "assistant", ts, text: value, delta: true, channel: channel === "final" ? "final" : channel === "progress" ? "progress" : "unknown", itemId: id }];
   }
   if (kind === "reasoning") {
     state.reasoningDeltaItemIds.add(id);
-    return [{ kind: "thinking", ts, text: value, delta: true, channel: channel === "detail" ? "detail" : channel === "summary" ? "summary" : "unknown" }];
+    return [{ kind: "thinking", ts, text: value, delta: true, channel: channel === "detail" ? "detail" : channel === "summary" ? "summary" : "unknown", itemId: id }];
   }
   if (kind === "commandexecution") {
     state.toolOutputItemIds.add(id);
@@ -738,7 +739,11 @@ function parsePrpEvent(
     const summary = text(result.summary);
     if (!summary || state.resultSummaries.has(summary)) return [];
     state.resultSummaries.add(summary);
-    return [runResultEntry(result, ts), { kind: "assistant", ts, text: summary, channel: "final" }];
+    // The semantic summary is governance state, not provider-authored prose.
+    // Stored task projection can use it as a terminal fallback after seeing
+    // the complete run, but the streaming parser must not race a later
+    // explicit final item and materialize a duplicate reply.
+    return [runResultEntry(result, ts)];
   }
   if (eventType === "run.terminal") return [runTerminalEntry(payload, ts)];
   if (eventType === "harness.diagnostic" || eventType === "runner.diagnostic" || eventType === "session.failed" || eventType === "mcp_app.failed") {

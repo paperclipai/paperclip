@@ -34,6 +34,23 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime sandbox", () => {
+  it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(
+    "preserves the requested Claude model %s in its isolated settings",
+    async (model) => {
+      const fixture = await sandboxFixture("claude");
+      const sandbox = await prepareAcpxRuntimeSandbox({
+        binding: { ...fixture.binding, requestedModel: model },
+        agent: "claude",
+      });
+      const settingsPath = join(sandbox.agentHomeDirectory, "settings.json");
+      expect(JSON.parse(await readFile(settingsPath, "utf8"))).toMatchObject({
+        model,
+        availableModels: [model],
+      });
+      expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
+    },
+  );
+
   it.each([
     ["pi", "OPENROUTER_API_KEY", "pi-home"],
     ["claude", "ANTHROPIC_API_KEY", "claude-home"],
@@ -83,6 +100,14 @@ describe("ACPX runtime sandbox", () => {
         sandbox.persistedEnvironment.PAPERCLIP_NATIVE_MCP_TOKEN,
       ).toBeUndefined();
       expect(sandbox.persistedEnvironment.HOME).toBe(sandbox.homeDirectory);
+      if (agent === "codex") {
+        const config = await readFile(
+          join(sandbox.agentHomeDirectory, "config.toml"),
+          "utf8",
+        );
+        expect(config).toBe("[features]\nshell_snapshot = false\n");
+        expect(config).not.toContain("provider-secret");
+      }
       expect(await readFile(sandbox.workspaceRecordPath, "utf8")).toBe(
         `${fixture.binding.workspacePath}\n`,
       );

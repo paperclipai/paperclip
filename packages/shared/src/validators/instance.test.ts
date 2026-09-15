@@ -5,6 +5,22 @@ import {
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
+  it("defaults chat connectors off independently of Apps and accepts only explicit boolean patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableChatConnectors).toBe(false);
+    expect(instanceExperimentalSettingsSchema.parse({ enableApps: true }).enableChatConnectors).toBe(false);
+    expect(patchInstanceExperimentalSettingsSchema.parse({ enableChatConnectors: true }))
+      .toEqual({ enableChatConnectors: true });
+    expect(patchInstanceExperimentalSettingsSchema.parse({ enableChatConnectors: false }))
+      .toEqual({ enableChatConnectors: false });
+    expect(patchInstanceExperimentalSettingsSchema.safeParse({ enableChatConnectors: "true" }).success).toBe(false);
+  });
+  it("defaults the streamlined UI on and accepts an explicit patch", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableStreamlinedUi).toBe(true);
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enableStreamlinedUi: false }),
+    ).toEqual({ enableStreamlinedUi: false });
+  });
+
   it("defaults the server info debug view off", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
@@ -16,6 +32,16 @@ describe("instance experimental settings validators", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({ enablePaperclipDeveloperMode: true }),
     ).toEqual({ enablePaperclipDeveloperMode: true });
+  });
+
+  it("strips retired watchdog and liveness auto-recovery settings", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableTaskWatchdogs: false,
+        enableIssueGraphLivenessAutoRecovery: true,
+        issueGraphLivenessAutoRecoveryLookbackHours: 24,
+      }),
+    ).toEqual({});
   });
 
   it("defaults workspace branch repair settings on", () => {
@@ -86,10 +112,10 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableBetaSkills).toBe(false);
   });
 
-  it("defaults apps off", () => {
+  it("defaults the retired Apps compatibility key on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
-    expect(settings.enableApps).toBe(false);
+    expect(settings.enableApps).toBe(true);
   });
 
   it("accepts worktree run execution patches", () => {

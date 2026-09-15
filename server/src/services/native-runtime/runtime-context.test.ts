@@ -23,7 +23,8 @@ vi.mock("../tool-access.js", () => ({
   }),
 }));
 
-import { buildNativeRuntimeContext } from "./runtime-context.js";
+import { createHash } from "node:crypto";
+import { buildNativeRuntimeContext, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
 let previousPaperclipHome: string | undefined;
@@ -224,6 +225,8 @@ describe("buildNativeRuntimeContext", () => {
       .toBe("Follow the agent instructions.\n");
     expect(await readFile(path.join(context.instructions.bundle.rootPath, "references", "policy.md"), "utf8"))
       .toBe("Company policy sibling.\n");
+    const unselected = await buildNativeRuntimeContext({ ...input, runtimeConfig: {} });
+    expect(unselected.skills).toEqual([]);
     expect(context.skills).toHaveLength(1);
     expect(context.skills[0]).toMatchObject({
       key: "company-1/reviewer",
@@ -296,4 +299,27 @@ describe("buildNativeRuntimeContext", () => {
     });
     expect(context.skills.map((skill) => skill.key)).toEqual(["company-1/supported"]);
   });
+});
+
+
+it("pins both permitted GitHub tool catalogs even when another user’s health probe reports missing credentials", async () => {
+  const connections = ["github-A", "github-B"].map((id) => ({
+    id, status: "active", enabled: true, healthStatus: "missing_secret", transport: "mcp_remote",
+    config: { sourceTemplateKey: "github" }, transportConfig: {},
+  }));
+  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+    entries: connections.map((connection) => ({ effect: "include", connectionId: connection.id })),
+    installedConnections: connections,
+    allowedTools: connections.map((connection) => ({ id: `${connection.id}-get_me`, connectionId: connection.id })),
+  });
+  const limit = vi.fn(async () => [{ responsibleUserId: "A", activeIdentityContextId: "context-A" }]);
+  const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
+  const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" });
+  const expected = createHash("sha256").update(JSON.stringify({
+    version: 1, agentId: "agent-1", connections: ["github-A", "github-B"],
+    tools: ["github-A-get_me", "github-B-get_me"],
+  })).digest("hex");
+  expect(snapshot.digest).toBe(expected);
+  expect(snapshot.bindingId).toBe("native-mcp:run-1");
+  expect(limit).toHaveBeenCalledOnce();
 });

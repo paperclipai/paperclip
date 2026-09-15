@@ -37,7 +37,7 @@ fn question_set() -> Value {
 }
 
 #[test]
-fn accumulates_assistant_text_deduplicates_reasoning_and_flushes_before_terminal() {
+fn accumulates_assistant_text_preserves_reasoning_and_flushes_before_terminal() {
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();
 
@@ -45,16 +45,30 @@ fn accumulates_assistant_text_deduplicates_reasoning_and_flushes_before_terminal
         1,
         GeneratedAcpxSidecarEventType::RuntimeEvent,
         Some("turn-1"),
-        json!({"type":"thinking","text":"private"}),
+        json!({"type":"thinking","messageId":"reasoning-1","text":"Inspecting."}),
     );
-    assert_eq!(state.accept_event(&thinking).unwrap().len(), 1);
+    let first_summary = state.accept_event(&thinking).unwrap();
+    assert!(matches!(
+        &first_summary[0],
+        AcpxProviderStateEvent::Activity(event)
+            if event.event_type == "item.delta"
+                && event.payload["channel"] == "summary"
+                && event.payload["text"] == "Inspecting."
+    ));
     let repeated = event(
         2,
         GeneratedAcpxSidecarEventType::RuntimeEvent,
         Some("turn-1"),
-        json!({"type":"thinking","text":"still private"}),
+        json!({"type":"thinking","messageId":"reasoning-1","text":"Checking the result."}),
     );
-    assert!(state.accept_event(&repeated).unwrap().is_empty());
+    let next_summary = state.accept_event(&repeated).unwrap();
+    assert!(matches!(
+        &next_summary[0],
+        AcpxProviderStateEvent::Activity(event)
+            if event.event_type == "item.delta"
+                && event.payload["itemId"] == "reasoning-1"
+                && event.payload["text"] == "Checking the result."
+    ));
 
     for (sequence, text) in [(3, "Hello "), (4, "world")] {
         state
@@ -88,6 +102,141 @@ fn accumulates_assistant_text_deduplicates_reasoning_and_flushes_before_terminal
         } if turn_id == "turn-1"
     ));
     assert_eq!(state.active_turn_id(), None);
+}
+
+#[test]
+fn assigns_monotonic_revisions_to_plan_snapshots_within_a_turn() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+
+    for (sequence, expected_revision, content) in
+        [(1, 1, "Inspect"), (2, 2, "Implement"), (3, 3, "Verify")]
+    {
+        let events = state
+            .accept_event(&event(
+                sequence,
+                GeneratedAcpxSidecarEventType::RuntimeEvent,
+                Some("turn-1"),
+                json!({
+                    "type":"plan",
+                    "entries":[{"content":content,"status":"in_progress"}]
+                }),
+            ))
+            .unwrap();
+        assert!(matches!(
+            &events[0],
+            AcpxProviderStateEvent::Activity(event)
+                if event.event_type == "plan.updated"
+                    && event.payload["planId"] == "turn-1"
+                    && event.payload["revision"] == expected_revision
+        ));
+    }
+}
+
+#[test]
+fn promotes_only_the_latest_provider_message_as_the_terminal_reply() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    let mut progress = Vec::new();
+
+    for (sequence, message_id, text) in [
+        (1, "message-1", "First paragraph."),
+        (2, "message-2", "Second paragraph."),
+        (3, "message-2", "\n\nStill final."),
+    ] {
+        let emitted = state
+            .accept_event(&event(
+                sequence,
+                GeneratedAcpxSidecarEventType::RuntimeEvent,
+                Some("turn-1"),
+                json!({"type":"text_delta","messageId":message_id,"text":text}),
+            ))
+            .unwrap();
+        assert!(matches!(
+            &emitted[0],
+            AcpxProviderStateEvent::Activity(event)
+                if event.payload["channel"] == "progress"
+        ));
+        progress.push(emitted[0].clone());
+    }
+    assert_eq!(progress.len(), 3);
+    let terminal = state
+        .accept_event(&event(
+            4,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"}),
+        ))
+        .unwrap();
+    assert!(matches!(
+        &terminal[0],
+        AcpxProviderStateEvent::AssistantMessage { text, .. }
+            if text == "Second paragraph.\n\nStill final."
+    ));
+}
+
+#[test]
+fn preserves_an_idless_prefix_when_the_provider_begins_identifying_deltas() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    state
+        .accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-1"),
+            json!({"type":"text_delta","text":"Preface.\n\n"}),
+        ))
+        .unwrap();
+    state
+        .accept_event(&event(
+            2,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-1"),
+            json!({"type":"text_delta","messageId":"message-1","text":"Final response."}),
+        ))
+        .unwrap();
+    let terminal = state
+        .accept_event(&event(
+            3,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"}),
+        ))
+        .unwrap();
+    assert!(matches!(
+        &terminal[0],
+        AcpxProviderStateEvent::AssistantMessage { text, .. }
+            if text == "Preface.\n\nFinal response."
+    ));
+}
+
+#[test]
+fn does_not_promote_partial_text_to_a_final_reply_after_failure_or_cancellation() {
+    for status in ["failed", "cancelled", "interrupted"] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        state
+            .accept_event(&event(
+                1,
+                GeneratedAcpxSidecarEventType::RuntimeEvent,
+                Some("turn-1"),
+                json!({"type":"text_delta","messageId":"message-1","text":"Partial"}),
+            ))
+            .unwrap();
+        let terminal = state
+            .accept_event(&event(
+                2,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":status,"error": {"message":"stopped"}}),
+            ))
+            .unwrap();
+        assert_eq!(terminal.len(), 1);
+        assert!(matches!(
+            &terminal[0],
+            AcpxProviderStateEvent::TurnTerminal { .. }
+        ));
+    }
 }
 
 #[test]
@@ -176,6 +325,7 @@ fn correlates_projected_runtime_requests_to_the_upstream_input_id() {
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
+            provider_turn_id: None,
             item_id: "item-1".to_owned(),
         },
         &emitted[0],
@@ -344,4 +494,117 @@ fn terminal_events_clear_pending_requests_and_reject_late_turn_events() {
             json!({"type":"text_delta","text":"late"}),
         ))
         .is_err());
+}
+
+#[test]
+fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    let plan = format!(
+        "{}\nThe token CHAT8322bda781b81 must be included in the document.",
+        "Relevant context. ".repeat(400)
+    );
+    let input = json!({
+        "title": "Write project description",
+        "description": "The document must contain the token CHAT8322bda781b81.",
+        "initialPlan": plan,
+        "idempotencyKey": "CHAT8322bda781b81-task",
+        "apiToken": "actual-credential",
+    });
+    let mut expected = input.clone();
+    expected["apiToken"] = json!("[REDACTED]");
+    let emitted = state
+        .accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            Some("turn-1"),
+            json!({"callId": "call-1", "operationId": "create_task", "input": input}),
+        ))
+        .unwrap();
+    assert_eq!(state.pending_tool("call-1").unwrap().input, expected);
+    let projected = project_acpx_state_event(
+        &AcpxEventProjectionContext {
+            run_id: "run-1".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            provider_turn_id: None,
+            item_id: "call-1".to_owned(),
+        },
+        &emitted[0],
+    )
+    .unwrap();
+    assert_eq!(projected[0].event_type, "semantic_tool.input");
+    assert_eq!(projected[0].payload["semantic_tool"]["input"], expected);
+    assert_eq!(
+        projected[0].payload["semantic_tool"]["content"]["digest"],
+        json!(paperclip_runner_core::provider_bridge::semantic_value_digest(&expected))
+    );
+
+    for (operation, field, prose, preserved) in [
+        (
+            "write_document",
+            "body",
+            "Include the token CHAT8322bda781b81.",
+            true,
+        ),
+        (
+            "create_project",
+            "description",
+            "Include the token CHAT8322bda781b81.",
+            true,
+        ),
+        (
+            "get_task_context",
+            "description",
+            "Include the token CHAT8322bda781b81.",
+            false,
+        ),
+        (
+            "mcp__untrusted__create_task",
+            "description",
+            "Include the token CHAT8322bda781b81.",
+            false,
+        ),
+        (
+            "create_task",
+            "description",
+            "Authorization: Bearer actual-credential",
+            false,
+        ),
+        (
+            "create_task",
+            "initialPlan",
+            "access token actual-credential",
+            false,
+        ),
+    ] {
+        state
+            .complete_tool(
+                "call-1",
+                state
+                    .pending_tool("call-1")
+                    .unwrap()
+                    .operation_id
+                    .clone()
+                    .as_str(),
+            )
+            .unwrap();
+        let emitted = state
+            .accept_event(&event(
+                2,
+                GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+                Some("turn-1"),
+                json!({"callId": "call-1", "operationId": operation, "input": {field: prose}}),
+            ))
+            .unwrap();
+        let AcpxProviderStateEvent::ToolCall { input, .. } = &emitted[0] else {
+            panic!("expected tool call");
+        };
+        assert_eq!(
+            input[field] == json!(prose),
+            preserved,
+            "{operation}: {prose}"
+        );
+        assert!(!input.to_string().contains("actual-credential"));
+    }
 }

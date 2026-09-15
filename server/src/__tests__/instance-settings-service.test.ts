@@ -7,6 +7,15 @@ import {
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
+    for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
+      expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enableChatConnectors: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled))).enableChatConnectors).toBe(true);
+    const disabled = applyExperimentalSettingsPatch(enabled, { enableChatConnectors: false });
+    expect(disabled).toMatchObject({ enableApps: true, enableChatConnectors: false });
+  });
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,
@@ -15,24 +24,25 @@ describe("instance settings service", () => {
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
-      enableTaskWatchdogs: true,
       enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
       autoRestartDevServerWhenIdle: true,
-      enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
-      issueGraphLivenessAutoRecoveryLookbackHours: 48,
       enableNewestFirstIssueThread: true,
     })).toEqual({
       enableEnvironments: true,
       enableNativeRunner: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: false,
       enableStreamlinedLeftNavigation: true,
-      enableApps: false,
+      enableStreamlinedUi: true,
+      enableApps: true,
+      enableAgentChat: false,
+      enableChatConnectors: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,
@@ -41,7 +51,6 @@ describe("instance settings service", () => {
       enableCases: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
-      enableTaskWatchdogs: true,
       enableBuiltInAgents: true,
       enableBetaSkills: false,
       enableSummaries: false,
@@ -51,8 +60,8 @@ describe("instance settings service", () => {
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
       enableSimplifiedEnglishInteractions: false,
+      enableFirstTaskPlanProposal: false,
       autoRestartDevServerWhenIdle: true,
-      enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
       enableOwnerInstanceAdmin: false,
@@ -61,14 +70,23 @@ describe("instance settings service", () => {
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
-      issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });
 
-  it("defaults enableApps to false for empty and legacy stored settings", () => {
-    expect(normalizeExperimentalSettings(undefined).enableApps).toBe(false);
-    expect(normalizeExperimentalSettings({}).enableApps).toBe(false);
-    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(false);
+  it("defaults streamlined UI on without inheriting the retired navigation preference", () => {
+    expect(normalizeExperimentalSettings(undefined).enableStreamlinedUi).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableStreamlinedUi).toBe(true);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: false }).enableStreamlinedUi,
+    ).toBe(true);
+    expect(normalizeExperimentalSettings({ enableStreamlinedUi: false }).enableStreamlinedUi).toBe(false);
+  });
+
+  it("keeps Apps on for empty, legacy, and explicitly disabled stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({}).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enableApps: false }).enableApps).toBe(true);
   });
 
   it("retains the deprecated ingress key for stored-settings compatibility", () => {
@@ -112,14 +130,6 @@ describe("instance settings service", () => {
       normalizeExperimentalSettings({ enableSimplifiedEnglishInteractions: true })
         .enableSimplifiedEnglishInteractions,
     ).toBe(true);
-  });
-
-  it("defaults enableTaskWatchdogs to false for empty and legacy stored settings", () => {
-    expect(normalizeExperimentalSettings(undefined).enableTaskWatchdogs).toBe(false);
-    expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
-    expect(
-      normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
-    ).toBe(false);
   });
 
   it("defaults enableSmokeLab to false for empty and legacy stored settings", () => {
@@ -167,7 +177,7 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings(undefined).enableWorkspaceBranchReconcileForward).toBe(true);
     expect(normalizeExperimentalSettings({}).enableWorkspaceBranchReconcileForward).toBe(true);
     expect(
-      normalizeExperimentalSettings({ enableIssueGraphLivenessAutoRecovery: true })
+      normalizeExperimentalSettings({ enableExperimentalFileViewer: true })
         .enableWorkspaceBranchReconcileForward,
     ).toBe(true);
     expect(normalizeExperimentalSettings(undefined).enableWorkspaceDirtyQuarantineRepair).toBe(true);
