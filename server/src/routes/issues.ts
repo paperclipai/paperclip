@@ -3547,6 +3547,18 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
+  const assertIssueDoneDeliveryReady = async (issueId: string, store: Db = db) => {
+    const readiness = await executionWorkspaceServiceDirect(store)
+      .getIssueDoneDeliveryReadiness(issueId);
+    if (!readiness || !readiness.required || readiness.ready) return;
+    throw conflict(
+      "Code work cannot transition to Done until review, merge delivery, health, regression, and reconciliation evidence are complete.",
+      {
+        code: "issue_delivery_not_ready",
+        reasonCodes: readiness.reasonCodes,
+      },
+    );
+  };
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
@@ -9357,6 +9369,9 @@ export function issueRoutes(
               actor: { type: actor.actorType, id: actor.actorId },
             });
           }
+          if (sourceIssueStatus === "done") {
+            await assertIssueDoneDeliveryReady(lockedIssue.id, tx as unknown as Db);
+          }
 
           const updateFields: Record<string, unknown> = {
             status: sourceIssueStatus,
@@ -13523,6 +13538,15 @@ export function issueRoutes(
             reviewPolicy: lockedExisting.reviewPolicy,
           });
         }
+        if (
+          lockedExisting.status !== "done" &&
+          updateFields.status === "done"
+        ) {
+          await assertIssueDoneDeliveryReady(
+            lockedExisting.id,
+            tx as unknown as Db,
+          );
+        }
         return true;
       };
       const persistReviewTransitionActivity = async (
@@ -17591,6 +17615,12 @@ export function issueRoutes(
         const postCommitIssueActions: IssuePostCommitAction[] = [];
         try {
           txResult = await db.transaction(async (tx) => {
+            const lockedIssue = await svc.getByIdForUpdate(id, tx);
+            if (!lockedIssue) throw new AutoApprovalIssueMissingError();
+            await assertIssueDoneDeliveryReady(
+              lockedIssue.id,
+              tx as unknown as Db,
+            );
             const insertedComment = await svc.addComment(
               id,
               req.body.body,

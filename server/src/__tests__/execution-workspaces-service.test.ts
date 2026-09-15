@@ -51,6 +51,7 @@ describe("execution workspace delivery state", () => {
   it.each([
     [{ sourceIssueTerminal: true, mergedPullRequest: true, pullRequestStateUnknown: false, isMergedIntoBase: false }, "merged_via_pr"],
     [{ sourceIssueTerminal: false, mergedPullRequest: false, pullRequestStateUnknown: false, isMergedIntoBase: true }, "merged_by_ancestry"],
+    [{ sourceIssueTerminal: true, mergedPullRequest: false, pullRequestStateUnknown: false, isMergedIntoBase: false, isPatchEquivalentToBase: true }, "merged_by_patch_equivalence"],
     [{ sourceIssueTerminal: true, mergedPullRequest: false, pullRequestStateUnknown: false, isMergedIntoBase: false }, "unmerged"],
     [{ sourceIssueTerminal: true, mergedPullRequest: false, pullRequestStateUnknown: true, isMergedIntoBase: false }, "unknown"],
   ] as const)("derives %s as %s", (input, expected) => {
@@ -475,6 +476,121 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
+
+  it("accepts a pre-terminal commit that was cherry-picked onto the configured target branch", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const branchName = `feature-${randomUUID().slice(0, 8)}`;
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-cherry-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+    await fs.writeFile(path.join(worktreePath, "delivered.txt"), "delivered\n", "utf8");
+    await runGit(worktreePath, ["add", "delivered.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Delivered change"]);
+    const featureSha = await readGit(worktreePath, ["rev-parse", "HEAD"]);
+
+    await fs.writeFile(path.join(repoRoot, "base.txt"), "base moved\n", "utf8");
+    await runGit(repoRoot, ["add", "base.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Move target branch"]);
+    await runGit(repoRoot, ["cherry-pick", featureSha!]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.slice(0, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Cherry delivery", status: "in_progress" });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: branchName,
+      status: "active",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      providerType: "git_worktree",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "main",
+      branchName,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Cherry-picked delivery",
+      status: "in_review",
+      priority: "medium",
+      reviewPolicy: "not_creator",
+      executionWorkspaceId: workspaceId,
+    });
+    await db.update(executionWorkspaces).set({ sourceIssueId: issueId }).where(eq(executionWorkspaces.id, workspaceId));
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      executionWorkspaceId: workspaceId,
+      type: "commit",
+      provider: "github",
+      title: "Delivered commit",
+      status: "merged",
+      reviewState: "approved",
+      isPrimary: true,
+      healthStatus: "healthy",
+      metadata: {
+        deliveryEvidence: {
+          reconciledAt: "2026-09-15T12:00:00.000Z",
+          combinedRegressionChecks: [{ name: "combined regression", status: "passed" }],
+        },
+      },
+    });
+
+    const readiness = await svc.getIssueDoneDeliveryReadiness(issueId);
+
+    expect(readiness).toMatchObject({ required: true, ready: true, reasonCodes: [] });
+    const workspace = await svc.getById(workspaceId);
+    expect(workspace?.deliveryState).toBe("merged_by_patch_equivalence");
+  }, 20_000);
+
+  it("flags a historical Done issue with a non-merged primary code product even without a workspace", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `D${companyId.slice(0, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Historical delivery drift",
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "Unmerged delivery",
+      status: "ready_for_review",
+      isPrimary: true,
+    });
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+
+    expect(sweep).toMatchObject({
+      checked: 0,
+      deliveryDriftDetected: 1,
+    });
+  });
 
   async function seedAncestryTerminalWorkspace(overrides: { updatedAt?: Date } = {}) {
     // Build a worktree whose HEAD equals the base ref, so HEAD is an ancestor

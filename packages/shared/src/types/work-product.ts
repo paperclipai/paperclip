@@ -87,3 +87,21 @@ export interface CommitWorkProductMetadata {
   deletions: number;
   changedFiles: number;
 }
+
+export interface IssueWorkProductDeliveryEvidence {
+  /** Timestamp of the last reconciliation against the configured target branch. */
+  reconciledAt: string;
+  /** Required when no local isolated Git workspace is available for verification. */
+  commitOnTarget?: boolean;
+  combinedRegressionChecks: Array<{
+    name: string;
+    status: "passed" | "failed" | "success";
+    command?: string;
+    recordedAt?: string;
+  }>;
+}
+
+export interface IssueWorkProductDeliveryDisposition {
+  kind: "no_merge";
+  reason: string;
+}

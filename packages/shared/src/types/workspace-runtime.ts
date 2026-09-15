@@ -39,6 +39,7 @@ export type ExecutionWorkspaceStatus =
 export type ExecutionWorkspaceDeliveryState =
   | "merged_via_pr"
   | "merged_by_ancestry"
+  | "merged_by_patch_equivalence"
   | "unmerged"
   | "unknown";
 
@@ -146,6 +147,7 @@ export interface ExecutionWorkspaceCloseGitReadiness {
   aheadCount: number | null;
   behindCount: number | null;
   isMergedIntoBase: boolean | null;
+  isPatchEquivalentToBase: boolean | null;
   createdByRuntime: boolean;
 }
 

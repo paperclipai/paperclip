@@ -1336,6 +1336,14 @@ async function startServerWithDatabaseTeardown(
       trackHeartbeatSchedulerWork(terminalWorkspaces
         .sweepTerminalWorkspaces()
         .then((result) => {
+          const nowMs = Date.now();
+          if (
+            result.deliveryDriftDetected > 0
+            && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs
+          ) {
+            lastTerminalWorkspaceSkipLogAt = nowMs;
+            logger.warn(result, "done issues have unreconciled code delivery");
+          }
           if (result.archived > 0 || result.cleanupFailed > 0) {
             logger.info(result, "terminal issue workspace reaper changed workspace state");
             return;
@@ -1346,7 +1354,6 @@ async function startServerWithDatabaseTeardown(
             + result.skippedUndelivered
             + result.skippedRace
             + result.skippedCooldown;
-          const nowMs = Date.now();
           if (skipped > 0 && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs) {
             lastTerminalWorkspaceSkipLogAt = nowMs;
             logger.info(result, "terminal issue workspace reaper skipped all candidates");
