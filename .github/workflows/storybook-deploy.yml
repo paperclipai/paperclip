@@ -31,7 +31,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Require CODEOWNER initiator and rerunner
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const authorize = require('./.github/scripts/authorize-storybook-deploy.cjs');
@@ -39,7 +39,7 @@ jobs:
 
       - name: Pin requested repository branch
         id: source
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SOURCE_BRANCH: ${{ inputs.branch }}
           STORYBOOK_S3_BUCKET: ${{ vars.STORYBOOK_S3_BUCKET }}
@@ -129,7 +129,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/scripts
       - name: Recheck CODEOWNER access before publishing
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const authorize = require('./.github/scripts/authorize-storybook-deploy.cjs');
