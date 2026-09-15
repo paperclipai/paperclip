@@ -342,6 +342,50 @@ export function isClaudeImageProcessingError(parsed: Record<string, unknown>): b
   );
 }
 
+/**
+ * Reduce a Claude CLI stdout stream to the run's own error surface.
+ *
+ * `--output-format stream-json` multiplexes three unrelated things onto stdout:
+ * the agent's transcript, the CLI's telemetry, and — when the run fails — the
+ * error text. Only the last one may decide a failure class, so everything else
+ * is dropped here before the transient/quota alternations see it.
+ *
+ * Both of the discarded kinds actively produce false positives today:
+ *
+ * - The CLI emits a `rate_limit_event` on essentially every run, and its
+ *   `rateLimitType` field matches the transient `rate[-\s]?limit` branch. That
+ *   token is present whether or not the run was throttled.
+ * - The transcript carries whatever the agent read or wrote. A run editing a
+ *   Traefik `rateLimit` middleware, or one merely quoting a 429, poisons its
+ *   own haystack.
+ *
+ * Kept are the error-bearing events (`result`, `error`, and anything flagged
+ * `is_error`) and every non-JSON line, because a CLI that dies before its first
+ * stream event reports that failure as plain text on stdout.
+ */
+function claudeStdoutErrorSurface(stdout: string): string {
+  const surface: string[] = [];
+
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const event = parseJson(line);
+    if (!event) {
+      surface.push(line);
+      continue;
+    }
+
+    const type = asString(event.type, "");
+    if (type === "result" || type === "error" || asBoolean(event.is_error, false)) {
+      surface.push(asString(event.result, "") || asString(event.error, ""));
+      surface.push(...extractClaudeErrorMessages(event));
+    }
+  }
+
+  return surface.filter(Boolean).join("\n");
+}
+
 function buildClaudeTransientHaystack(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
@@ -355,7 +399,7 @@ function buildClaudeTransientHaystack(input: {
     input.errorMessage ?? "",
     resultText,
     ...parsedErrors,
-    input.stdout ?? "",
+    claudeStdoutErrorSurface(input.stdout ?? ""),
     input.stderr ?? "",
   ]
     .join("\n")
