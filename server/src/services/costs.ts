@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
@@ -459,32 +459,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     },
 
     byProject: async (companyId: string, range?: CostDateRange) => {
-      const issueIdAsText = sql<string>`${issues.id}::text`;
-      const runProjectLinks = db
-        .selectDistinctOn([activityLog.runId, issues.projectId], {
-          runId: activityLog.runId,
-          projectId: issues.projectId,
-        })
-        .from(activityLog)
-        .innerJoin(
-          issues,
-          and(
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, issueIdAsText),
-          ),
-        )
-        .where(
-          and(
-            eq(activityLog.companyId, companyId),
-            eq(issues.companyId, companyId),
-            isNotNull(activityLog.runId),
-            isNotNull(issues.projectId),
-          ),
-        )
-        .orderBy(activityLog.runId, issues.projectId, desc(activityLog.createdAt))
-        .as("run_project_links");
-
-      const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, ${runProjectLinks.projectId})`;
+      // A cost event belongs to exactly one project: the project of the issue
+      // that owns the event. Resolving the project through `activity_log`
+      // instead produced one link row per (run, project) pair, so a run that
+      // touched issues in two projects joined twice and its full usage was
+      // counted in both. This cut and `by-agent` aggregate the same ledger, so
+      // they must report the same company total.
+      const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, ${issues.projectId})`;
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
@@ -501,7 +482,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           outputTokens: sumAsNumber(costEvents.outputTokens),
         })
         .from(costEvents)
-        .leftJoin(runProjectLinks, eq(costEvents.heartbeatRunId, runProjectLinks.runId))
+        .leftJoin(issues, and(eq(costEvents.issueId, issues.id), eq(issues.companyId, companyId)))
         .innerJoin(projects, sql`${projects.id} = ${effectiveProjectId}`)
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
