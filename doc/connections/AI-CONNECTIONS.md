@@ -108,22 +108,17 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
-A subscription invocation takes a grant-scoped transaction advisory lease only
-when it writes a provider authentication file back to the grant. OpenAI and xAI
-subscriptions do this, because their refresh tokens are single use. An
-Anthropic subscription invocation writes no file back, so it takes no lease;
-two Anthropic invocations of one grant run at the same time. The reserved
-database client keeps one transaction open until cleanup, including on
-transaction-pooling proxies such as PgBouncer. Session-level advisory locks must
-not be used here: a pooled connection can return to a different backend for
-cleanup and leave the original lock behind. The lease transaction disables its
-idle timeout and contains no application data writes; cleanup rolls it back.
-Two
-different users' grants can run concurrently; a second invocation of the same
-file-backed subscription receives a retryable busy response while it is in
-use. Refreshes are merged only into the originating active grant, with
-reconnect/revocation version checks. Temporary homes are removed on normal
-completion or failure.
+A subscription invocation takes no lease. Two invocations of one grant, from
+the same or a different provider account, run at the same time. At cleanup,
+each invocation re-reads the credential stored at that moment under a row
+lock on the grant, then compares it against its own refreshed copy using the
+provider's own freshness field: Codex compares `last_refresh` and bounds it
+against the host clock; Grok compares `expires_at`. The newer credential
+persists; a tie or an unparseable freshness value keeps the stored
+credential, so a spent single-use refresh token never overwrites a good one.
+Refreshes are merged only into the originating active grant, with a
+revocation check. Temporary homes are removed on normal completion or
+failure.
 
 For a fresh task execution, subscription contention creates a durable scheduled
 retry checked every 60–120 seconds. The task shows “Waiting for AI subscription”
@@ -215,8 +210,8 @@ unmanaged legacy agents retain their existing authentication paths.
 
 `server/src/__tests__/ai-connections.test.ts` exercises storage, isolation,
 defaults, human audiences, agent access, reconnect races, refresh ownership,
-subscription locking, migration replay, and redacted API failures against a real
-embedded database. Existing login, adapter, tool, and channel suites cover their
+concurrent subscription write-backs, migration replay, and redacted API
+failures against a real embedded database. Existing login, adapter, tool, and channel suites cover their
 shared integration paths. The onboarding tests cover managed reuse and keeping a
 successfully connected account after failed agent creation.
 
