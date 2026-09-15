@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
+import os from "node:os";
 import http from "node:http";
 import express from "express";
 import request from "supertest";
@@ -455,6 +456,36 @@ describe("buildSentryInitOptions", () => {
 
     expect(httpIntegration).toHaveBeenCalledWith({ breadcrumbs: false });
     expect(resolved.filter((i) => i.name === "Http")).toHaveLength(1);
+  });
+});
+
+describe("buildSentryInitOptions serverName", () => {
+  it("sets serverName to the host name", async () => {
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe(os.hostname());
+  });
+
+  it("reads the host name from node:os at call time, not at module load time", async () => {
+    vi.doMock("node:os", () => ({
+      default: { hostname: () => "fixed-test-host" },
+      hostname: () => "fixed-test-host",
+    }));
+
+    const { buildSentryInitOptions } = await importFreshSentry();
+    const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
+      httpIntegration: () => ({ name: "Http" }),
+      onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+    });
+
+    expect(options.serverName).toBe("fixed-test-host");
+
+    vi.doUnmock("node:os");
   });
 });
 

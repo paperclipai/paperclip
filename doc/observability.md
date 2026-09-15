@@ -375,6 +375,14 @@ sends, so an operator can read what the feature does before turning it on.
 Each Sentry integration name below is verified against the default
 integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
+**Server attribute this feature sets**
+
+- `server_name` — every server event carries the host name of the process.
+  The `@sentry/node` client already sets this value by default when the
+  operator does not pass a `serverName` option; this feature passes the
+  value directly, so the server keeps sending it even if a later SDK
+  version changes its default.
+
 **Server events this feature adds**
 
 - An Express `HttpError` with `status >= 500`.

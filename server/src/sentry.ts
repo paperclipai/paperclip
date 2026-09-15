@@ -16,6 +16,12 @@
 // adds error monitoring only and starts no span or trace behavior of its
 // own.
 //
+// `serverName`: the initializer sets this to the host name of the process,
+// with `os.hostname()`. The `@sentry/node` client already falls back to the
+// same host name when the caller omits this option, so this line makes an
+// existing default explicit instead of changing captured event content. An
+// explicit value stays correct if a future SDK version changes its default.
+//
 // Default-integration privacy note: `sendDefaultPii: false` filters values
 // by name, inside the `RequestData` integration only. Three other default
 // integrations copy raw values past that filter, so the initializer removes
@@ -44,6 +50,7 @@
 // never throws. This gate mirrors the OpenTelemetry gate in
 // `instrumentation.ts`.
 
+import os from "node:os";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 
@@ -200,6 +207,7 @@ export interface SentryInitOptions {
   skipOpenTelemetrySetup: boolean;
   tracesSampleRate: number;
   sendDefaultPii: boolean;
+  serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
 }
 
@@ -218,6 +226,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    serverName: os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
         (integration) =>
