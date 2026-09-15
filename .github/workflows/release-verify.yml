@@ -302,6 +302,23 @@ jobs:
           toolchain="$(rustup show active-toolchain | awk '{print $1}')"
           echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
 
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
       - name: Cache Runner Rust dependencies
         # Restore and save only within trusted master-push verification. GitHub
         # isolates branch/PR caches from master; other callers compile afresh.
