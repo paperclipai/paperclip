@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 const EDGE_ZONE = 24; // px from left edge to start open-swipe
 const MIN_DISTANCE = 60; // minimum horizontal swipe distance
@@ -23,6 +23,19 @@ export interface SidebarSwipeOptions {
  * gesture entirely.
  */
 export const useSidebarSwipe = ({ enabled, isOpen, onOpenChange }: SidebarSwipeOptions) => {
+  // Read the latest values through refs so listeners aren't re-registered on
+  // every open/close or when a caller passes a non-memoized callback.
+  const isOpenRef = useRef(isOpen);
+  const onOpenChangeRef = useRef(onOpenChange);
+
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+  }, [isOpen]);
+
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  }, [onOpenChange]);
+
   useEffect(() => {
     if (!enabled) return;
 
@@ -61,15 +74,17 @@ export const useSidebarSwipe = ({ enabled, isOpen, onOpenChange }: SidebarSwipeO
       const dy = Math.abs(t.clientY - startY);
       if (dy > Math.abs(dx) * MAX_SLOPE) return; // drifted diagonal overall
 
+      const isOpen = isOpenRef.current;
+
       // Swipe right from left edge → open
       if (!isOpen && startX <= EDGE_ZONE && dx >= MIN_DISTANCE) {
-        onOpenChange(true);
+        onOpenChangeRef.current(true);
         return;
       }
 
       // Swipe left when open → close
       if (isOpen && dx <= -MIN_DISTANCE) {
-        onOpenChange(false);
+        onOpenChangeRef.current(false);
       }
     };
 
@@ -88,5 +103,5 @@ export const useSidebarSwipe = ({ enabled, isOpen, onOpenChange }: SidebarSwipeO
       document.removeEventListener("touchend", onTouchEnd);
       document.removeEventListener("touchcancel", onTouchCancel);
     };
-  }, [enabled, isOpen, onOpenChange]);
+  }, [enabled]);
 };
