@@ -145,6 +145,8 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
 
+export const COMPANY_NAME_FIELD_LABEL = "Name";
+
 // First-run onboarding stays on the proven direct adapters even when an
 // instance administrator has opted into Paperclip Runner elsewhere. The
 // experimental flag only exposes the runner in explicit agent configuration.
@@ -2501,7 +2503,7 @@ function OnboardingWizardInner({
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Name
+                      {COMPANY_NAME_FIELD_LABEL}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
