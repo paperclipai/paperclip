@@ -162,6 +162,9 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.3
+      smol-toml:
+        specifier: ^1.4.2
+        version: 1.8.0
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
