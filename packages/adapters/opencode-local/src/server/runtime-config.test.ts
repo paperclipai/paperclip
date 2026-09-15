@@ -181,7 +181,18 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    // ALAA-3796 rebase: the runtime config always carries the paperclip_adaptive
+    // variant block, so a dropped gateway/model input leaves adaptive-only providers.
+    expect(runtimeConfig.provider).toMatchObject({
+      opencode: {
+        models: {
+          "claude-opus-5": { variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } } },
+          "muse-spark-1.3-contributor-free": {
+            variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } },
+          },
+        },
+      },
+    });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON; custom providers ignored.",
     );
@@ -198,7 +209,18 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    // ALAA-3796 rebase: the runtime config always carries the paperclip_adaptive
+    // variant block, so a dropped gateway/model input leaves adaptive-only providers.
+    expect(runtimeConfig.provider).toMatchObject({
+      opencode: {
+        models: {
+          "claude-opus-5": { variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } } },
+          "muse-spark-1.3-contributor-free": {
+            variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } },
+          },
+        },
+      },
+    });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS is set but is not a JSON object; custom providers ignored.",
     );
@@ -242,7 +264,18 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    // ALAA-3796 rebase: the runtime config always carries the paperclip_adaptive
+    // variant block, so a dropped gateway/model input leaves adaptive-only providers.
+    expect(runtimeConfig.provider).toMatchObject({
+      opencode: {
+        models: {
+          "claude-opus-5": { variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } } },
+          "muse-spark-1.3-contributor-free": {
+            variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } },
+          },
+        },
+      },
+    });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: bifrost.",
     );
@@ -306,7 +339,18 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    // ALAA-3796 rebase: the runtime config always carries the paperclip_adaptive
+    // variant block, so a dropped gateway/model input leaves adaptive-only providers.
+    expect(runtimeConfig.provider).toMatchObject({
+      opencode: {
+        models: {
+          "claude-opus-5": { variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } } },
+          "muse-spark-1.3-contributor-free": {
+            variants: { paperclip_adaptive: { thinking: { type: "adaptive" } } },
+          },
+        },
+      },
+    });
     await prepared.cleanup();
   });
 
@@ -320,5 +364,46 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
+  });
+
+  it("defines the paperclip_adaptive variant for adaptive-only models (ALAA-3794)", async () => {
+    const configHome = await makeConfigHome({
+      provider: {
+        opencode: {
+          models: {
+            "claude-opus-5": {
+              variants: { custom: { thinking: { type: "disabled" } } },
+            },
+          },
+        },
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    const models = (
+      (runtimeConfig.provider as Record<string, unknown>).opencode as Record<string, unknown>
+    ).models as Record<string, Record<string, unknown>>;
+    // Existing custom variants survive alongside the injected adaptive one.
+    expect(models["claude-opus-5"].variants).toMatchObject({
+      custom: { thinking: { type: "disabled" } },
+      paperclip_adaptive: { thinking: { type: "adaptive" } },
+    });
+    expect(models["muse-spark-1.3-contributor-free"].variants).toEqual({
+      paperclip_adaptive: { thinking: { type: "adaptive" } },
+    });
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
   });
 });

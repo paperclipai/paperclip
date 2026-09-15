@@ -99,3 +99,20 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+// ALAA-3794: provider request-shape errors that are scoped to the resumed
+// opencode session, so retrying once with a fresh session recovers the run:
+// - reasoning `encrypted_content` was not issued to this caller: the resumed
+//   session replays thinking blocks issued to a different caller/model and
+//   the upstream rejects them.
+// - "thinking.type.enabled" is not supported for this model: a session created
+//   under a stale variant mapping replays the old thinking shape.
+export function isOpenCodeStaleRequestShapeError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  return /encrypted_content.+not issued|thinking\.type\.enabled.+not supported/i.test(haystack);
+}
