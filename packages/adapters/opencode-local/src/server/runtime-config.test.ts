@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
@@ -246,6 +247,109 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: bifrost.",
     );
+    await prepared.cleanup();
+  });
+
+  it("injects Paperclip-managed MCP servers using OpenCode's native remote-MCP shape", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const mcpServers: AdapterRuntimeMcpServer[] = [
+      { name: "discord", url: "https://gateway.example/mcp/discord", token: "tok-discord", connectionId: "conn-aaaaaaaa" },
+    ];
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      mcpServers,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp?: Record<string, unknown> };
+    expect(runtimeConfig.mcp).toMatchObject({
+      discord: {
+        type: "remote",
+        url: "https://gateway.example/mcp/discord",
+        headers: { Authorization: "Bearer tok-discord" },
+      },
+    });
+    expect(prepared.notes).toContain("Injected 1 Paperclip-managed MCP server(s) into OpenCode config.");
+    await prepared.cleanup();
+  });
+
+  it("switches the runtime-config-dir injection on for MCP grants alone, even with permission overrides opted out", async () => {
+    const configHome = await makeConfigHome();
+    const mcpServers: AdapterRuntimeMcpServer[] = [
+      { name: "discord", url: "https://gateway.example/mcp/discord", token: "tok-discord", connectionId: "conn-aaaaaaaa" },
+    ];
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      mcpServers,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    expect(prepared.env.XDG_CONFIG_HOME).not.toBe(configHome);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp?: Record<string, unknown>; permission?: Record<string, unknown> };
+    expect(runtimeConfig.mcp?.discord).toBeDefined();
+    // No dangerouslySkipPermissions -> no external_directory override written.
+    expect(runtimeConfig.permission?.external_directory).toBeUndefined();
+    await prepared.cleanup();
+  });
+
+  it("renames a managed MCP server instead of overwriting an existing user-defined entry of the same name", async () => {
+    const userDiscordConfig = { type: "local", command: ["my-discord-mcp"] };
+    const configHome = await makeConfigHome({
+      permission: { read: "allow" },
+      mcp: { discord: userDiscordConfig },
+    });
+    const mcpServers: AdapterRuntimeMcpServer[] = [
+      { name: "discord", url: "https://gateway.example/mcp/discord", token: "tok-discord", connectionId: "conn-aaaaaaaa" },
+    ];
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      mcpServers,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp?: Record<string, unknown> };
+    // The user's own "discord" server must survive untouched...
+    expect(runtimeConfig.mcp?.discord).toEqual(userDiscordConfig);
+    // ...and the managed grant lands under a disambiguated name instead of
+    // silently replacing it.
+    expect(runtimeConfig.mcp?.["discord-conn-aaa"]).toMatchObject({
+      type: "remote",
+      url: "https://gateway.example/mcp/discord",
+    });
+    await prepared.cleanup();
+  });
+
+  it("dedupes managed MCP server names against each other when no existing config entry collides", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const mcpServers: AdapterRuntimeMcpServer[] = [
+      { name: "discord", url: "https://gateway.example/mcp/a", token: "tok-a", connectionId: "conn-aaaaaaaa" },
+      { name: "discord", url: "https://gateway.example/mcp/b", token: "tok-b", connectionId: "conn-bbbbbbbb" },
+    ];
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      mcpServers,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp?: Record<string, unknown> };
+    expect(runtimeConfig.mcp?.discord).toMatchObject({ url: "https://gateway.example/mcp/a" });
+    expect(runtimeConfig.mcp?.["discord-conn-bbb"]).toMatchObject({ url: "https://gateway.example/mcp/b" });
     await prepared.cleanup();
   });
 
