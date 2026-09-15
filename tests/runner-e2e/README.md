@@ -498,3 +498,7 @@ not a reason to retry as infrastructure. State snapshots remain in the evidence;
 the timeout message does not serialize task data into the failure classifier.
 Explicit server-health waits and failed network reads retain infrastructure
 classification.
+
+The product execution prompt v3 tells agents to record child dependencies and
+end the parent turn when no independent work remains. The user-story prompts
+stay unchanged, so live retests measure the product guidance itself.

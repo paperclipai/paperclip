@@ -753,6 +753,18 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
           isNull(nativeRunFinalizations.resultId),
         ),
       );
+    let nativeFailureBlock: { runId: string; statusVersion: number } | undefined;
+    if (issue.status !== "blocked") {
+      const projected = await issueService(tx).update(issue.id, { status: "blocked" }, tx);
+      if (projected) {
+        nativeFailureBlock = { runId: run.id, statusVersion: projected.statusVersion };
+        await tx.insert(activityLog).values({
+          companyId: issue.companyId, actorType: "system", actorId: "execution-recovery",
+          action: "issue.updated", entityType: "issue", entityId: issue.id, runId: run.id,
+          details: { status: "blocked", previousStatus: issue.status, reason: "native_continuation_requires_reconciliation" },
+        });
+      }
+    }
     await issueRecoveryActionService(tx).upsertSourceScoped({
       companyId: issue.companyId,
       sourceIssueId: issue.id,
@@ -761,21 +773,12 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
       returnOwnerAgentId: run.agentId,
       cause: "native_continuation_requires_reconciliation",
       fingerprint: `native-continuation:${run.id}`,
-      evidence: { runId: run.id, originalFailureCode: run.errorCode },
+      evidence: { runId: run.id, originalFailureCode: run.errorCode, ...(nativeFailureBlock ? { nativeFailureBlock } : {}) },
       nextAction:
         "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.",
       maxAttempts: 3,
       wakePolicy: null,
       supersedeOnIdentityChange: true,
-    });
-  }
-  if (issue.status !== "blocked") {
-    await tx.update(issues).set({ status: "blocked", updatedAt: now })
-      .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
-    await tx.insert(activityLog).values({
-      companyId: issue.companyId, actorType: "system", actorId: "execution-recovery",
-      action: "issue.updated", entityType: "issue", entityId: issue.id, runId: run.id,
-      details: { status: "blocked", previousStatus: issue.status, reason: "native_continuation_requires_reconciliation" },
     });
   }
   return true;
