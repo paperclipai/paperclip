@@ -1,6 +1,12 @@
 /**
  * SandboxOrchestrator implementation backed by the kubernetes-sigs/agent-sandbox
- * Sandbox CRD (agents.x-k8s.io/v1alpha1).
+ * Sandbox CRD (agents.x-k8s.io).
+ *
+ * Which version of that CRD to address is NOT decided here: the caller resolves
+ * it from cluster discovery (see sandbox-api-version.ts) and passes it in, so
+ * the plugin works against both a v1beta1 controller (agent-sandbox >= v0.5.0)
+ * and an older v1alpha1 one. `makeSandboxCrOrchestrator` binds a resolved
+ * version into the version-agnostic SandboxOrchestrator interface.
  *
  * The Sandbox CR creates a long-lived pod that paperclip-server can exec into
  * for multi-command adapter-install workflows — the key architectural win over
@@ -22,10 +28,9 @@
  */
 
 import type { KubeClients } from "./kube-client.js";
+import { SANDBOX_GROUP, type SandboxApiVersion } from "./sandbox-api-version.js";
 import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
 
-const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
 const SANDBOX_PLURAL = "sandboxes";
 
 export class SandboxCrTimeoutError extends Error {
@@ -98,10 +103,11 @@ export async function createSandboxCr(
   clients: KubeClients,
   namespace: string,
   manifest: Record<string, unknown>,
+  apiVersion: SandboxApiVersion,
 ): Promise<{ uid: string }> {
   const result = await clients.custom.createNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: apiVersion,
     namespace,
     plural: SANDBOX_PLURAL,
     body: manifest,
@@ -115,10 +121,11 @@ export async function getSandboxCrStatus(
   clients: KubeClients,
   namespace: string,
   name: string,
+  apiVersion: SandboxApiVersion,
 ): Promise<SandboxStatus> {
   const result = await clients.custom.getNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: apiVersion,
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -136,11 +143,12 @@ export async function findPodForSandbox(
   clients: KubeClients,
   namespace: string,
   name: string,
+  apiVersion: SandboxApiVersion,
 ): Promise<string | null> {
   // Primary: read status.podName from the Sandbox CR
   const cr = await clients.custom.getNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: apiVersion,
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -224,10 +232,11 @@ export async function deleteSandboxCr(
   clients: KubeClients,
   namespace: string,
   name: string,
+  apiVersion: SandboxApiVersion,
 ): Promise<void> {
   await clients.custom.deleteNamespacedCustomObject({
     group: SANDBOX_GROUP,
-    version: SANDBOX_VERSION,
+    version: apiVersion,
     namespace,
     plural: SANDBOX_PLURAL,
     name,
@@ -252,6 +261,7 @@ export async function waitForSandboxReady(
     timeoutMs: 120_000,
     pollMs: 2000,
   },
+  apiVersion: SandboxApiVersion,
 ): Promise<SandboxStatus> {
   const deadline = Date.now() + opts.timeoutMs;
   const pollMs = opts.pollMs ?? 2000;
@@ -259,15 +269,16 @@ export async function waitForSandboxReady(
   while (Date.now() < deadline) {
     const cr = await clients.custom.getNamespacedCustomObject({
       group: SANDBOX_GROUP,
-      version: SANDBOX_VERSION,
+      version: apiVersion,
       namespace,
       plural: SANDBOX_PLURAL,
       name,
     }) as Record<string, unknown>;
 
     const status = (cr.status as Record<string, unknown>) ?? {};
-    // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
-    // not status.phase. Fall back to phase for forward-compat.
+    // agent-sandbox reports readiness through
+    // status.conditions[type=Ready,status=True] in both served versions, not
+    // status.phase. Fall back to phase for forward-compat.
     const conditions = Array.isArray(status.conditions) ? status.conditions as Array<Record<string, unknown>> : [];
     const readyCondition = conditions.find((c) => c.type === "Ready");
     const failedCondition = conditions.find((c) => c.type === "Failed" || (c.type === "Ready" && c.status === "False" && typeof c.reason === "string" && /failed/i.test(c.reason)));
@@ -300,17 +311,29 @@ export async function waitForSandboxReady(
 }
 
 /**
- * Sandbox CR-backed conformance to SandboxOrchestrator.
+ * Sandbox CR-backed conformance to SandboxOrchestrator, bound to one resolved
+ * served API version. SandboxOrchestrator is deliberately version-agnostic (the
+ * Job backend has no such notion), so the version is closed over here rather
+ * than threaded through every call site.
  *
  * waitForCompletion semantics change: for this backend, "completion" means
  * "pod is up and Ready to exec into" — NOT "workload finished". The actual
  * command execution and its completion is handled by execInPod().
  */
-export const sandboxCrOrchestrator: SandboxOrchestrator = {
-  claim: createSandboxCr,
-  getStatus: getSandboxCrStatus,
-  findPod: findPodForSandbox,
-  streamLogs: streamSandboxLogs,
-  release: deleteSandboxCr,
-  waitForCompletion: waitForSandboxReady,
-};
+export function makeSandboxCrOrchestrator(
+  apiVersion: SandboxApiVersion,
+): SandboxOrchestrator {
+  return {
+    claim: (clients, namespace, manifest) =>
+      createSandboxCr(clients, namespace, manifest, apiVersion),
+    getStatus: (clients, namespace, name) =>
+      getSandboxCrStatus(clients, namespace, name, apiVersion),
+    findPod: (clients, namespace, name) =>
+      findPodForSandbox(clients, namespace, name, apiVersion),
+    streamLogs: streamSandboxLogs,
+    release: (clients, namespace, name) =>
+      deleteSandboxCr(clients, namespace, name, apiVersion),
+    waitForCompletion: (clients, namespace, name, opts) =>
+      waitForSandboxReady(clients, namespace, name, opts, apiVersion),
+  };
+}
