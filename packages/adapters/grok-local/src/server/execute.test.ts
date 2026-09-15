@@ -360,6 +360,152 @@ describe("grok_local execute", () => {
     expect(seenArgs[flagIndex + 1]).toBe("bypassPermissions");
   });
 
+  it("forwards grok-4.6 and xhigh reasoning effort", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      expect(args).toEqual(expect.arrayContaining(["--model", "grok-4.6"]));
+      expect(args).toEqual(expect.arrayContaining(["--reasoning-effort", "xhigh"]));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "ok" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-46", requestId: "req-46" }),
+        ].join("\n"),
+        stderr: "",
+      };
+    });
+
+    const result = await execute({
+      runId: "run-grok-46-xhigh",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.6", reasoningEffort: "xhigh" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+  });
+
+  it("remaps saved grok-build to grok-4.6 before spawn", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      expect(args).toEqual(expect.arrayContaining(["--model", "grok-4.6"]));
+      expect(args).not.toEqual(expect.arrayContaining(["--model", "grok-build"]));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "ok" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-alias", requestId: "req-alias" }),
+        ].join("\n"),
+        stderr: "",
+      };
+    });
+
+    const result = await execute({
+      runId: "run-grok-build-alias",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-build" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+  });
+
+  it("accepts effort as an alias for reasoningEffort", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      expect(args).toEqual(expect.arrayContaining(["--reasoning-effort", "high"]));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "ok" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-effort", requestId: "req-effort" }),
+        ].join("\n"),
+        stderr: "",
+      };
+    });
+
+    const result = await execute({
+      runId: "run-effort-alias",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, effort: "high" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("downgrades xhigh to high on grok-4.5 instead of forwarding it", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      expect(args).toEqual(expect.arrayContaining(["--model", "grok-4.5"]));
+      expect(args).toEqual(expect.arrayContaining(["--reasoning-effort", "high"]));
+      expect(args).not.toEqual(expect.arrayContaining(["--reasoning-effort", "xhigh"]));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "ok" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-45", requestId: "req-45" }),
+        ].join("\n"),
+        stderr: "",
+      };
+    });
+
+    const result = await execute({
+      runId: "run-grok-45-xhigh",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5", reasoningEffort: "xhigh" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+  });
+
   it("cleans up staged assets when setup fails before the Grok process starts", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");

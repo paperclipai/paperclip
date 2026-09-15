@@ -105,6 +105,7 @@ import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_GROK_LOCAL_MODEL } from "@paperclipai/adapter-grok-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
@@ -1092,6 +1093,7 @@ function OnboardingWizardInner({
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
     adapterType === "kimi_local" ||
+    adapterType === "grok_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
@@ -1458,6 +1460,7 @@ function OnboardingWizardInner({
     codex_local: "codex",
     gemini_local: "gemini",
     kimi_local: "kimi",
+    grok_local: "grok",
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
@@ -1765,6 +1768,8 @@ function OnboardingWizardInner({
           ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "kimi_local"
             ? model || DEFAULT_KIMI_LOCAL_MODEL
+          : adapterType === "grok_local"
+            ? model || DEFAULT_GROK_LOCAL_MODEL
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
             : adapterType === "opencode_local"
@@ -2891,6 +2896,8 @@ function OnboardingWizardInner({
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "kimi_local"
                                 ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
+                              : adapterType === "grok_local"
+                                ? `${effectiveAdapterCommand} --single "Respond with hello." --output-format streaming-json`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
@@ -2903,6 +2910,7 @@ function OnboardingWizardInner({
                           adapterType === "codex_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "kimi_local" ||
+                          adapterType === "grok_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
                               If auth fails, set{" "}
@@ -2913,6 +2921,8 @@ function OnboardingWizardInner({
                                     ? "GEMINI_API_KEY"
                                     : adapterType === "kimi_local"
                                       ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
+                                    : adapterType === "grok_local"
+                                      ? "XAI_API_KEY"
                                     : "OPENAI_API_KEY"}
                               </span>{" "}
                               in env or run{" "}
@@ -2925,6 +2935,8 @@ function OnboardingWizardInner({
                                       ? "gemini auth"
                                       : adapterType === "kimi_local"
                                         ? "kimi login"
+                                      : adapterType === "grok_local"
+                                        ? "grok login"
                                       : "opencode auth login"}
                               </span>
                               .

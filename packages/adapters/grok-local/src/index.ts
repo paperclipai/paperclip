@@ -1,10 +1,14 @@
 export const type = "grok_local";
 export const label = "Grok Build";
 
-export const DEFAULT_GROK_LOCAL_MODEL = "grok-build";
+export const DEFAULT_GROK_LOCAL_MODEL = "grok-4.6";
+
+export { grokModelSupportsXhigh, resolveGrokCliModelId, resolveGrokReasoningEffort } from "./effort.js";
 
 export const models = [
-  { id: DEFAULT_GROK_LOCAL_MODEL, label: DEFAULT_GROK_LOCAL_MODEL },
+  { id: "grok-4.6", label: "Grok 4.6" },
+  { id: "grok-4.5", label: "Grok 4.5" },
+  { id: "grok-build", label: "grok-build (alias → grok-4.6)" },
 ];
 
 export const agentConfigurationDoc = `# grok_local agent configuration
@@ -25,9 +29,9 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe, otherwise falls back to \`--rules @file\`
 - promptTemplate (string, optional): run prompt template
-- model (string, optional): Grok model id. Defaults to grok-build.
+- model (string, optional): Grok model id. Defaults to grok-4.6. Built-in options: grok-4.6, grok-4.5. \`grok-build\` is still accepted as a saved/catalog alias and remapped to grok-4.6 before spawn (current Grok CLI rejects \`grok-build\` as an unknown model id).
 - permissionMode (string, optional): Grok permission mode passed via \`--permission-mode\`. Unset by default: Grok >= 1.0 enforces \`dontAsk\` as deny-by-default and it overrides \`--always-approve\`, so unattended runs rely on \`--always-approve\` alone unless you explicitly need a mode
-- reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`
+- reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`. Accepted values: \`low\`, \`medium\`, \`high\`, \`xhigh\`. \`effort\` is accepted as an alias. \`xhigh\` is only valid on grok-4.6 / grok-build; grok-4.5 remaps it to \`high\`.
 - maxTurns (number, optional): maximum agent turns for the run
 - command (string, optional): defaults to "grok"
 - extraArgs (string[], optional): additional CLI args
