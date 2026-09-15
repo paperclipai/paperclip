@@ -16029,10 +16029,9 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
   }
 
-  // Subscription homes are serialized so refresh tokens cannot be overwritten
-  // by another run. Contention is a resource wait, not broken authentication.
-  // The database lease is released on completion/disconnect; retrying remains
-  // safe across processes and each attempt revalidates the selected account.
+  // No code path raises the `ai_connection_busy` error any more. This
+  // function stays because a stored run can still carry that error code from
+  // before this change.
   async function finalizeAiConnectionBusyDeferral(
     run: typeof heartbeatRuns.$inferSelect,
     error: HttpError,

@@ -120,9 +120,11 @@ Refreshes are merged only into the originating active grant, with a
 revocation check. Temporary homes are removed on normal completion or
 failure.
 
-For a fresh task execution, subscription contention creates a durable scheduled
-retry checked every 60–120 seconds. The task shows “Waiting for AI subscription”
-and does not request a reconnect or consume its provider-failure retry allowance.
+A fresh task execution cannot enter subscription contention; the freshest-write
+rule above resolves the conflict instead. A run that entered the wait before
+this change still carries a durable scheduled retry checked every 60–120
+seconds. The task shows “Waiting for AI subscription” and does not request a
+reconnect or consume its provider-failure retry allowance.
 Each attempt rechecks task eligibility, ownership, budget, and current credential
 access. Revocation and other configuration failures still require user action.
 Authorized comment wakes that started as non-assignee runs can resume without
