@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { parseOpenCodeJsonl, isOpenCodeStaleRequestShapeError, isOpenCodeUnknownSessionError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,22 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  it("detects stale request-shape errors (ALAA-3794)", () => {
+    expect(
+      isOpenCodeStaleRequestShapeError(
+        'reasoning `encrypted_content` was not issued to this caller',
+        "",
+      ),
+    ).toBe(true);
+    expect(
+      isOpenCodeStaleRequestShapeError(
+        'Error from provider (Console): Upstream request failed: [invalid_request_error] "thinking.type.enabled" is not supported for this model.',
+        "",
+      ),
+    ).toBe(true);
+    expect(isOpenCodeStaleRequestShapeError("Session not found: s_123", "")).toBe(false);
+    expect(isOpenCodeStaleRequestShapeError("all good", "")).toBe(false);
   });
 });
