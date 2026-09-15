@@ -344,6 +344,36 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].statusVersion).toBe(blockedIssue.statusVersion);
   });
 
+  it.each(["active", "escalated"])("repairs a failed native task with an existing %s recovery action", async (status) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "failed", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", errorCode: "runner_lost" }).where(eq(heartbeatRuns.id, runId));
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const [existing] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, status, kind: "active_run_watchdog",
+      ownerType: "board", cause: "native_runner_restart_unverified", fingerprint: `restart:${runId}`,
+      evidence: { runId, priorProof: "keep", automaticRecovery: { attempts: 2 } },
+      nextAction: "Verify the previous execution stopped", attemptCount: 2, maxAttempts: 3,
+    }).returning();
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    const release = () => adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => { throw new Error("must not replay"); });
+    await release();
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(blocked.status).toBe("blocked");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: existing.id, status, cause: existing.cause,
+      ownerType: "board", attemptCount: 2, maxAttempts: 3, nextAction: existing.nextAction,
+      evidence: { runId, priorProof: "keep", automaticRecovery: { attempts: 2 },
+        nativeFailureBlock: { runId, statusVersion: blocked.statusVersion } } });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).toBe("deferred_issue_execution");
+    await release();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].statusVersion).toBe(blocked.statusVersion);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).toHaveLength(1);
+  });
+
   it.each(["queued", "running", "scheduled_retry"])("does not promote another turn behind a %s successor without an execution lock", async (status) => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
