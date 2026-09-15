@@ -1,6 +1,6 @@
 # Agent Companies Spec Inventory
 
-This document indexes every part of the Paperclip codebase that touches the [Agent Companies Specification](docs/companies/companies-spec.md) (`agentcompanies/v1-draft`).
+This document indexes every part of the Paperclip codebase that touches the [Agent Companies Specification](../docs/companies/companies-spec.md) (`agentcompanies/v1-draft`).
 
 Use it when you need to:
 
