@@ -57,6 +57,8 @@ Paperclip creates a personal grant with no credentials after the probe succeeds.
 That successful public probe saves the draft identity and its grant. A later
 catalog-refresh failure leaves them available for retry instead of undoing a
 grant that another setup attempt may already be using.
+Catalog and default-profile writes after that probe are atomic: a failure rolls
+back that step while retaining the established draft identity.
 Later health checks still require the user's authorization and return an
 actionable `422` error when it is missing.
 

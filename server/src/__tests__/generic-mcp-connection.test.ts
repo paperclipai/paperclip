@@ -1092,6 +1092,49 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(service.checkHealth(first.connectionId, actor)).resolves.toMatchObject({ connection: { healthStatus: "ok" } });
   });
 
+  it("rolls back partial catalog and profile writes without removing the established public identity", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "public" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const input = { link: MCP_URL, name: "Personal atomic catalog", grantKind: "user" as const };
+    const first = await service.connectGalleryApp(company.id, input, actor);
+    const catalogBefore = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, first.connectionId));
+    await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId));
+    await db.update(toolConnections).set({ status: "archived" }).where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications).set({ status: "archived", archivedAt: new Date() }).where(eq(toolApplications.id, first.application.id));
+    fixture.fetchMock.mockRestore();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => jsonResponse({
+      jsonrpc: "2.0", id: "paperclip-catalog-refresh",
+      result: { tools: [...FIXTURE_TOOLS, { name: "new_tool", description: "Partial catalog addition" }] },
+    }));
+    await db.execute(sql`
+      CREATE FUNCTION test_personal_profile_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'personal profile fixture failure'; END $$
+    `);
+    await db.execute(sql`
+      CREATE TRIGGER test_personal_profile_failure BEFORE INSERT ON tool_profile_entries
+      FOR EACH ROW EXECUTE FUNCTION test_personal_profile_failure()
+    `);
+    try {
+      await expect(service.connectGalleryApp(company.id, input, actor)).rejects.toThrow();
+      await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, first.connectionId)))
+        .resolves.toEqual(catalogBefore);
+      await expect(db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).resolves.toHaveLength(0);
+      await expect(db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, company.id))).resolves.toHaveLength(0);
+      await expect(db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId)))
+        .resolves.toEqual([expect.objectContaining({ kind: "user", status: "active", credentialSecretRefs: [] })]);
+      await expect(service.getConnection(first.connectionId)).resolves.toMatchObject({ status: "draft", credentialPolicy: "per_user" });
+    } finally {
+      await db.execute(sql`DROP TRIGGER test_personal_profile_failure ON tool_profile_entries`);
+      await db.execute(sql`DROP FUNCTION test_personal_profile_failure()`);
+    }
+    const retry = await service.connectGalleryApp(company.id, { ...input, resumeConnectionId: first.connectionId }, actor);
+    expect(retry.catalog).toHaveLength(3);
+    await expect(db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).resolves.toHaveLength(1);
+    await expect(db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, company.id))).resolves.toHaveLength(1);
+  });
+
   it("creates an empty user grant after a personal public URL probe succeeds", async () => {
     // Use a real loopback MCP server here: neither fetch nor the transport is mocked.
     const receivedMethods: string[] = [];

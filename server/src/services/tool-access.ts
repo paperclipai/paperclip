@@ -13382,10 +13382,22 @@ export function toolAccessService(
         };
       }
       const restoreDraftDefaults = Boolean(revivedConnectionPrevious);
-      const refresh = await refreshCatalog(connectionRow.id, actor, {
+      const refreshOptions = {
         enableAllByDefault: restoreDraftDefaults,
         restoreDraftDefaults,
-      });
+      };
+      const catalogConnectionId = connectionRow.id;
+      // Keep the established public identity outside this transaction while
+      // making catalog, defaults, and their audits one all-or-nothing step.
+      const refresh: ToolCatalogRefreshResult = personalPublicSetupEstablished
+        ? await db.transaction(async (tx): Promise<ToolCatalogRefreshResult> =>
+            toolAccessService(tx as unknown as Db, options).refreshCatalog(
+              catalogConnectionId,
+              actor,
+              refreshOptions,
+            ),
+          )
+        : await refreshCatalog(catalogConnectionId, actor, refreshOptions);
       const [application] = await db
         .select()
         .from(toolApplications)
