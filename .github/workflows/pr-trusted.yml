@@ -658,6 +658,42 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same restore-only contract as the pnpm store above, for the Rust
+      # dependency tree: master's post-merge verification is the sole writer
+      # of release-runner-v1, and PR merge refs must not save branch-scoped
+      # copies of a ~680MB target directory. Every key input below has to
+      # match that writer in release-verify.yml exactly or each PR misses and
+      # recompiles all 313 third-party crates in both profiles. A miss is a
+      # slow run, never a wrong one.
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: release-runner-v1
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
+
       - name: Verify Paperclip Runner
         run: pnpm --filter @paperclipai/paperclip-runner check:all
 
