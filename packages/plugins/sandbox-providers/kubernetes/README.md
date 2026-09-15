@@ -61,6 +61,7 @@ Common optional fields:
 | Field | Default | Purpose |
 |---|---|---|
 | `backend` | `"sandbox-cr"` | `sandbox-cr` (alpha, requires agent-sandbox controller) or `job` (stable, one-shot entrypoint). |
+| `reuseLease` | `false` | Keep the sandbox pod alive on release so the next run resumes it. See [Lease reuse](#lease-reuse). |
 | `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, cursor_local, opencode_local, pi_local). Determines runtime image + env keys + egress allow-list. |
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
@@ -76,6 +77,33 @@ Common optional fields:
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
 
 Full JSON Schema in `src/manifest.ts`.
+
+### Lease reuse
+
+By default every run provisions a fresh sandbox and tears it down on release, so
+each run pays a cold start: namespace bootstrap, pod scheduling, image pull, and
+the adapter install. Set `reuseLease: true` to keep the Sandbox CR, its pod, and
+the per-run Secret alive on release instead. The next run for the same
+environment, execution workspace, agent, and adapter resumes that pod and skips
+the provision entirely.
+
+What to know before turning it on:
+
+- **`sandbox-cr` only.** A Job's pod is terminal once the Job finishes, so a
+  `job` backend lease is always torn down on release regardless of the setting.
+- **The pod keeps running** (and keeps holding namespace quota and node capacity)
+  until paperclip-server destroys the lease. Size `ResourceQuota` for the number
+  of agents you expect to be idle, not just the number running.
+- **Resume is best-effort.** If the pod is gone, terminally failed, or does not
+  report Ready within 30 seconds, the lease reports itself expired and the run
+  falls back to a fresh provision. A Kubernetes pod cannot be revived in place
+  the way a stopped VM-backed sandbox can.
+- **Only leases acquired while it was on are kept.** paperclip-server fixes a
+  lease's policy at acquisition, so turning `reuseLease` on takes effect from the
+  next lease onward. Leases already in flight are torn down on release as usual,
+  which is what keeps a mid-lease flip from stranding a pod the server has
+  already written off.
+- **Leases with a task-scoped egress grant are never reused** (below).
 
 ### Task-scoped egress grants
 
@@ -93,6 +121,8 @@ Keep provider-level egress defaults narrow, then grant only the destinations a t
 ```
 
 The provider creates a workload-owned policy selected by the task run label, so the additional destinations do not become reachable from other concurrent agent pods. Cilium mode enforces FQDNs directly. Standard NetworkPolicy mode cannot express FQDNs, so an FQDN grant permits public IPv4 TCP 80/443 for that run while excluding private, loopback, link-local, CGNAT, and multicast ranges. Network failures that look policy-related include the grant path in stderr, and the sandbox exposes the effective policy through `PAPERCLIP_NETWORK_EGRESS_*` environment variables.
+
+A grant is scoped to one run and never outlives it. The policy selects the pod by its run-id label, which is fixed at pod-creation time, so a lease that carried a grant is always torn down on release even when `reuseLease` is on: reusing that pod would hand the next run an egress allowance it never asked for. Workspaces that always request a grant therefore never reuse leases. In the other direction reuse is fail-closed: a resumed lease carries no grant, so a workspace that starts requesting one after the lease was taken sees its egress denied rather than silently widened.
 
 ## What gets created in your cluster
 
