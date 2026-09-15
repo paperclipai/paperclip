@@ -322,6 +322,7 @@ export function readNativeWorkspaceSyncReference(
 
 function parseGitSnapshot(
   value: unknown,
+  nested = false,
 ): GitWorkspaceSnapshot | null | undefined {
   if (value === null) return null;
   const candidate = parseObject(value);
@@ -348,12 +349,26 @@ function parseGitSnapshot(
   ) {
     return undefined;
   }
+  const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
+  if (candidate.repositories !== undefined) {
+    if (nested || !Array.isArray(candidate.repositories)) return undefined;
+    const seen = new Set<string>();
+    for (const raw of candidate.repositories) {
+      const repo = parseObject(raw);
+      if (typeof repo.path !== "string" || !/^\.paperclip-repositories\/[a-zA-Z0-9_-]+$/.test(repo.path) || seen.has(repo.path)) return undefined;
+      const snapshot = parseGitSnapshot(repo.snapshot, true);
+      if (!snapshot) return undefined;
+      seen.add(repo.path);
+      repositories.push({ path: repo.path, snapshot });
+    }
+  }
   return {
     headCommit: candidate.headCommit,
     branchName: candidate.branchName as string | null,
     overlayPaths: [...(candidate.overlayPaths as string[])],
     deletedPaths: [...(candidate.deletedPaths as string[])],
     ignoredPaths: [...(candidate.ignoredPaths as string[])],
+    ...(repositories.length ? { repositories } : {}),
   };
 }
 

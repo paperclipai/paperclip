@@ -67,6 +67,12 @@ vi.mock("../adapters/index.js", async () => {
   };
 });
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.js")>("../sentry.js");
+  return { ...actual, captureRunFailure: mockCaptureRunFailure };
+});
+
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
@@ -527,6 +533,77 @@ describe("P6-25 pre-result native session recovery", () => {
       .where(eq(nativeRunFinalizations.runId, initialRunId))).resolves.toEqual([
       expect.objectContaining({ phase: "observed", attempt: 0, failureCode: null }),
     ]);
+  });
+
+  it("sends exactly one Sentry event when a sweep resolves a run from running to failed", async () => {
+    const freshRunId = "79000000-0000-4000-8000-000000000101";
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      nativeIssueId: issueId,
+      status: "running",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      runnerProfileJson: {
+        nativeExecutionInput: {
+          ...persistedProfile.nativeExecutionInput,
+          binding: { runId: freshRunId },
+        },
+      },
+      contextSnapshot: { issueId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId: freshRunId,
+      companyId,
+      issueId,
+      phase: "retryable_failure",
+      attempt: 1,
+    });
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
+    // The Sentry report fires without an await inside the reconciler, so a
+    // follow-up round trip to the real database gives that fire-and-forget
+    // call room to complete before this test reads the spy.
+    await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, freshRunId));
+
+    const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
+    expect(newCaptures).toHaveLength(1);
+    expect(newCaptures[0]?.[0]).toMatchObject({ runId: freshRunId, runStatus: "failed" });
+  });
+
+  it("sends no Sentry event when a sweep finds a run that is already failed", async () => {
+    const freshRunId = "79000000-0000-4000-8000-000000000102";
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      nativeIssueId: issueId,
+      status: "failed",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      runnerProfileJson: {
+        nativeExecutionInput: {
+          ...persistedProfile.nativeExecutionInput,
+          binding: { runId: freshRunId },
+        },
+      },
+      contextSnapshot: { issueId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId: freshRunId,
+      companyId,
+      issueId,
+      phase: "retryable_failure",
+      attempt: 1,
+    });
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
+    await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, freshRunId));
+
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(0);
   });
 });
 

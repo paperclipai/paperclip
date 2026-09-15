@@ -37,6 +37,12 @@ or existing package identity mismatches fail the workflow. Retries reuse matchin
 published artifacts, including a shared package published before a DB publish
 failure. Allow npm's visibility polling to finish before retrying.
 
+The publisher validates both package archives first, then submits each missing
+package without waiting for the other to become visible. One visibility poll
+checks both accepted packages, so their registry propagation delays overlap.
+The publisher succeeds only after both packages pass the identity and
+distribution-pin checks. A visibility timeout names the package still missing.
+
 The final `stack-deploy-result` artifact contains `result.json` with contract
 version 1, request ID, SHA, stage `build`, and status `ready`. It expires after
 30 days. This confirms artifact availability; it does not certify a tenant deploy.
@@ -116,3 +122,64 @@ node scripts/preview-artifacts.mjs pack /path/to/source /path/to/output FULL_SHA
 
 This executes source build scripts. Keep output outside the repository and use an
 environment without publishing or cloud-admin credentials.
+
+## Direct cloud migrator artifacts
+
+`cloud-migrator-artifacts.yml` builds the DB and shared preview packages on each
+canonical `master` push. A manual run also requires `master` and uses its exact
+commit. This workflow runs on GitHub-hosted runners. It has no PR trigger.
+
+The build resolves a complete npm lockfile from the two local archives. It then
+pins their download URLs to immutable, content-addressed objects. The cloud
+migration runner can use `npm ci` with this lockfile before either new package
+version is available on npm. Existing external dependencies still come from npm
+and carry SHA-512 integrity pins. Package lifecycle scripts remain disabled.
+Before upload, the build job smoke-installs the real archives and their complete
+external and bundled dependency graph with an empty npm cache. It imports both
+installed packages. This check uses local archive URLs because public objects
+do not exist yet; all versions and integrity pins remain unchanged.
+
+Artifacts use the existing runner-history S3 bucket and CloudFront distribution,
+under the separate `cloud-migrators/v1/` prefix. The manifest at
+`https://d1p6rlowie26tp.cloudfront.net/cloud-migrators/v1/<full-sha>/manifest.json`
+records the full source SHA, exact preview version, and the size, URL, and SHA-512
+hash of each archive and the lockfile. Blob URLs include the content hash.
+The publisher validates the complete bundle before any write, writes all blobs
+before the manifest, and verifies downloads through the public endpoint.
+A retry reuses a complete existing manifest after verification. The publisher
+also creates a GitHub/Sigstore build-provenance attestation for the manifest
+before upload. This independently binds all package and lockfile content hashes
+to the canonical workflow, master ref, repository identity, and source commit.
+Cloud must verify this signature and its certificate claims before accepting
+the executable archives; hashes served by the artifact store alone are not
+sufficient provenance.
+
+The build job has no AWS credential. The publish job downloads only the four
+fixed files, validates them, and uploads them without executing their code.
+The dedicated `paperclip-cloud-migrator-github` OIDC role trusts only
+`repo:paperclipai/paperclip:ref:refs/heads/master`. Its policy permits prefix
+listing and conditional `PutObject` calls in this one prefix. It permits no
+object deletion or overwrite. PRs, including allowlisted PRs, cannot assume it.
+
+The deploy policies are checked in under `.github/cloud-migrator-deploy/`:
+
+- `trust-policy.json`: the role trust policy.
+- `upload-policy.json`: the role's inline permission policy.
+- `cloudfront-read-statement.json`: append this statement to the existing bucket
+  policy, preserving its other statements and public-access blocks.
+
+There is no lifecycle expiry on this prefix. Keep referenced artifacts for
+rollback; deleting them can prevent a fresh migrator install for an old release.
+Cloud readiness consumes the signed direct bundle after its exact-source
+publisher succeeds. It retains source verification, image identity, and the
+cloud runner's integrity and migration compatibility checks. The cloud direct
+artifact switch must be enabled before adopting this gate. Automatic npm-only
+migrator dispatch is removed; explicit npm previews and manual migrator runs
+remain available. See `doc/cloud-build-readiness.md` for coordinated rollback.
+
+Local verification:
+
+```sh
+node --test scripts/cloud-migrator-artifacts.test.mjs
+node scripts/cloud-migrator-artifacts.mjs verify <full-sha>
+```

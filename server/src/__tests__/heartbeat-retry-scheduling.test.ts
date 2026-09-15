@@ -55,6 +55,7 @@ vi.mock("../services/heartbeat-run-events.js", async (importOriginal) => {
 });
 
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
@@ -1835,6 +1836,23 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
       maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
     });
+
+    const onLiveEvent = vi.fn();
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, onLiveEvent);
+    try {
+      const restartedHeartbeat = heartbeatService(createDb(tempDb!.connectionString));
+      const repeated = await Promise.all(Array.from({ length: 8 }, (_, index) =>
+        (index % 2 ? heartbeat : restartedHeartbeat).scheduleBoundedRetry(cappedRunId, {
+          now, random: () => 0.5,
+        })));
+      expect(repeated).toEqual(Array.from({ length: 8 }, () => exhausted));
+      expect(await db.select().from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, cappedRunId))).toHaveLength(1);
+      expect((await heartbeat.getRun(cappedRunId))?.nextEventSeq).toBe(2);
+      expect(onLiveEvent).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("advances codex transient fallback stages across bounded retry attempts", async () => {

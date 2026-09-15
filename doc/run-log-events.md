@@ -159,6 +159,14 @@ Provider identity diagnostics remain in the local run log. They record the notif
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
+Bounded retry exhaustion writes one lifecycle receipt per run, retry reason,
+scheduled attempt, and retry limit. Repeated or concurrent recovery checks reuse
+that receipt, including receipts from earlier builds, without advancing the event
+sequence or publishing another live event. Attention reads select the latest
+matching receipt in PostgreSQL and project only the run's issue/task identifiers
+from its context, so historical duplicate receipts cannot multiply run contexts
+in server memory. Existing duplicate events do not require deletion or migration.
+
 ## Codex resume usage snapshot
 
 The native runner retains a bounded local `harness.diagnostic` event with code
@@ -171,9 +179,10 @@ identity checks remain in force.
 
 ## AI subscription contention
 
-A run that waits for a managed subscription lease writes an informational
-`lifecycle` event to the local run log. Its payload contains only
-`retryScheduled`, a boolean that reports whether the scheduler created a retry.
+A fresh task execution cannot enter this wait. A run that already entered this
+wait writes an informational `lifecycle` event to the local run log. Its
+payload contains only `retryScheduled`, a boolean that reports
+whether the scheduler created a retry.
 The message distinguishes an automatic retry from work that is no longer eligible.
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials

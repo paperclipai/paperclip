@@ -25,19 +25,15 @@ function runShard(args) {
   return result.stdout.trim().split(/\s+/).filter(Boolean);
 }
 
-function readPinnedTrustedPrWorkflow() {
+function readTrustedPrWorkflow() {
   const caller = readFileSync(prCallerWorkflow, "utf8");
-  const pin = caller.match(
-    /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@([0-9a-f]{40})/,
+  assert.match(
+    caller,
+    /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master\s*$/m,
+    "pr.yml must call the trusted workflow from CODEOWNERS-protected master",
   );
-  assert.ok(pin, "pr.yml must call the trusted workflow at a full commit SHA");
-
-  const result = spawnSync("git", ["show", `${pin[1]}:${trustedPrWorkflowPath}`], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  assert.equal(result.status, 0, `cannot read the pinned trusted workflow: ${result.stderr}`);
-  return result.stdout;
+  // Validate proposed workflow changes locally; CI executes the merged master version.
+  return readFileSync(trustedPrWorkflow, "utf8");
 }
 
 function readWorkflowJobs(workflow) {
@@ -161,15 +157,15 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml calls the trusted PR workflow at an immutable SHA", () => {
-  assert.ok(readPinnedTrustedPrWorkflow().length > 0);
+test("pr.yml calls the trusted PR workflow from master", () => {
+  assert.ok(readTrustedPrWorkflow().length > 0);
 });
 
 test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
-  const workflow = readPinnedTrustedPrWorkflow();
+  const workflow = readTrustedPrWorkflow();
   const jobs = readWorkflowJobs(workflow);
 
   const aggregate = jobs.get("e2e");
@@ -293,7 +289,7 @@ test("the stacked PR scope selector runs full CI only where intended", () => {
 test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
-  const workflow = readPinnedTrustedPrWorkflow();
+  const workflow = readTrustedPrWorkflow();
   assert.ok(
     !/pnpm run test:e2e --\s/.test(workflow),
     "pr-trusted.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
@@ -306,10 +302,8 @@ test("the trusted PR workflow passes the shard's spec filter to Playwright witho
 });
 
 test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
-  // Implementation PRs validate the workflow under development here. The
-  // caller remains pinned to the last merged trusted SHA until a separate
-  // activation PR advances it, so unmerged PR code never runs on trusted
-  // infrastructure.
+  // Validate the proposed workflow here. The caller executes the merged master
+  // workflow; edits to this workflow take effect after code-owner review and merge.
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   assert.match(
     workflow,

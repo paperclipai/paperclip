@@ -37,6 +37,8 @@ jobs:
     timeout-minutes: 35
     permissions:
       contents: read
+      actions: read
+      attestations: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -46,6 +48,7 @@ jobs:
           node-version: 24
       - name: Wait for verified image and exact-source migrator
         env:
+          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.sha }}
         run: node scripts/cloud-readiness.mjs "$SOURCE_SHA"
 
@@ -91,6 +94,8 @@ jobs:
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |
-          echo "Cloud deployable v1: $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
-          echo "Source verification passed; the full-SHA image and exact-source migrator are available." >> "$GITHUB_STEP_SUMMARY"
-          echo "Deployment tooling must still resolve and pin the image and migrator and validate migration compatibility." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Cloud deployable v1: $SOURCE_SHA"
+            echo "Source verification passed; the full-SHA image and exact-source migrator are available."
+            echo "Deployment tooling must still resolve and pin the image and migrator and validate migration compatibility."
+          } >> "$GITHUB_STEP_SUMMARY"

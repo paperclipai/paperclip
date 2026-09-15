@@ -44,6 +44,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableNativeRunner: z.boolean().default(true),
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
+  enableIsolatedWorkspacesByDefault: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
   enableStreamlinedUi: z.boolean().default(true),
   // Deprecated compatibility key. Apps is a standard product surface and is

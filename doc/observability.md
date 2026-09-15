@@ -375,11 +375,24 @@ sends, so an operator can read what the feature does before turning it on.
 Each Sentry integration name below is verified against the default
 integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
+**Server attribute this feature sets**
+
+- `server_name` — every server event carries the host name of the process.
+  The `@sentry/node` client already sets this value by default when the
+  operator does not pass a `serverName` option; this feature passes the
+  value directly, so the server keeps sending it even if a later SDK
+  version changes its default. To send a different value in place of the
+  host name, set the environment variable `SENTRY_NAME` to that value.
+
 **Server events this feature adds**
 
 - An Express `HttpError` with `status >= 500`.
 - Any unknown throw that is not a `ZodError`. It always answers 500.
 - A server startup failure.
+- A run that ends with the status `failed` or the status `timed_out`. The
+  event carries five context fields: `taskId`, `runId`, `errorMessage`,
+  `errorCode`, and `agentAdapter`. The server redacts the error message and
+  the error code before it sends the event.
 
 **Server events the default integrations add**
 

@@ -140,6 +140,15 @@ vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => mockTelemetryClient,
 }));
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.ts", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.ts")>("../sentry.ts");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 vi.mock("../services/native-runtime/native-session-executor.js", async () => {
   const actual = await vi.importActual<
     typeof import("../services/native-runtime/native-session-executor.js")
@@ -2405,6 +2414,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+    // The legacy engine writes this terminal status through the same
+    // guarded emitter that reports a genuine failed transition to Sentry.
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    expect(mockCaptureRunFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId,
+        errorCode: "process_lost",
+        runStatus: "failed",
+      }),
+    );
     const [action] = await db
       .select()
       .from(issueRecoveryActions)
@@ -2418,6 +2437,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId)),
     ).toHaveLength(2);
+    // A replay over the same already-failed run must not report a second
+    // Sentry event for one terminal failure.
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
 
     const issue = await waitForValue(async () =>
       db

@@ -16,6 +16,17 @@
 // adds error monitoring only and starts no span or trace behavior of its
 // own.
 //
+// `serverName`: the initializer sets this to the host name of the process,
+// with `os.hostname()`. The `@sentry/node` client already falls back to the
+// same host name when the caller omits this option, so this line makes an
+// existing default explicit instead of changing captured event content. An
+// explicit value stays correct if a future SDK version changes its default.
+//
+// An operator can still send a different value in place of the host name.
+// When the environment variable `SENTRY_NAME` holds a non-empty string, the
+// initializer uses that value instead. This keeps the same order the
+// `@sentry/node` client itself uses when the caller omits `serverName`.
+//
 // Default-integration privacy note: `sendDefaultPii: false` filters values
 // by name, inside the `RequestData` integration only. Three other default
 // integrations copy raw values past that filter, so the initializer removes
@@ -44,6 +55,7 @@
 // never throws. This gate mirrors the OpenTelemetry gate in
 // `instrumentation.ts`.
 
+import os from "node:os";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 
@@ -59,9 +71,17 @@ if (legacyFallbackUsed) {
   );
 }
 
+/** The subset of the `@sentry/node` scope surface `captureRunFailure` calls. */
+interface SentryScopeLike {
+  setTag(key: string, value: string): void;
+  setContext(name: string, context: Record<string, unknown> | null): void;
+  setFingerprint(fingerprint: string[]): void;
+}
+
 /** The subset of the `@sentry/node` client surface this gate calls. */
 interface SentryHandle {
   captureException(error: unknown): string;
+  withScope(callback: (scope: SentryScopeLike) => void): void;
   close(timeout?: number): Promise<boolean>;
 }
 
@@ -89,6 +109,65 @@ export function captureException(error: unknown): void {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureException failed", err);
+  }
+}
+
+/** The run status values that mark a run as a genuine terminal failure. */
+export type RunFailureStatus = "failed" | "timed_out";
+
+/**
+ * The diagnostic values `captureRunFailure` sends with a terminal-failure
+ * event. `errorCode` is `null` when the run holds no error code.
+ */
+export interface RunFailureEvent {
+  /** The task UUID the run belongs to. */
+  taskId: string;
+  /** The `heartbeat_runs` row id. */
+  runId: string;
+  /** The redacted error message. */
+  errorMessage: string;
+  /** The run's error code, or `null` when the run holds none. */
+  errorCode: string | null;
+  /** The agent's adapter type, or `"unknown"` when the agent row is absent. */
+  agentAdapter: string;
+  /** The run status that triggered this report. */
+  runStatus: RunFailureStatus;
+}
+
+/**
+ * Report one terminal run failure to Sentry. A no-op before the gate opens
+ * or when the gate never opens. Never throws — observability must not
+ * change run control flow.
+ *
+ * Sets the fingerprint to `[errorCode, agentAdapter]`, in that order, so
+ * Sentry groups events by error code and adapter. The error message stays
+ * out of the fingerprint — it still travels as the exception message and as
+ * a field of the `run_failure` context.
+ */
+export function captureRunFailure(event: RunFailureEvent): void {
+  if (!sentryHandle) return;
+  const handle = sentryHandle;
+  try {
+    handle.withScope((scope) => {
+      const errorCode = event.errorCode ?? "unknown";
+      scope.setTag("run_id", event.runId);
+      scope.setTag("task_id", event.taskId);
+      scope.setTag("error_code", errorCode);
+      scope.setTag("agent_adapter", event.agentAdapter);
+      scope.setTag("run_status", event.runStatus);
+      scope.setContext("run_failure", {
+        taskId: event.taskId,
+        runId: event.runId,
+        errorMessage: event.errorMessage,
+        errorCode,
+        agentAdapter: event.agentAdapter,
+      });
+      scope.setFingerprint([errorCode, event.agentAdapter]);
+      handle.captureException(new Error(event.errorMessage));
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[paperclip] Sentry captureRunFailure failed", err);
   }
 }
 
@@ -130,6 +209,7 @@ export interface SentryInitOptions {
   skipOpenTelemetrySetup: boolean;
   tracesSampleRate: number;
   sendDefaultPii: boolean;
+  serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
 }
 
@@ -148,6 +228,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
         (integration) =>
@@ -198,6 +279,7 @@ async function bootstrapSentry(dsn: string): Promise<void> {
 
     sentryHandle = {
       captureException: (error) => Sentry.captureException(error),
+      withScope: (callback) => Sentry.withScope(callback),
       close: (timeout) => Sentry.close(timeout),
     };
   } catch (err) {

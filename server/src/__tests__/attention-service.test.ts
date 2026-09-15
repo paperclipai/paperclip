@@ -42,6 +42,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
@@ -916,6 +917,63 @@ describeEmbeddedPostgres("attention service", () => {
     // Non-interaction rows carry no resolver policy at all.
     expect(feed.items.find((item) => item.sourceKind !== "issue_thread_interaction")?.resolverAudience)
       .toBeNull();
+  });
+
+  it("reads one compact row per exhausted run despite thousands of historical receipts", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("MEM");
+    const other = await seedCompany("OTH");
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, reviewerId));
+    const issueId = await insertIssue({
+      companyId, identifier: "MEM-1", title: "Failed task", status: "in_progress",
+    });
+    const taskId = await insertIssue({
+      companyId, identifier: "MEM-2", title: "Timed out task", status: "in_progress",
+    });
+    const [failedId, timedOutId, succeededId, terminatedId, foreignId, noReceiptId] =
+      Array.from({ length: 6 }, () => randomUUID());
+    const createdAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values([
+      { id: failedId, companyId, agentId: workerId, status: "failed", contextSnapshot: { issueId, prompt: "x".repeat(32_000) } },
+      { id: timedOutId, companyId, agentId: workerId, status: "timed_out", contextSnapshot: { taskId, prompt: "y".repeat(32_000) } },
+      { id: succeededId, companyId, agentId: workerId, status: "succeeded" },
+      { id: terminatedId, companyId, agentId: reviewerId, status: "failed" },
+      { id: foreignId, companyId: other.companyId, agentId: other.workerId, status: "failed" },
+      { id: noReceiptId, companyId, agentId: workerId, status: "failed" },
+    ].map((run) => ({ ...run, createdAt, updatedAt: createdAt, finishedAt: createdAt })));
+    for (let batch = 0; batch < 5; batch += 1) {
+      await db.insert(heartbeatRunEvents).values(Array.from({ length: 500 }, (_, index) => ({
+        companyId, agentId: workerId, runId: failedId, seq: batch * 500 + index + 1,
+        eventType: "lifecycle", message: `Bounded retry exhausted receipt ${batch * 500 + index + 1}`,
+      })));
+    }
+    await db.insert(heartbeatRunEvents).values([
+      { companyId, agentId: workerId, runId: timedOutId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted timeout" },
+      { companyId, agentId: workerId, runId: succeededId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted success" },
+      { companyId, agentId: reviewerId, runId: terminatedId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted terminated" },
+      { companyId: other.companyId, agentId: other.workerId, runId: foreignId, seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted other company" },
+      // A newer event must not replace the latest matching, company-scoped receipt.
+      { companyId: other.companyId, agentId: other.workerId, runId: failedId, seq: 2501, eventType: "lifecycle", message: "Bounded retry exhausted foreign receipt" },
+      { companyId, agentId: workerId, runId: failedId, seq: 2502, eventType: "stdout", message: "Bounded retry exhausted quoted output" },
+      { companyId, agentId: workerId, runId: failedId, seq: 2503, eventType: "lifecycle", message: "Unrelated lifecycle event" },
+    ]);
+
+    // Assert the database result itself: JavaScript feed deduplication used to
+    // hide the thousands of full run contexts already loaded into memory.
+    const rows = await listAttentionExhaustedRuns(db, companyId);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === failedId)).toMatchObject({
+      exhaustionMessage: "Bounded retry exhausted receipt 2500",
+      contextSnapshot: { issueId, taskId: null },
+    });
+    expect(rows.find((row) => row.id === timedOutId)?.contextSnapshot).toEqual({ issueId: null, taskId });
+    expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(4096);
+
+    const feed = await attentionService(db).list(companyId, {
+      includeDismissed: true, all: true, allowUnscopedAll: true,
+    });
+    const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
+    expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId].sort());
+    expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
   });
 
   it("suppresses failed-run attention after a newer run for the same issue", async () => {

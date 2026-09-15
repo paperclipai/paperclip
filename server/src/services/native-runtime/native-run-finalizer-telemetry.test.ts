@@ -27,10 +27,23 @@ const mockTelemetryClient = vi.hoisted(() => ({
 }));
 vi.mock("../../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../../sentry.ts", async () => {
+  const actual = await vi.importActual<typeof import("../../sentry.ts")>("../../sentry.ts");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 function agentTaskRunCalls(fromIndex: number) {
   return mockTelemetryClient.track.mock.calls
     .slice(fromIndex)
     .filter((call) => call[0] === "agent.task_run");
+}
+
+function captureRunFailureCallsFrom(fromIndex: number) {
+  return mockCaptureRunFailure.mock.calls.slice(fromIndex);
 }
 
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
@@ -166,6 +179,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     await driveToCompleteResult(fixture);
 
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -183,6 +197,8 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       .where(eq(heartbeatRuns.id, fixture.runId))
       .then((rows) => rows[0]);
     expect(run?.status).toBe("succeeded");
+    // "succeeded" is not a failure status, so it never reports to Sentry.
+    expect(captureRunFailureCallsFrom(captureCallsBefore)).toHaveLength(0);
   });
 
   it("emits zero events when a repeat finalize call preserves the succeeded terminal state", async () => {
@@ -410,6 +426,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     // workspaceFinalizeStatus reports whether the workspace finalization
     // step itself succeeded, independent of the run's own terminal state
     // (runTerminalState below), which is what actually failed here.
+    const captureCallsBeforeFirstFinalize = mockCaptureRunFailure.mock.calls.length;
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -422,13 +439,23 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       .where(eq(heartbeatRuns.id, fixture.runId))
       .then((rows) => rows[0]);
     expect(run?.status).toBe("failed");
+    // The first write is a genuine transition into "failed": it reports
+    // exactly one Sentry event.
+    const firstFinalizeCaptures = captureRunFailureCallsFrom(captureCallsBeforeFirstFinalize);
+    expect(firstFinalizeCaptures).toHaveLength(1);
+    expect(firstFinalizeCaptures[0]?.[0]).toMatchObject({
+      runId: fixture.runId,
+      runStatus: "failed",
+    });
 
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    const captureCallsBeforeReplay = mockCaptureRunFailure.mock.calls.length;
     // The coordinator is already "committed" with a "failed" terminal
     // result, and the run row is already "failed". Like "succeeded",
     // "failed" sits inside projectCommittedRun's WHERE clause, so its write
     // matches the row. The write changes nothing (failed -> failed), so it
-    // must not emit a second event for the same committed result.
+    // must not emit a second event for the same committed result, and it
+    // must not report a second Sentry event either.
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -436,6 +463,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       projectRunStatus: true,
     });
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+    expect(captureRunFailureCallsFrom(captureCallsBeforeReplay)).toHaveLength(0);
   });
 
   it("emits zero events when a retryable-failure write's conditional status spread is omitted", async () => {

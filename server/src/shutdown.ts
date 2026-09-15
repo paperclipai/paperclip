@@ -112,6 +112,13 @@ export async function finalizeServerShutdown(input: {
    */
   closeHttpListener?: (() => Promise<unknown>) | null;
   /**
+   * Waits for every run-failure Sentry report still in flight. Runs after the
+   * application services and before the database pool ends, so a report that
+   * started just before shutdown still gets its database read and reaches
+   * Sentry before `shutdownSentry` flushes and closes the client.
+   */
+  drainPendingRunFailureReports?: (() => Promise<void>) | null;
+  /**
    * Ends the server's PostgreSQL client pools. Runs after the application
    * services (which still need the database) and before the embedded
    * provider stops, so the backends close in order and none outlive the
@@ -142,6 +149,18 @@ export async function finalizeServerShutdown(input: {
     await input.shutdownAppServices?.();
   } catch (err) {
     input.log.error({ err, signal }, "Application service shutdown failed");
+  }
+
+  // Wait for every in-flight run-failure Sentry report before the database
+  // pool ends. `reportRunFailure` is fire-and-forget: without this wait, a
+  // report that started just before shutdown can lose its database read to
+  // the pool end below, or lose its Sentry call to the flush further down.
+  if (input.drainPendingRunFailureReports) {
+    try {
+      await input.drainPendingRunFailureReports();
+    } catch (err) {
+      input.log.error({ err, signal }, "run-failure report drain failed");
+    }
   }
 
   // End the client pools once nothing needs them any more. Without this the

@@ -1166,6 +1166,8 @@ export async function prepareSandboxManagedRuntime(input: {
     input.workspaceExclude,
     gitIgnoredExcludes,
   );
+  const repositories = gitSnapshot?.repositories ?? [];
+  const workspaceRestoreExclude = mergeExcludes(restoreExclude, repositories.map((repo) => repo.path));
   // The baseline "before" snapshot: a recursive walk of the whole workspace that
   // `lstat`s every entry and SHA-256-hashes every file's bytes. This is the
   // dominant cost in the pre-`pack` window — it reads the content of every
@@ -1673,6 +1675,43 @@ export async function prepareSandboxManagedRuntime(input: {
       if (syncWorkspace) {
         outboundTasks.push(() =>
           runStepSpan("restore.workspace", async () => {
+            // Each repository owns its Git history and merge. The parent baseline also
+            // records child files so restart recovery has their original merge inputs.
+            for (const repository of repositories) {
+              const prefix = `${repository.path}/`;
+              const localDir = path.join(input.workspaceLocalDir, repository.path);
+              if (await fs.realpath(localDir) !== path.join(await fs.realpath(input.workspaceLocalDir), repository.path)) {
+                throw new Error("Project repository escaped its workspace");
+              }
+              const nestedExclude = mergeExcludes(
+                repository.snapshot.ignoredPaths,
+                baselineSnapshot!.exclude.flatMap((entry) =>
+                  entry.startsWith(prefix) ? [entry.slice(prefix.length)]
+                    : entry.startsWith("*/") ? [entry] : []),
+              );
+              const nested = await prepareSandboxManagedRuntime({
+                spec: { ...input.spec, remoteCwd: path.posix.join(workspaceRemoteDir, repository.path) },
+                client: input.client,
+                adapterKey: input.adapterKey,
+                workspaceLocalDir: localDir,
+                workspaceInboundMode: "adopt_remote",
+                workspaceGitSnapshot: repository.snapshot,
+                workspaceExclude: nestedExclude,
+                workspaceBaseline: {
+                  exclude: mergeExcludes(
+                    SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+                    [...GIT_ARCHIVE_EXCLUDES],
+                    [".paperclip-runtime"],
+                    nestedExclude,
+                  ),
+                  entries: new Map([...baselineSnapshot!.entries]
+                    .filter(([entry]) => entry.startsWith(prefix))
+                    .map(([entry, value]) => [entry.slice(prefix.length), value])),
+                },
+                onRuntimeProgress: input.onRuntimeProgress,
+              });
+              await nested.restoreWorkspace(restoreSink);
+            }
             await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
               let importedRef: string | null = null;
               let importedHead: string | null = null;
@@ -1782,7 +1821,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       sourcePath: workspaceRemoteDir,
                       targetPath: extractedDir,
                       kind: "directory",
-                      exclude: restoreExclude,
+                      exclude: workspaceRestoreExclude,
                     }],
                   }];
                   assertSyncOperationsConfined(operations, {
@@ -1806,7 +1845,7 @@ export async function prepareSandboxManagedRuntime(input: {
                     `sh -c ${shellQuote(createRemoteTarballFromDirectoryCommand({
                       remoteDir: workspaceRemoteDir,
                       archivePath: remoteWorkspaceTar,
-                      exclude: restoreExclude,
+                      exclude: workspaceRestoreExclude,
                     }))}`,
                     { timeoutMs: input.spec.timeoutMs },
                   );
@@ -1830,7 +1869,11 @@ export async function prepareSandboxManagedRuntime(input: {
                 }
                 const gitHeadToIntegrate = importedHead;
                 await mergeDirectoryWithBaseline({
-                  baseline: baselineSnapshot!,
+                  baseline: repositories.length === 0 ? baselineSnapshot! : {
+                    exclude: workspaceRestoreExclude,
+                    entries: new Map([...baselineSnapshot!.entries].filter(([entry]) =>
+                      !repositories.some((repo) => entry === repo.path || entry.startsWith(`${repo.path}/`)))),
+                  },
                   sourceDir: extractedDir,
                   targetDir: input.workspaceLocalDir,
                   beforeApply: gitHeadToIntegrate

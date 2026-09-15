@@ -9,11 +9,12 @@ The `Cloud readiness` workflow starts for every master push. Its versioned
   image, including Sentry resolution and orphan reaping, then publishes the
   full-SHA cloud tag. Cloud readiness owns the master trigger so there is one
   cloud build per push. Release tags and manual Docker runs retain their callers.
-- The full-SHA image and both exact-source npm packages are visible. The
-  packages are `@paperclipai/shared` and `@paperclipai/db` at
-  `0.0.0-preview.g<FULL_SHA>`, published through the migrator-only release lane.
-  Registry metadata must match the full commit, and the database package must
-  pin the matching shared package.
+- The full-SHA image is visible and the exact-source `Cloud migrator artifacts`
+  workflow has succeeded. Readiness verifies the manifest's GitHub attestation
+  against the full SHA, canonical master workflow, and GitHub-hosted runner,
+  then downloads and validates both package archives and the prepared dependency
+  lockfile. The database package pins the matching shared package. New-version
+  npm metadata and tarball propagation are outside this path.
 
 The Cloud workflow builds the image with `USER_UID=1001` and `USER_GID=1001`,
 matching the managed runtime. This avoids a startup user remap, which can walk
@@ -56,16 +57,19 @@ before that bot's PR merges. Verification must install and test that commit
 without waiting for another merge. The generated lockfile stays in the job's
 workspace; these checks do not commit it back to the repository.
 
-The artifact wait runs for up to 30 minutes and reports what is missing. Only
-an HTTP 404 means publication is pending; authorization errors, upstream outages,
-and identity mismatches fail the job. A failed, cancelled, or skipped prerequisite
+The artifact wait runs for up to 30 minutes and reports what is missing. A
+missing image or an exact-source publisher with no successful run yet means publication
+is pending. An earlier successful push or manual run remains valid after a failed
+retry because publication is immutable. If all matching runs failed, readiness
+fails. An invalid signature, inaccessible or corrupt
+bundle, authorization error, or identity mismatch fails the job. A failed, cancelled, or skipped prerequisite
 cannot produce a successful readiness job. Retry the failed publication or build,
 then rerun the failed readiness workflow jobs to check the same commit again.
 
 ## Consumer contract
 
 `Cloud deployable v1` is a source-and-artifact readiness signal. A deployment
-consumer must still resolve and pin the image digest and npm integrity/lockfile,
+consumer must still resolve and pin the image digest and migrator integrity/lockfile,
 validate migration contents and compatibility, and apply its target health gates.
 The check creates no release record and deploys no instance. A full-SHA tag by
 itself, or a successful migrator dispatch, is not this readiness signal.
@@ -78,9 +82,16 @@ Do not trust a similarly named check from another workflow or a manual branch ru
 Order candidates by master ancestry, not job completion time: an older commit
 finishing late must not roll a fleet backward. Fail closed on API errors.
 
-Existing npm canary discovery is unchanged by this producer workflow. Consumers
-can adopt the versioned signal separately after the workflow has landed and
-successfully verified a real master commit.
+Cloud consumers must enable `CLOUD_HARNESS_DIRECT_MIGRATOR_ARTIFACTS` before
+this gate is adopted: readiness no longer promises preview npm availability.
+The automatic npm-only migrator dispatcher has been removed. Manual
+`release.yml` runs with `channel=cloud-migrator`, branch previews, and stable
+releases retain their npm publisher for legacy consumers and rollback.
+
+For rollback, restore the npm dispatcher and gate together before disabling the
+cloud direct-artifact switch. Already-created releases retain their immutable
+archive URLs and lockfiles; keep those objects available. The master producer
+can be retried independently without republishing or overwriting a valid bundle.
 
 ## Timing and rollout
 
@@ -151,9 +162,10 @@ its trusted-publisher identity.
 
 Before enabling the switch, deploy the separate Fleet and restrict its GitHub
 runner group to repository ID `1170821064` and these workflows at
-`refs/heads/master`: `cloud-readiness.yml`, `cloud-artifacts.yml`,
+`refs/heads/master`: `cloud-readiness.yml`,
 `release-verify.yml`, `runner-chaos-evals.yml`, and `release.yml`. Do not authorize
-PR-controlled workflow versions. PR placement retains its independent pinned
+PR-controlled workflow versions. The direct migrator producer always uses
+GitHub-hosted runners and needs no AWS runner-group authorization. PR placement retains its independent pinned
 workflow and six-account author/actor allowlist.
 
 Disable the switch and rerun the whole workflow to restore GitHub-hosted

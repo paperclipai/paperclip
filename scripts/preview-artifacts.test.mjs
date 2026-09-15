@@ -97,6 +97,59 @@ test("publishing reuses existing previews and never executes package lifecycle h
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("publishing submits both packages before waiting for either to propagate", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-overlap-"));
+  const submitted = [];
+  let polls = 0;
+  try {
+    for (const short of ["shared", "db"]) writeFileSync(path.join(dir, `${short}.tgz`), pack(manifest(`@paperclipai/${short}`)));
+    await publishPreview(dir, sha, {
+      exec: (_command, args) => submitted.push(path.basename(args[1], ".tgz")),
+      fetchImpl: async (url) => {
+        const name = decodeURIComponent(new URL(url).pathname.split("/")[1]);
+        // Both packages become visible after the first shared visibility wait.
+        return submitted.length === 2 && polls > 0
+          ? json({ ...manifest(name), dist: { integrity: "test-integrity", tarball: "https://registry.npmjs.org/package.tgz" } })
+          : json({}, 404);
+      },
+      sleep: async () => { assert.deepEqual(submitted, ["shared", "db"]); polls++; },
+    });
+    assert.deepEqual(submitted, ["shared", "db"]);
+    assert.equal(polls, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a visibility timeout identifies the missing package after both were submitted", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-timeout-"));
+  const submitted = [];
+  try {
+    for (const short of ["shared", "db"]) writeFileSync(path.join(dir, `${short}.tgz`), pack(manifest(`@paperclipai/${short}`)));
+    await assert.rejects(publishPreview(dir, sha, {
+      exec: (_command, args) => submitted.push(path.basename(args[1], ".tgz")),
+      fetchImpl: async (url) => {
+        const name = decodeURIComponent(new URL(url).pathname.split("/")[1]);
+        return name === "@paperclipai/db" && submitted.includes("db")
+          ? json({ ...manifest(name), dist: { integrity: "test-integrity", tarball: "https://registry.npmjs.org/package.tgz" } })
+          : json({}, 404);
+      },
+      sleep: async () => {},
+    }), /not yet visible: @paperclipai\/shared\./);
+    assert.deepEqual(submitted, ["shared", "db"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("invalid DB package metadata prevents publication of either package", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-invalid-"));
+  try {
+    writeFileSync(path.join(dir, "shared.tgz"), pack(manifest("@paperclipai/shared")));
+    writeFileSync(path.join(dir, "db.tgz"), pack({ ...manifest("@paperclipai/db"), gitHead: "b".repeat(40) }));
+    await assert.rejects(publishPreview(dir, sha, {
+      exec: () => assert.fail("Invalid package pairs must not be published"),
+      fetchImpl: async () => assert.fail("Validate the pair before registry requests"),
+    }), /identity or dependency pin mismatch/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("preview workflow separates branch compilation from trusted publishing", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const builder = workflow.split("  package_preview:")[1].split("  publish_preview:")[0];
@@ -117,15 +170,8 @@ test("preview workflow separates branch compilation from trusted publishing", ()
   assert.match(workflow, /Stack deploy \{0\} build/);
 });
 
-test("merge dispatch uses the existing publisher outside full-release concurrency without claiming image readiness", () => {
-  const dispatcher = readFileSync(new URL("../.github/workflows/cloud-artifacts.yml", import.meta.url), "utf8");
+test("manual migrator and branch preview retain their npm publisher and concurrency", () => {
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.match(dispatcher, /branches: \[master\]/);
-  assert.match(dispatcher, /github.ref == 'refs\/heads\/master'/);
-  assert.match(dispatcher, /SOURCE_SHA: \$\{\{ github.sha \}\}/);
-  assert.match(dispatcher, /gh workflow run release.yml .*--ref master/);
-  assert.match(dispatcher, /--field channel=cloud-migrator/);
-  assert.doesNotMatch(dispatcher, /actions\/checkout|id-token: write|packages: write|secrets\./);
   assert.match(release, /\(inputs.channel == 'preview' \|\| inputs.channel == 'cloud-migrator'\) && format\('\{0\}-\{1\}', inputs.channel, inputs.source_ref\)/);
   const publisher = release.split("  publish_preview:")[1].split("  image_preview:")[0];
   assert.match(publisher, /group: preview-package-publish-\$\{\{ inputs.source_ref \}\}/);

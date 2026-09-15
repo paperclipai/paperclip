@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readSourceVerification, sourceVerificationJob, waitForSourceVerification } from "./cloud-source-verification.mjs";
+import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification } from "./cloud-source-verification.mjs";
 
 const sha = "a".repeat(40);
 const workflow = { id: 123, path: ".github/workflows/cloud-readiness.yml" };
@@ -122,4 +122,112 @@ test("malformed source refs are rejected before any request", async () => {
   for (const ref of ["master", "a".repeat(7), "A".repeat(40), undefined]) {
     await assert.rejects(readSourceVerification(ref, () => assert.fail("must not request")), /full lowercase/);
   }
+});
+
+// A gateway error during the poll must not decide the release. These cover the
+// reader's transport only; the verification semantics above are unchanged.
+function reader({ responses, attempts = 4, ...options }) {
+  const seen = [];
+  const waits = [];
+  const fetchImpl = async () => {
+    const next = responses[seen.length];
+    seen.push(next);
+    if (next instanceof Error) throw next;
+    return {
+      ok: next.status >= 200 && next.status < 300,
+      status: next.status,
+      headers: { get: (name) => next.headers?.[name.toLowerCase()] ?? null },
+      json: async () => {
+        if (next.bodyError) throw next.bodyError;
+        return next.body ?? { ok: true };
+      },
+    };
+  };
+  const api = createActionsReader({
+    token: "t", fetchImpl, attempts, backoffMs: 10,
+    sleep: async (ms) => { waits.push(ms); }, log: () => {}, ...options,
+  });
+  return { api, seen, waits };
+}
+
+test("a transient gateway error is retried instead of failing the release", async () => {
+  const { api, seen, waits } = reader({ responses: [{ status: 502 }, { status: 200, body: { id: 1 } }] });
+  assert.deepEqual(await api("/repos/x"), { id: 1 });
+  assert.equal(seen.length, 2);
+  assert.deepEqual(waits, [10]);
+});
+
+test("every transient status is retried, and the backoff grows", async () => {
+  for (const status of [408, 425, 429, 500, 502, 503, 504]) {
+    const { api, seen, waits } = reader({ responses: [{ status }, { status }, { status: 200, body: { ok: true } }] });
+    await api("/repos/x");
+    assert.equal(seen.length, 3, `status ${status} should be retried`);
+    assert.deepEqual(waits, [10, 20]);
+  }
+});
+
+test("a rate-limited 403 is retried, and a forbidden 403 is not", async () => {
+  // GitHub reports both primary and secondary rate limits as 403; only the
+  // headers tell them apart from a token that may not read Actions.
+  for (const headers of [{ "retry-after": "1" }, { "x-ratelimit-remaining": "0" }]) {
+    const { api, seen } = reader({ responses: [{ status: 403, headers }, { status: 200, body: { ok: true } }] });
+    await api("/repos/x");
+    assert.equal(seen.length, 2, `403 with ${JSON.stringify(headers)} should be retried`);
+  }
+  for (const headers of [undefined, { "x-ratelimit-remaining": "4999" }]) {
+    const { api, seen } = reader({ responses: [{ status: 403, headers }, { status: 200 }] });
+    await assert.rejects(api("/repos/x"), /HTTP 403/);
+    assert.equal(seen.length, 1, "a forbidden 403 must fail on the first response");
+  }
+});
+
+test("Retry-After sets the wait, capped so one header cannot stall the poll", async () => {
+  const { api, waits } = reader({ responses: [{ status: 429, headers: { "retry-after": "5" } }, { status: 200 }] });
+  await api("/repos/x");
+  assert.deepEqual(waits, [5_000]);
+
+  const capped = reader({ responses: [{ status: 429, headers: { "retry-after": "86400" } }, { status: 200 }], maxRetryAfterMs: 60_000 });
+  await capped.api("/repos/x");
+  assert.deepEqual(capped.waits, [60_000]);
+});
+
+test("a body that fails while being read is retried", async () => {
+  const { api, seen } = reader({
+    responses: [{ status: 200, bodyError: new Error("terminated") }, { status: 200, body: { id: 7 } }],
+  });
+  assert.deepEqual(await api("/repos/x"), { id: 7 });
+  assert.equal(seen.length, 2);
+});
+
+test("a network failure is retried, and its message survives exhaustion", async () => {
+  const { api, seen } = reader({ responses: Array.from({ length: 4 }, () => new Error("fetch failed")) });
+  await assert.rejects(api("/repos/x"), /GitHub Actions read failed: fetch failed/);
+  assert.equal(seen.length, 4);
+});
+
+test("an authorization failure is not retried", async () => {
+  for (const status of [401, 404, 422]) {
+    const { api, seen } = reader({ responses: [{ status }, { status: 200 }] });
+    await assert.rejects(api("/repos/x"), new RegExp(`HTTP ${status}`));
+    assert.equal(seen.length, 1, `status ${status} must fail on the first response`);
+  }
+});
+
+test("a transient status that never clears fails after its attempt budget", async () => {
+  const { api, seen } = reader({ responses: Array.from({ length: 4 }, () => ({ status: 502 })) });
+  await assert.rejects(api("/repos/x"), /HTTP 502/);
+  assert.equal(seen.length, 4);
+});
+
+test("retries stop at the caller's deadline rather than outliving the poll", async () => {
+  // The wait this attempt would cost does not fit before the deadline, so the
+  // read reports the failure instead of sleeping past the timeout it serves.
+  let clock = 0;
+  const { api, seen, waits } = reader({
+    responses: [{ status: 502 }, { status: 200 }],
+    now: () => clock, deadlineAt: () => 5,
+  });
+  await assert.rejects(api("/repos/x"), /HTTP 502/);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(waits, []);
 });

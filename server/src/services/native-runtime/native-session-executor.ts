@@ -127,6 +127,7 @@ import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launc
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
@@ -8234,6 +8235,10 @@ async function executePaperclipNativeSessionWithinScope(
           ? error.message.slice(0, 2_000)
           : String(error).slice(0, 2_000);
       const sanitizedStderrTail = redactSensitiveText(message).slice(-4_096);
+      // Set inside the transaction only when the write below genuinely
+      // transitions the run into "failed". Read after the transaction
+      // commits, so a rolled-back write never reports a false failure.
+      let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
       await input.db.transaction(async (tx) => {
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -8364,7 +8369,12 @@ async function executePaperclipNativeSessionWithinScope(
           .returning({ runId: nativeRunFinalizations.runId })
           .then((rows) => rows[0] ?? null);
         if (!updated) throw new Error("native_session_lease_lost");
-        await tx
+        const [runBeforeWrite] = await tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.execution.binding.runId))
+          .for("update");
+        const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
             // An authentication timeout does not prove the retained runner or
@@ -8384,7 +8394,15 @@ async function executePaperclipNativeSessionWithinScope(
               : sourceFailureCode,
             updatedAt: now,
           })
-          .where(eq(heartbeatRuns.id, input.execution.binding.runId));
+          .where(eq(heartbeatRuns.id, input.execution.binding.runId))
+          .returning();
+        if (
+          updatedRun &&
+          runBeforeWrite &&
+          updatedRun.status !== runBeforeWrite.status
+        ) {
+          terminalRunToReport = updatedRun;
+        }
         const stillOwnsTask =
           failureTask?.assigneeAgentId === input.execution.binding.agentId &&
           ["in_progress", "in_review"].includes(failureTask.status) &&
@@ -8470,6 +8488,7 @@ async function executePaperclipNativeSessionWithinScope(
             recoveryProjection.supersedeOnIdentityChange,
         });
       });
+      if (terminalRunToReport) void reportRunFailure(input.db, terminalRunToReport);
       await boundedExecutionCleanup(async () => {
         await stoppedLeaseRenewal;
         await attemptFailureStep(() =>

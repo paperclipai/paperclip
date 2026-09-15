@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueThreadInteractions, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -202,9 +202,9 @@ describe("agent-created hires use managed AI connections", () => {
 });
 
 describe("hired agents sharing a subscription", () => {
-  it.each(["anthropic", "openai"] as const)("waits for the %s parent and resumes without asking for a new connection", async (provider) => {
+  it.each(["openai", "anthropic"] as const)("runs the %s child alongside a live parent and inherits its connection", async (provider) => {
     const f = await fixture(provider, "subscription");
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const parentRuntime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { cwd: home } });
     const execute = vi.fn(async () => {
@@ -213,27 +213,17 @@ describe("hired agents sharing a subscription", () => {
     });
     registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
     const heartbeat = heartbeatService(db);
-    let parentReleased = false;
     try {
       const run = await heartbeat.invoke(agent.id, "assignment", { issueId: issue.id, wakeReason: "issue_assigned", responsibleUserId: f.userId }, "system");
       expect(run).not.toBeNull();
-      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).not.toBe("running");
-      expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: "ai_connection_busy" });
-      let retry: typeof heartbeatRuns.$inferSelect | undefined;
-      await expect.poll(async () => { [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id)); return retry?.status; }, { timeout: 10_000 }).toBe("scheduled_retry");
-      expect(execute).not.toHaveBeenCalled();
-      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id))).toHaveLength(0);
-      expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].executionRunId).toBe(retry!.id);
-      parentReleased = true;
-      await parentRuntime.cleanup();
-      const promoted = await heartbeat.promoteDueScheduledRetries(new Date(retry!.scheduledRetryAt!.getTime() + 1000));
-      expect(promoted.runIds).toContain(retry!.id);
-      await heartbeat.resumeQueuedRuns();
-      await expect.poll(async () => (await heartbeat.getRun(retry!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
       expect(execute).toHaveBeenCalledTimes(1);
-      expect((await heartbeat.getRun(retry!.id))?.contextSnapshot?.aiConnection).toMatchObject({ connectionId: f.account.connectionId, responsibleUserId: f.userId, method: "subscription" });
+      const finished = await heartbeat.getRun(run!.id);
+      expect(finished?.errorCode).not.toBe("ai_connection_busy");
+      expect(finished?.contextSnapshot?.aiConnection).toMatchObject({ connectionId: f.account.connectionId, responsibleUserId: f.userId, method: "subscription" });
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.scheduledRetryReason, "ai_connection_busy")))).toEqual([]);
     } finally {
-      if (!parentReleased) await parentRuntime.cleanup();
+      await parentRuntime.cleanup();
       await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
       await heartbeat.drainActiveRunExecutions();
       unregisterServerAdapter(f.adapterType);

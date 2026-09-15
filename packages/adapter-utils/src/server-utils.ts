@@ -3234,6 +3234,11 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
       }
       return nextHint;
     }
+    const relative = localWorkspaceCwd ? path.relative(localWorkspaceCwd, hintCwd).split(path.sep).join("/") : "";
+    if (realizedWorkspaceCwd && /^\.paperclip-repositories\/[a-zA-Z0-9_-]+$/.test(relative)) {
+      nextHint.cwd = path.posix.join(realizedWorkspaceCwd, relative);
+      return nextHint;
+    }
 
     // A referenced (mentioned) project hint carries its `projectId`. When the transport staged that
     // project into the sandbox, repoint the hint at its staged `project-<projectId>` directory so

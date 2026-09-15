@@ -134,7 +134,7 @@ describe("native workspace sync durable metadata", () => {
     ).toThrow("native_workspace_sync_descriptor_digest_invalid");
   });
 
-  it("writes one immutable descriptor when the same state is replayed", async () => {
+  it.each([false, true])("writes one immutable descriptor when the same state is replayed (multiple repositories: %s)", async (multipleRepositories) => {
     const paperclipHome = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-native-workspace-sync-"),
     );
@@ -164,7 +164,12 @@ describe("native workspace sync durable metadata", () => {
       state: "prepared" as const,
       baselineSha256: directorySnapshotSha256(baseline),
       baseline: serializeDirectorySnapshot(baseline),
-      gitSnapshot: null,
+      gitSnapshot: multipleRepositories ? {
+        headCommit: "a".repeat(40), branchName: "main", overlayPaths: [], deletedPaths: [], ignoredPaths: [],
+        repositories: [{ path: ".paperclip-repositories/backend", snapshot: {
+          headCommit: "b".repeat(40), branchName: "backend-work", overlayPaths: ["dirty.txt"], deletedPaths: [], ignoredPaths: ["secret.txt"],
+        } }],
+      } : null,
       seed: null,
       createdAt: "2026-01-01T00:00:00.000Z",
       finalizedAt: null,

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { type Db, connectionGrants } from "@paperclipai/db";
+import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
   type AiConnectionBinding,
@@ -166,41 +166,6 @@ done`,
   }
 }
 
-async function acquireCredentialLease(db: Db, grantId: string) {
-  const client = await db.$client.reserve();
-  try {
-    // A reserved client pins our connection to PgBouncer, not its backend.
-    // Keep the lease in one transaction so transaction-pooling deployments
-    // cannot acquire and release it on different PostgreSQL sessions.
-    await client`begin`;
-    await client`set local idle_in_transaction_session_timeout = 0`;
-    const [result] =
-      await client`select pg_try_advisory_xact_lock(hashtextextended(${`ai-runtime:${grantId}`}, 0)) as acquired`;
-    if (!result.acquired)
-      throw unprocessable(
-        "This subscription is in use. Retry when its current execution finishes.",
-        { code: "ai_connection_busy" },
-      );
-  } catch (error) {
-    try {
-      await client`rollback`;
-    } finally {
-      client.release();
-    }
-    throw error;
-  }
-  let released = false;
-  return async () => {
-    if (released) return;
-    released = true;
-    try {
-      await client`rollback`;
-    } finally {
-      client.release();
-    }
-  };
-}
-
 export async function prepareManagedAiRuntime(
   db: Db,
   input: {
@@ -243,10 +208,9 @@ export async function prepareManagedAiRuntime(
     runnerProvider: input.config.provider,
     acpxAgent: input.config.acpxAgent,
   });
-  const release =
-    selection.attribution.method === "subscription"
-      ? await acquireCredentialLease(db, selection.grant.id)
-      : async () => {};
+  const subscriptionFile =
+    selection.attribution.method === "subscription" &&
+    input.binding.provider !== "anthropic";
   let home: string | undefined;
   try {
     const selectedGrantId = selection.grant.id;
@@ -291,9 +255,6 @@ export async function prepareManagedAiRuntime(
         'cli_auth_credentials_store = "file"\n',
         { mode: 0o600 },
       );
-    const subscriptionFile =
-      selection.attribution.method === "subscription" &&
-      input.binding.provider !== "anthropic";
     if (subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else env[capability.envKey] = value;
     if (
@@ -342,18 +303,32 @@ export async function prepareManagedAiRuntime(
                     ),
                   )
                   .for("update");
-                // Reconnect/revocation wins over a process holding an older credential.
-                if (
-                  !grant ||
-                  grant.status !== "active" ||
-                  grant.updatedAt.getTime() !==
-                    selection.grant.updatedAt.getTime()
-                )
-                  return;
-                const current = await service.credential({
-                  ...selection,
-                  grant,
-                });
+                // A missing or revoked grant blocks the write-back. Among
+                // active copies, the merge decision below keeps the
+                // credential with the newest provider freshness field.
+                if (!grant || grant.status !== "active") return;
+                const ref = grant.credentialSecretRefs.find(
+                  (r) => r.configPath === "ai.credential",
+                );
+                if (!ref) return;
+                // Lock the referenced secret row for the rest of this
+                // transaction. The grant-row lock above does not cover it,
+                // so an authorized rotation of this secret could otherwise
+                // land between the read and the write below and be
+                // overwritten by this stale write-back.
+                await tx
+                  .select({ id: companySecrets.id })
+                  .from(companySecrets)
+                  .where(
+                    and(
+                      eq(companySecrets.id, ref.secretId),
+                      eq(companySecrets.companyId, input.companyId),
+                    ),
+                  )
+                  .for("update");
+                const current = await aiConnectionService(
+                  tx as unknown as Db,
+                ).credential({ ...selection, grant });
                 const destination = path.join(
                   providerHome,
                   "current-auth.json",
@@ -368,9 +343,6 @@ export async function prepareManagedAiRuntime(
                         errorLabel: "AI account refresh",
                       });
                 if (decision !== 10) return;
-                const ref = grant.credentialSecretRefs.find(
-                  (r) => r.configPath === "ai.credential",
-                )!;
                 await secretService(tx).rotate(
                   ref.secretId,
                   { value: refreshed },
@@ -383,20 +355,12 @@ export async function prepareManagedAiRuntime(
               });
           }
         } finally {
-          try {
-            if (home) await rm(home, { recursive: true, force: true });
-          } finally {
-            await release();
-          }
+          if (home) await rm(home, { recursive: true, force: true });
         }
       },
     };
   } catch (error) {
-    try {
-      if (home) await rm(home, { recursive: true, force: true });
-    } finally {
-      await release();
-    }
+    if (home) await rm(home, { recursive: true, force: true });
     throw error;
   }
 }

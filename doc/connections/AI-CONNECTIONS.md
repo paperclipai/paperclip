@@ -93,6 +93,9 @@ subsequent agent creation fails or is cancelled.
 ## Runtime isolation
 
 `prepareManagedAiRuntime` is shared by runs, environment tests, and adoption.
+Claude ACP validates working directories on the selected execution target. A
+sandbox directory does not need to exist on the Paperclip server. When the agent
+has no configured directory, the test uses the remote target's working directory.
 It checks responsible identity, membership, compatibility, connection health,
 human audience and agent installation before reading credentials.
 Missing credentials produce an actionable configuration failure; responsible-user
@@ -105,21 +108,23 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
-Subscription invocations take a grant-scoped transaction advisory lease. The
-reserved database client keeps one transaction open until cleanup, including on
-transaction-pooling proxies such as PgBouncer. Session-level advisory locks must
-not be used here: a pooled connection can return to a different backend for
-cleanup and leave the original lock behind. The lease transaction disables its
-idle timeout and contains no application data writes; cleanup rolls it back.
-Two
-different users' grants can run concurrently; a second invocation of the same
-subscription receives a retryable busy response while it is in use. Refreshes
-are merged only into the originating active grant, with reconnect/revocation
-version checks. Temporary homes are removed on normal completion or failure.
+A subscription invocation takes no lease. Two invocations of one grant, from
+the same or a different provider account, run at the same time. At cleanup,
+each invocation re-reads the credential stored at that moment under a row
+lock on the grant, then compares it against its own refreshed copy using the
+provider's own freshness field: Codex compares `last_refresh` and bounds it
+against the host clock; Grok compares `expires_at`. The newer credential
+persists; a tie or an unparseable freshness value keeps the stored
+credential, so a spent single-use refresh token never overwrites a good one.
+Refreshes are merged only into the originating active grant, with a
+revocation check. Temporary homes are removed on normal completion or
+failure.
 
-For a fresh task execution, subscription contention creates a durable scheduled
-retry checked every 60–120 seconds. The task shows “Waiting for AI subscription”
-and does not request a reconnect or consume its provider-failure retry allowance.
+A fresh task execution cannot enter subscription contention. The freshest-write
+rule above resolves the conflict instead. A run that already entered this wait
+keeps a durable scheduled retry, checked every 60–120 seconds. The task shows
+“Waiting for AI subscription”. It does not request a reconnect, and it does not
+consume its provider-failure retry allowance.
 Each attempt rechecks task eligibility, ownership, budget, and current credential
 access. Revocation and other configuration failures still require user action.
 Authorized comment wakes that started as non-assignee runs can resume without
@@ -207,8 +212,8 @@ unmanaged legacy agents retain their existing authentication paths.
 
 `server/src/__tests__/ai-connections.test.ts` exercises storage, isolation,
 defaults, human audiences, agent access, reconnect races, refresh ownership,
-subscription locking, migration replay, and redacted API failures against a real
-embedded database. Existing login, adapter, tool, and channel suites cover their
+concurrent subscription write-backs, migration replay, and redacted API
+failures against a real embedded database. Existing login, adapter, tool, and channel suites cover their
 shared integration paths. The onboarding tests cover managed reuse and keeping a
 successfully connected account after failed agent creation.
 
@@ -283,15 +288,18 @@ inside the task. Connecting installs access for that agent and resumes the pendi
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-Concurrent runs using the same subscription wait through scheduled retries while
-the credential lease is held. They do not request new credentials or consume the
-provider-failure retry allowance. Each retry revalidates the account and existing
-run-dispatch rules still suppress cancelled, reassigned, or otherwise ineligible work.
-Assignee retries must retain execution-lock ownership at scheduling, promotion, and dispatch.
+Concurrent runs of one subscription do not wait for each other. No credential
+lease exists to hold them, so a fresh task execution cannot enter a contention
+wait. A run that already entered this wait keeps its scheduled retries. It does
+not request new credentials, and it does not consume the provider-failure retry
+allowance. Each retry revalidates the account, and existing run-dispatch rules
+still suppress cancelled, reassigned, or otherwise ineligible work. An assignee
+retry must still keep execution-lock ownership at scheduling, promotion, and
+dispatch.
 
 `server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
 both providers and methods, approval gates, native provider mapping, shared access
-boundaries, and subscription contention. The opt-in
+boundaries, and concurrent runs of one subscription for both providers. The opt-in
 [`tests/hiring-ai-connections/README.md`](../../tests/hiring-ai-connections/README.md)
 describes real browser hiring, subtask, connection, and automatic-resume checks on
 local and Daytona environments, plus the production component Storybook checks.
