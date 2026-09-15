@@ -25781,6 +25781,75 @@ export function heartbeatService(
       }
     }
 
+    // PHA-3517: detect and repair the openclaw_gateway adapterConfig wedge
+    // before the wake proceeds. The wedge is when adapterConfig is an empty
+    // object on an openclaw_gateway agent — the agent flaps between {} and
+    // a populated state within ~30s. The repair re-applies the last known-good
+    // adapterConfig from agent_config_revisions and writes a new revision so
+    // the recovery itself is auditable. The wakeup proceeds either way; the
+    // repair is non-fatal because a missing revision history just means the
+    // wedge will be visible until someone manually restores the config.
+    {
+      const adapterConfigRecord = parseObject(agent.adapterConfig);
+      const adapterConfigSize = adapterConfigRecord
+        ? Object.keys(adapterConfigRecord).length
+        : 0;
+      logger.debug(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          adapterType: agent.adapterType,
+          adapterConfigKeyCount: adapterConfigSize,
+          wakeSource: source,
+          wakeReason: reason,
+          issueId,
+        },
+        "heartbeat.enqueue_wakeup pre-recovery adapterConfig snapshot",
+      );
+      if (isOpenclawGatewayAgentWedged(agent)) {
+        try {
+          await repairOpenclawGatewayAgentAdapterConfig({
+            db,
+            applyAdapterConfigPatch: async ({ agentId: id, companyId, adapterConfig, sourceRevisionId }) => {
+              await agentService(db).update(
+                id,
+                { adapterConfig },
+                {
+                  recordRevision: {
+                    source: "openclaw_gateway_wedge_recovery",
+                    rolledBackFromRevisionId: sourceRevisionId,
+                    createdByAgentId: null,
+                    createdByUserId: null,
+                  },
+                  allowBuiltInAgentMetadata: true,
+                },
+              );
+              void companyId;
+            },
+            agent,
+            trigger: {
+              kind: "wakeup",
+              wakeupSource: source,
+              agentId: agent.id,
+              issueId,
+            },
+          });
+          // Re-read so the wakeup operates on the recovered config.
+          const refreshed = await getAgent(agentId);
+          if (refreshed) Object.assign(agent, refreshed);
+        } catch (err) {
+          logger.error(
+            {
+              agentId: agent.id,
+              companyId: agent.companyId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            "heartbeat.enqueue_wakeup openclaw_gateway wedge repair threw; continuing with current config",
+          );
+        }
+      }
+    }
+
     if (opts.failedRunId) {
       const failed = await getRun(opts.failedRunId);
       if (opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
