@@ -120,11 +120,11 @@ Refreshes are merged only into the originating active grant, with a
 revocation check. Temporary homes are removed on normal completion or
 failure.
 
-A fresh task execution cannot enter subscription contention; the freshest-write
-rule above resolves the conflict instead. A run that entered the wait before
-this change still carries a durable scheduled retry checked every 60–120
-seconds. The task shows “Waiting for AI subscription” and does not request a
-reconnect or consume its provider-failure retry allowance.
+A fresh task execution cannot enter subscription contention. The freshest-write
+rule above resolves the conflict instead. A run that already entered this wait
+keeps a durable scheduled retry, checked every 60–120 seconds. The task shows
+“Waiting for AI subscription”. It does not request a reconnect, and it does not
+consume its provider-failure retry allowance.
 Each attempt rechecks task eligibility, ownership, budget, and current credential
 access. Revocation and other configuration failures still require user action.
 Authorized comment wakes that started as non-assignee runs can resume without
@@ -288,13 +288,14 @@ inside the task. Connecting installs access for that agent and resumes the pendi
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-A fresh task execution cannot enter this wait; no credential lease exists to
-hold it. A run that entered the wait before this change still uses scheduled
-retries. It does not request new credentials or consume the provider-failure
-retry allowance. Each retry revalidates the account, and existing run-dispatch
-rules still suppress cancelled, reassigned, or otherwise ineligible work. An
-assignee retry must still keep execution-lock ownership at scheduling,
-promotion, and dispatch.
+Concurrent runs of one subscription do not wait for each other. No credential
+lease exists to hold them, so a fresh task execution cannot enter a contention
+wait. A run that already entered this wait keeps its scheduled retries. It does
+not request new credentials, and it does not consume the provider-failure retry
+allowance. Each retry revalidates the account, and existing run-dispatch rules
+still suppress cancelled, reassigned, or otherwise ineligible work. An assignee
+retry must still keep execution-lock ownership at scheduling, promotion, and
+dispatch.
 
 `server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
 both providers and methods, approval gates, native provider mapping, shared access

@@ -171,9 +171,9 @@ identity checks remain in force.
 
 ## AI subscription contention
 
-A fresh task execution cannot enter this wait now. A run that entered the wait
-before this change writes an informational `lifecycle` event to the local run
-log. Its payload contains only `retryScheduled`, a boolean that reports
+A fresh task execution cannot enter this wait. A run that already entered this
+wait writes an informational `lifecycle` event to the local run log. Its
+payload contains only `retryScheduled`, a boolean that reports
 whether the scheduler created a retry.
 The message distinguishes an automatic retry from work that is no longer eligible.
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does

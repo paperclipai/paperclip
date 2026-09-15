@@ -16030,8 +16030,8 @@ export function heartbeatService(
   }
 
   // No code path raises the `ai_connection_busy` error any more. This
-  // function stays because a stored run can still carry that error code from
-  // before this change.
+  // function stays because a stored run row can still carry that error code
+  // from an earlier release.
   async function finalizeAiConnectionBusyDeferral(
     run: typeof heartbeatRuns.$inferSelect,
     error: HttpError,
