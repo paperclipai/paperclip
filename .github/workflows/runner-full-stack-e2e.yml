@@ -1234,7 +1234,7 @@ jobs:
 
       - name: Package pruned dashboard with declared screenshots for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: ${{ steps.pages_artifact_name.outputs.name }}
           path: runner-e2e-merged-report/pages
