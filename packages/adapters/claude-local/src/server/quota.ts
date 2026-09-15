@@ -92,10 +92,22 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   } catch {
     return null;
   }
-  return parseClaudeCredentialToken(raw);
+  const credential = parseClaudeCredential(raw);
+  if (!credential) return null;
+  // On macOS the CLI refreshes the Keychain item, not this file, so a file
+  // whose token has expired is a stale leftover. Skip it so the caller can
+  // fall through to a live credential instead of failing with a dead token.
+  if (credential.expiresAt != null && credential.expiresAt <= Date.now()) return null;
+  return credential.token;
 }
 
-function parseClaudeCredentialToken(raw: string): string | null {
+interface ClaudeCredential {
+  token: string;
+  /** Epoch milliseconds, when the credential file records one. */
+  expiresAt: number | null;
+}
+
+function parseClaudeCredential(raw: string): ClaudeCredential | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -107,7 +119,13 @@ function parseClaudeCredentialToken(raw: string): string | null {
   const oauth = obj["claudeAiOauth"];
   if (typeof oauth !== "object" || oauth === null) return null;
   const token = (oauth as Record<string, unknown>)["accessToken"];
-  return typeof token === "string" && token.length > 0 ? token : null;
+  if (typeof token !== "string" || token.length === 0) return null;
+  const expiresAt = (oauth as Record<string, unknown>)["expiresAt"];
+  return { token, expiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null };
+}
+
+function parseClaudeCredentialToken(raw: string): string | null {
+  return parseClaudeCredential(raw)?.token ?? null;
 }
 
 interface ClaudeAuthStatus {

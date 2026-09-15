@@ -25,6 +25,26 @@ describe("explicit Claude Keychain import", () => {
     await expect(readClaudeToken({ allowKeychain: true })).resolves.toBeNull();
     expect(mocks.exec).not.toHaveBeenCalled();
   });
+  it("skips an expired credentials file and falls through to Keychain", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "");
+    mocks.read.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "stale", expiresAt: Date.now() - 60_000 } }));
+    mocks.exec.mockResolvedValue({ stdout: JSON.stringify({ claudeAiOauth: { accessToken: "fresh", expiresAt: Date.now() + 60_000 } }) });
+    await expect(readClaudeToken({ allowKeychain: true })).resolves.toBe("fresh");
+    expect(mocks.exec).toHaveBeenCalledTimes(1);
+  });
+  it("returns null for an expired credentials file without Keychain access", async () => {
+    mocks.read.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "stale", expiresAt: Date.now() - 60_000 } }));
+    await expect(readClaudeToken()).resolves.toBeNull();
+    expect(mocks.exec).not.toHaveBeenCalled();
+  });
+  it("still accepts a credentials file that records no expiry", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "");
+    mocks.read.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "file" } }));
+    await expect(readClaudeToken({ allowKeychain: true })).resolves.toBe("file");
+    expect(mocks.exec).not.toHaveBeenCalled();
+  });
   it("does not surface a credential-bearing subprocess error", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.stubEnv("CLAUDE_CONFIG_DIR", "");
