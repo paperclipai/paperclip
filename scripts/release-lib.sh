@@ -426,48 +426,64 @@ wait_for_npm_package_versions() {
   local attempts="${1:-12}"
   local delay_seconds="${2:-5}"
   local package_info="$3"
-  local status_dir
-  local pids=()
-  local specs=()
-  local failures=()
-  local index=0
-  local pkg_name
-  local pkg_version
-  local i
 
-  status_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-visibility.XXXXXX")"
+  # The polling phase runs in a subshell that owns its own EXIT trap: a
+  # cancelled or signalled release reaps every in-flight poller and the
+  # scratch directory instead of leaking one npm poll per package for the
+  # rest of its budget. The subshell also keeps this trap from clobbering
+  # the caller's cleanup trap.
+  (
+    local status_dir
+    local pids=()
+    local specs=()
+    local failures=()
+    local index=0
+    local pkg_name
+    local pkg_version
+    local i
 
-  while IFS=$'\t' read -r _pkg_dir pkg_name pkg_version; do
-    [ -z "$pkg_name" ] && continue
-    (
-      if wait_for_npm_package_version "$pkg_name" "$pkg_version" "$attempts" "$delay_seconds"; then
-        : > "$status_dir/$index.ok"
-      fi
-    ) &
-    pids+=("$!")
-    specs+=("${pkg_name}@${pkg_version}")
-    index=$((index + 1))
-  done <<< "$package_info"
+    status_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-visibility.XXXXXX")"
 
-  if [ "${#pids[@]}" -gt 0 ]; then
-    for i in "${!pids[@]}"; do
-      wait "${pids[$i]}" || true
-      if [ -e "$status_dir/$i.ok" ]; then
-        release_info "    ✓ ${specs[$i]} is registry-visible"
-      else
-        failures+=("${specs[$i]}")
-      fi
-    done
-  fi
+    # shellcheck disable=SC2329 # invoked via the trap below
+    reap_visibility_pollers() {
+      local pid
+      for pid in ${pids[@]+"${pids[@]}"}; do
+        kill "$pid" 2>/dev/null || true
+      done
+      rm -rf "$status_dir"
+    }
+    trap reap_visibility_pollers EXIT INT TERM
 
-  rm -rf "$status_dir"
+    while IFS=$'\t' read -r _pkg_dir pkg_name pkg_version; do
+      [ -z "$pkg_name" ] && continue
+      (
+        if wait_for_npm_package_version "$pkg_name" "$pkg_version" "$attempts" "$delay_seconds"; then
+          : > "$status_dir/$index.ok"
+        fi
+      ) &
+      pids+=("$!")
+      specs+=("${pkg_name}@${pkg_version}")
+      index=$((index + 1))
+    done <<< "$package_info"
 
-  if [ "${#failures[@]}" -gt 0 ]; then
-    release_warn "npm accepted every publish, but these versions did not become registry-visible: ${failures[*]}"
-    return 1
-  fi
+    if [ "${#pids[@]}" -gt 0 ]; then
+      for i in "${!pids[@]}"; do
+        wait "${pids[$i]}" || true
+        if [ -e "$status_dir/$i.ok" ]; then
+          release_info "    ✓ ${specs[$i]} is registry-visible"
+        else
+          failures+=("${specs[$i]}")
+        fi
+      done
+    fi
 
-  return 0
+    if [ "${#failures[@]}" -gt 0 ]; then
+      release_warn "npm accepted every publish, but these versions did not become registry-visible: ${failures[*]}"
+      exit 1
+    fi
+
+    exit 0
+  )
 }
 
 verify_npm_installable() {
