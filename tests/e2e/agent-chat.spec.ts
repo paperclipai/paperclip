@@ -554,19 +554,30 @@ for (const bad of [
     }
   });
 
-test("sidebar stars, recent agents, configuration links, and drafts survive switching", async ({
+test("sidebar discovery, stars, recent agents, configuration links, and drafts survive switching", async ({
   page,
   request,
 }) => {
   const f = await setup(request);
   try {
+    await page.goto(`/${f.company.issuePrefix}/dashboard`);
+    const nav = page.getByRole("navigation");
+    const chatLinks = nav.locator('a[href*="/chats/"]');
+    await expect(chatLinks).toHaveText(["Alpha"]);
+    const compose = nav.getByRole("button", { name: "Chat with an agent", exact: true });
+    await compose.click();
+    const picker = page.getByRole("dialog", { name: "Chat with an agent", exact: true });
+    await expect(picker.getByRole("option")).toHaveCount(6);
+    await picker.getByRole("combobox").fill("Beta");
+    await picker.getByRole("combobox").press("Enter");
+    await expect(picker).not.toBeVisible();
+    await expect(page.getByRole("link", { name: "Configure Beta", exact: true })).toBeVisible();
+    expect(await json(await request.get(`/api/companies/${f.company.id}/chats/${f.agents[1].id}`))).toBeNull();
     for (const agent of f.agents) {
       await page.goto(`/${f.company.issuePrefix}/chats/${agent.id}`);
       await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
     }
-    const nav = page.getByRole("navigation");
-    await expect(nav.locator('a[href*="/chats/"]')).toHaveCount(4);
-    await expect(nav.locator('a[href*="/chats/"]').first()).toHaveText("Zeta");
+    await expect(chatLinks).toHaveText(["Alpha", "Zeta", "Epsilon", "Delta", "Gamma"]);
     const star = page.getByRole("button", { name: "Star Zeta", exact: true });
     await page.getByTestId("task-chat-composer-input").click();
     await expect(star).toHaveCSS("opacity", "0");
@@ -618,12 +629,13 @@ test("sidebar stars, recent agents, configuration links, and drafts survive swit
         ),
       ),
     ).toEqual(recent);
-    await page
-      .getByRole("link", { name: "See all agents", exact: true })
-      .click();
-    await expect(page).toHaveURL(
-      new RegExp(`/${f.company.issuePrefix}/agents/all$`),
-    );
+    await compose.click();
+    await expect(picker.getByRole("combobox")).toHaveValue("");
+    await picker.getByRole("combobox").fill("Beta");
+    await picker.getByRole("combobox").press("Enter");
+    await expect(picker).not.toBeVisible();
+    await expect(page.getByRole("link", { name: "Configure Beta", exact: true })).toBeVisible();
+    await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
   } finally {
     await f.restore();
   }

@@ -4,6 +4,7 @@ import {
   projectExecutionWorkspacePolicySchema,
 } from "@paperclipai/shared";
 import {
+  applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -12,6 +13,7 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   ManagedSandboxUnavailableError,
+  resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
@@ -530,5 +532,115 @@ describe("execution workspace policy helpers", () => {
         true,
       ),
     ).toEqual({ enabled: true, defaultMode: "isolated_workspace" });
+  });
+});
+
+describe("operator default isolated execution workspaces", () => {
+  const withDefault = (
+    projectPolicy: Parameters<
+      typeof applyDefaultIsolatedExecutionWorkspacePolicy
+    >[0]["projectPolicy"],
+    hasProject = true,
+    defaultIsolatedWorkspacesEnabled = true,
+  ) =>
+    applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy,
+      defaultIsolatedWorkspacesEnabled,
+      hasProject,
+    });
+
+  it("substitutes an isolated policy for a project that stores none", () => {
+    expect(withDefault(null)).toEqual({
+      enabled: true,
+      defaultMode: "isolated_workspace",
+    });
+  });
+
+  it("leaves everything alone while the operator default is off", () => {
+    expect(withDefault(null, true, false)).toBeNull();
+  });
+
+  it("keeps a task that has no project on its existing behavior", () => {
+    // Isolation needs a repository to cut a worktree from. A project-less task
+    // (agent chat, for example) must not be pulled into worktree mode.
+    expect(withDefault(null, false)).toBeNull();
+  });
+
+  it("never overrides a policy the project already stores", () => {
+    expect(withDefault({ enabled: true, defaultMode: "shared_workspace" })).toEqual({
+      enabled: true,
+      defaultMode: "shared_workspace",
+    });
+    // `enabled: false` is a tenant decision to stay on the shared checkout,
+    // not an absent policy to fill in.
+    expect(withDefault({ enabled: false })).toEqual({ enabled: false });
+  });
+
+  it("resolves an unpolicied project's tasks to an isolated workspace", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: withDefault(null),
+        issueSettings: null,
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("isolated_workspace");
+  });
+
+  it("still lets an explicit issue setting win over the operator default", () => {
+    expect(
+      resolveExecutionWorkspaceMode({
+        projectPolicy: withDefault(null),
+        issueSettings: { mode: "shared_workspace" },
+        legacyUseProjectWorkspace: null,
+      }),
+    ).toBe("shared_workspace");
+  });
+
+  it("keeps mode and strategy coherent for the substituted policy", () => {
+    // Substituting a policy (rather than moving the terminal fallback) is what
+    // makes `hasWorkspaceControl` true, so the default git_worktree strategy is
+    // supplied instead of leaving isolated mode on a project_primary strategy.
+    const projectPolicy = withDefault(null);
+    const mode = resolveExecutionWorkspaceMode({
+      projectPolicy,
+      issueSettings: null,
+      legacyUseProjectWorkspace: null,
+    });
+    const config = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy,
+      issueSettings: null,
+      mode,
+      legacyUseProjectWorkspace: null,
+    });
+    expect(resolveEffectiveWorkspaceStrategyType(mode, config)).toBe("git_worktree");
+  });
+
+  it("does not strand a project-less task as an unrunnable worktree", () => {
+    const projectPolicy = withDefault(null, false);
+    const mode = resolveExecutionWorkspaceMode({
+      projectPolicy,
+      issueSettings: null,
+      legacyUseProjectWorkspace: null,
+    });
+    const config = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy,
+      issueSettings: null,
+      mode,
+      legacyUseProjectWorkspace: null,
+    });
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: mode,
+        resolvedStrategy: resolveEffectiveWorkspaceStrategyType(mode, config),
+      }),
+    ).toBe(false);
   });
 });

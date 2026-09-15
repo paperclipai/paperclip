@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { unprocessable } from "../errors.js";
+import { HttpError, unprocessable } from "../errors.js";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,11 @@ import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+
+export function isAiConnectionBusy(error: unknown): error is HttpError {
+  return error instanceof HttpError && error.status === 422 &&
+    (error.details as { code?: unknown } | undefined)?.code === "ai_connection_busy";
+}
 
 // Blank values intentionally override inherited credentials in CLI child environments.
 export const AI_AUTH_ENV_KEYS = [
@@ -238,10 +243,15 @@ export async function prepareManagedAiRuntime(
     runnerProvider: input.config.provider,
     acpxAgent: input.config.acpxAgent,
   });
-  const release =
-    selection.attribution.method === "subscription"
-      ? await acquireCredentialLease(db, selection.grant.id)
-      : async () => {};
+  const subscriptionFile =
+    selection.attribution.method === "subscription" &&
+    input.binding.provider !== "anthropic";
+  // A file-backed subscription runs one credential rotation at a time, so it
+  // needs the lease. Anthropic writes no file back, so two runs share no
+  // mutable state and can run at the same time without the lease.
+  const release = subscriptionFile
+    ? await acquireCredentialLease(db, selection.grant.id)
+    : async () => {};
   let home: string | undefined;
   try {
     const selectedGrantId = selection.grant.id;
@@ -286,9 +296,6 @@ export async function prepareManagedAiRuntime(
         'cli_auth_credentials_store = "file"\n',
         { mode: 0o600 },
       );
-    const subscriptionFile =
-      selection.attribution.method === "subscription" &&
-      input.binding.provider !== "anthropic";
     if (subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else env[capability.envKey] = value;
     if (

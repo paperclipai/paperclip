@@ -15,7 +15,11 @@ export interface GitWorkspaceSnapshot {
   overlayPaths: string[];
   deletedPaths: string[];
   ignoredPaths: string[];
+  /** Managed, editable repositories inside the task workspace. */
+  repositories?: Array<{ path: string; snapshot: GitWorkspaceSnapshot }>;
 }
+
+export const PROJECT_REPOSITORIES_DIR = ".paperclip-repositories";
 
 export interface ExpensiveWorkspaceGitInput {
   localDir: string;
@@ -136,7 +140,25 @@ async function runExpensiveWorkspaceGit(
   return await runLocalGit(localDir, args, options);
 }
 
-export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWorkspaceSnapshot | null> {
+export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true): Promise<GitWorkspaceSnapshot | null> {
+  const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
+  if (includeRepositories) {
+    const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
+    const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (rootStat) {
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
+      for (const entry of (await fs.readdir(root, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
+        const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
+        const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false);
+        if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
+        repositories.push({ path: relative, snapshot });
+      }
+    }
+  }
   try {
     const insideWorkTree = await runLocalGit(localDir, ["rev-parse", "--is-inside-work-tree"], {
       timeout: 10_000,
@@ -200,17 +222,22 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
     return {
       headCommit: headCommitResult.stdout.trim(),
       branchName: branchName && branchName !== "HEAD" ? branchName : null,
-      overlayPaths: [...new Set([...splitNul(overlayDiffResult.stdout), ...splitNul(untrackedResult.stdout)])]
+      overlayPaths: [...new Set([...splitNul(overlayDiffResult.stdout), ...splitNul(untrackedResult.stdout),
+        ...repositories.flatMap((repo) => repo.snapshot.overlayPaths.map((entry) => `${repo.path}/${entry}`))])]
         .sort((left, right) => left.localeCompare(right)),
-      deletedPaths: [...new Set(splitNul(deletedResult.stdout))]
+      deletedPaths: [...new Set([...splitNul(deletedResult.stdout),
+        ...repositories.flatMap((repo) => repo.snapshot.deletedPaths.map((entry) => `${repo.path}/${entry}`))])]
         .sort((left, right) => left.localeCompare(right)),
-      ignoredPaths: splitNul(ignoredResult.stdout)
+      ignoredPaths: [...splitNul(ignoredResult.stdout)
         .filter((entry) => entry.startsWith("!! "))
         .map((entry) => entry.slice(3).replace(/\/+$/, ""))
-        .filter(Boolean)
+        .filter((entry) => Boolean(entry) && !(repositories.length > 0 && entry === PROJECT_REPOSITORIES_DIR)),
+        ...repositories.flatMap((repo) => repo.snapshot.ignoredPaths.map((entry) => `${repo.path}/${entry}`))]
         .sort((left, right) => left.localeCompare(right)),
+      ...(repositories.length > 0 ? { repositories } : {}),
     };
-  } catch {
+  } catch (error) {
+    if (repositories.length > 0) throw error;
     return null;
   }
 }
@@ -557,6 +584,17 @@ export async function withShallowGitWorkspaceClone<T>(
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
+    for (const repository of input.snapshot.repositories ?? []) {
+      await withShallowGitWorkspaceClone({
+        localDir: path.join(input.localDir, repository.path),
+        snapshot: repository.snapshot,
+      }, async (nestedClone) => {
+        await fs.cp(nestedClone, path.join(cloneDir, repository.path), { recursive: true });
+      });
+    }
+    if (input.snapshot.repositories?.length) {
+      await fs.appendFile(path.join(cloneDir, ".git/info/exclude"), `\n/${PROJECT_REPOSITORIES_DIR}/\n`);
+    }
     return await fn(cloneDir);
   } finally {
     await runLocalGit(input.localDir, ["update-ref", "-d", tempRef], {

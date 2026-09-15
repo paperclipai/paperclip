@@ -7,7 +7,7 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -28,6 +28,8 @@ import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { initializeRunIdentity, explicitOperatorRunIdentity } from "./run-identity.js";
 import {
   assertDurableChatWakeupReceipt,
@@ -174,6 +176,7 @@ import { publishLiveEvent } from "./live-events.js";
 import {
   allocateHeartbeatRunEventSeq,
   appendHeartbeatRunEvent,
+  type AppendHeartbeatRunEventInput,
 } from "./heartbeat-run-events.js";
 import {
   queuedCommentIdsFromWakePayload,
@@ -434,6 +437,7 @@ import {
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 import {
+  applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -491,6 +495,7 @@ import {
   type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
+  AI_CONNECTION_BUSY_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   WAKE_COMMENT_IDS_KEY,
@@ -2371,24 +2376,49 @@ export async function ensureManagedProjectWorkspace(input: {
   /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
-  const cwd = resolveManagedProjectWorkspaceDir({
+  const defaultCwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
     projectId: input.projectId,
     repoName: deriveRepoNameFromRepoUrl(input.repoUrl),
   });
+  let cwd = defaultCwd;
+  if (input.repoUrl && await fs.stat(path.join(cwd, ".git")).catch(() => null)) {
+    const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
+      .then((result) => result.stdout.trim()).catch(() => null);
+    if (origin && origin !== input.repoUrl) {
+      cwd = `${cwd}-${createHash("sha256").update(input.repoUrl).digest("hex").slice(0, 12)}`;
+    }
+  }
   const inFlight = managedCheckoutMaterializations.get(cwd);
-  if (inFlight) return inFlight;
+  if (inFlight) {
+    await inFlight;
+    // The winner may have cloned a different repository with the same basename.
+    return ensureManagedProjectWorkspace(input);
+  }
   const attempt = materializeManagedProjectWorkspace(cwd, input).finally(() => {
     managedCheckoutMaterializations.delete(cwd);
   });
   managedCheckoutMaterializations.set(cwd, attempt);
-  return attempt;
+  const result = await attempt;
+  if (input.repoUrl) {
+    // A different server process can publish a same-name checkout between the
+    // initial origin check and the atomic rename. Never adopt its other repo.
+    const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
+      .then((value) => value.stdout.trim()).catch(() => null);
+    if (origin && origin !== input.repoUrl) {
+      if (cwd !== defaultCwd) throw new Error("Managed checkout origin does not match the requested repository");
+      return ensureManagedProjectWorkspace(input);
+    }
+  }
+  return result;
 }
 
 async function materializeManagedProjectWorkspace(
   cwd: string,
   input: {
     repoUrl: string | null;
+    repoRef?: string | null;
+    localSource?: string | null;
     resolveGitAuth?: GitRemoteAuthProvider | null;
   },
 ): Promise<{ cwd: string; warning: string | null }> {
@@ -2426,14 +2456,14 @@ async function materializeManagedProjectWorkspace(
   // is never created in a partial state and never removed on failure, so a concurrent
   // materialization (another process, or a run racing this one) can neither adopt a broken
   // checkout nor lose its own completed one.
-  const auth = input.resolveGitAuth
+  const auth = input.resolveGitAuth && !input.localSource
     ? await input.resolveGitAuth(input.repoUrl)
     : null;
   const cloneTmpDir = await fs.mkdtemp(`${cwd}.clone-`);
   try {
     await execFile(
       "git",
-      [...(auth?.configArgs ?? []), "clone", input.repoUrl, cloneTmpDir],
+      [...(auth?.configArgs ?? []), "clone", "--no-hardlinks", "--", input.localSource ?? input.repoUrl, cloneTmpDir],
       {
         env: {
           // Spread order matters: the sanitizer strips PAPERCLIP_*, which would remove the
@@ -2447,6 +2477,15 @@ async function materializeManagedProjectWorkspace(
         timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
       },
     );
+    if (input.localSource) {
+      const snapshot = await readGitWorkspaceSnapshot(input.localSource, false);
+      if (!snapshot) throw new Error("Configured repository folder is not a Git checkout");
+      const baseline = await captureDirectorySnapshot(cloneTmpDir, { exclude: [".git", ".paperclip-runtime", PROJECT_REPOSITORIES_DIR, ...snapshot.ignoredPaths] });
+      await mergeDirectoryWithBaseline({ baseline, sourceDir: input.localSource, targetDir: cloneTmpDir });
+      await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
+    } else if (input.repoRef) {
+      await execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
+    }
   } catch (error) {
     await fs
       .rm(cloneTmpDir, { recursive: true, force: true })
@@ -2481,6 +2520,59 @@ async function materializeManagedProjectWorkspace(
     );
   }
   return { cwd, warning: null };
+}
+
+/** Keep every distinct project repository inside the task's writable/synced root. */
+export async function prepareProjectRepositoryWorkspaces(input: {
+  cwd: string;
+  anchorRepoUrl: string | null;
+  workspaces: Array<Pick<typeof projectWorkspaces.$inferSelect, "id" | "repoUrl" | "repoRef"> & { cwd?: string | null }>;
+  resolveGitAuth?: GitRemoteAuthProvider | null;
+}): Promise<Array<{ workspaceId: string; cwd: string; repoUrl: string; repoRef: string | null }>> {
+  const identity = (url: string) => url.trim().replace(/\.git\/?$/, "").replace(/\/$/, "");
+  const seen = new Set(input.anchorRepoUrl ? [identity(input.anchorRepoUrl)] : []);
+  const selected = input.workspaces.filter((workspace) => {
+    if (!workspace.repoUrl || seen.has(identity(workspace.repoUrl))) return false;
+    seen.add(identity(workspace.repoUrl));
+    return true;
+  });
+  const root = path.join(input.cwd, PROJECT_REPOSITORIES_DIR);
+  if (selected.length === 0 && !(await fs.lstat(root).catch(() => null))) return [];
+  await fs.mkdir(root, { recursive: true });
+  if (await fs.realpath(root) !== path.join(await fs.realpath(input.cwd), PROJECT_REPOSITORIES_DIR)) {
+    throw new Error("Project repositories directory escapes the task workspace");
+  }
+  const excludePath = await execFile("git", ["-C", input.cwd, "rev-parse", "--git-path", "info/exclude"], { timeout: 10_000 })
+    .then((result) => path.resolve(input.cwd, result.stdout.trim()));
+  const exclude = await fs.readFile(excludePath, "utf8").catch(() => "");
+  if (!exclude.split(/\r?\n/).includes(`/${PROJECT_REPOSITORIES_DIR}/`)) {
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    await fs.appendFile(excludePath, `\n/${PROJECT_REPOSITORIES_DIR}/\n`);
+  }
+  const results = [];
+  for (const workspace of selected) {
+    const repoUrl = workspace.repoUrl!;
+    const name = (deriveRepoNameFromRepoUrl(repoUrl) ?? "repo").replace(/[^a-zA-Z0-9_-]/g, "-");
+    const key = `${name}-${createHash("sha256").update(JSON.stringify([workspace.id, identity(repoUrl), workspace.repoRef, workspace.cwd ?? null])).digest("hex").slice(0, 12)}`;
+    const cwd = path.join(root, key);
+    const existing = await fs.lstat(cwd).catch(() => null);
+    if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) throw new Error("Invalid project repository checkout path");
+    const localSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL
+      && await fs.stat(workspace.cwd).then((entry) => entry.isDirectory()).catch(() => false)
+      ? workspace.cwd : null;
+    const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth });
+    if (result.warning) throw new Error(result.warning);
+    results.push({ workspaceId: workspace.id, cwd, repoUrl, repoRef: workspace.repoRef });
+  }
+  // Retain detached checkout work outside the synchronized repository set.
+  const active = new Set(results.map((repo) => path.basename(repo.cwd)));
+  for (const entry of await fs.readdir(root)) {
+    if (active.has(entry) || entry.includes(".clone-")) continue;
+    const retained = path.join(input.cwd, ".paperclip-runtime", "detached-repositories", randomUUID());
+    await fs.mkdir(path.dirname(retained), { recursive: true });
+    await fs.rename(path.join(root, entry), retained);
+  }
+  return results;
 }
 
 /**
@@ -13503,6 +13595,7 @@ export function heartbeatService(
       color?: string;
       message?: string;
       payload?: Record<string, unknown>;
+      retryExhaustion?: AppendHeartbeatRunEventInput["retryExhaustion"];
     },
   ) {
     const eventAt = new Date();
@@ -13541,7 +13634,9 @@ export function heartbeatService(
       color: event.color,
       message: sanitizedMessage,
       payload: sanitizedPayload,
+      retryExhaustion: event.retryExhaustion,
     });
+    if (persistedEvent.disposition === "duplicate") return;
     const seq = persistedEvent.row.seq;
 
     publishLiveEvent({
@@ -15018,6 +15113,7 @@ export function heartbeatService(
     );
     const nextAttempt =
       (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
+      retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
         ? (run.scheduledRetryAttempt ?? 0)
         : executionFailureRetryCount(run)) + 1;
@@ -15058,16 +15154,18 @@ export function heartbeatService(
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (!baseSchedule) {
+      const exhaustion = {
+        retryReason,
+        scheduledRetryAttempt: run.scheduledRetryAttempt ?? 0,
+        maxAttempts,
+      };
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
         message: `Bounded retry exhausted after ${run.scheduledRetryAttempt ?? 0} scheduled attempts; no further automatic retry will be queued`,
-        payload: {
-          retryReason,
-          scheduledRetryAttempt: run.scheduledRetryAttempt ?? 0,
-          maxAttempts,
-        },
+        payload: exhaustion,
+        retryExhaustion: exhaustion,
       });
       if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
         await escalatePlanApprovalResumeFailureNeedsAttention({
@@ -15144,6 +15242,7 @@ export function heartbeatService(
 
     const requiresIssueGate =
       hasConversationContinuationPolicy(run.resultJson) ||
+      retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
@@ -15211,6 +15310,9 @@ export function heartbeatService(
               failureRetriesBeforeWorkspaceWait:
                 executionFailureRetryCount(run),
             }
+          : {}),
+        ...(retryReason === AI_CONNECTION_BUSY_RETRY_REASON
+          ? { failureRetriesBeforeAiConnectionWait: executionFailureRetryCount(run) }
           : {}),
         ...(shouldQuarantineWorkspaceForRetry
           ? {
@@ -15531,6 +15633,23 @@ export function heartbeatService(
                 },
               };
             }
+          }
+        }
+
+        if (
+          retryReason === AI_CONNECTION_BUSY_RETRY_REASON && issueId &&
+          !isNonAssigneeWorkspaceBusyRetry(retryReason, contextSnapshot)
+        ) {
+          // The issue row is locked above. Recheck after the preflight gate so
+          // cancellation or recovery cannot leave a successor without its lock.
+          const [lockedIssue] = await tx.select({ executionRunId: issues.executionRunId })
+            .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+          if (lockedIssue?.executionRunId !== run.id) {
+            return {
+              outcome: "not_scheduled", issueId, errorCode: "issue_execution_lock_changed",
+              reason: "Subscription retry suppressed because the task execution lock changed",
+              details: { issueId, expectedExecutionRunId: run.id, currentExecutionRunId: lockedIssue?.executionRunId ?? null },
+            };
           }
         }
 
@@ -15914,6 +16033,52 @@ export function heartbeatService(
       .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  // Subscription homes are serialized so refresh tokens cannot be overwritten
+  // by another run. Contention is a resource wait, not broken authentication.
+  // The database lease is released on completion/disconnect; retrying remains
+  // safe across processes and each attempt revalidates the selected account.
+  async function finalizeAiConnectionBusyDeferral(
+    run: typeof heartbeatRuns.$inferSelect,
+    error: HttpError,
+    wasIssueAssignee: boolean,
+  ) {
+    const now = new Date();
+    const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
+      error: error.message, errorCode: AI_CONNECTION_BUSY_RETRY_REASON, finishedAt: now,
+      resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+      contextSnapshot: {
+        ...parseObject(run.contextSnapshot),
+        aiConnectionBusyDeferredWhileAssignee: wasIssueAssignee,
+      },
+    });
+    if (!cancelled.updated) return;
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: error.message }).catch(() => undefined);
+    const cancelledRun = cancelled.run ?? await getRun(run.id);
+    const agent = await getAgent(run.agentId);
+    let scheduled = false;
+    try {
+      if (cancelledRun && agent) {
+        const retry = await scheduleBoundedRetryForRun(cancelledRun, agent, {
+          now, retryReason: AI_CONNECTION_BUSY_RETRY_REASON, wakeReason: "ai_connection_busy_retry",
+          maxAttempts: (cancelledRun.scheduledRetryAttempt ?? 0) + 1,
+          delayMs: computeWorkspaceBusyRetryDelayMs(),
+        });
+        scheduled = retry.outcome === "scheduled";
+        await appendRunEvent(cancelledRun, {
+          eventType: "lifecycle", stream: "system", level: "info",
+          message: scheduled ? "Waiting for the shared AI subscription. This task will retry automatically." : "The AI subscription is busy; this task can no longer retry automatically.",
+          payload: { retryScheduled: scheduled },
+        });
+      }
+    } finally {
+      try {
+        if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
+      } finally {
+        await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+      }
+    }
   }
 
   // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
@@ -19891,6 +20056,12 @@ export function heartbeatService(
         await instanceSettings.getExperimental();
       const isolatedWorkspacesEnabled =
         experimentalInstanceSettings.enableIsolatedWorkspaces;
+      // Inert on its own: the operator default only reaches the resolver when
+      // isolated workspaces are enabled at all, so a stack that has one flag
+      // without the other keeps its current behavior.
+      const defaultIsolatedWorkspacesEnabled =
+        isolatedWorkspacesEnabled &&
+        experimentalInstanceSettings.enableIsolatedWorkspacesByDefault;
       const parsedIssueExecutionWorkspaceSettings =
         parseIssueExecutionWorkspaceSettings(
           issueContext?.executionWorkspaceSettings,
@@ -20035,10 +20206,17 @@ export function heartbeatService(
           projectContext?.executionWorkspacePolicy,
         );
       const projectExecutionWorkspacePolicy =
-        gateProjectExecutionWorkspacePolicy(
-          parsedProjectExecutionWorkspacePolicy,
-          isolatedWorkspacesEnabled,
-        );
+        applyDefaultIsolatedExecutionWorkspacePolicy({
+          projectPolicy: gateProjectExecutionWorkspacePolicy(
+            parsedProjectExecutionWorkspacePolicy,
+            isolatedWorkspacesEnabled,
+          ),
+          defaultIsolatedWorkspacesEnabled,
+          // A resolved project row, not the issue's raw `projectId`: the
+          // substituted policy must only reach a task whose repository the
+          // worktree can actually be cut from.
+          hasProject: Boolean(projectContext),
+        });
       const retainedTrust = await resolveAndRetainRunTrustPreset(db, {
         companyId: agent.companyId,
         agentId: agent.id,
@@ -20711,6 +20889,18 @@ export function heartbeatService(
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
         } catch (error) {
+          // Only fresh executions can receive a pre-provider wait receipt. A
+          // persisted native input may already have provider effects to recover.
+          if (isAiConnectionBusy(error) && !persistedNativeExecutionInput) {
+            // Use the authority recorded by the locked admission gate, never
+            // the issue's mutable assignee observed during runtime preparation.
+            const authorizedNonAssigneeWake =
+              parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true ||
+              (run.scheduledRetryReason === AI_CONNECTION_BUSY_RETRY_REASON &&
+                isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, parseObject(run.contextSnapshot)));
+            await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
+            return;
+          }
           if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
             await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
               logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
@@ -21495,6 +21685,25 @@ export function heartbeatService(
         );
       }
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
+      const projectRepositoryPaths: string[] = [];
+      if (executionWorkspace.projectId && resolvedWorkspace.source === "project_primary" && !resolvedWorkspace.baseCwdFallback) {
+        const repositoryRows = await db.select().from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.companyId, agent.companyId),
+          eq(projectWorkspaces.projectId, executionWorkspace.projectId),
+        )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+        const repositories = await prepareProjectRepositoryWorkspaces({
+          cwd: executionWorkspace.cwd,
+          anchorRepoUrl: executionWorkspace.repoUrl,
+          workspaces: repositoryRows,
+          resolveGitAuth: workspaceGitAuthProvider,
+        });
+        const paths = new Map(repositories.map((repo) => [repo.workspaceId, repo.cwd]));
+        projectRepositoryPaths.push(...repositories.map((repo) => path.relative(executionWorkspace.cwd, repo.cwd)));
+        if (resolvedWorkspace.workspaceId) paths.set(resolvedWorkspace.workspaceId, executionWorkspace.cwd);
+        resolvedWorkspace.workspaceHints = resolvedWorkspace.workspaceHints.map((hint) => ({
+          ...hint, cwd: paths.get(hint.workspaceId) ?? hint.cwd,
+        }));
+      }
       if (persistedExecutionWorkspace) {
         context.executionWorkspaceId = persistedExecutionWorkspace.id;
         await db
@@ -22832,13 +23041,17 @@ export function heartbeatService(
                     companyId: agent.companyId,
                     runId: run.id,
                     issue: issueRef,
-                    taskPrompt:
+                    taskPrompt: [
                       readNonEmptyString(
                         selectPaperclipTaskMarkdown(context, {
                           resumedSession,
                         }),
                       ) ??
                       `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`,
+                      projectRepositoryPaths.length > 0
+                        ? `## Project repositories\nThe task workspace also contains these editable Git repositories:\n${projectRepositoryPaths.map((repo) => `- ${repo}`).join("\n")}`
+                        : null,
+                    ].filter(Boolean).join("\n\n"),
                     wakePayload: context.paperclipWake,
                     resumedSession,
                     conversationMode: context.conversationMode === true,

@@ -5,11 +5,12 @@
 // then packs the result into a facts object. This file only branches on
 // that facts object; it never queries a database or reads the clock.
 
-/** The retry reason a run carries, reduced to the three kinds a gate cares about. */
+/** The retry reason a run carries, reduced to the kinds a gate cares about. */
 export type RetryReasonKind =
   | "max_turn_continuation"
   | "disposition_repair"
   | "native_safe_replacement"
+  | "ai_connection_wait"
   | "other";
 
 export type BudgetBlockFacts = {
@@ -403,7 +404,10 @@ export function decideScheduledRetryGate(
   }
 
   const lockOutcome = decideExecutionLock({
-    requiresExecutionLock: requiresInProgress && facts.enforceIssueExecutionLock,
+    requiresExecutionLock:
+      (requiresInProgress ||
+        (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry)) &&
+      facts.enforceIssueExecutionLock,
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });
@@ -411,7 +415,7 @@ export function decideScheduledRetryGate(
     return {
       allowed: false,
       reason:
-        "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
+        "Scheduled retry suppressed because the issue execution lock belongs to a different run",
       errorCode: "issue_execution_lock_changed",
       issueId: facts.issueId,
       details: {
@@ -629,7 +633,9 @@ export function decideQueuedRunStaleness(
   }
 
   const lockOutcome = decideExecutionLock({
-    requiresExecutionLock: requiresInProgress,
+    // A server-recorded non-assignee wake never held the task execution lock.
+    requiresExecutionLock: requiresInProgress ||
+      (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry),
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });
@@ -638,7 +644,7 @@ export function decideQueuedRunStaleness(
       stale: true,
       errorCode: "issue_execution_lock_changed",
       reason:
-        "Cancelled because max-turn continuation no longer owns the issue execution lock before the queued run could start",
+        "Cancelled because the retry no longer owns the issue execution lock before the queued run could start",
       details: {
         issueId: facts.issueId,
         expectedExecutionRunId: facts.runId,

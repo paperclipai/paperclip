@@ -227,6 +227,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableNativeRunner: parsed.data.enableNativeRunner ?? true,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableIsolatedWorkspacesByDefault: parsed.data.enableIsolatedWorkspacesByDefault ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
       // Apps graduated from Experimental. Ignore historical off values while
@@ -269,6 +270,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableNativeRunner: true,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
+    enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,

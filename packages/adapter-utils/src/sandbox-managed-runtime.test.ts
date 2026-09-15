@@ -340,6 +340,64 @@ function createRecordingTraceContext(): {
 describe("sandbox managed runtime", () => {
   const cleanupDirs: string[] = [];
 
+  it.each(["host_current", "adopt_remote", "durable_seed"] as const)("stages and restores both project repositories with independent Git histories (%s)", async (mode) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-multi-repo-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local");
+    const remote = path.join(root, "remote");
+    const secondPath = ".paperclip-repositories/backend";
+    for (const [relative, contents] of [["", "frontend"], [secondPath, "backend"]]) {
+      const cwd = path.join(local, relative!);
+      await mkdir(cwd, { recursive: true });
+      await git(cwd, ["init", "-b", "main"]);
+      await git(cwd, ["config", "user.name", "Test"]);
+      await git(cwd, ["config", "user.email", "test@example.com"]);
+      await writeFile(path.join(cwd, "README.md"), contents!);
+      await writeFile(path.join(cwd, ".gitignore"), "secret.txt\n");
+      await git(cwd, ["add", "."]);
+      await git(cwd, ["commit", "-m", contents!]);
+      await writeFile(path.join(cwd, "secret.txt"), "must stay local");
+    }
+    await writeFile(path.join(local, ".git/info/exclude"), ".paperclip-repositories/\n");
+    await writeFile(path.join(local, secondPath, "dirty.txt"), "local edit");
+    await writeFile(path.join(local, secondPath, "host-config.txt"), "excluded by operator");
+    const seed = { workspaceArchivePath: path.join(root, "workspace.tar"), gitArchivePath: path.join(root, "git.tar") };
+    const input = {
+      spec: { transport: "sandbox", provider: "test", sandboxId: "two-repos", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      client: makeFilesystemClient(), adapterKey: "test", workspaceLocalDir: local,
+      workspaceDurableSeed: seed,
+      workspaceExclude: [`${secondPath}/host-config.txt`],
+    } satisfies Parameters<typeof prepareSandboxManagedRuntime>[0];
+    let prepared = await prepareSandboxManagedRuntime(input);
+    if (mode !== "host_current") {
+      if (mode === "durable_seed") await rm(remote, { recursive: true, force: true });
+      await writeFile(path.join(local, secondPath, "host-only.txt"), "concurrent host work");
+      prepared = await prepareSandboxManagedRuntime({
+        ...input, workspaceInboundMode: mode,
+        workspaceBaseline: prepared.workspaceSyncSnapshot!.baseline,
+        workspaceGitSnapshot: prepared.workspaceSyncSnapshot!.gitSnapshot,
+      });
+    }
+    for (const relative of ["", secondPath]) {
+      const cwd = path.join(remote, relative);
+      expect((await lstat(path.join(cwd, ".git"))).isDirectory()).toBe(true);
+      await expect(stat(path.join(cwd, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await writeFile(path.join(cwd, "README.md"), `updated ${relative}`);
+      await git(cwd, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-am", "remote change"]);
+    }
+    expect(await readFile(path.join(remote, secondPath, "dirty.txt"), "utf8")).toBe("local edit");
+    await expect(stat(path.join(remote, secondPath, "host-config.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(path.join(remote, secondPath, "host-config.txt"), "remote must not replace host config");
+    await prepared.restoreWorkspace();
+    expect(await readFile(path.join(local, secondPath, "host-config.txt"), "utf8")).toBe("excluded by operator");
+    if (mode !== "host_current") expect(await readFile(path.join(local, secondPath, "host-only.txt"), "utf8")).toBe("concurrent host work");
+    for (const relative of ["", secondPath]) {
+      expect(await readFile(path.join(local, relative, "README.md"), "utf8")).toBe(`updated ${relative}`);
+      expect(await git(path.join(local, relative), ["log", "-1", "--format=%s"])).toBe("remote change");
+      expect(await readFile(path.join(local, relative, "secret.txt"), "utf8")).toBe("must stay local");
+    }
+  }, 30_000);
+
   afterEach(async () => {
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();

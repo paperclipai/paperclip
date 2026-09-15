@@ -62,17 +62,21 @@ export function useRecentAgentChats(company: string, user?: string | null) {
     useSyncExternalStore(subscribe, getSnapshot, () => "[]"),
   );
 }
-export function orderChatAgents<T extends Pick<Agent, "id" | "name">>(
+export function orderChatAgents<T extends Pick<Agent, "id" | "name" | "createdAt">>(
   agents: T[],
   stars: string[],
   recent: string[],
 ) {
+  const firstAgent = [...agents].sort((a, b) =>
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id.localeCompare(b.id),
+  )[0];
   return [
     ...agents
       .filter((agent) => stars.includes(agent.id))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
-    ...recent
-      .filter((id) => !stars.includes(id))
+    ...(firstAgent && !stars.includes(firstAgent.id) ? [firstAgent] : []),
+    ...[...new Set(recent)]
+      .filter((id) => !stars.includes(id) && id !== firstAgent?.id)
       .flatMap((id) => agents.filter((agent) => agent.id === id))
       .slice(0, 4),
   ];

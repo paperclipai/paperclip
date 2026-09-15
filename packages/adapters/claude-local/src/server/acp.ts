@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
@@ -718,9 +719,13 @@ export async function testClaudeAcpEnvironment(
     });
   }
 
-  const cwd = asString(config.cwd, process.cwd());
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   try {
-    await fs.mkdir(cwd, { recursive: true });
+    await ensureAdapterExecutionTargetDirectory(`claude-acp-envtest-${Date.now()}`, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "claude_acp_cwd_valid",
       level: "info",

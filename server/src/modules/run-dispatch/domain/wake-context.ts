@@ -17,6 +17,7 @@ function readNonEmptyString(value: unknown): string | null {
 
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
+export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
@@ -28,7 +29,7 @@ export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
 ]);
 
 /**
- * True for the retry of a workspace-busy deferral whose original run did not
+ * True for a resource-wait retry whose original run did not
  * execute under assignee-ship (a comment or review-participant wake). Such a
  * retry has an expected assignee mismatch, so the scheduled-retry gate and
  * the queued-run staleness check must not treat it as a reassignment.
@@ -38,8 +39,10 @@ export function isNonAssigneeWorkspaceBusyRetry(
   contextSnapshot: Record<string, unknown>,
 ): boolean {
   return (
-    retryReason === WORKSPACE_BUSY_RETRY_REASON &&
-    contextSnapshot.workspaceBusyDeferredWhileAssignee === false
+    (retryReason === WORKSPACE_BUSY_RETRY_REASON &&
+      contextSnapshot.workspaceBusyDeferredWhileAssignee === false) ||
+    (retryReason === AI_CONNECTION_BUSY_RETRY_REASON &&
+      contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false)
   );
 }
 

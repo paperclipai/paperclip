@@ -1,3 +1,4 @@
+import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
@@ -5474,7 +5475,9 @@ export function recoveryService(
   // state is auditable. It never overwrites a status that another path already
   // made terminal.
   //
-  // Two independent authorities terminalize the run. Either one is enough:
+  // A live controller lease owns execution and finalization across server
+  // processes. Only after that ownership ends can either authority below
+  // terminalize the run:
   //
   // - Issue-terminal authority: the run's issue already reached a terminal
   //   status (done or cancelled), but the run row is still "running". A healthy
@@ -5511,6 +5514,12 @@ export function recoveryService(
     // Authentication failure does not prove the retained provider stopped.
     // PID observations and task status edits cannot resolve its ownership.
     if (isNativeRunnerOwnershipHeld(run))
+      return { terminalized: false, status: run.status };
+
+    // Another controller may own a sandbox run whose PID has no meaning on
+    // this host. Its live lease owns both execution and finalization, even if
+    // the issue is already terminal or this process has no in-memory handle.
+    if (await hasLiveLegacyController(db, run))
       return { terminalized: false, status: run.status };
 
     const pid = run.processPid ?? null;
@@ -5624,7 +5633,22 @@ export function recoveryService(
         and(
           eq(heartbeatRuns.id, run.id),
           eq(heartbeatRuns.status, "running"),
+          eq(heartbeatRuns.runtimeMode, run.runtimeMode),
           nativeRunnerOwnershipNotHeldCondition(),
+          // Recheck ownership in the write: a controller can renew or claim
+          // the run after the liveness read. An old snapshot cannot end a new
+          // controller's run, even if that controller's lease later expires.
+          run.runtimeMode === "legacy"
+            ? and(
+                run.controllerBootId
+                  ? eq(heartbeatRuns.controllerBootId, run.controllerBootId)
+                  : isNull(heartbeatRuns.controllerBootId),
+                or(
+                  isNull(heartbeatRuns.controllerBootId),
+                  sql`${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()`,
+                ),
+              )
+            : undefined,
         ),
       )
       .returning()

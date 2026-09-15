@@ -282,12 +282,16 @@ describe("managed AI connections", () => {
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
   });
-  it("serializes subscription refresh and releases the lease after execution", async () => {
-    const subscription = { ...input, binding: { ...binding, method: "subscription" as const }, responsibleUserId: "alice", config: { model: "same-model" } };
-    const account = (await service.list(companyId, "alice")).find(account => account.provider === "anthropic" && account.method === "subscription")!;
-    await service.setDefault(companyId, "alice", account.grantId);
+  it("serializes OpenAI subscription refresh and releases the lease after execution", async () => {
+    // OpenAI writes its rotated refresh token back to a shared auth file, so
+    // two runs against the same grant must not overlap.
+    const userId = "openai-lease-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const token = JSON.stringify({ tokens: { access_token: "fixture-lease-access", refresh_token: "fixture-lease-refresh", id_token: "fixture-lease-id", account_id: "fixture-lease-account" } });
+    await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Lease subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, token);
+    const subscription = { ...input, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, responsibleUserId: userId, config: { model: "same-model" } };
     const first = await prepareManagedAiRuntime(db, subscription);
-    const selected = await service.select({ ...subscription, userId: "alice" });
+    const selected = await service.select({ ...subscription, userId });
     const lockKey = `ai-runtime:${selected.grant.id}`;
     const held = await db.execute(sql`
       select activity.state, activity.xact_start
@@ -307,6 +311,57 @@ describe("managed AI connections", () => {
     const next = await prepareManagedAiRuntime(db, subscription);
     expect(next.identity).toBe(first.identity);
     await next.cleanup();
+  });
+  it("runs two Claude subscription executions for the same grant at the same time", async () => {
+    // Claude writes no auth file back to the grant, so two runs share no
+    // mutable state and must not wait for each other.
+    const subscription = { ...input, binding: { ...binding, method: "subscription" as const }, responsibleUserId: "alice", config: { model: "same-model" } };
+    const account = (await service.list(companyId, "alice")).find(account => account.provider === "anthropic" && account.method === "subscription")!;
+    await service.setDefault(companyId, "alice", account.grantId);
+    const [first, second] = await Promise.all([prepareManagedAiRuntime(db, subscription), prepareManagedAiRuntime(db, subscription)]);
+    try {
+      expect(second.identity).toBe(first.identity);
+    } finally {
+      await Promise.all([first.cleanup(), second.cleanup()]);
+    }
+  });
+  it("reproduces same-agent OpenAI subscription contention and resumes without reconnecting", async () => {
+    const userId = "subscription-contention-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const credential = JSON.stringify({ tokens: { access_token: "fixture-access", refresh_token: "fixture-refresh", id_token: "fixture-id", account_id: "fixture-account" } });
+    const account = await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Contention fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, credential);
+    const runInput = {
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      responsibleUserId: userId,
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const,
+      config: {},
+    };
+    // A parent can create and assign a child before its own execution ends.
+    // Both runs select the same personal subscription, even on the same agent.
+    const parent = await prepareManagedAiRuntime(db, runInput);
+    try {
+      await expect(prepareManagedAiRuntime(db, runInput)).rejects.toMatchObject({
+        status: 422,
+        message: "This subscription is in use. Retry when its current execution finishes.",
+        details: { code: "ai_connection_busy" },
+      });
+      const selected = await service.select({ ...runInput, userId });
+      expect(selected.grant).toMatchObject({ id: account.grantId, status: "active" });
+      expect(await service.credential(selected)).toBe(credential);
+    } finally {
+      await parent.cleanup();
+    }
+    // Releasing the parent alone is sufficient: no reconnect, credential
+    // rotation, account switch, or agent configuration change is required.
+    const child = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(child.identity).toBe(parent.identity);
+      expect(child.attribution.grantId).toBe(account.grantId);
+    } finally {
+      await child.cleanup();
+    }
   });
   it("persists refreshed credentials only to their original grant and fences reconnects", async () => {
     const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });

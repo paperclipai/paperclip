@@ -320,7 +320,13 @@ export class PaperclipRunnerToolAuthority {
           conversation: Boolean(context.issue.conversationAgentId) });
       }
       case "search_api": return searchRunnerApi(call.arguments);
-      case "call_api": return this.#callApi(call.callId, call.arguments);
+      case "call_api": {
+        // PRP reserves operationId/callId for semantic result identity. The
+        // HTTP operation is metadata, including in previously saved receipts;
+        // exposing it as operationId makes the runner reject a valid response.
+        const { operationId, ...response } = record(await this.#callApi(call.callId, call.arguments));
+        return { ...response, apiOperationId: operationId };
+      }
       case "get_task_context": return {
         company: { id: this.binding.companyId },
         actor: redactedActor(context.actor),

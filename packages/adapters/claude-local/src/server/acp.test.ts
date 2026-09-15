@@ -449,6 +449,28 @@ describe("claude_local ACP lane", () => {
     });
   });
 
+  it.each([undefined, "/sandbox/configured-workspace"])("checks sandbox directories on the sandbox (configured cwd=%s)", async (configuredCwd) => {
+    const remoteCwd = "/sandbox/workspace";
+    const mkdir = vi.spyOn(fs, "mkdir").mockRejectedValue(new Error("Host filesystem must not be used"));
+    const execute = vi.fn(async () => ({
+      exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "",
+      pid: null, startedAt: new Date().toISOString(),
+    }));
+    try {
+      const result = await testClaudeAcpEnvironment({
+        companyId: "company-1", adapterType: "claude_local",
+        config: { cwd: configuredCwd, agentCommand: "claude-agent-acp", env: { ANTHROPIC_API_KEY: "fixture" } },
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd, runner: { execute } },
+      });
+      expect(result.status, JSON.stringify(result.checks)).toBe("pass");
+      expect(result.checks).toContainEqual(expect.objectContaining({
+        code: "claude_acp_cwd_valid", message: `Working directory is valid: ${configuredCwd ?? remoteCwd}`,
+      }));
+      expect(mkdir).not.toHaveBeenCalled();
+      expect(JSON.stringify(execute.mock.calls)).toContain(`mkdir -p '${configuredCwd ?? remoteCwd}'`);
+    } finally { mkdir.mockRestore(); }
+  });
+
   it("reports ACP prerequisites for the ACP lane", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-env-");
     const commandPath = path.join(root, "bin", "claude-agent-acp");

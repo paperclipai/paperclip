@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { agentRouteRef } from "@/lib/utils";
 import { recordAgentChatVisit } from "@/lib/recent-agent-chats";
@@ -9,7 +9,7 @@ import { Agents, AGENT_FILTER_TABS } from "@/pages/Agents";
 import { Layout } from "@/components/Layout";
 import { usePanel } from "@/context/PanelContext";
 import { PluginLauncherProvider } from "@/plugins/launchers";
-import { Routes, Route, useNavigate, useLocation } from "@/lib/router";
+import { Routes, Route, useNavigate } from "@/lib/router";
 import type {
   IssueChatComment,
   IssueChatLinkedRun,
@@ -27,11 +27,12 @@ import {
   storybookIssueDocuments,
 } from "../../fixtures/paperclipData";
 import { chatAgents, chatIdentifier } from "./AgentChatSidebar";
+import { ChatEntryReviewProvider, ChatEntrySidebar, ChatEntryLanding, reviewRoster, type EntryScenario } from "../chat-entry/ChatEntryReview";
 
 const agent = storybookAgents.find((agent) => agent.id === "agent-codex")!;
 const issue = {
   ...storybookIssues[0],
-  id: "agent-chat-shared-task",
+  id: "00000000-0000-4000-8000-000000000001",
   identifier: "PAP-241",
   title: "Chat with CodexCoder",
   description: "",
@@ -47,6 +48,10 @@ const issue = {
   labelIds: [],
   currentExecutionWorkspace: null,
 };
+function chatIssueId(agentId: string) {
+  const index = reviewRoster("large-team").findIndex((item) => item.id === agentId);
+  return agentId === agent.id ? issue.id : `00000000-0000-4000-8000-${String(index + 2).padStart(12, "0")}`;
+}
 const child = {
   ...storybookIssues[0],
   id: "agent-chat-child",
@@ -202,6 +207,7 @@ export interface AgentChatPrototypeProps {
   scenario?: Scenario;
   contextInitiallyOpen?: boolean;
   taskComparison?: boolean;
+  entryScenario?: EntryScenario;
 }
 
 /** Production pages with an in-memory API. No alternate chat controller. */
@@ -209,10 +215,11 @@ export function AgentChatPrototype({
   scenario = "returning",
   contextInitiallyOpen = true,
   taskComparison = false,
+  entryScenario,
 }: AgentChatPrototypeProps) {
   const [ready, setReady] = useState(false);
   const navigate = useNavigate();
-  const location = useLocation();
+  const initialRouteSet = useRef(false);
   const queryClient = useQueryClient();
   const { setPanelVisible } = usePanel();
   useEffect(() => {
@@ -220,6 +227,9 @@ export function AgentChatPrototype({
   }, [contextInitiallyOpen, setPanelVisible]);
   useLayoutEffect(() => {
     const originalFetch = window.fetch;
+    const recentKey = `paperclip.recentAgentChats:${issue.companyId}:user-board`;
+    const previousRecents = localStorage.getItem(recentKey);
+    if (entryScenario) localStorage.setItem(recentKey, "[]");
     const chats = new Map<
       string,
       typeof issue & {
@@ -233,7 +243,7 @@ export function AgentChatPrototype({
       projectMemberships: {},
       agentMemberships: {},
       starredProjectIds: [],
-      starredAgentIds: ["agent-cto"],
+      starredAgentIds: entryScenario === "first-use" ? [] : ["agent-cto"],
       starredDocumentIds: [],
       projectStarredAt: {},
       agentStarredAt: {},
@@ -242,7 +252,7 @@ export function AgentChatPrototype({
     };
     let failSend = scenario === "error";
     let active = scenario === "working";
-    const fixtureAgents = chatAgents.map((a) => ({
+    const fixtureAgents = (entryScenario ? reviewRoster(entryScenario) : chatAgents).map((a) => ({
       ...a,
       status:
         scenario === "paused" && a.id === agent.id
@@ -252,15 +262,15 @@ export function AgentChatPrototype({
     for (const a of fixtureAgents) {
       const task = {
         ...issue,
-        id: a.id === agent.id ? issue.id : `chat-task-${a.id}`,
-        identifier: chatIdentifier(a.id),
+        id: chatIssueId(a.id),
+        identifier: entryScenario ? `PAP-${400 + fixtureAgents.findIndex((item) => item.id === a.id)}` : chatIdentifier(a.id),
         assigneeAgentId: a.id,
         title: `Chat with ${a.name}`,
         conversationAgentId: taskComparison ? null : a.id,
         conversationUserId: taskComparison ? null : "user-board",
         conversationState: "waiting" as const,
       };
-      if (scenario !== "empty" || a.id !== agent.id) chats.set(a.id, task);
+      if (entryScenario ? entryScenario !== "first-use" && a.id === agent.id : scenario !== "empty" || a.id !== agent.id) chats.set(a.id, task);
       let history =
         a.id === agent.id && scenario !== "empty"
           ? scenario === "working"
@@ -313,7 +323,7 @@ export function AgentChatPrototype({
         updatedAt: Date.now(),
       });
     }
-    for (const id of ["chat-design", "agent-qa", "agent-codex"])
+    for (const id of entryScenario === "first-use" ? [] : ["chat-design", "agent-qa", "agent-codex"])
       recordAgentChatVisit(issue.companyId, "user-board", id);
     window.fetch = async (input, init) => {
       const url = new URL(
@@ -346,7 +356,10 @@ export function AgentChatPrototype({
             conversationAgentId: a.id,
             conversationUserId: "user-board",
             conversationState: "waiting",
-            id: issue.id,
+            id: chatIssueId(a.id),
+            identifier: entryScenario ? `PAP-${400 + fixtureAgents.findIndex((item) => item.id === a.id)}` : chatIdentifier(a.id),
+            assigneeAgentId: a.id,
+            title: `Chat with ${a.name}`,
           });
         return Response.json(chats.get(a.id) ?? null);
       }
@@ -362,7 +375,9 @@ export function AgentChatPrototype({
         members.starredAgentIds = body.starred
           ? [...new Set([...members.starredAgentIds, id])]
           : members.starredAgentIds.filter((i) => i !== id);
-        return Response.json(members);
+        return Response.json({
+          resourceId: id, state: "joined", starredAt: body.starred ? new Date().toISOString() : null,
+        });
       }
       if (method === "POST" && path.endsWith("/comments")) {
         if (failSend) {
@@ -525,21 +540,28 @@ export function AgentChatPrototype({
     setReady(true);
     return () => {
       window.fetch = originalFetch;
+      if (entryScenario) {
+        if (previousRecents === null) localStorage.removeItem(recentKey);
+        else localStorage.setItem(recentKey, previousRecents);
+        window.dispatchEvent(new Event("paperclip:recent-agent-chats"));
+      }
       queryClient.clear();
     };
-  }, [scenario, taskComparison, queryClient]);
+  }, [scenario, taskComparison, entryScenario, queryClient]);
   useEffect(() => {
-    if (ready && location.pathname.endsWith("/storybook"))
+    if (ready && !initialRouteSet.current) {
+      initialRouteSet.current = true;
       navigate(
-        `/PAP/${taskComparison ? `issues/${issue.id}` : "chats/agent-codex"}`,
+        `/PAP/${entryScenario === "first-use" ? "chats" : entryScenario === "paused" ? "chats/operations" : taskComparison ? `issues/${issue.id}` : "chats/agent-codex"}`,
         { replace: true },
       );
-  }, [ready, navigate, location.pathname, taskComparison]);
+    }
+  }, [ready, navigate, taskComparison, entryScenario]);
   if (!ready) return null;
-  return (
-    <PluginLauncherProvider>
+  const routes = (
       <Routes>
-        <Route path="/:companyPrefix" element={<Layout />}>
+        <Route path="/:companyPrefix" element={<Layout sidebarSections={entryScenario ? <ChatEntrySidebar /> : undefined} />}>
+          <Route path="chats" element={<ChatEntryLanding />} />
           <Route path="chats/:agentRef" element={<AgentChat />} />
           <Route path="issues/:issueId" element={<IssueDetail />} />
           <Route path="agents" element={<Agents />} />
@@ -550,6 +572,8 @@ export function AgentChatPrototype({
           <Route path="agents/:agentId" element={<AgentDetail />} />
         </Route>
       </Routes>
-    </PluginLauncherProvider>
   );
+  return <PluginLauncherProvider>{entryScenario
+    ? <ChatEntryReviewProvider scenario={entryScenario}>{routes}</ChatEntryReviewProvider>
+    : routes}</PluginLauncherProvider>;
 }

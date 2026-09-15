@@ -5,6 +5,10 @@ export function executionFailureRetryCount(run: {
   contextSnapshot?: Record<string, unknown> | null;
 }): number {
   if (run.scheduledRetryReason === "max_turns_continuation") return 0;
+  if (run.scheduledRetryReason === "ai_connection_busy") {
+    const count = run.contextSnapshot?.failureRetriesBeforeAiConnectionWait;
+    if (typeof count === "number" && Number.isInteger(count) && count >= 0) return count;
+  }
   if (run.scheduledRetryReason === "workspace_busy") {
     // Only a server-created workspace retry can consume this field. Its
     // scheduler overwrites caller context with the predecessor's durable count.

@@ -333,6 +333,54 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     );
   });
 
+  it.each(["in_progress", "done"])("preserves a live legacy controller lease when the issue is %s", async (status) => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", processPid: 2_000_000_000,
+      controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Remote controller still owns the run", status,
+      assigneeAgentId: agentId, executionRunId: runningRunId, checkoutRunId: runningRunId,
+    });
+    const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running" }]);
+    expect(await db.select({ executionRunId: issues.executionRunId }).from(issues)
+      .where(eq(issues.id, issueId))).toEqual([{ executionRunId: runningRunId }]);
+  });
+
+  it.each(["renew", "replace", "claim"])("fences a legacy controller %s between the orphan check and terminal write", async (change) => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const bootId = randomUUID();
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", processPid: 2_000_000_000,
+      controllerBootId: change === "claim" ? null : bootId,
+      controllerLeaseExpiresAt: new Date(Date.now() - 60_000),
+    }).where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: randomUUID(), companyId, title: "Controller changed during sweep", status: "in_progress",
+      assigneeAgentId: agentId, executionRunId: runningRunId, checkoutRunId: runningRunId,
+    });
+    const result = await recoveryService(db, {
+      enqueueWakeup: vi.fn(),
+      beforeOrphanedRunTerminalWrite: async () => {
+        await db.update(heartbeatRuns).set({
+          controllerBootId: change === "renew" ? bootId : randomUUID(),
+          // A replacement invalidates the old snapshot even if its lease expires.
+          controllerLeaseExpiresAt: new Date(Date.now() + (change === "replace" ? -30_000 : 60_000)),
+        }).where(eq(heartbeatRuns.id, runningRunId));
+      },
+    }).sweepStaleIssueLocks();
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    expect(await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running" }]);
+    expect(mockTelemetryClient.track).not.toHaveBeenCalled();
+  });
+
   it("preserves a process-less native run while same-run resumption owns its retry", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     const issueId = randomUUID();
