@@ -2476,6 +2476,12 @@ async function applySessionConfigOptions(input: {
   prepared: AcpxPreparedRuntime;
   onLog: AdapterExecutionContext["onLog"];
 }) {
+  if (input.prepared.acpxAgent === "claude" && input.prepared.requestedThinkingEffort) {
+    await input.onLog(
+      "stderr",
+      `[paperclip] ACPX claude does not support config option "effort"; omitting effort=${input.prepared.requestedThinkingEffort}.\n`,
+    );
+  }
   const options = sessionConfigOptions(input.prepared);
   if (options.length === 0) return;
 

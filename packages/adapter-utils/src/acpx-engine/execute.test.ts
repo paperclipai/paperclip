@@ -544,6 +544,10 @@ describe("shared ACPX engine runtime behavior", () => {
       "claude-opus-4-7",
     );
     expect(claude.configOptions).toEqual([]);
+    expect(claude.logs).toContainEqual({
+      stream: "stderr",
+      text: '[paperclip] ACPX claude does not support config option "effort"; omitting effort=high.\n',
+    });
 
     const gemini = await runExecutor({
       agent: "gemini",
