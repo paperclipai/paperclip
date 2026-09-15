@@ -285,11 +285,17 @@ describe("native runner file handoff", () => {
       stateRevision: 0,
       entityRefs: [expect.any(String), expect.any(String), expect.any(String)],
       scheduledWakeIds: [],
+      attachmentId: first.entityRefs[0],
+      contentPath: `/api/attachments/${first.entityRefs[0]}/content`,
+      downloadPath: `/api/attachments/${first.entityRefs[0]}/content?download=1`,
     });
     expect(replay).toEqual(first);
     expect(replayWithNewKey).toMatchObject({
       disposition: "duplicate",
       entityRefs: first.entityRefs,
+      attachmentId: first.attachmentId,
+      contentPath: first.contentPath,
+      downloadPath: first.downloadPath,
     });
 
     await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))

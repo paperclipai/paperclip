@@ -2156,6 +2156,46 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each([false, true])("reveals new artifacts once in the task panel (mobile: %s)", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
+    mockPanelState.panelVisible = false;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>);
+    });
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData(queryKeys.issues.attachments("PAP-1"))).toEqual([]);
+    });
+    await flushReact();
+    const panelProps = () => (isMobile
+      ? mockTaskSidePanelRender.mock.calls.at(-1)?.[0]
+      : mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props) as {
+        artifactsOpenRequestId?: number;
+        onArtifactsOpened: (requestId: number) => void;
+      };
+    const file = createAttachment({ id: "new-output", createdByAgentId: "agent-1" });
+    act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [file]); });
+    await waitForAssertion(() => expect(panelProps()?.artifactsOpenRequestId).toBe(1));
+    if (isMobile) {
+      expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
+      expect(mockSetPanelVisible).not.toHaveBeenCalled();
+      expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.artifactsOpenRequestId).toBeUndefined();
+    } else {
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+    }
+
+    act(() => panelProps().onArtifactsOpened(1));
+    await waitForAssertion(() => expect(panelProps().artifactsOpenRequestId).toBeUndefined());
+    act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [{ ...file, originalFilename: "Renamed output" }]); });
+    await flushReact();
+    expect(panelProps().artifactsOpenRequestId).toBeUndefined();
+
+    act(() => { queryClient.setQueryData(queryKeys.issues.attachments("PAP-1"), [file,
+      createAttachment({ id: "next-output", createdByAgentId: "agent-1" }),
+    ]); });
+    await waitForAssertion(() => expect(panelProps().artifactsOpenRequestId).toBe(2));
+  });
+
   it("opens the mobile properties sheet for a document deep link", async () => {
     mockSidebarState.isMobile = true;
     mockLocation.hash = "#document-qa-evidence";

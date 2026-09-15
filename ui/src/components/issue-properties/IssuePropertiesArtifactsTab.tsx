@@ -37,7 +37,7 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { cn, formatDateTime } from "@/lib/utils";
-import { Link, useLocation } from "@/lib/router";
+import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
@@ -357,8 +357,6 @@ function DocumentRow({
  * thread.
  */
 export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDocument }: IssuePropertiesArtifactsTabProps) {
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [runFilter, setRunFilter] = useState("all");
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
@@ -387,9 +385,9 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   const agentsById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
 
   type ArtifactRow =
-    | { kind: "work_product"; id: string; runId: string | null; date: Date; type: string; value: IssueWorkProduct }
-    | { kind: "document"; id: string; runId: null; date: Date; type: "document"; value: IssueDocument }
-    | { kind: "attachment"; id: string; runId: null; date: Date; type: "file" | "image"; value: NonNullable<typeof fileRows>[number] };
+    | { kind: "work_product"; id: string; runId: string | null; date: Date; value: IssueWorkProduct }
+    | { kind: "document"; id: string; runId: null; date: Date; value: IssueDocument }
+    | { kind: "attachment"; id: string; runId: null; date: Date; value: NonNullable<typeof fileRows>[number] };
 
   const allRows = useMemo<ArtifactRow[]>(() => [
     ...workProductRows.map((value): ArtifactRow => ({
@@ -397,9 +395,6 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
       id: value.id,
       runId: value.createdByRunId,
       date: new Date(value.createdAt),
-      type: value.type === "artifact" && typeof value.metadata?.contentType === "string" && value.metadata.contentType.startsWith("image/")
-        ? "image"
-        : value.type === "artifact" ? "file" : value.type,
       value,
     })),
     ...documentRows.map((value): ArtifactRow => ({
@@ -407,7 +402,6 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
       id: value.id,
       runId: null,
       date: new Date(value.createdAt),
-      type: "document",
       value,
     })),
     ...fileRows.map((value): ArtifactRow => ({
@@ -415,16 +409,11 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
       id: value.id,
       runId: null,
       date: new Date(value.createdAt),
-      type: value.contentType.startsWith("image/") ? "image" : "file",
       value,
     })),
   ], [documentRows, fileRows, workProductRows]);
 
-  const filteredRows = allRows.filter((row) =>
-    (typeFilter === "all" || row.type === typeFilter) &&
-    (runFilter === "all" || (runFilter === "other" ? row.runId === null : row.runId === runFilter)),
-  );
-  const groupedRows = [...filteredRows.reduce((groups, row) => {
+  const groupedRows = [...allRows.reduce((groups, row) => {
     const key = row.runId ?? "other";
     const group = groups.get(key) ?? [];
     group.push(row);
@@ -439,7 +428,6 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
         : new Date(runsById.get(runId)?.startedAt ?? rows[0]?.date ?? 0),
     }))
     .sort((a, b) => b.date.getTime() - a.date.getTime());
-  const runOptions = [...new Set(allRows.flatMap((row) => row.runId ? [row.runId] : []))];
 
   if (workProductRows.length === 0 && documentRows.length === 0 && fileRows.length === 0) {
     return (
@@ -451,65 +439,21 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
 
   return (
     <div className="flex flex-col gap-3 py-2">
-      <div className="flex items-center gap-2 px-1">
-        <label className="min-w-0 flex-1 text-(length:--text-micro) text-muted-foreground">
-          <span className="sr-only">Filter artifacts by type</span>
-          <select
-            aria-label="Filter artifacts by type"
-            value={typeFilter}
-            onChange={(event) => setTypeFilter(event.target.value)}
-            className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
-          >
-            <option value="all">All types</option>
-            <option value="image">Images</option>
-            <option value="file">Files</option>
-            <option value="pull_request">Pull requests</option>
-            <option value="commit">Commits</option>
-            <option value="branch">Branches</option>
-            <option value="document">Documents</option>
-            <option value="preview_url">Previews</option>
-            <option value="runtime_service">Runtime services</option>
-          </select>
-        </label>
-        <label className="min-w-0 flex-1 text-(length:--text-micro) text-muted-foreground">
-          <span className="sr-only">Filter artifacts by run</span>
-          <select
-            aria-label="Filter artifacts by run"
-            value={runFilter}
-            onChange={(event) => setRunFilter(event.target.value)}
-            className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
-          >
-            <option value="all">All runs</option>
-            {runOptions.map((runId) => {
-              const run = runsById.get(runId);
-              const agent = run ? agentsById.get(run.agentId) : null;
-              const runDate = run?.startedAt ?? allRows.find((row) => row.runId === runId)?.date;
-              return (
-                <option key={runId} value={runId}>
-                  {`${agent?.name ?? `Run ${runId.slice(0, 8)}`}${runDate ? ` · ${formatDateTime(runDate)}` : ""}`}
-                </option>
-              );
-            })}
-            {allRows.some((row) => row.runId === null) ? <option value="other">Other artifacts</option> : null}
-          </select>
-        </label>
-      </div>
-
-      {groupedRows.length === 0 ? (
-        <p className="px-1 py-6 text-sm text-muted-foreground">No artifacts match these filters.</p>
-      ) : groupedRows.map((group) => {
+      {groupedRows.map((group) => {
         const run = group.runId === "other" ? null : runsById.get(group.runId);
         const agent = run ? agentsById.get(run.agentId) : null;
         return (
           <section key={group.runId} className="flex flex-col gap-1.5">
-            <header className="flex items-baseline justify-between gap-2 px-1">
-              <h3 className="truncate text-xs font-medium text-foreground">
-                {group.runId === "other" ? "Other artifacts" : agent?.name ?? `Run ${group.runId.slice(0, 8)}`}
-              </h3>
-              <time className="shrink-0 text-(length:--text-micro) text-muted-foreground" dateTime={group.date.toISOString()}>
-                {formatDateTime(group.date)}
-              </time>
-            </header>
+            {group.runId !== "other" ? (
+              <header className="flex items-baseline justify-between gap-2 px-1">
+                <h3 className="truncate text-xs font-medium text-foreground">
+                  {agent?.name ?? `Run ${group.runId.slice(0, 8)}`}
+                </h3>
+                <time className="shrink-0 text-(length:--text-micro) text-muted-foreground" dateTime={group.date.toISOString()}>
+                  {formatDateTime(group.date)}
+                </time>
+              </header>
+            ) : null}
             <ul className="flex flex-col gap-1">
               {group.rows.map((row) => {
                 if (row.kind === "work_product") {
@@ -563,10 +507,6 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
           </section>
         );
       })}
-
-      <Link to="/artifacts" className="mx-1 border-t border-border pt-2 text-xs font-medium text-foreground hover:underline">
-        View all in company Artifacts →
-      </Link>
     </div>
   );
 }

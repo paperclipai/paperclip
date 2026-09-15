@@ -4855,6 +4855,8 @@ export function issueRoutes(
   ) {
     const upload = multer({
       storage: multer.memoryStorage(),
+      // Curl and browser FormData send unlabelled filenames as UTF-8.
+      defParamCharset: "utf8",
       limits: { fileSize: fileSizeLimit, files: 1 },
     });
     await new Promise<void>((resolve, reject) => {
@@ -18567,6 +18569,8 @@ export function issueRoutes(
       contentType: responseContentType,
       originalFilename: attachment.originalFilename,
     });
+    // Express formats filenames with an encoded Unicode parameter when needed.
+    res.attachment(attachment.originalFilename ?? "attachment");
     res.setHeader(
       "Content-Type",
       isMarkdownResponse
@@ -18581,7 +18585,6 @@ export function issueRoutes(
         "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
       );
     }
-    const filename = attachment.originalFilename ?? "attachment";
     const disposition = parseBooleanQuery(req.query.download)
       ? "attachment"
       : isInlineAttachmentContentType(responseContentType)
@@ -18589,7 +18592,7 @@ export function issueRoutes(
         : "attachment";
     res.setHeader(
       "Content-Disposition",
-      `${disposition}; filename=\"${filename.replaceAll('"', "")}\"`,
+      String(res.getHeader("Content-Disposition")).replace(/^attachment;/, `${disposition};`),
     );
 
     object.stream.on("error", (err) => {

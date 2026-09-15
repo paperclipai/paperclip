@@ -354,7 +354,7 @@ describe("markdown work product review row", () => {
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
   });
 
-  it("groups compact rows by producing run and filters by type", async () => {
+  it("groups compact rows by producing run", async () => {
     const runOne = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const runTwo = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const imagePath = `/api/attachments/${ATTACHMENT_ID}/content`;
@@ -401,13 +401,5 @@ describe("markdown work product review row", () => {
       expect(container.querySelector('a[aria-label="Open on GitHub: Artifact grouping PR"]')).not.toBeNull();
       expect(container.querySelector('button[aria-label="Open gallery: Artifacts screenshot"]')).not.toBeNull();
     });
-
-    const typeSelect = container.querySelector('select[aria-label="Filter artifacts by type"]') as HTMLSelectElement;
-    await act(async () => {
-      typeSelect.value = "pull_request";
-      typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(container.textContent).toContain("Artifact grouping PR");
-    expect(container.textContent).not.toContain("Artifacts screenshot");
   });
 });

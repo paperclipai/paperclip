@@ -91,6 +91,9 @@ export interface TaskSidePanelProps {
   checkingMonitorNow?: boolean;
   fileTabsEnabled: boolean;
   documentDeepLink?: { requestId: number; documentKey: string } | null;
+  /** A new durable output asks the host to reveal this tab once. */
+  artifactsOpenRequestId?: number;
+  onArtifactsOpened?: (requestId: number) => void;
   onRequestClose?: () => void;
   streamlinedTabs?: boolean;
   showSubtasksTab?: boolean;
@@ -222,6 +225,8 @@ export function TaskSidePanel({
   checkingMonitorNow = false,
   fileTabsEnabled,
   documentDeepLink,
+  artifactsOpenRequestId,
+  onArtifactsOpened,
   onRequestClose,
   streamlinedTabs = false,
   showSubtasksTab = false,
@@ -248,6 +253,7 @@ export function TaskSidePanel({
   const scrollPositionsRef = useRef(new Map<string, number>());
   const userInteractedRef = useRef(restoredRef.current?.userInteracted ?? false);
   const autoPlanHandledRef = useRef(restoredRef.current?.autoPlanHandled ?? false);
+  const handledArtifactsRequestRef = useRef<number | undefined>(undefined);
   const initialState = useMemo(() => {
     const restored = restoredRef.current?.state;
     let tabs = restored?.tabs ?? (issue.conversationAgentId ? [taskPanelArtifactsTab()] : [taskPanelPropertiesTab()]);
@@ -365,6 +371,15 @@ export function TaskSidePanel({
     viewer.query,
     viewer.state,
   ]);
+
+  useEffect(() => {
+    if (artifactsOpenRequestId === undefined || handledArtifactsRequestRef.current === artifactsOpenRequestId) return;
+    handledArtifactsRequestRef.current = artifactsOpenRequestId;
+    setLauncherOpen(false);
+    controller.openTab(taskPanelArtifactsTab());
+    if (viewer.state || viewer.browse) viewer.close();
+    onArtifactsOpened?.(artifactsOpenRequestId);
+  }, [artifactsOpenRequestId, controller.openTab, viewer.state, viewer.browse, viewer.close, onArtifactsOpened]);
 
   const recentFilesQuery = useQuery({
     queryKey: queryKeys.issues.fileResources(issue.id, {

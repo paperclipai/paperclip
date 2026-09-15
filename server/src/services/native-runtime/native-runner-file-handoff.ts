@@ -63,6 +63,9 @@ export interface NativeRunnerFileHandoffResult {
   readonly stateRevision: number;
   readonly entityRefs: readonly string[];
   readonly scheduledWakeIds: readonly string[];
+  readonly attachmentId: string;
+  readonly contentPath: string;
+  readonly downloadPath: string;
 }
 
 export interface PreparedNativeRunnerFileHandoff {
@@ -1195,6 +1198,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
       result: {
         commandId: `deliverable-prepared:${existing.attachmentId}`,
         disposition: "duplicate",
+        attachmentId: existing.attachmentId,
+        contentPath: `/api/attachments/${existing.attachmentId}/content`,
+        downloadPath: `/api/attachments/${existing.attachmentId}/content?download=1`,
         stateRevision: statusVersion,
         entityRefs: [
           existing.attachmentId,
@@ -1265,6 +1271,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
       result: {
         commandId: `deliverable-prepared:${attachment.id}`,
         disposition: "applied",
+        attachmentId: attachment.id,
+        contentPath: `/api/attachments/${attachment.id}/content`,
+        downloadPath: `/api/attachments/${attachment.id}/content?download=1`,
         stateRevision: statusVersion,
         entityRefs: [
           attachment.id,
