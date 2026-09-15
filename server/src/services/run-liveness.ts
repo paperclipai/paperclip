@@ -290,14 +290,18 @@ function extractNextAction(input: RunLivenessClassificationInput) {
 export function classifyRunActionability(input: RunLivenessClassificationInput): RunLivenessActionability {
   const text = actionabilityText(input);
   if (!text) return "unknown";
+  // Approval and manager/escalation gates are safety-critical, so detect them
+  // before a stray negation ("not blocked") can downgrade the run to runnable.
+  // A negation may only relax a plain external blocker, never an approval or
+  // manager-review signal.
+  if (APPROVAL_REQUIRED_RE.test(text)) return "approval_required";
+  if (MANAGER_REVIEW_RE.test(text)) return "manager_review";
   if (NEGATED_BLOCKER_RE.test(text)) {
     return RUNNABLE_RE.test(text) ? "runnable" : "unknown";
   }
-  if (APPROVAL_REQUIRED_RE.test(text)) return "approval_required";
-  if (EXTERNAL_BLOCKER_RE.test(text) || BLOCKER_RE.test(text) && /\b(?:credential|secret|api key|token|access|input|clarification)\b/i.test(text)) {
+  if (EXTERNAL_BLOCKER_RE.test(text) || (BLOCKER_RE.test(text) && /\b(?:credential|secret|api key|token|access|input|clarification)\b/i.test(text))) {
     return "blocked_external";
   }
-  if (MANAGER_REVIEW_RE.test(text)) return "manager_review";
   if (RUNNABLE_RE.test(text)) return "runnable";
   return "unknown";
 }
@@ -339,6 +343,14 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (declaredBlocker(input)) {
     return output("blocked", issueStatus === "blocked" ? "Issue status is blocked" : "Run output declared a concrete blocker", nextAction);
+  }
+
+  // A manager/escalation signal must route to human review even when the run
+  // also produced concrete evidence — otherwise a productive run that flags a
+  // production deploy or secret rotation would fall through to "advanced" and
+  // be treated as safe to auto-continue.
+  if (actionability === "manager_review") {
+    return output("needs_followup", "Run flagged a change that needs manager or human review before it is safe to continue", nextAction);
   }
 
   if (!usefulOutput && !concreteEvidence) {

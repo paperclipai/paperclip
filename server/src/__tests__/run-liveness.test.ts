@@ -228,4 +228,58 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("unknown");
     expect(classification.nextAction).toBeNull();
   });
+
+  it("does not let a negation mask a required approval", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Not blocked, but I need board approval before deploying the change.",
+      },
+    });
+
+    expect(classification.actionability).toBe("approval_required");
+    expect(classification.livenessState).toBe("blocked");
+  });
+
+  it("does not let a negation mask a manager/escalation signal", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "No blockers remaining; escalate to security review before rotating the API secret.",
+      },
+    });
+
+    expect(classification.actionability).toBe("manager_review");
+    expect(classification.livenessState).toBe("needs_followup");
+  });
+
+  it("escalates a manager-review run to human review even with concrete evidence", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Finished the change and will escalate to security review before the production deploy.",
+      },
+      evidence: {
+        issueCommentsCreated: 1,
+        workProductsCreated: 1,
+        latestEvidenceAt: new Date("2026-04-18T12:00:00Z"),
+      },
+    });
+
+    // Without the escalation gate this run's concrete evidence would classify it
+    // as "advanced" and let it auto-continue.
+    expect(classification.actionability).toBe("manager_review");
+    expect(classification.livenessState).toBe("needs_followup");
+  });
+
+  it("still lets a negation relax a plain runnable follow-up", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "No blockers; run pnpm test to verify the change.",
+      },
+    });
+
+    expect(classification.actionability).toBe("runnable");
+  });
 });
