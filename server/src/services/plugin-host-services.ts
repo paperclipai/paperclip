@@ -545,6 +545,7 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.packWallMs,
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
+  SPAN_ATTRS.transferDirection,
 ]);
 
 /** The subset of allowed keys that carry a finite number. */
@@ -557,11 +558,15 @@ const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
 /** The closed value set for the `outcome` attribute. */
 const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "failed"]);
 
+/** The closed value set for the `transfer.direction` attribute. */
+const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
+
 /**
  * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
  * is not on the allowlist. Re-map `provider` through `normalizeProviderFamily`,
- * bound `outcome` to its closed set, and keep a numeric attribute only when it
- * is a finite number. The result holds only bounded, low-cardinality values.
+ * bound `outcome` and `transfer.direction` each to its closed set, and keep a
+ * numeric attribute only when it is a finite number. The result holds only
+ * bounded, low-cardinality values.
  */
 export function clampProviderSpanAttributes(
   raw: Record<string, unknown> | undefined,
@@ -576,6 +581,10 @@ export function clampProviderSpanAttributes(
     }
     if (key === SPAN_ATTRS.outcome) {
       if (typeof value === "string" && KNOWN_SPAN_OUTCOMES.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === SPAN_ATTRS.transferDirection) {
+      if (typeof value === "string" && KNOWN_TRANSFER_DIRECTIONS.has(value)) clamped[key] = value;
       continue;
     }
     if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {
@@ -690,7 +699,11 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+    heartbeatRuntimeEnv?: Record<string, string | undefined>;
+  } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -730,6 +743,7 @@ export function buildHostServices(
   });
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
+    runtimeEnv: options.heartbeatRuntimeEnv,
   });
   const projects = projectService(db);
   const executionWorkspaces = executionWorkspaceService(db);
@@ -2397,36 +2411,55 @@ export function buildHostServices(
         // handling here, just the core wake. An assignee-less or
         // closed-status issue is a silent no-op, matching the route's own
         // guard.
-        if (
-          params.actorUserId
-          && issue.assigneeAgentId
-          && issue.status !== "done"
-          && issue.status !== "cancelled"
-        ) {
-          await heartbeat.wakeup(issue.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_commented",
-            payload: {
+        //
+        // The guard re-fetches the issue instead of trusting the pre-insert
+        // `issue` snapshot: a concurrent close/unassign/reassign landing
+        // between the initial fetch and here would otherwise wake the wrong
+        // (or no-longer-relevant) agent off stale state.
+        //
+        // The comment is already committed above, so this best-effort wake
+        // must never change that outcome: a failed re-fetch is logged and
+        // falls back to the in-hand snapshot rather than rejecting
+        // createComment — a rejection would surface to the caller as a failed
+        // write and invite a retry that inserts a duplicate comment.
+        if (params.actorUserId) {
+          const postCommentIssue = (await issues.getById(issue.id).catch((err) => {
+            logger.warn(
+              { err, issueId: issue.id, commentId: comment.id },
+              "failed to re-fetch issue for plugin-relayed human comment wake; falling back to pre-insert snapshot",
+            );
+            return null;
+          })) ?? issue;
+          if (
+            postCommentIssue.assigneeAgentId
+            && postCommentIssue.status !== "done"
+            && postCommentIssue.status !== "cancelled"
+          ) {
+            await heartbeat.wakeup(postCommentIssue.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              payload: {
+                issueId: issue.id,
+                commentId: comment.id,
+                mutation: "comment",
+              },
+              requestedByActorType: "user",
+              requestedByActorId: params.actorUserId,
+              contextSnapshot: {
+                issueId: issue.id,
+                taskId: issue.id,
+                sourceCommentId: comment.id,
+                wakeReason: "issue_commented",
+                source: `plugin:${pluginKey}`,
+              },
+            }).catch((err) => logger.warn({
+              err,
               issueId: issue.id,
               commentId: comment.id,
-              mutation: "comment",
-            },
-            requestedByActorType: "user",
-            requestedByActorId: params.actorUserId,
-            contextSnapshot: {
-              issueId: issue.id,
-              taskId: issue.id,
-              sourceCommentId: comment.id,
-              wakeReason: "issue_commented",
-              source: `plugin:${pluginKey}`,
-            },
-          }).catch((err) => logger.warn({
-            err,
-            issueId: issue.id,
-            commentId: comment.id,
-            agentId: issue.assigneeAgentId,
-          }, "failed to wake assignee on plugin-relayed human comment"));
+              agentId: postCommentIssue.assigneeAgentId,
+            }, "failed to wake assignee on plugin-relayed human comment"));
+          }
         }
 
         return comment;

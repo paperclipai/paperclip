@@ -274,6 +274,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     Boolean(nonEmpty(ctx.runtime?.sessionId));
   const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
   const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+    conversationMode: ctx.context.conversationMode === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: Boolean(taskMarkdown),
@@ -293,7 +294,7 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "",
-    ...(isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
+    ...(ctx.context.conversationMode === true || isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
       ? []
       : [
           "Execution contract:",
@@ -322,7 +323,10 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
 function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const configuredInput = nonEmpty(payloadTemplate.input);
+  const input = configuredInput && ctx.context.conversationMode === true
+    ? `${configuredInput}\n\n${buildInput(ctx, paperclipApiUrl)}`
+    : configuredInput ?? buildInput(ctx, paperclipApiUrl);
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
@@ -872,6 +876,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let runId: string | null = null;
   try {
+    // This adapter has no local child process, so crossing into the first
+    // remote create request is its dispatch boundary. Report it before the
+    // request can block so continuation gates may release their issue lock.
+    ctx.onDispatch?.();
     const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,

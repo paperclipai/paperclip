@@ -37,25 +37,29 @@ import type {
   AttentionItemDetail,
   AttentionProjectRef,
   AttentionQueueRef,
+  AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
   AttentionSubject,
   AttentionTriageAttribution,
   AttentionWorkspaceRef,
+  IssueThreadInteractionEffectiveResolverPolicySource,
+  IssueThreadInteractionResolverPolicyProvenance,
+  IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
-import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
 import { budgetService } from "./budgets.js";
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
   BLOCKER_ATTENTION_MAX_NODES,
   issueService,
 } from "./issues.js";
-import { visibleIssueCondition } from "./issue-visibility.js";
+import { executionIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
+import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
   decisionRetentionService,
@@ -100,7 +104,6 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
-const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
 const FAILED_RUN_STATUSES = ["failed", "timed_out"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
@@ -123,6 +126,8 @@ type IssueSummaryRow = {
   title: string;
   status: string;
   priority: string;
+  /** Who may give the `in_review` verdict; `null`/absent ≡ "anyone" (PAP-16506). */
+  reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   createdAt: Date;
@@ -341,6 +346,9 @@ function issueSubject(prefix: string, issue: IssueSubjectRow): AttentionSubject 
       priority: issue.priority,
       assigneeAgentId: issue.assigneeAgentId,
       assigneeUserId: issue.assigneeUserId,
+      // Only present when the row was selected with the column, so subjects
+      // built from narrower selects do not claim a policy they never read.
+      ...(issue.reviewPolicy !== undefined ? { reviewPolicy: issue.reviewPolicy } : {}),
     },
   };
 }
@@ -405,6 +413,7 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     snoozedUntil: null,
     detail: input.detail ?? null,
     trainingExampleId: null,
+    resolverAudience: input.resolverAudience ?? null,
     rank: 0,
   };
 }
@@ -708,6 +717,47 @@ function interactionVerbs(kind: string, payload: Record<string, unknown>) {
   );
 }
 
+/**
+ * The resolver audience carried by an `issue_thread_interaction` feed row
+ * (PAP-17287). A collapsed queue row offers Accept/Reject long before anything
+ * fetches the interaction itself, so the audience the server will enforce has
+ * to ride along with the item — the queue must never ask for a decision without
+ * saying whose decision it is.
+ *
+ * Facts only. The stored columns are canonicalized through the same helper the
+ * resolution evaluator uses, so a pre-migration row cannot read as `Anyone`
+ * here while the API still treats it as `not_creator`.
+ */
+export function interactionResolverAudience(
+  row: {
+    addresseeAgentId: string | null;
+    addresseeUserId?: string | null;
+    createdByAgentId: string | null;
+    requestedResolverPolicy: string;
+    effectiveResolverPolicy: string;
+    resolverPolicyProvenance: string | null;
+    effectiveResolverPolicySource: string | null;
+  },
+  agentName: (agentId: string) => string | null,
+): AttentionResolverAudience {
+  const provenance = (row.resolverPolicyProvenance
+    ?? (row.requestedResolverPolicy === "board_only" || row.requestedResolverPolicy === "board_or_agents"
+      ? "legacy_inherited_restriction"
+      : "inherited")) as IssueThreadInteractionResolverPolicyProvenance;
+  return {
+    requestedResolverPolicy: canonicalizeStoredResolverPolicy(row.requestedResolverPolicy, provenance),
+    effectiveResolverPolicy: canonicalizeStoredResolverPolicy(row.effectiveResolverPolicy, provenance),
+    effectiveResolverPolicySource:
+      (row.effectiveResolverPolicySource ?? "requested") as IssueThreadInteractionEffectiveResolverPolicySource,
+    resolverPolicyProvenance: provenance,
+    addresseeAgentId: row.addresseeAgentId,
+    addresseeUserId: row.addresseeUserId ?? null,
+    addresseeName: row.addresseeAgentId ? agentName(row.addresseeAgentId) : null,
+    createdByAgentId: row.createdByAgentId,
+    createdByAgentName: row.createdByAgentId ? agentName(row.createdByAgentId) : null,
+  };
+}
+
 function collapsePendingConfirmationsToNewest<T extends {
   id: string;
   issueId: string;
@@ -776,6 +826,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       title: issues.title,
       status: issues.status,
       priority: issues.priority,
+      reviewPolicy: issues.reviewPolicy,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeUserId: issues.assigneeUserId,
       createdAt: issues.createdAt,
@@ -793,7 +844,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       eq(issues.projectWorkspaceId, projectWorkspaces.id),
       eq(projectWorkspaces.companyId, companyId),
     ))
-    .where(and(eq(issues.companyId, companyId), inArray(issues.id, ids), visibleIssueCondition()));
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, ids), executionIssueCondition()));
   return new Map(rows.map((row) => [row.id, {
     id: row.id,
     companyId: row.companyId,
@@ -801,6 +852,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
     title: row.title,
     status: row.status,
     priority: row.priority,
+    reviewPolicy: row.reviewPolicy ?? null,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
     createdAt: row.createdAt,
@@ -1120,7 +1172,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           summary: issueThreadInteractions.summary,
           payload: issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+          addresseeUserId: issueThreadInteractions.addresseeUserId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
+          requestedResolverPolicy: issueThreadInteractions.requestedResolverPolicy,
+          effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
+          resolverPolicyProvenance: issueThreadInteractions.resolverPolicyProvenance,
+          effectiveResolverPolicySource: issueThreadInteractions.effectiveResolverPolicySource,
           createdAt: issueThreadInteractions.createdAt,
           updatedAt: issueThreadInteractions.updatedAt,
         })
@@ -1130,7 +1187,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
-      const companyAgentRows: AgentOrgRow[] = interactionRows.some((row) => row.addresseeAgentId !== null)
+      // Addressee invokability needs the org graph; the audience line also needs
+      // the creator's name whenever the effective policy excludes it, so a
+      // creator-excluding row pulls the roster in too (PAP-17287).
+      const needsCompanyAgents = interactionRows.some((row) =>
+        row.addresseeAgentId !== null
+        || canonicalizeStoredResolverPolicy(row.effectiveResolverPolicy, row.resolverPolicyProvenance) === "not_creator"
+      );
+      const companyAgentRows: AgentOrgRow[] = needsCompanyAgents
         ? await db
           .select({
             id: agents.id,
@@ -1144,8 +1208,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         : [];
       const companyAgentMap = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
       const boardInteractionRows = interactionRows.filter((row) =>
-        row.addresseeAgentId === null ||
-        !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable
+        (row.addresseeAgentId === null ||
+          !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable)
+        && (row.addresseeUserId === null || row.addresseeUserId === options.userId)
       );
       const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
@@ -1198,6 +1263,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: issue ? issueSubject(prefix, issue) : null,
           ...issueContext(issue),
           detail,
+          resolverAudience: interactionResolverAudience(
+            interaction,
+            (agentId) => companyAgentMap.get(agentId)?.name ?? null,
+          ),
         }));
       }
 
@@ -1382,65 +1451,6 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
-      const productivityRows = await db
-        .select({
-          id: issues.id,
-          companyId: issues.companyId,
-          identifier: issues.identifier,
-          title: issues.title,
-          status: issues.status,
-          priority: issues.priority,
-          originId: issues.originId,
-          originFingerprint: issues.originFingerprint,
-          assigneeAgentId: issues.assigneeAgentId,
-          assigneeUserId: issues.assigneeUserId,
-          createdAt: issues.createdAt,
-          updatedAt: issues.updatedAt,
-        })
-        .from(issues)
-        .where(and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
-          isNull(issues.hiddenAt),
-          isNotNull(issues.assigneeUserId),
-          notInArray(issues.status, [...PRODUCTIVITY_REVIEW_TERMINAL_STATUSES]),
-        ))
-        .orderBy(desc(issues.updatedAt), desc(issues.id));
-      const [productivitySourceMap, productivityReviewMap, productivityImageMap] = await Promise.all([
-        issueSummaryMap(db, companyId, productivityRows.map((row) => row.originId)),
-        issueSummaryMap(db, companyId, productivityRows.map((row) => row.id)),
-        issueImageMap(db, companyId, productivityRows.map((row) => row.id)),
-      ]);
-
-      for (const review of productivityRows) {
-        const reviewIssue = productivityReviewMap.get(review.id);
-        if (!reviewIssue) continue;
-        const sourceIssue = review.originId ? productivitySourceMap.get(review.originId) ?? null : null;
-        const dedupKey = `productivity_review:${review.originFingerprint ?? review.originId ?? review.id}`;
-        add(createItem({
-          companyId,
-          sourceKind: "productivity_review",
-          subject: issueSubject(prefix, reviewIssue),
-          whyNow: "Productivity review is awaiting a human decision.",
-          decisionVerbs: decisionVerbs(
-            { id: "resolve", label: "Resolve", description: "Record a productivity review outcome." },
-            { id: "dismiss", label: "Dismiss", description: "Dismiss this review for now." },
-            { id: "reassign", label: "Reassign", description: "Move the review to another owner." },
-          ),
-          inlineResolvable: false,
-          entryRule: "Open issue_productivity_review issue assigned to a user.",
-          exitRule: "Review issue is done/cancelled or no longer assigned to a user.",
-          dedupKey,
-          severity: review.priority === "critical" ? "critical" : review.priority === "high" ? "high" : "medium",
-          activityAt: toIso(review.updatedAt),
-          createdAt: toIso(review.createdAt),
-          updatedAt: toIso(review.updatedAt),
-          relatedIssue: sourceIssue ? issueSubject(prefix, sourceIssue) : null,
-          ...issueContext(reviewIssue),
-          detail: genericDetail(sourceIssue?.title ?? review.title, issueImages(productivityImageMap, review.id)),
-        }));
-      }
-
       const blockedIssues = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
       type BlockedAttentionIssue = IssueSubjectRow & {
         blockerAttention?: {
@@ -1576,7 +1586,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), visibleIssueCondition()))
+        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), executionIssueCondition()))
         .orderBy(desc(issues.updatedAt), desc(issues.id));
       const reviewIssueIds = reviewRows.map((row) => row.id);
       const pendingReviewApprovalRows = reviewIssueIds.length === 0

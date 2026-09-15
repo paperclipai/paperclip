@@ -42,6 +42,62 @@ describe("parseDeviceLoginPrompt", () => {
     expect(result?.code).toBe("ABCD-EFGHJ");
   });
 
+  it("parse_returns_url_and_code_from_carriage_return_line_endings", () => {
+    // A pseudo-terminal ends each line with a carriage return and a line feed.
+    // The carriage return is whitespace, so the URL token stops before it, and the
+    // code line trims it. The parser reads the tokens the same as line-feed output.
+    const text = [
+      "1. Open this link in your browser and sign in to your account",
+      EXACT_URL,
+      "2. Enter this one-time code (expires in 15 minutes)",
+      "ABCD-EFGHJ",
+    ].join("\r\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(EXACT_URL);
+    expect(result?.code).toBe("ABCD-EFGHJ");
+  });
+
+  it("parse_returns_url_and_code_with_a_terminal_title_osc_sequence", () => {
+    // A pseudo-terminal can emit an Operating System Command (OSC) title sequence
+    // in the stream. The device-auth prompt still prints the URL and the code as
+    // plain standalone tokens on their own lines. The OSC title sequence carries no
+    // URL token, so it does not shift the URL or the code, and the parser reads
+    // both tokens.
+    const osc = "\x1b]0;Codex\x07";
+    const text = [
+      `${osc}1. Open this link in your browser and sign in to your account`,
+      EXACT_URL,
+      "2. Enter this one-time code (expires in 15 minutes)",
+      "ABCD-EFGHJ",
+    ].join("\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(EXACT_URL);
+    expect(result?.code).toBe("ABCD-EFGHJ");
+  });
+
+  it("parse_returns_url_and_code_from_a_merged_raw_pseudo_terminal_frame", () => {
+    // One buffer holds the whole prompt as a real pseudo-terminal emits it: a
+    // leading title Operating System Command (OSC) sequence, color Control
+    // Sequence Introducer (CSI) sequences around the URL and the code, and
+    // carriage-return line endings. The parser removes the color sequences and
+    // reads the plain tokens.
+    const title = "\x1b]0;Codex login\x07";
+    const cyan = "\x1b[36m";
+    const bold = "\x1b[1m";
+    const reset = "\x1b[0m";
+    const text =
+      `${title}1. Open this link in your browser and sign in to your account\r\n` +
+      `${cyan}${EXACT_URL}${reset}\r\n` +
+      `2. Enter this one-time code (expires in 15 minutes)\r\n` +
+      `${bold}ABCD-EFGHJ${reset}\r\n`;
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(EXACT_URL);
+    expect(result?.code).toBe("ABCD-EFGHJ");
+  });
+
   it("parse_returns_null_when_prompt_absent", () => {
     const text = "Some unrelated log line\nNothing to see here\n";
     expect(parseDeviceLoginPrompt(text)).toBeNull();
@@ -60,6 +116,33 @@ describe("parseDeviceLoginPrompt", () => {
     ].join("\n");
     expect(parseDeviceLoginPrompt(withQuery)).toBeNull();
     expect(parseDeviceLoginPrompt(withFragment)).toBeNull();
+  });
+
+  it("parse_returns_the_printed_url_with_a_bare_trailing_fragment_marker", () => {
+    // A printed URL that ends with a bare `#` carries an empty fragment. The
+    // platform `URL` parser keeps the marker in its normalized form. The parser
+    // returns that normalized form, not the fixed constant.
+    const preamble = "2. Enter this one-time code (expires in 15 minutes)";
+    const text = [`${EXACT_URL}#`, preamble, "ABCD-EFGHJ"].join("\n");
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe("https://auth.openai.com/codex/device#");
+  });
+
+  it("parse_returns_the_normalized_url_for_an_explicit_default_port_or_an_uppercase_host", () => {
+    // The platform `URL` parser normalizes an explicit default port and an
+    // uppercase host. The parser returns that normalized form.
+    const preamble = "2. Enter this one-time code (expires in 15 minutes)";
+    const withPort = [`${EXACT_URL.replace("auth.openai.com", "auth.openai.com:443")}`, preamble, "ABCD-EFGHJ"].join(
+      "\n",
+    );
+    const withUppercaseHost = [
+      `${EXACT_URL.replace("auth.openai.com", "AUTH.OPENAI.COM")}`,
+      preamble,
+      "ABCD-EFGHJ",
+    ].join("\n");
+    expect(parseDeviceLoginPrompt(withPort)?.url).toBe(EXACT_URL);
+    expect(parseDeviceLoginPrompt(withUppercaseHost)?.url).toBe(EXACT_URL);
   });
 
   it("parse_returns_null_for_wrong_origin_or_path", () => {

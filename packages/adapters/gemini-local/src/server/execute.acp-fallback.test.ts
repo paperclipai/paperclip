@@ -36,10 +36,10 @@ const {
 
 vi.mock("./acp.js", () => ({
   createGeminiAcpExecutor: () => executeGeminiAcp,
-  formatGeminiAcpFallbackMessage: (reason: string) =>
-    `[paperclip] Gemini ACP default unavailable; falling back to Gemini CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`,
   resolveGeminiExecutionEngineForRun: async (ctx: { config: Record<string, unknown> }) =>
-    ctx.config.engine === "acp"
+    ctx.config.engine === "cli"
+      ? { engine: "cli", explicit: true }
+      : ctx.config.engine === "acp"
       ? { engine: "acp", explicit: true }
       : { engine: "acp", explicit: false },
 }));
@@ -99,23 +99,11 @@ describe("gemini_local ACP startup fallback", () => {
     vi.clearAllMocks();
   });
 
-  it("falls back to Gemini CLI when auto-selected ACP fails before execution starts", async () => {
+  it("does not start CLI after default ACP fails", async () => {
     const ctx = buildContext();
-
-    const result = await execute(ctx as never);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.summary).toBe("hello");
+    await expect(execute(ctx as never)).rejects.toThrow('Unexpected "<<"');
     expect(executeGeminiAcp).toHaveBeenCalledTimes(1);
-    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
-    expect(ctx.onLog).toHaveBeenCalledWith(
-      "stderr",
-      expect.stringContaining("Gemini ACP startup failed"),
-    );
-    expect(ctx.onLog).toHaveBeenCalledWith(
-      "stderr",
-      expect.stringContaining('Unexpected "<<"'),
-    );
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
 
   it("keeps explicit ACP strict when startup fails", async () => {

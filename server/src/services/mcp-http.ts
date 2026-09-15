@@ -13,6 +13,7 @@
 
 /** The Accept header value required by the MCP Streamable HTTP transport. */
 export const MCP_HTTP_ACCEPT = "application/json, text/event-stream";
+export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
 /**
  * Default headers for an MCP Streamable HTTP JSON-RPC POST. Caller-supplied
@@ -25,6 +26,89 @@ export function mcpHttpRequestHeaders(extra?: Record<string, string>): Record<st
     ...extra,
     accept: MCP_HTTP_ACCEPT,
   };
+}
+
+export class McpHttpInitializationError extends Error {
+  constructor(
+    message: string,
+    readonly stage: "initialize" | "initialized_notification",
+    readonly status: number | null,
+  ) {
+    super(message);
+    this.name = "McpHttpInitializationError";
+  }
+}
+
+/**
+ * Establish the short-lived Streamable HTTP session needed by stateful MCP
+ * servers. The returned headers belong only to the caller's next request; no
+ * session id is persisted with the connection or shared across operations.
+ */
+export async function initializeMcpHttpSession(input: {
+  send: (init: RequestInit) => Promise<Response>;
+  headers?: Record<string, string>;
+  requestId: string;
+}): Promise<Record<string, string>> {
+  const initializeResponse = await input.send({
+    method: "POST",
+    headers: mcpHttpRequestHeaders(input.headers),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: `${input.requestId}-initialize`,
+      method: "initialize",
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "paperclip", version: "1" },
+      },
+    }),
+  });
+  if (!initializeResponse.ok) {
+    throw new McpHttpInitializationError(
+      `Remote MCP initialization returned HTTP ${initializeResponse.status}`,
+      "initialize",
+      initializeResponse.status,
+    );
+  }
+  let payload: unknown;
+  try {
+    payload = parseMcpHttpResponseBody(
+      await initializeResponse.text(),
+      initializeResponse.headers.get("content-type"),
+    );
+  } catch {
+    throw new McpHttpInitializationError("Remote MCP initialization returned an invalid response", "initialize", null);
+  }
+  const result = payload && typeof payload === "object" && "result" in payload
+    ? (payload as { result?: unknown }).result
+    : null;
+  const resultRecord = result && typeof result === "object" ? result as Record<string, unknown> : null;
+  const protocolVersion = typeof resultRecord?.protocolVersion === "string" && resultRecord.protocolVersion
+    ? resultRecord.protocolVersion
+    : MCP_PROTOCOL_VERSION;
+  const sessionId = initializeResponse.headers.get("mcp-session-id");
+  const sessionHeaders: Record<string, string> = {
+    ...(input.headers ?? {}),
+    "MCP-Protocol-Version": protocolVersion,
+    ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+  };
+  const initializedResponse = await input.send({
+    method: "POST",
+    headers: mcpHttpRequestHeaders(sessionHeaders),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+      params: {},
+    }),
+  });
+  if (!initializedResponse.ok) {
+    throw new McpHttpInitializationError(
+      `Remote MCP initialized notification returned HTTP ${initializedResponse.status}`,
+      "initialized_notification",
+      initializedResponse.status,
+    );
+  }
+  return sessionHeaders;
 }
 
 function looksLikeJsonRpcMessage(value: unknown): boolean {

@@ -37,7 +37,6 @@ vi.mock("@/adapters/use-adapter-capabilities", () => ({
     supportsSkills: true,
     supportsLocalAgentJwt: true,
     requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: false,
   }),
 }));
 vi.mock("@/context/ToastContext", () => ({

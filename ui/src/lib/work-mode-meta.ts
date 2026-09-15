@@ -6,7 +6,6 @@ export type WorkModeTone = "neutral" | "ask" | "planning";
 export interface WorkModeMeta {
   value: IssueWorkMode;
   label: string;
-  shortLabel: string;
   icon: LucideIcon;
   tone: WorkModeTone;
   classes: {
@@ -46,8 +45,7 @@ export function workModeMetaList(): WorkModeMeta[] {
   return [
     {
       value: "standard",
-      label: "Agent mode",
-      shortLabel: "Agent",
+      label: "Auto mode",
       icon: Hammer,
       tone: "neutral",
       classes: STANDARD_CLASSES,
@@ -55,7 +53,6 @@ export function workModeMetaList(): WorkModeMeta[] {
     {
       value: "planning",
       label: "Plan mode",
-      shortLabel: "Plan",
       icon: ClipboardList,
       tone: "planning",
       classes: PLANNING_CLASSES,
@@ -63,7 +60,6 @@ export function workModeMetaList(): WorkModeMeta[] {
     {
       value: "ask",
       label: "Ask mode",
-      shortLabel: "Ask",
       icon: MessageCircleQuestion,
       tone: "ask",
       classes: ASK_CLASSES,
@@ -89,5 +85,5 @@ export function titleForPendingWorkMode(mode: IssueWorkMode): string {
   if (mode === "planning") {
     return "Plan mode is on for this submission. Click to change.";
   }
-  return "Agent mode for this submission. Click to change.";
+  return "Auto mode for this submission. Click to change.";
 }

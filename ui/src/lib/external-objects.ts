@@ -9,13 +9,13 @@ import {
   Clock,
   CloudOff,
   GitMerge,
-  Github,
   GitPullRequest,
   KeyRound,
   Loader2,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import { GithubIcon } from "@/components/icons/github-icon";
 import type {
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
@@ -55,7 +55,7 @@ const EXTERNAL_OBJECT_ICON_KEYS: Record<string, LucideIcon> = {
   circle: Circle,
   "circle-dot": CircleDot,
   clock: Clock,
-  github: Github,
+  github: GithubIcon,
   "git-merge": GitMerge,
   "git-pull-request": GitPullRequest,
   key: KeyRound,

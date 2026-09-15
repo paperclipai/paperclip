@@ -91,7 +91,11 @@ export function createRuntimeProgressReporter(
   const minIntervalMs =
     options.minIntervalMs && options.minIntervalMs > 0 ? options.minIntervalMs : 2000;
   const now = options.now ?? Date.now;
-  const prefix = `[paperclip] ${options.phase}${options.label ? ` ${options.label}` : ""} ${options.direction} ${options.target}`;
+  // "sandbox" is the transport key, not product vocabulary: progress lines are
+  // user-visible run status, and the product refers to the run's machine as an
+  // environment ("Paperclip Computer" on managed deployments).
+  const targetDisplay = options.target === "sandbox" ? "environment" : options.target;
+  const prefix = `[paperclip] ${options.phase}${options.label ? ` ${options.label}` : ""} ${options.direction} ${targetDisplay}`;
 
   let lastEmitAt: number | null = null;
   let lastStep = -1;

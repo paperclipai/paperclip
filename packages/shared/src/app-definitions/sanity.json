@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "slug": "sanity",
+  "name": "Sanity",
+  "description": "Connect Sanity's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/sanity.svg",
+    "darkLogoUrl": "/brands/apps/sanity-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.sanity.io/*"
+  ],
+  "docsUrl": "https://www.sanity.io/docs/ai/mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.sanity.io"
+      },
+      "guidanceMd": "Connect Sanity in the browser. A Sanity account with access to the relevant projects and datasets.",
+      "riskTier": "S3",
+      "label": "Sign in with Sanity",
+      "consoleLinks": {
+        "docs": "https://www.sanity.io/docs/ai/mcp-server"
+      },
+      "warnings": [
+        "A Sanity account with access to the relevant projects and datasets."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.sanity.io"
+      },
+      "guidanceMd": "Use a customer-created Sanity key. A Sanity account with access to the relevant projects and datasets.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Sanity API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "sk...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://www.sanity.io/docs/ai/mcp-server",
+        "docs": "https://www.sanity.io/docs/ai/mcp-server"
+      },
+      "warnings": [
+        "A Sanity account with access to the relevant projects and datasets."
+      ]
+    }
+  ]
+}

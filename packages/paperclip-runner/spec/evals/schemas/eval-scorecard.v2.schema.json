@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/eval-scorecard.v2.schema.json",
+  "title": "EvalScorecardV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "bundleId", "caseId", "candidateId", "classification", "dimensions", "overall"],
+  "properties": {
+    "schema": { "const": "paperclip.runner.eval-scorecard.v2" },
+    "bundleId": { "type": "string", "minLength": 1 },
+    "caseId": { "type": "string", "minLength": 1 },
+    "candidateId": { "type": "string", "minLength": 1 },
+    "classification": { "enum": ["completed", "candidate_failure", "infrastructure_failure", "skipped"] },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hard_invariants", "lifecycle_integrity", "semantic_outcome", "trajectory_restraint", "trace_completeness", "quality_efficiency", "continuation_integrity", "presentation_fidelity"],
+      "properties": {
+        "hard_invariants": { "$ref": "#/$defs/dimension" },
+        "lifecycle_integrity": { "$ref": "#/$defs/dimension" },
+        "semantic_outcome": { "$ref": "#/$defs/dimension" },
+        "trajectory_restraint": { "$ref": "#/$defs/dimension" },
+        "trace_completeness": { "$ref": "#/$defs/dimension" },
+        "quality_efficiency": { "$ref": "#/$defs/dimension" },
+        "continuation_integrity": { "$ref": "#/$defs/dimension" },
+        "presentation_fidelity": { "$ref": "#/$defs/dimension" }
+      }
+    },
+    "overall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "gatePassed", "passed"],
+      "properties": {
+        "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "gatePassed": { "type": ["boolean", "null"] },
+        "passed": { "type": ["boolean", "null"] }
+      }
+    }
+  },
+  "$defs": {
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dimension", "score", "passed", "gate", "weight", "reasons"],
+      "properties": {
+        "dimension": { "type": "string" },
+        "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "passed": { "type": ["boolean", "null"] },
+        "gate": { "type": "boolean" },
+        "weight": { "type": "number", "minimum": 0 },
+        "reasons": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

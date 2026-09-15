@@ -33,6 +33,8 @@ my-company/
 
 Both flows are also available in the web UI as company settings pages: **Export** and **Import** appear in the company settings navigation.
 
+> **Cloud-managed instances:** when a hosting platform manages the instance, the company is provisioned by the platform and importing is disabled — the Import page and buttons are hidden, and every import API route answers `403` with `code: "cloud_managed"`. Export stays available, so you can always take your company's data with you. Self-hosted instances keep the full import surface.
+
 The **Export** page lets you pick exactly which files go into the bundle before downloading it. Above the file tree it shows a **"Not included in this export"** panel — the export fidelity report — listing data the bundle will not carry (for example attachments, approvals, cost history, or activity log entries), with blocking issues highlighted.
 
 The **Import** page previews the package, lets you resolve name collisions and adapter assignments, and applies the import. A **"Start imported agents and routines paused"** checkbox (on by default) makes imported agents and routines land paused instead of live. After the import finishes, an **"Activate imported agents and routines"** panel lists everything that was imported paused so you can resume the agents and activate the routines you select — nothing starts running until you say so.

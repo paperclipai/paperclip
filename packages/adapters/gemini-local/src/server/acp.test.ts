@@ -1,9 +1,26 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+
+// Every test in this file needs a real teardown, so the mock below delegates
+// to the actual factory by default. Only the wiring test further down reads
+// the call arguments; it does not change this behavior.
+const mockCreateWorkspaceRestoreTeardown = vi.hoisted(() => vi.fn());
+
+vi.mock("@paperclipai/adapter-utils/workspace-restore-teardown", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  mockCreateWorkspaceRestoreTeardown.mockImplementation(
+    actual.createWorkspaceRestoreTeardown as (...args: unknown[]) => unknown,
+  );
+  return {
+    ...actual,
+    createWorkspaceRestoreTeardown: mockCreateWorkspaceRestoreTeardown,
+  };
+});
+
 import {
   buildGeminiAcpConfig,
   createGeminiAcpExecutor,
@@ -244,18 +261,18 @@ describe("gemini_local ACP lane", () => {
   });
 
   it("checks the Node version required by the Gemini ACP runtime", () => {
-    setNodeVersion("v19.9.0");
+    setNodeVersion("v24.10.0");
     expect(nodeVersionMeetsGeminiAcpMinimum()).toBe(false);
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
     expect(nodeVersionMeetsGeminiAcpMinimum()).toBe(true);
   });
 
-  it("defaults to ACP when prerequisites pass and falls back to CLI only for auto resolution", async () => {
+  it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-gemini-acp-default-");
     const commandPath = path.join(root, "bin", "gemini");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
 
     expect(resolveGeminiExecutionEngine({})).toEqual({ engine: "acp", explicit: false });
     await expect(
@@ -275,27 +292,27 @@ describe("gemini_local ACP lane", () => {
       explicit: true,
     });
 
-    setNodeVersion("v19.9.0");
+    setNodeVersion("v24.10.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { command: commandPath },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("Node"),
+      unavailableReason: expect.stringContaining("Node"),
     });
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { engine: "acp", command: "/missing/gemini" },
         executionTarget: null,
       }),
-    ).resolves.toEqual({ engine: "acp", explicit: true });
+    ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
-  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
-    setNodeVersion("v20.0.0");
+  it("reports unavailable ACP for non-sandbox remote auto runs", async () => {
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { agentCommand: "gemini --acp" },
@@ -316,14 +333,14 @@ describe("gemini_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+      unavailableReason: expect.stringContaining("sandbox remote targets only"),
     });
   });
 
-  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
-    setNodeVersion("v20.0.0");
+  it("reports unavailable ACP for one-shot sandbox auto runs", async () => {
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: {},
@@ -335,14 +352,14 @@ describe("gemini_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { agentCommand: "gemini --acp" },
@@ -551,6 +568,118 @@ describe("gemini_local ACP lane", () => {
     expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
   });
 
+  it("test_gemini_acp_seam_registers_workspace_sync_back", async () => {
+    const root = await makeTempRoot("paperclip-gemini-acp-syncback-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+
+    // The runtime writes a NEW file into the in-sandbox workspace during the turn.
+    // The seam must register a workspace sync-back teardown, so the file lands in
+    // the host worktree after the run.
+    const runtime = new FakeRuntime({});
+    const startTurn = runtime.startTurn.bind(runtime);
+    runtime.startTurn = (input) => {
+      const turn = startTurn(input);
+      const remoteWorkspaceCwd = input.handle.cwd ?? remoteCwd;
+      return {
+        ...turn,
+        result: (async () => {
+          await fs.writeFile(path.join(remoteWorkspaceCwd, "from-sandbox.txt"), "synced", "utf8");
+          return await turn.result;
+        })(),
+      };
+    };
+
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    // The teardown fired `restoreWorkspace`, so the sandbox-authored file is now
+    // in the host worktree.
+    await expect(fs.readFile(path.join(localCwd, "from-sandbox.txt"), "utf8")).resolves.toBe("synced");
+  });
+
+  it("passes the Gemini-specific teardown messages to the shared workspace-restore-teardown factory", async () => {
+    // Wiring test only: `createWorkspaceRestoreTeardown` owns the
+    // classify-and-redact contract, proven once for all three adapters by its
+    // own table-driven test in `packages/adapter-utils`. This test proves only
+    // that the Gemini adapter passes its own two message strings to it.
+    // Clear the shared, hoisted mock first: earlier tests in this file also
+    // call through it, and a leftover call could hide a real wiring bug.
+    mockCreateWorkspaceRestoreTeardown.mockClear();
+    const root = await makeTempRoot("paperclip-gemini-acp-teardown-wiring-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(mockCreateWorkspaceRestoreTeardown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
+        failurePrefix: "[paperclip] Gemini ACP teardown workspace restore failed",
+      }),
+    );
+  });
+
   it("does not persist an api-key auth selector from a host-only credential", async () => {
     const root = await makeTempRoot("paperclip-gemini-acp-hostkey-");
     const localCwd = path.join(root, "worktree");
@@ -618,8 +747,8 @@ describe("gemini_local ACP lane", () => {
     }
   });
 
-  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
-    setNodeVersion("v22.13.0");
+  it("reports unavailable ACP for a runner-less sandbox even when the ACP command is set", async () => {
+    setNodeVersion("v24.11.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
         config: { agentCommand: "gemini --acp" },
@@ -631,9 +760,9 @@ describe("gemini_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
@@ -644,7 +773,7 @@ describe("gemini_local ACP lane", () => {
     await fs.writeFile(path.join(bin, "gemini"), "#!/usr/bin/env sh\n", "utf8");
     process.env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ""}`;
     process.env.GEMINI_API_KEY = "test-key";
-    setNodeVersion("v20.0.0");
+    setNodeVersion("v24.11.0");
 
     const result = await testGeminiAcpEnvironment({
       adapterType: "gemini_local",

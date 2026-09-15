@@ -84,7 +84,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -116,6 +116,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/execution-workspaces.js", () => ({
     executionWorkspaceService: () => mockExecutionWorkspaceService,
+    STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
   }));
 
   vi.doMock("../services/feedback.js", () => ({
@@ -139,6 +140,12 @@ async function createApp(actor: Record<string, unknown>) {
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any, { feedbackExportService: mockFeedbackExportService }));
+  const routeErrors: string[] = [];
+  app.locals.routeErrors = routeErrors;
+  app.use((error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    routeErrors.push(error instanceof Error ? error.stack ?? error.message : String(error));
+    next(error);
+  });
   app.use(errorHandler);
   return app;
 }
@@ -252,7 +259,7 @@ describe("issue feedback trace routes", () => {
 
     const res = await request(app).get("/api/feedback-traces/trace-1");
 
-    expect(res.status).toBe(404);
+    expect(res.status, JSON.stringify({ body: res.body, errors: app.locals.routeErrors })).toBe(404);
   });
 
   it("returns 404 for bundle fetches when a board user lacks access to the trace company", async () => {
@@ -272,6 +279,6 @@ describe("issue feedback trace routes", () => {
 
     const res = await request(app).get("/api/feedback-traces/trace-1/bundle");
 
-    expect(res.status).toBe(404);
+    expect(res.status, JSON.stringify({ body: res.body, errors: app.locals.routeErrors })).toBe(404);
   });
 });

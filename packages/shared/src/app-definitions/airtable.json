@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "airtable",
+  "name": "Airtable",
+  "description": "Connect Airtable's provider-hosted MCP server.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/airtable.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.airtable.com/*"
+  ],
+  "docsUrl": "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.airtable.com/mcp"
+      },
+      "guidanceMd": "Connect Airtable in the browser. An Airtable account; enterprise administrators may need to allowlist the client.",
+      "riskTier": "S3",
+      "label": "Sign in with Airtable",
+      "consoleLinks": {
+        "docs": "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server"
+      },
+      "warnings": [
+        "An Airtable account; enterprise administrators may need to allowlist the client."
+      ]
+    }
+  ]
+}

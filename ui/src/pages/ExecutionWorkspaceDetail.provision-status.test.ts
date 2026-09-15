@@ -9,7 +9,7 @@ function operation(overrides: Partial<WorkspaceOperation> = {}): WorkspaceOperat
     executionWorkspaceId: "ews-1",
     heartbeatRunId: null,
     issueId: null,
-    phase: overrides.phase ?? "workspace_runtime_provision",
+    phase: overrides.phase ?? "workspace_seed",
     command: overrides.command ?? "bash ./scripts/provision-worktree-runtime.sh",
     cwd: null,
     status: overrides.status ?? "succeeded",
@@ -56,6 +56,15 @@ describe("resolveRuntimeProvisionStatus", () => {
         operations: [operation({ status: "succeeded", finishedAt })],
       }),
     ).toEqual({ kind: "provisioned", at: finishedAt });
+  });
+
+  it("continues to recognize custom runtime dependency provisioning", () => {
+    expect(
+      resolveRuntimeProvisionStatus({
+        runtimeProvisionCommand: "pnpm install",
+        operations: [operation({ phase: "workspace_runtime_provision" })],
+      }),
+    ).toMatchObject({ kind: "provisioned" });
   });
 
   it("reports provisioning while the op is running", () => {

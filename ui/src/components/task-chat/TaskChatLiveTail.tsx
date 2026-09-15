@@ -1,8 +1,14 @@
 import type { ReactElement } from "react";
 import { MarkdownBody } from "@/components/MarkdownBody";
-import type { TaskChatItem } from "./task-chat-model";
+import type { TaskChatItem, TaskChatRuntimeRequestDecision, TaskChatRuntimeRequestItem } from "./task-chat-model";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
+import { TaskChatThinking } from "./TaskChatThinking";
+import { TaskChatMarker } from "./TaskChatMarker";
+import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
+import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
+import { buildTurnTimelineRows } from "./transcript-adapter";
 
 /**
  * Live-tail body for the experimental chat-style view (PAP-463, Workstream C1
@@ -18,21 +24,31 @@ import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
  * no "Streaming" chip, no uppercase "USED TERMINAL" cards. The status pill above
  * this body (`TaskChatLiveRunPill`) owns the run-status affordance.
  *
- * Live and settle-gap render identically — both feed their parsed items here
- * (`running: true` while in flight, `false` through the settle gap) — so the
- * tail never restyles when a run finishes; the hand-off to the folded settled
- * turn is the only visible transition.
+ * Stable assistant and runtime-request boundaries compact the rows into an
+ * ordered turn timeline. Commentary remains readable above the activity group
+ * it introduced, and resolved request receipts keep their original slot.
  */
 export function TaskChatLiveTail({
   items,
   emptyMessage,
+  excludeFinal = false,
+  onRuntimeRequestDecision,
 }: {
   items: readonly TaskChatItem[];
   /** Shown when nothing renderable has streamed yet (queued / pre-first-token). */
   emptyMessage?: string;
+  /** New-runner turn renders final-answer messages in its dedicated response slot. */
+  excludeFinal?: boolean;
+  onRuntimeRequestDecision?: (
+    item: TaskChatRuntimeRequestItem,
+    decision: TaskChatRuntimeRequestDecision,
+  ) => void | Promise<void>;
 }) {
-  const rows = items
-    .map((item) => renderTailRow(item))
+  const visibleItems = excludeFinal
+    ? items.filter((item) => item.kind !== "message" || item.interstitial)
+    : items;
+  const rows = buildTurnTimelineRows(visibleItems, true)
+    .map((item) => renderTailRow(item, onRuntimeRequestDecision))
     .filter((row): row is ReactElement => row != null);
 
   if (rows.length === 0) {
@@ -44,7 +60,13 @@ export function TaskChatLiveTail({
   return <div className="flex flex-col gap-2">{rows}</div>;
 }
 
-function renderTailRow(item: TaskChatItem): ReactElement | null {
+function renderTailRow(
+  item: TaskChatItem,
+  onRuntimeRequestDecision?: (
+    item: TaskChatRuntimeRequestItem,
+    decision: TaskChatRuntimeRequestDecision,
+  ) => void | Promise<void>,
+): ReactElement | null {
   switch (item.kind) {
     case "message": {
       // Streamed reply text (always interstitial from the transcript adapter).
@@ -76,10 +98,37 @@ function renderTailRow(item: TaskChatItem): ReactElement | null {
           <TaskChatUsageReadout item={item} />
         </div>
       );
-    // Thinking never renders as a row (PAP-361): its live signal is the status
-    // pill, and the text stays in the run log / classic transcript. Every other
-    // kind (markers, interactions, briefs, statuses, turns, and the dropped
-    // debug kinds) cannot appear in a parsed live transcript.
+    case "thinking":
+      return <TaskChatThinking key={item.id} item={item} />;
+    case "activity_phase":
+      return (
+        <TaskChatActivityPhase
+          key={item.id}
+          item={item}
+          defaultOpen={item.items.some(
+            (child) =>
+              child.kind === "thinking" &&
+              child.lines.some((line) => line.trim().length > 0),
+          )}
+          childrenClassName="relative ml-2.5 pl-6"
+          showChildRail
+          renderChild={(child) => child.kind === "tool"
+            ? <TaskChatToolCard item={child} />
+            : child.kind === "thinking"
+              ? <TaskChatThinking item={child} />
+              : child.kind === "marker"
+                ? <TaskChatMarker item={child} />
+                : child.kind === "protocol"
+                  ? child.surface === "runtime_request"
+                    ? <TaskChatProtocolCard item={child} onRuntimeRequestDecision={onRuntimeRequestDecision} />
+                    : <TaskChatProtocolActivityRow item={child} />
+                  : <TaskChatUsageReadout item={child} />}
+        />
+      );
+    case "protocol":
+      return <TaskChatProtocolCard key={item.id} item={item} onRuntimeRequestDecision={onRuntimeRequestDecision} />;
+    // Markers, interactions, briefs, statuses, turns, and dropped debug kinds
+    // cannot appear as direct live-tail rows.
     default:
       return null;
   }

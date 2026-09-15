@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "slug": "supabase",
+  "name": "Supabase",
+  "description": "Connect Supabase's provider-hosted MCP server.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/supabase.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.supabase.com/*"
+  ],
+  "docsUrl": "https://supabase.com/docs/guides/ai-tools/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.supabase.com/mcp"
+      },
+      "guidanceMd": "Connect Supabase in the browser and scope the connection to one development project. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "riskTier": "S4",
+      "label": "Sign in with Supabase",
+      "consoleLinks": {
+        "docs": "https://supabase.com/docs/guides/ai-tools/mcp"
+      },
+      "warnings": [
+        "A Supabase account; use a development project and review write actions before connecting production data.",
+        "Do not connect production data unless you have reviewed Supabase's MCP security guidance."
+      ],
+      "tenantFields": [
+        {
+          "key": "projectRef",
+          "label": "Project reference",
+          "type": "text",
+          "required": true,
+          "placeholder": "abcdefghijklmnopqrst",
+          "helperMd": "Scope the connection to one development project.",
+          "transport": {
+            "location": "query",
+            "name": "project_ref"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Enable this to prevent the connection from changing the database.",
+          "transport": {
+            "location": "query",
+            "name": "read_only",
+            "format": "boolean"
+          }
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "database,docs",
+          "helperMd": "Optional comma-separated feature groups.",
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "project"
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.supabase.com/mcp"
+      },
+      "guidanceMd": "Use a customer-created Supabase key scoped to one development project. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Supabase API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "sbp_...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://supabase.com/docs/guides/ai-tools/mcp",
+        "docs": "https://supabase.com/docs/guides/ai-tools/mcp"
+      },
+      "warnings": [
+        "A Supabase account; use a development project and review write actions before connecting production data.",
+        "Do not connect production data unless you have reviewed Supabase's MCP security guidance."
+      ],
+      "tenantFields": [
+        {
+          "key": "projectRef",
+          "label": "Project reference",
+          "type": "text",
+          "required": true,
+          "placeholder": "abcdefghijklmnopqrst",
+          "helperMd": "Scope the connection to one development project.",
+          "transport": {
+            "location": "query",
+            "name": "project_ref"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Enable this to prevent the connection from changing the database.",
+          "transport": {
+            "location": "query",
+            "name": "read_only",
+            "format": "boolean"
+          }
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "database,docs",
+          "helperMd": "Optional comma-separated feature groups.",
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "project"
+      ]
+    }
+  ]
+}

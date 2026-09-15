@@ -101,17 +101,17 @@ On wake, the watchdog agent reads a fixed default mandate plus your custom instr
 
 - Treat every stopped leaf as a **claim** that must be verified against comments, documents, work products, screenshots, tests, blockers, and review state. Do not accept "I could not" or "waiting for approval" as automatically valid.
 - Leave genuinely-complete leaves alone, with a short note on what was checked.
-- If a leaf is not genuinely complete, restore a live path: reopen the issue, reassign, comment actionable instructions, create a follow-up child issue inside the watched subtree, or accept an eligible task-level plan confirmation.
+- If a leaf is not genuinely complete, restore a live path: reopen the issue, reassign, comment actionable instructions, create a follow-up child issue inside the watched subtree, or resolve an interaction that the ordinary agent audience permits.
 - If the blocker is real, leave a valid waiting disposition that names the unblock owner and the next action.
 
 The mandate also enforces safety constraints that custom instructions **cannot override**:
 
 - Stay inside the watched subtree. No cross-company mutations, no mutations outside the watched issue and its non-watchdog descendants.
-- No impersonating board-only approvals, accepting spend or hiring decisions, accepting security-sensitive interactions, or bypassing execution-policy stages that require a typed reviewer or approver.
+- No impersonating formal approvals, accepting spend or hiring decisions, using an interaction response as downstream authority, or bypassing execution-policy stages that require a typed reviewer or approver.
 - No creating another watchdog for the watched subtree. No waking itself. Exactly one reusable review task per watched issue.
 - Custom instructions can narrow focus or veto specific shortcuts. They cannot grant authority the server does not already give the watchdog.
 
-The formal authority contract (the full list of allowed and disallowed mutations, and the eligibility test for accepting plan confirmations) is in [`doc/SPEC-implementation.md`](SPEC-implementation.md) §9.9.
+The formal authority contract (the full list of allowed and disallowed mutations, plus the ordinary interaction resolver contract) is in [`doc/SPEC-implementation.md`](SPEC-implementation.md) §§9.8.1–9.9.
 
 ### Writing custom instructions
 
@@ -119,11 +119,11 @@ Custom instructions are most useful when they tell the watchdog what evidence to
 
 > Before accepting any leaf as done, check that there is a corresponding green CI run linked in the comments. If there isn't, reopen the leaf and ask for one.
 
-> Do not accept a `request_confirmation` plan that proposes more than five subtasks without first asking me to review. Leave the issue in review and ping me.
+> When an interaction is `not_creator` or `human_only`, preserve that restriction. Do not treat the watchdog role as an override.
 
 > If a leaf is blocked on the marketing team, accept the wait but make sure the unblock owner is named in the blocker reason.
 
-What custom instructions cannot do: grant authority outside the watched subtree, approve board-level decisions, expand the interaction kinds the watchdog can resolve, or override safety constraints. The server enforces this regardless of what the instructions say.
+What custom instructions cannot do: grant authority outside the watched subtree, approve formal governance decisions, widen an interaction's resolver audience, or override safety constraints. The server enforces this regardless of what the instructions say.
 
 ---
 
@@ -133,7 +133,7 @@ Every watchdog-originated mutation is gated by a server-side scope check derived
 
 - mutations on issues outside the watched subtree (parent-chain walk, depth-limited)
 - mutations on issues whose company id does not match the watchdog's company
-- attempts to resolve interactions other than eligible task-level `request_confirmation` plan confirmations (see SPEC §9.9 for eligibility)
+- interaction resolution outside the ordinary effective audience, named addressee, company/issue scope, run-attribution, low-trust/task-bridge, target-staleness, or exact-once checks
 - changes to the watchdog configuration itself (a watchdog cannot edit its own row or create another watchdog)
 - direct edits to active-run output or execution-policy decisions that require a typed participant
 
@@ -165,7 +165,7 @@ It is **not** the right tool for:
 
 - monitoring a single running process for silence — that is the silent active-run watchdog, automatic, no configuration
 - liveness recovery on stalled agent-owned issues without an explicit recovery surface — that is automatic too
-- board-level approvals or anything security-sensitive — the watchdog cannot resolve those
+- formal approvals or security-sensitive downstream actions — an interaction response cannot authorize those
 - replacing a human reviewer on a typed execution-policy stage — the watchdog cannot bypass typed participants
 
 If what you actually want is "wake me when this is done," use a routine or an issue-thread interaction with `continuationPolicy: wake_assignee`, not a watchdog.

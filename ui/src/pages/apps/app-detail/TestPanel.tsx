@@ -34,6 +34,13 @@ import {
 } from "@/components/ui/collapsible";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   JsonSchemaForm,
   getDefaultValues,
   validateJsonSchemaForm,
@@ -41,6 +48,7 @@ import {
 } from "@/components/JsonSchemaForm";
 import { cn, relativeTime } from "@/lib/utils";
 import { appTabHref } from "../app-tabs";
+import { formatActionPermissionSummary } from "./action-permission-summary";
 
 // ---------------------------------------------------------------------------
 // Small format helpers
@@ -69,6 +77,133 @@ function actionSubLine(entry: ToolCatalogEntry): string | null {
 // ---------------------------------------------------------------------------
 
 type DecisionMeta = { label: string; className: string };
+
+type TestAgentWithAccess = ToolConnectionTestAgent & {
+  effectiveAccess: ToolConnectionAccessSummary;
+};
+
+const TEST_ACCESS_STALE_TIME_MS = 5 * 60_000;
+const TEST_ACCESS_GC_TIME_MS = 30 * 60_000;
+
+/**
+ * Focused action tester used by the combined Permissions page. The modal keeps
+ * the existing schema form and result renderer, but scopes agent selection and
+ * test state to the action the user opened.
+ */
+export function ActionTestDialog({
+  connectionId,
+  appName,
+  entry,
+  open,
+  onOpenChange,
+}: {
+  connectionId: string;
+  appName: string;
+  entry: ToolCatalogEntry;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const testAgentsQuery = useQuery({
+    queryKey: queryKeys.tools.testAgents(connectionId),
+    queryFn: () => toolsApi.listTestAgents(connectionId),
+    enabled: open && !!connectionId,
+  });
+  const agents = useMemo(
+    () => [...(testAgentsQuery.data?.agents ?? [])].sort(
+      (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
+    ),
+    [testAgentsQuery.data],
+  );
+  const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
+  const agentId = requestedAgentId && agents.some((agent) => agent.id === requestedAgentId)
+    ? requestedAgentId
+    : agents[0]?.id ?? null;
+  const selectedAgentBase = agents.find((agent) => agent.id === agentId) ?? null;
+  const accessQuery = useQuery({
+    queryKey: queryKeys.tools.testAgentAccess(connectionId, agentId ?? "__none__"),
+    queryFn: () => toolsApi.getTestAgentAccess(connectionId, agentId!),
+    enabled: open && !!connectionId && !!agentId,
+    staleTime: TEST_ACCESS_STALE_TIME_MS,
+    gcTime: TEST_ACCESS_GC_TIME_MS,
+    refetchOnWindowFocus: false,
+  });
+  const selectedAgent = useMemo<TestAgentWithAccess | null>(() => (
+    selectedAgentBase && accessQuery.data
+      ? { ...selectedAgentBase, effectiveAccess: accessQuery.data.access }
+      : null
+  ), [accessQuery.data, selectedAgentBase]);
+  const decision = useMemo<ToolConnectionTestDecision>(() => {
+    const tool = selectedAgent?.effectiveAccess.tools.find((candidate) => (
+      candidate.toolName === entry.toolName || candidate.gatewayToolName === entry.toolName
+    ));
+    return tool?.decision ?? "off";
+  }, [entry.toolName, selectedAgent]);
+  const title = entry.title ?? entry.toolName;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Test {title}</DialogTitle>
+          <DialogDescription>
+            Run a real action with the same permissions and credentials an agent would use.
+          </DialogDescription>
+        </DialogHeader>
+
+        {testAgentsQuery.isLoading ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading agents…
+          </div>
+        ) : testAgentsQuery.isError ? (
+          <TestLoadError
+            message="We couldn't load the agents available for testing."
+            onRetry={() => { void testAgentsQuery.refetch(); }}
+          />
+        ) : agents.length === 0 ? (
+          <p className="py-6 text-sm text-muted-foreground">No agents are available to test as.</p>
+        ) : accessQuery.isError && !accessQuery.data ? (
+          <TestLoadError
+            message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
+            onRetry={() => { void accessQuery.refetch(); }}
+          />
+        ) : !selectedAgent ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading agent permissions…
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div className="rounded-md border border-border bg-muted/30 p-4">
+              <p className="text-xs font-medium text-muted-foreground">Act as</p>
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                <AgentPicker
+                  agents={agents}
+                  selectedAgent={selectedAgent}
+                  onSelect={setRequestedAgentId}
+                  connectionId={connectionId}
+                  appName={appName}
+                  inline
+                />
+                <DecisionBadge decision={decision} />
+              </div>
+            </div>
+            <ActionTester
+              key={`${entry.id}:${selectedAgent.id}`}
+              entry={entry}
+              decision={decision}
+              connectionId={connectionId}
+              appName={appName}
+              agent={selectedAgent}
+              allAgents={agents}
+              onSelectAgent={setRequestedAgentId}
+            />
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 const DECISION_META: Record<ToolConnectionTestDecision, DecisionMeta> = {
   allowed: {
@@ -99,19 +234,6 @@ function DecisionBadge({ decision }: { decision: ToolConnectionTestDecision }) {
   );
 }
 
-/** "Allowed for 1 action · Ask first for 2 · Off for 1" — singular gets " action". */
-function summaryCount(label: string, n: number): string {
-  return `${label} ${n}${n === 1 ? " action" : ""}`;
-}
-
-function accessSummaryLine(summary: ToolConnectionAccessSummary): string {
-  return [
-    summaryCount("Allowed for", summary.allowedCount),
-    summaryCount("Ask first for", summary.askFirstCount),
-    summaryCount("Off for", summary.offCount),
-  ].join(" · ");
-}
-
 // ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
@@ -129,31 +251,41 @@ export function TestPanel({
   /** New, not-yet-reviewed actions — shown as Off so they're reachable to test. */
   quarantined?: ToolCatalogEntry[];
 }) {
+  const hasActions = active.length > 0 || quarantined.length > 0;
   const testAgentsQuery = useQuery({
     queryKey: queryKeys.tools.testAgents(connectionId),
     queryFn: () => toolsApi.listTestAgents(connectionId),
-    enabled: !!connectionId,
+    enabled: !!connectionId && hasActions,
   });
 
   const agents = useMemo(
-    () => [...(testAgentsQuery.data?.agents ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+    () => [...(testAgentsQuery.data?.agents ?? [])].sort(
+      (a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name),
+    ),
     [testAgentsQuery.data],
   );
 
-  const [agentId, setAgentId] = useState<string | null>(null);
-  // Default to the first agent (alphabetical) that can run at least one action;
-  // otherwise the first agent we can test as at all.
-  useEffect(() => {
-    if (agentId && agents.some((a) => a.id === agentId)) return;
-    if (agents.length === 0) return;
-    const withAccess = agents.find((a) => a.effectiveAccess.allowedCount > 0);
-    setAgentId((withAccess ?? agents[0]).id);
-  }, [agents, agentId]);
-
-  // Switches the header from "TEST AS" card to the compact "Testing as …" line.
-  const [hasInteracted, setHasInteracted] = useState(false);
-
-  const selectedAgent = agents.find((a) => a.id === agentId) ?? null;
+  const [requestedAgentId, setRequestedAgentId] = useState<string | null>(null);
+  // The API returns only agents this user may write to. Prefer the highest
+  // agent in that accessible slice of the org tree, regardless of whether a
+  // lower-ranked agent happens to have a broader app policy today.
+  const agentId = requestedAgentId && agents.some((agent) => agent.id === requestedAgentId)
+    ? requestedAgentId
+    : agents[0]?.id ?? null;
+  const selectedAgentBase = agents.find((agent) => agent.id === agentId) ?? null;
+  const testAgentAccessQuery = useQuery({
+    queryKey: queryKeys.tools.testAgentAccess(connectionId, agentId ?? "__none__"),
+    queryFn: () => toolsApi.getTestAgentAccess(connectionId, agentId!),
+    enabled: !!connectionId && !!agentId && hasActions,
+    staleTime: TEST_ACCESS_STALE_TIME_MS,
+    gcTime: TEST_ACCESS_GC_TIME_MS,
+    refetchOnWindowFocus: false,
+  });
+  const selectedAgent = useMemo<TestAgentWithAccess | null>(() => (
+    selectedAgentBase && testAgentAccessQuery.data
+      ? { ...selectedAgentBase, effectiveAccess: testAgentAccessQuery.data.access }
+      : null
+  ), [selectedAgentBase, testAgentAccessQuery.data]);
 
   // Per-action decision for the selected agent, keyed by both the upstream and
   // gateway tool names so we can match whatever the catalog stores.
@@ -196,9 +328,17 @@ export function TestPanel({
   const visibleQuarantined = quarantinedActions.filter(matches);
   const visibleCount = visibleRead.length + visibleWrite.length + visibleQuarantined.length;
 
+  if (!hasActions) {
+    return <EmptyState connectionId={connectionId} appName={appName} />;
+  }
+
   if (testAgentsQuery.isLoading) {
     return (
       <div className="space-y-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading agents…
+        </div>
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-12 w-full" />
         <Skeleton className="h-12 w-full" />
@@ -206,13 +346,18 @@ export function TestPanel({
     );
   }
 
-  if (active.length === 0 && quarantinedActions.length === 0) {
-    return <EmptyState connectionId={connectionId} appName={appName} />;
+  if (testAgentsQuery.isError) {
+    return (
+      <TestLoadError
+        message="We couldn't load the agents available for testing."
+        onRetry={() => { void testAgentsQuery.refetch(); }}
+      />
+    );
   }
 
   if (agents.length === 0) {
     return (
-      <div className="rounded-lg border border-border bg-card p-6 text-center">
+      <div className="py-6 text-center">
         <p className="text-sm font-medium text-foreground">No agents to test as</p>
         <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
           Only agents you can assign tasks to can preview {appName}. Give an agent access in{" "}
@@ -225,28 +370,50 @@ export function TestPanel({
     );
   }
 
+  if (testAgentAccessQuery.isError && !testAgentAccessQuery.data) {
+    return (
+      <TestLoadError
+        message={`We couldn't load ${selectedAgentBase?.name ?? "this agent"}'s permissions.`}
+        onRetry={() => { void testAgentAccessQuery.refetch(); }}
+      />
+    );
+  }
+
+  if (testAgentAccessQuery.isLoading || !selectedAgent) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading agent permissions…
+        </div>
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-12 w-full" />
+        <Skeleton className="h-12 w-full" />
+      </div>
+    );
+  }
+
   const sharedRowProps = {
     connectionId,
     appName,
     allAgents: agents,
-    onSelectAgent: setAgentId,
-    onInteract: () => setHasInteracted(true),
+    onSelectAgent: setRequestedAgentId,
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-8">
       {selectedAgent && (
         <TestAsHeader
           appName={appName}
           agents={agents}
           selectedAgent={selectedAgent}
-          onSelect={setAgentId}
+          onSelect={setRequestedAgentId}
           connectionId={connectionId}
-          compact={hasInteracted}
         />
       )}
 
-      <div className="space-y-3">
+      <section className="space-y-4 border-t border-border pt-8">
+        <h2 className="text-lg font-semibold text-foreground">Actions</h2>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-(--sz-12rem) flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -263,10 +430,10 @@ export function TestPanel({
           <FilterChip label={`Write ${writeActions.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
         </div>
         <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
-      </div>
+      </section>
 
       {visibleCount === 0 ? (
-        <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+        <div className="py-6 text-center text-sm text-muted-foreground">
           No actions match “{query}”. Clear the search to see them all.
         </div>
       ) : (
@@ -311,13 +478,24 @@ export function TestPanel({
 
 function EmptyState({ connectionId, appName }: { connectionId: string; appName: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-8 text-center">
+    <div className="py-8 text-center">
       <p className="text-base font-bold text-foreground">Nothing to test yet</p>
       <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
         Once {appName} is connected, the actions it offers will show up here so you can try them out.
       </p>
       <Button asChild className="mt-4" variant="outline">
-        <Link to={appTabHref(connectionId, "setup")}>Go to Setup</Link>
+        <Link to={appTabHref(connectionId, "permissions")}>Go to Permissions</Link>
+      </Button>
+    </div>
+  );
+}
+
+function TestLoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="py-8 text-center">
+      <p className="text-sm font-medium text-foreground">{message}</p>
+      <Button className="mt-3" size="sm" variant="outline" onClick={onRetry}>
+        Try again
       </Button>
     </div>
   );
@@ -333,38 +511,24 @@ function TestAsHeader({
   selectedAgent,
   onSelect,
   connectionId,
-  compact,
 }: {
   appName: string;
   agents: ToolConnectionTestAgent[];
-  selectedAgent: ToolConnectionTestAgent;
+  selectedAgent: TestAgentWithAccess;
   onSelect: (agentId: string) => void;
   connectionId: string;
-  compact: boolean;
 }) {
-  if (compact) {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-        <p className="text-sm text-muted-foreground">
-          Testing as{" "}
-          <AgentPicker
-            agents={agents}
-            selectedAgent={selectedAgent}
-            onSelect={onSelect}
-            connectionId={connectionId}
-            appName={appName}
-            inline
-          />
-        </p>
-        <p className="text-xs text-muted-foreground">{accessSummaryLine(selectedAgent.effectiveAccess)}</p>
-      </div>
-    );
-  }
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <section className="space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold text-foreground">Test an action</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Run a real action as an agent.
+        </p>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Test as</p>
+          <p className="text-xs font-medium text-muted-foreground">Agent</p>
           <AgentPicker
             agents={agents}
             selectedAgent={selectedAgent}
@@ -373,12 +537,14 @@ function TestAsHeader({
             appName={appName}
           />
         </div>
-        <p className="text-sm text-muted-foreground">{accessSummaryLine(selectedAgent.effectiveAccess)}</p>
+        <Link
+          className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          to={appTabHref(connectionId, "permissions")}
+        >
+          {formatActionPermissionSummary(selectedAgent.effectiveAccess)}
+        </Link>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Runs real actions in {appName}, exactly as this agent would.
-      </p>
-    </div>
+    </section>
   );
 }
 
@@ -438,8 +604,7 @@ function AgentPicker({
             <p className="px-3 py-4 text-center text-xs text-muted-foreground">No agents match.</p>
           ) : (
             filtered.map((agent) => {
-              const summary = agent.effectiveAccess;
-              const noAccess = summary.allowedCount === 0 && summary.askFirstCount === 0;
+              const detail = agent.title?.trim() || agent.role;
               return (
                 <button
                   key={agent.id}
@@ -462,11 +627,7 @@ function AgentPicker({
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium text-foreground">{agent.name}</span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {noAccess
-                        ? "No access — not allowed for any action"
-                        : `Allowed ${summary.allowedCount} · Ask first ${summary.askFirstCount} · Off ${summary.offCount}`}
-                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">{detail}</span>
                   </span>
                 </button>
               );
@@ -525,7 +686,6 @@ type RowSharedProps = {
   appName: string;
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
-  onInteract: () => void;
 };
 
 function ActionGroup({
@@ -540,13 +700,13 @@ function ActionGroup({
   subheading?: string;
   entries: ToolCatalogEntry[];
   decisionFor: (entry: ToolCatalogEntry) => ToolConnectionTestDecision;
-  agent: ToolConnectionTestAgent;
+  agent: TestAgentWithAccess;
 } & RowSharedProps) {
   return (
     <section>
       <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
       {subheading && <p className="mb-1.5 -mt-1 text-xs text-muted-foreground">{subheading}</p>}
-      <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+      <div className="divide-y divide-border">
         {entries.map((entry) => (
           <ActionRow
             key={entry.id}
@@ -569,7 +729,7 @@ function ActionRow({
 }: {
   entry: ToolCatalogEntry;
   decision: ToolConnectionTestDecision;
-  agent: ToolConnectionTestAgent;
+  agent: TestAgentWithAccess;
 } & RowSharedProps) {
   const [open, setOpen] = useState(() => Boolean(loadStoredAskFirstOutcome(shared.connectionId, entry, agent)));
   const title = entry.title ?? entry.toolName;
@@ -599,7 +759,7 @@ function ActionRow({
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="border-t border-border bg-muted/20 px-4 py-4">
+        <div className="border-t border-border py-4 pl-11">
           <ActionTester entry={entry} decision={decision} agent={agent} {...shared} />
         </div>
       </CollapsibleContent>
@@ -687,11 +847,10 @@ function ActionTester({
   agent,
   allAgents,
   onSelectAgent,
-  onInteract,
 }: {
   entry: ToolCatalogEntry;
   decision: ToolConnectionTestDecision;
-  agent: ToolConnectionTestAgent;
+  agent: TestAgentWithAccess;
 } & RowSharedProps) {
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
@@ -755,7 +914,6 @@ function ActionTester({
     const validationErrors = validateJsonSchemaForm(rawSchema, values);
     setErrors(validationErrors);
     if (Object.keys(validationErrors).length > 0) return;
-    onInteract();
     cancelledRef.current = false;
     startedAtRef.current = Date.now();
     setElapsedMs(0);
@@ -1015,8 +1173,8 @@ function AllowedResult({
 
       <p className="mt-3 text-xs text-muted-foreground">
         This call is in the{" "}
-        <Link className="text-primary hover:underline" to={appTabHref(connectionId, "activity")}>
-          Activity tab
+        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
+          Audit log
         </Link>
         .
       </p>
@@ -1146,8 +1304,8 @@ function ErrorResult({
       <p className="mt-3 text-xs text-muted-foreground">Adjust the input above and try again.</p>
       <p className="mt-1 text-xs text-muted-foreground">
         Also visible in the{" "}
-        <Link className="text-primary hover:underline" to={appTabHref(connectionId, "activity")}>
-          Activity tab
+        <Link className="text-primary hover:underline" to="/activity?mode=agents&action=tool_">
+          Audit log
         </Link>
         .
       </p>
@@ -1312,7 +1470,6 @@ function AskFirstResult({
 function OffExplanation({
   entry,
   connectionId,
-  appName,
   agent,
   allAgents,
   onSelectAgent,
@@ -1320,28 +1477,21 @@ function OffExplanation({
   entry: ToolCatalogEntry;
   connectionId: string;
   appName: string;
-  agent: ToolConnectionTestAgent;
+  agent: TestAgentWithAccess;
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
 }) {
   const title = entry.title ?? entry.toolName;
   const permHref = `${appTabHref(connectionId, "permissions")}?focus=${encodeURIComponent(entry.id)}`;
 
-  // Decision for this action across every agent we can test as.
+  // Other agents are intentionally not summarized up front. Selecting one
+  // fetches and caches only that agent's access, keeping this screen fast even
+  // for large companies.
   const others = allAgents.filter((a) => a.id !== agent.id);
-  const decisionOf = (a: ToolConnectionTestAgent): ToolConnectionTestDecision => {
-    const tool = a.effectiveAccess.tools.find(
-      (t) => t.toolName === entry.toolName || t.gatewayToolName === entry.toolName,
-    );
-    return tool?.decision ?? "off";
-  };
-  const allOff = allAgents.every((a) => decisionOf(a) === "off");
 
   const whyBody = entry.status === "quarantined"
     ? "This action is new and hasn't been turned on yet."
-    : allOff
-      ? "An admin set it to Off for all agents using this app."
-      : `${agent.name}'s access profile sets this action to Off.`;
+    : `${agent.name}'s access profile sets this action to Off.`;
 
   // "Last changed by {Actor} · {relativeTime}" — only the access config carries
   // this; a quarantined action has never been configured, so there's nothing to
@@ -1352,13 +1502,10 @@ function OffExplanation({
       ? `Last changed${lastChangedByName ? ` by ${lastChangedByName}` : ""} · ${relTime(new Date(lastChangedAt))}`
       : null;
 
-  const otherSettings = others.map((a) => ({ name: a.name, decision: decisionOf(a) }));
-  const tryAgents = others.filter((a) => decisionOf(a) !== "off");
-
   return (
     <div className="grid gap-3 md:grid-cols-(--gtc-62)">
       <div className="space-y-3">
-        <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3">
+        <div className="flex items-start gap-2">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-sm text-muted-foreground">
             <p className="font-medium text-foreground">{title} is off for {agent.name}.</p>
@@ -1378,27 +1525,15 @@ function OffExplanation({
         <p className="text-xs text-muted-foreground">No call will be made — this action is off for {agent.name}.</p>
       </div>
 
-      <aside className="rounded-md border border-border bg-card p-3">
+      <aside>
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
         {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}
-        {otherSettings.length > 0 && (
-          <div className="mt-3">
-            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Other agents using {appName}:</p>
-            <ul className="mt-1 space-y-0.5 text-(length:--text-micro) text-muted-foreground">
-              {otherSettings.map((s) => (
-                <li key={s.name}>
-                  {s.name}: <span className="text-foreground">{DECISION_META[s.decision].label}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {tryAgents.length > 0 && (
+        {others.length > 0 && (
           <div className="mt-3">
             <p className="text-(length:--text-micro) font-medium text-muted-foreground">Try as a different agent:</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
-              {tryAgents.slice(0, 4).map((other) => (
+              {others.slice(0, 4).map((other) => (
                 <button
                   key={other.id}
                   type="button"

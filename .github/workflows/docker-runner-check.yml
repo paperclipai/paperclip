@@ -1,0 +1,38 @@
+name: Docker Runner check
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/docker-runner-check.yml
+      - Dockerfile
+      - .dockerignore
+      - scripts/check-docker-runner-cache.sh
+      - packages/paperclip-runner/rust-toolchain.toml
+      - packages/paperclip-runner/runner/**
+      - packages/paperclip-runner/protocol/**
+
+permissions: {}
+
+concurrency:
+  group: docker-runner-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  runner:
+    name: Compile isolated native Runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      # Compile the real target, then change source in a disposable context.
+      # A fresh builder must import dependencies and produce changed binary metadata.
+      # No registry credentials, external cache, or image publication.
+      - name: Verify native build and dependency cache reuse
+        run: bash scripts/check-docker-runner-cache.sh

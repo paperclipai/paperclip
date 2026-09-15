@@ -129,7 +129,135 @@ describe("InlineEntitySelector", () => {
 
     const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
+    expect(searchInput?.className).toContain("text-base");
+    expect(document.querySelector("[data-mobile-entity-picker]")).not.toBeNull();
     expect(document.activeElement).toBe(searchInput);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("opens on programmatic focus without toggling an open popover closed", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[{ id: "project-1", label: "Project One" }]}
+          placeholder="Project"
+          noneLabel="No project"
+          searchPlaceholder="Search projects..."
+          emptyMessage="No projects found."
+          onChange={vi.fn()}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+
+    await act(async () => {
+      trigger?.focus();
+      await Promise.resolve();
+    });
+    expect(
+      document.querySelector('input[placeholder="Search projects..."]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      trigger?.focus();
+      await Promise.resolve();
+    });
+    expect(
+      document.querySelector('input[placeholder="Search projects..."]'),
+    ).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not open the popover when disabled", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[{ id: "agent:agent-1", label: "CodexCoder" }]}
+          placeholder="Responsible"
+          noneLabel="No responsible"
+          searchPlaceholder="Search responsible..."
+          emptyMessage="No responsible found."
+          onChange={onChange}
+          disabled
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+    expect(trigger?.disabled).toBe(true);
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.querySelector('input[placeholder="Search responsible..."]')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("filters options as the user types in the search box", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value=""
+          options={[
+            { id: "agent:agent-1", label: "CodexCoder" },
+            { id: "agent:agent-2", label: "DesignBot" },
+          ]}
+          placeholder="Responsible"
+          noneLabel="No responsible"
+          searchPlaceholder="Search responsible..."
+          emptyMessage="No responsible found."
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement | null;
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const searchInput = document.querySelector('input[placeholder="Search responsible..."]') as HTMLInputElement | null;
+    expect(searchInput).not.toBeNull();
+
+    const nativeInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeInputValue?.call(searchInput, "design");
+      searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const optionLabels = Array.from(document.querySelectorAll("[role='dialog'] button, .max-h-56 button")).map(
+      (el) => el.textContent ?? "",
+    );
+    const joined = optionLabels.join("|");
+    expect(joined).toContain("DesignBot");
+    expect(joined).not.toContain("CodexCoder");
 
     act(() => {
       root.unmount();

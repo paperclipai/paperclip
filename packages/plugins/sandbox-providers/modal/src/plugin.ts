@@ -318,8 +318,8 @@ async function getSandboxOrNull(
 
 function warnIfUnsupportedNode(logger: { warn: (msg: string) => void } | undefined): void {
   const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-  if (Number.isFinite(major) && major < 22) {
-    const message = `Modal sandbox provider is running on Node ${process.versions.node}; Modal officially supports Node 22+. The plugin will attempt to operate but vendor support is not guaranteed below Node 22.`;
+  if (Number.isFinite(major) && major < 24) {
+    const message = `Modal sandbox provider is running on Node ${process.versions.node}; Paperclip requires Node 24+. Upgrade the host runtime before using this plugin.`;
     logger?.warn(message);
   }
 }

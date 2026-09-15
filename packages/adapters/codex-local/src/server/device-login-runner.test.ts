@@ -24,10 +24,10 @@ interface FakeDriverOptions {
 function createFakeDriver(options: FakeDriverOptions = {}) {
   const disposeCalls = { count: 0 };
   const driver: SandboxLoginDriver = {
-    async execStreaming(_command, onStdout) {
+    async start(_command, onData) {
       if (options.execError) throw options.execError;
       for (const chunk of options.chunks ?? []) {
-        onStdout(chunk);
+        onData(chunk);
       }
       if (options.hang) {
         // Never resolve. The runner must fall back to its timeout or signal.
@@ -193,5 +193,35 @@ describe("runDeviceLogin", () => {
   it("exposes the default login command", () => {
     expect(CODEX_DEVICE_LOGIN_COMMAND).toContain("codex");
     expect(CODEX_DEVICE_LOGIN_COMMAND).toContain("--device-auth");
+  });
+
+  it("uses the parser the caller supplies instead of the Codex parser", async () => {
+    // The caller's parser reads a shape the Codex parser rejects, so a call that
+    // reaches the Codex parser instead would never surface a prompt.
+    const { driver } = createFakeDriver({
+      chunks: ["not a codex prompt, but the caller's own marker\n"],
+      exitCode: 0,
+    });
+    const onPrompt = vi.fn();
+    const parsePrompt = vi.fn((output: string) =>
+      output.includes("marker") ? { url: "https://example.test/device", code: "AAAA-11111" } : null,
+    );
+    const result = await runDeviceLogin(driver, { onPrompt, timeoutMs: 1000, parsePrompt });
+    expect(result.outcome).toBe("success");
+    expect(result.promptSurfaced).toBe(true);
+    expect(parsePrompt).toHaveBeenCalled();
+    expect(onPrompt).toHaveBeenCalledWith({ url: "https://example.test/device", code: "AAAA-11111" });
+  });
+
+  it("uses the Codex parser when the caller supplies none", async () => {
+    const { driver } = createFakeDriver({
+      chunks: [`1. Open this link\n${REAL_SHAPED_URL}\n2. Enter this one-time code (expires in 15 minutes)\n${REAL_SHAPED_CODE}\nDone.\n`],
+      exitCode: 0,
+    });
+    const onPrompt = vi.fn();
+    const result = await runDeviceLogin(driver, { onPrompt, timeoutMs: 1000 });
+    expect(result.outcome).toBe("success");
+    expect(result.promptSurfaced).toBe(true);
+    expect(onPrompt).toHaveBeenCalledWith({ url: REAL_SHAPED_URL, code: REAL_SHAPED_CODE });
   });
 });

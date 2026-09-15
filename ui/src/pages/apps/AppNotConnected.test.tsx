@@ -9,19 +9,22 @@ import { AppNotConnected } from "./AppNotConnected";
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
+const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const updateApplicationMock = vi.hoisted(() => vi.fn());
 const mockAgentsList = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateComponentMock = vi.hoisted(() => vi.fn());
-const mockParams = vi.hoisted(() => ({ applicationId: "app-1", tab: "setup" as string | undefined }));
+const mockParams = vi.hoisted(() => ({ applicationId: "app-1", tab: "permissions" as string | undefined }));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listConnectionGrants: (connectionId: string) => listConnectionGrantsMock(connectionId),
     listConnectionActivity: (connectionId: string, limit: number) =>
       listConnectionActivityMock(connectionId, limit),
     listActionRequests: (companyId: string, status: string) =>
@@ -31,6 +34,12 @@ vi.mock("@/api/tools", () => ({
     approveActionRequest: vi.fn(),
     declineActionRequest: vi.fn(),
     createTrustRuleFromActionRequest: vi.fn(),
+  },
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    listUserDirectory: (companyId: string) => listUserDirectoryMock(companyId),
   },
 }));
 
@@ -115,6 +124,8 @@ function connection(overrides: Record<string, unknown> = {}) {
     name: "GitHub",
     connectionKind: "managed",
     transport: "mcp_remote",
+    authKind: "api_key",
+    credentialPolicy: "shared",
     status: "archived",
     transportConfig: { url: "https://github.example/mcp" },
     config: { url: "https://github.example/mcp" },
@@ -142,14 +153,30 @@ describe("AppNotConnected", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockParams.applicationId = "app-1";
-    mockParams.tab = "setup";
+    mockParams.tab = "permissions";
     listApplicationsMock.mockResolvedValue({ applications: [application()] });
     listConnectionsMock.mockResolvedValue({ connections: [connection()] });
     listGalleryMock.mockResolvedValue({
       apps: [{ key: "github", name: "GitHub", logoUrl: "https://example.test/github.png" }],
     });
     listConnectionActivityMock.mockResolvedValue({ events: [], issues: {}, actionRequests: {} });
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-old", uid: "conn-old" },
+      grants: [],
+      capabilities: {
+        canConfigure: true,
+        canCreateOrganizationGrant: true,
+        canSetCompanyInstall: true,
+        canConnectAsCurrentUser: true,
+        canManageAgentInstalls: true,
+        canViewOtherPersonalIdentities: false,
+        editableAgentIds: [],
+      },
+      currentUserId: "user-1",
+      members: [],
+    });
     listActionRequestsMock.mockResolvedValue({ actionRequests: [] });
+    listUserDirectoryMock.mockResolvedValue({ users: [] });
     mockAgentsList.mockResolvedValue([]);
     updateApplicationMock.mockResolvedValue(application({ status: "archived" }));
   });
@@ -174,12 +201,12 @@ describe("AppNotConnected", () => {
     await flushReact();
   }
 
-  it("redirects the application root route to setup", async () => {
+  it("redirects the application root route to Permissions", async () => {
     mockParams.tab = undefined;
 
     await renderPage();
 
-    expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/app/app-1/setup", replace: true });
+    expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/app/app-1/permissions", replace: true });
     expect(listApplicationsMock).not.toHaveBeenCalled();
   });
 
@@ -194,7 +221,7 @@ describe("AppNotConnected", () => {
     expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/conn-live/permissions", replace: true });
   });
 
-  it("shows all existing provider connections before connecting another", async () => {
+  it("redirects a provider application to its live connection Permissions page", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [
         application({
@@ -213,45 +240,71 @@ describe("AppNotConnected", () => {
     });
     listConnectionsMock.mockResolvedValue({
       connections: [
-        connection({ id: "conn-one", applicationId: "app-1", name: "Notion", status: "active" }),
+        connection({
+          id: "conn-one",
+          applicationId: "app-1",
+          name: "Notion",
+          status: "active",
+          createdByUserId: "user-1",
+        }),
         connection({ id: "conn-two", applicationId: "app-2", name: "Notion team", status: "active" }),
+      ],
+    });
+    listUserDirectoryMock.mockResolvedValue({
+      users: [{
+        principalId: "user-1",
+        status: "active",
+        user: {
+          id: "user-1",
+          name: "Dotta",
+          email: "dotta@example.com",
+          image: "https://example.com/dotta.png",
+        },
+      }],
+    });
+
+    await renderPage();
+
+    expect(navigateComponentMock).toHaveBeenCalledWith({
+      to: "/apps/conn-one/permissions",
+      replace: true,
+    });
+  });
+
+  it("does not group unrelated generic link applications", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [
+        application({
+          id: "app-1",
+          applicationKey: "app-gallery:link:first",
+          name: "First server",
+          metadata: { source: "link" },
+        }),
+        application({
+          id: "app-2",
+          applicationKey: "app-gallery:link:second",
+          name: "Second server",
+          metadata: { source: "link" },
+        }),
+      ],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({ id: "conn-old", applicationId: "app-1", status: "archived" }),
+        connection({ id: "conn-live", applicationId: "app-2", status: "active" }),
       ],
     });
 
     await renderPage();
 
-    expect(navigateComponentMock).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("2 connected");
-    expect(container.textContent).toContain("Already connected to Notion");
-    expect(container.textContent).toContain("Notion team");
-    expect(container.textContent).toContain("Connect another");
-
-    const editRows = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Edit"),
-    );
-    await act(async () => {
-      editRows[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-two/setup");
-
-    const connectAnother = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Connect another",
-    );
-    await act(async () => {
-      connectAnother?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(mockNavigate).toHaveBeenCalledWith(
-      "/apps/connect?applicationId=app-1&name=Notion&new=1&source=notion",
-    );
+    expect(container.textContent).toContain("Not connected");
+    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("Reconnect");
   });
 
   it.each([
-    ["setup", "Reconnect this app"],
     ["review", "Nothing is waiting for your OK right now."],
     ["permissions", "Permissions paused"],
-    ["test", "Reconnect to test this app."],
-    ["activity", "No activity yet."],
-    ["advanced", "Danger zone"],
   ])("renders the %s tab with persistent app identity", async (tab, expectedText) => {
     mockParams.tab = tab;
 
@@ -262,13 +315,119 @@ describe("AppNotConnected", () => {
     expect(container.textContent).toContain(expectedText);
   });
 
-  it("keeps previous setup context on reconnect tabs", async () => {
-    mockParams.tab = "setup";
+  it.each([
+    ["setup", "/apps/app/app-1/permissions"],
+    ["test", "/apps/app/app-1/permissions"],
+    ["advanced", "/apps/app/app-1/permissions"],
+    ["activity", "/activity?action=tool_"],
+  ])("redirects the retired %s tab", async (tab, to) => {
+    mockParams.tab = tab;
+    await renderPage();
+    expect(navigateComponentMock).toHaveBeenCalledWith({ to, replace: true });
+  });
+
+  it.each(["permissions", "review"])("shows reconnect directly below the header on %s", async (tab) => {
+    mockParams.tab = tab;
 
     await renderPage();
 
-    expect(container.textContent).toContain("Previous setup");
-    expect(container.textContent).toContain("Last error: Token expired.");
-    expect(container.textContent).toContain("https://github.example/mcp");
+    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("Add a working GitHub key to restore access.");
+    expect(Array.from(container.querySelectorAll("button")).some(
+      (button) => button.textContent?.trim() === "Reconnect",
+    )).toBe(true);
+  });
+
+  it("carries the retained identity into the reconnect flow", async () => {
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ credentialPolicy: "per_user", createdByUserId: "user-1" })],
+    });
+
+    await renderPage();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/connect?applicationId=app-1&name=GitHub&new=1&reconnect=conn-old&identity=user&source=github&link=https%3A%2F%2Fgithub.example%2Fmcp",
+    );
+  });
+
+  it("keeps a removed Vercel-backed connection in the isolated Vercel setup", async () => {
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ credentialSource: "vercel_connect" })],
+    });
+
+    await renderPage();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/vercel-connect?applicationId=app-1&name=GitHub&new=1&reconnect=conn-old&identity=organization&source=github&link=https%3A%2F%2Fgithub.example%2Fmcp",
+    );
+  });
+
+  it("prefills a custom MCP reconnect from the stored transport URL", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ applicationKey: "custom-mcp", name: "Bla", metadata: null })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({
+        name: "Bla",
+        config: { url: "http://127.0.0.1:49287" },
+        transportConfig: { url: "http://127.0.0.1:49287" },
+      })],
+    });
+    listGalleryMock.mockResolvedValue({ apps: [] });
+
+    await renderPage();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/connect?applicationId=app-1&name=Bla&new=1&reconnect=conn-old&identity=organization&byo=1&link=http%3A%2F%2F127.0.0.1%3A49287",
+    );
+  });
+
+  it("does not offer a removed personal reconnect to someone other than its fixed owner", async () => {
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ credentialPolicy: "per_user", createdByUserId: "user-2" })],
+    });
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-old", uid: "conn-old" },
+      grants: [{
+        id: "grant-user-2",
+        kind: "user",
+        subjectUserId: "user-2",
+        status: "revoked",
+        credentialSecretRefs: [],
+      }],
+      capabilities: {
+        canConfigure: true,
+        canCreateOrganizationGrant: true,
+        canSetCompanyInstall: true,
+        canConnectAsCurrentUser: true,
+        canManageAgentInstalls: true,
+        canViewOtherPersonalIdentities: true,
+        editableAgentIds: [],
+      },
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderPage();
+
+    expect(container.textContent).toContain("The person this connection belongs to must reconnect it.");
+    expect(Array.from(container.querySelectorAll("button")).some(
+      (button) => button.textContent?.trim() === "Reconnect",
+    )).toBe(false);
   });
 });

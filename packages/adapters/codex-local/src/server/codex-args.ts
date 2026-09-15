@@ -36,6 +36,7 @@ export function buildCodexExecArgs(
   options: {
     resumeSessionId?: string | null;
     skipGitRepoCheck?: boolean;
+    networkAccess?: boolean;
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
@@ -54,6 +55,17 @@ export function buildCodexExecArgs(
   const extraArgs = readExtraArgs(record);
 
   const args = ["exec", "--json"];
+  // `codex exec` otherwise defaults to read-only/never, which cannot perform
+  // Paperclip work. Keep the sandbox, but make unattended workspace work and
+  // API calls possible. Explicit operator modes/profiles retain their meaning.
+  const explicitSandbox = extraArgs.some((arg) =>
+    /^(--sandbox(?:=|$)|-s|--profile(?:=|$)|-p|--full-auto$|--yolo$|--dangerously-bypass-approvals-and-sandbox$)/.test(arg)
+    || /^(?:(?:--config=|-c=?)\s*)?(?:sandbox_mode|profile)\s*=/.test(arg),
+  );
+  if (!bypass && !explicitSandbox) {
+    args.push("-c", 'sandbox_mode="workspace-write"');
+    args.push("-c", `sandbox_workspace_write.network_access=${options.networkAccess !== false}`);
+  }
   // Codex rejects a repeated `--skip-git-repo-check` ("cannot be used multiple
   // times"). The adapter injects this flag for sandbox execution, so when an
   // operator's extraArgs already carry it the injection would abort the run
@@ -72,6 +84,9 @@ export function buildCodexExecArgs(
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
   if (extraArgs.length > 0) args.push(...extraArgs);
+  if (!bypass && options.networkAccess === false) {
+    args.push("-c", "sandbox_workspace_write.network_access=false");
+  }
   if (options.resumeSessionId) args.push("resume", options.resumeSessionId, "-");
   else args.push("-");
 

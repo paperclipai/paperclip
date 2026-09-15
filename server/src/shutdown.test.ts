@@ -1,9 +1,279 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
+  closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  drainRunExecutionFinalizersForShutdown,
+  finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function stubLogger() {
+  return { info: vi.fn(), error: vi.fn() };
+}
+
+describe("finalizeServerShutdown", () => {
+  it("awaits the setup-token cleanup before the database stop and the process exit", async () => {
+    const order: string[] = [];
+    // The held promise models the setup-token session cancellation and its
+    // sandbox lease release. The teardown must not continue while it is pending.
+    const release = deferred();
+    const shutdownAppServices = vi.fn(async () => {
+      order.push("appServices:start");
+      await release.promise;
+      order.push("appServices:settled");
+    });
+    const closeHttpListener = vi.fn(async () => {
+      order.push("listener:close");
+    });
+    const closeDatabase = vi.fn(async () => {
+      order.push("database:close");
+    });
+    const stopEmbeddedPostgres = vi.fn(async () => {
+      order.push("postgres:stop");
+    });
+    const shutdownInstrumentation = vi.fn(async () => {
+      order.push("instrumentation:flush");
+    });
+    const shutdownSentry = vi.fn(async () => {
+      order.push("sentry:flush");
+    });
+
+    let exited = false;
+    const finalize = finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices,
+      closeHttpListener,
+      closeDatabase,
+      stopEmbeddedPostgres,
+      shutdownInstrumentation,
+      shutdownSentry,
+      log: stubLogger(),
+    }).then(() => {
+      // This models the caller's `process.exit(0)` continuation.
+      exited = true;
+      order.push("exit");
+    });
+
+    // The cleanup is in flight. The database stop, the instrumentation flush,
+    // and the process exit continuation must all wait for it to settle.
+    await vi.waitFor(() => expect(shutdownAppServices).toHaveBeenCalledOnce());
+    // The listener already closed: requests are drained while every service
+    // is still available, and nothing after this point can be reached.
+    expect(closeHttpListener).toHaveBeenCalledOnce();
+    expect(closeDatabase).not.toHaveBeenCalled();
+    expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
+    expect(shutdownInstrumentation).not.toHaveBeenCalled();
+    expect(exited).toBe(false);
+
+    release.resolve();
+    await finalize;
+
+    expect(exited).toBe(true);
+    expect(order).toEqual([
+      "listener:close",
+      "appServices:start",
+      "appServices:settled",
+      "database:close",
+      "postgres:stop",
+      "instrumentation:flush",
+      "sentry:flush",
+      "exit",
+    ]);
+  });
+
+  it("keeps the teardown durable and still exits when the setup-token release fails", async () => {
+    const order: string[] = [];
+    // The held promise rejects, which models a lease release that failed. The
+    // reaper owns the durable retry, so the teardown must log the failure and
+    // continue rather than swallow it or block the exit.
+    const release = deferred();
+    const releaseError = new Error("lease release failed");
+    const shutdownAppServices = vi.fn(async () => {
+      await release.promise;
+    });
+    const stopEmbeddedPostgres = vi.fn(async () => {
+      order.push("postgres:stop");
+    });
+    const shutdownInstrumentation = vi.fn(async () => {
+      order.push("instrumentation:flush");
+    });
+    const shutdownSentry = vi.fn(async () => undefined);
+    const log = stubLogger();
+
+    let exited = false;
+    const finalize = finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices,
+      stopEmbeddedPostgres,
+      shutdownInstrumentation,
+      shutdownSentry,
+      log,
+    }).then(() => {
+      exited = true;
+    });
+
+    await vi.waitFor(() => expect(shutdownAppServices).toHaveBeenCalledOnce());
+    expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
+    expect(exited).toBe(false);
+
+    release.reject(releaseError);
+    await finalize;
+
+    // The teardown surfaced the failure in the log, then finished the ordered
+    // teardown and reached the exit continuation.
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: releaseError, signal: "SIGTERM" }),
+      expect.any(String),
+    );
+    expect(order).toEqual(["postgres:stop", "instrumentation:flush"]);
+    expect(exited).toBe(true);
+  });
+
+  it("logs a failed database close and still stops the provider and exits", async () => {
+    const order: string[] = [];
+    const closeError = new Error("pool end timed out");
+    const closeDatabase = vi.fn(async () => {
+      order.push("database:close");
+      throw closeError;
+    });
+    const stopEmbeddedPostgres = vi.fn(async () => {
+      order.push("postgres:stop");
+    });
+    const log = stubLogger();
+
+    await finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      closeDatabase,
+      stopEmbeddedPostgres,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry: vi.fn(async () => undefined),
+      log,
+    });
+
+    expect(order).toEqual(["database:close", "postgres:stop"]);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: closeError, signal: "SIGTERM" }),
+      "Database client shutdown failed",
+    );
+  });
+
+  it("skips the database stop when no embedded PostgreSQL runs in this process", async () => {
+    const shutdownAppServices = vi.fn(async () => undefined);
+    const shutdownInstrumentation = vi.fn(async () => undefined);
+    const shutdownSentry = vi.fn(async () => undefined);
+    const log = stubLogger();
+
+    await finalizeServerShutdown({
+      signal: "SIGINT",
+      shutdownAppServices,
+      stopEmbeddedPostgres: null,
+      shutdownInstrumentation,
+      shutdownSentry,
+      log,
+    });
+
+    expect(shutdownAppServices).toHaveBeenCalledOnce();
+    expect(shutdownInstrumentation).toHaveBeenCalledOnce();
+    expect(log.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("closeHttpListenerForShutdown", () => {
+  function fakeServer(input: { listening: boolean; closeDelayMs?: number | null }) {
+    const closeIdleConnections = vi.fn();
+    const closeAllConnections = vi.fn();
+    const close = vi.fn((callback?: (err?: Error) => void) => {
+      if (input.closeDelayMs === null) return;
+      setTimeout(() => callback?.(), input.closeDelayMs ?? 0);
+    });
+    return { listening: input.listening, close, closeIdleConnections, closeAllConnections };
+  }
+
+  it("stops accepting, closes idle keep-alive sockets, and resolves once the listener closed", async () => {
+    const server = fakeServer({ listening: true, closeDelayMs: 0 });
+    await expect(
+      closeHttpListenerForShutdown({ server, signal: "SIGTERM", timeoutMs: 1_000, log: stubLogger() }),
+    ).resolves.toBe("closed");
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(server.closeIdleConnections).toHaveBeenCalledOnce();
+    expect(server.closeAllConnections).not.toHaveBeenCalled();
+  });
+
+  it("closes the remaining connections when the drain outlives the grace period", async () => {
+    vi.useFakeTimers();
+    try {
+      const server = fakeServer({ listening: true, closeDelayMs: null });
+      const log = stubLogger();
+      const pending = closeHttpListenerForShutdown({ server, signal: "SIGINT", timeoutMs: 250, log });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toBe("timed_out");
+      expect(server.closeAllConnections).toHaveBeenCalledOnce();
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ timeoutMs: 250 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does nothing when the listener was never bound", async () => {
+    const server = fakeServer({ listening: false });
+    await expect(
+      closeHttpListenerForShutdown({ server, signal: "SIGTERM", log: stubLogger() }),
+    ).resolves.toBe("not_listening");
+    expect(server.close).not.toHaveBeenCalled();
+  });
+});
+
+describe("drainRunExecutionFinalizersForShutdown", () => {
+  it("awaits bounded execution finalizers", async () => {
+    const release = deferred();
+    const drain = vi.fn(() => release.promise);
+    const pending = drainRunExecutionFinalizersForShutdown({
+      signal: "SIGTERM",
+      drain,
+      timeoutMs: 1_000,
+      log: stubLogger(),
+    });
+    await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
+    release.resolve();
+    await expect(pending).resolves.toBe("drained");
+  });
+
+  it("returns after the bounded timeout when an adopted run remains active", async () => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const pending = drainRunExecutionFinalizersForShutdown({
+        signal: "SIGINT",
+        drain: () => new Promise<void>(() => undefined),
+        timeoutMs: 250,
+        log,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toBe("timed_out");
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ timeoutMs: 250 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("loadWithoutCoordinatedShutdownSignalHooks", () => {
   it("removes the eager signal handlers from the real embedded-postgres import", async () => {

@@ -58,20 +58,23 @@ export async function testEnvironment(
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
   });
+  if (engineSelection.unavailableReason) {
+    return {
+      adapterType: "gemini_local",
+      status: "fail",
+      checks: [{
+        code: "adapter_engine_unavailable",
+        level: "error",
+        message: engineSelection.unavailableReason,
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   if (engineSelection.engine === "acp") {
     return testGeminiAcpEnvironment(ctx);
   }
 
   const checks: AdapterEnvironmentCheck[] = [];
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    checks.push({
-      code: "gemini_acp_default_fallback",
-      level: "warn",
-      message: "Gemini ACP default is unavailable; testing the Gemini CLI fallback lane.",
-      detail: engineSelection.fallbackReason,
-      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
-    });
-  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "gemini");
   const target = ctx.executionTarget ?? null;

@@ -43,7 +43,7 @@ export function normalizeProviderFamily(key: string | undefined): string {
 
 /**
  * The common prefix for every sandbox-startup span attribute. One prefix keeps
- * the attribute namespace closed and easy to find in the telemetry backend.
+ * the attribute namespace closed and easy to find in the OpenTelemetry backend.
  */
 export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
 
@@ -109,6 +109,11 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   transferWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.wall_ms`,
   /** The number of serial guard round trips before one transfer. */
   transferGuardCount: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.guard.count`,
+  /** The transfer direction: `inbound` for an upload to the sandbox, `outbound`
+   * for a download from the sandbox. The parent span carries operation identity,
+   * so the transfer span never carries an operation label. The value stays in a
+   * closed set, so the attribute cardinality is bounded. */
+  transferDirection: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.direction`,
 } as const;
 
 /** The closed value set for the `outcome` attribute. */
@@ -784,5 +789,75 @@ export async function emitSkippedStartupStep(
     );
   } catch {
     // Observability must not change startup control flow.
+  }
+}
+
+/**
+ * Structured event emitted once per named run-lifecycle phase, so the duration
+ * and the outcome of each phase land in the run-events stream. It is a
+ * run-log event and rides the existing `ctx.onEvent` bridge. It never changes
+ * startup control flow. The payload is a closed shape: exactly `phase`,
+ * `durationMs`, and `outcome`. The phase name is from a closed allowlist, so
+ * the event never carries a command, an argument, a path, an environment
+ * value, or a raw identifier.
+ */
+export const RUN_PHASE_TIMING_EVENT_TYPE = "run.phase.timing";
+
+/**
+ * The closed set of run-lifecycle phase names. A phase-timing event may name only
+ * one of these. The list is fixed and low-cardinality; it never derives from run
+ * or user data.
+ */
+export const RUN_PHASE_NAMES = [
+  "place_workspace",
+  "start_transport",
+  "create_runtime",
+  "ensure_session",
+  "configure_session",
+  "prepare_turn",
+  "turn",
+  "end_session",
+  "settle_reuse",
+  "stop_transport",
+  "sync_back",
+  "release_staging_lease",
+] as const;
+
+/** One run-lifecycle phase name from the closed allowlist. */
+export type RunPhaseName = (typeof RUN_PHASE_NAMES)[number];
+
+const RUN_PHASE_NAME_SET: ReadonlySet<string> = new Set(RUN_PHASE_NAMES);
+
+/** The closed outcome set for a phase-timing event. */
+export type RunPhaseOutcome = "ok" | "failed";
+
+/**
+ * Emit exactly one `run.phase.timing` event for a run-lifecycle phase. The
+ * payload carries only `phase`, `durationMs`, and `outcome`. It never carries a
+ * command, an argument, a path, an environment value, or a raw identifier. The
+ * phase name must be one member of the closed allowlist; a name outside the
+ * allowlist emits nothing, so a free-form label can never reach the stream. A
+ * negative or a non-finite duration clamps to 0. Every sink call sits inside an
+ * error swallow, so a throwing telemetry sink never fails the run.
+ */
+export async function emitRunPhaseTiming(
+  ctx: Pick<AdapterExecutionContext, "onEvent">,
+  phase: string,
+  durationMs: number,
+  outcome: RunPhaseOutcome,
+): Promise<void> {
+  if (!RUN_PHASE_NAME_SET.has(phase)) return;
+  const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+  const event: AdapterRuntimeEvent = {
+    eventType: RUN_PHASE_TIMING_EVENT_TYPE,
+    stream: "system",
+    level: "info",
+    message: `run phase: ${phase} (${safeDuration}ms)`,
+    payload: { phase, durationMs: safeDuration, outcome },
+  };
+  try {
+    await ctx.onEvent?.(event);
+  } catch {
+    // Telemetry never fails the run.
   }
 }

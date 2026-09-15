@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { usePageVisibility } from "../../lib/page-visibility";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readTranscriptRequest } from "./read-transcript-request";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
@@ -44,6 +46,7 @@ export interface RunTranscriptSource {
   id: string;
   status: string;
   adapterType: string;
+  runtimeMode?: "legacy" | "native";
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
@@ -72,6 +75,10 @@ function isTerminalStatus(status: string): boolean {
   return status === "failed" || status === "timed_out" || status === "cancelled" || status === "interrupted" || status === "succeeded";
 }
 
+function canReadPersistedLog(run: RunTranscriptSource): boolean {
+  return run.status === "running" || isTerminalStatus(run.status);
+}
+
 function runKnownLogBytes(run: RunTranscriptSource): number | null {
   const bytes = run.status === "queued"
     ? run.logBytes
@@ -96,6 +103,7 @@ export function useLiveRunTranscripts({
 }: UseLiveRunTranscriptsOptions) {
   // Ticker consumers opt into the silent chunk-count cap; full task views use a
   // byte budget that collapses (not discards) the oldest output when exceeded.
+  const { visible } = usePageVisibility();
   const retentionBudget: ChunkRetentionBudget = useMemo(
     () =>
       typeof maxChunksPerRun === "number"
@@ -118,6 +126,12 @@ export function useLiveRunTranscripts({
   const normalizedRuns = useMemo(() => runs.map((run) => ({ ...run })), [runsKey]);
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
+  const [errorsByRun, setErrorsByRun] = useState<ReadonlyMap<string, Error>>(new Map());
+  const [retryGeneration, setRetryGeneration] = useState(0);
+  const retry = useCallback(() => {
+    missingTerminalLogRunIdsRef.current.clear();
+    setRetryGeneration((value) => value + 1);
+  }, []);
   const seenChunkKeysRef = useRef(new Set<string>());
   // Highest sequenced chunk trimmed out of a run's retained window; older
   // records re-delivered by the other transport are dropped instead of being
@@ -132,6 +146,10 @@ export function useLiveRunTranscripts({
   // the effect again once the nearest deadline elapses so a run that stays gone
   // is eventually cleaned up even if the `runs` list never changes again.
   const absenceDeadlineByRunRef = useRef(new Map<string, number>());
+  // Backoff state for the live event socket. Held outside the socket effect
+  // because that effect restarts on run-metadata changes; per-effect state
+  // would reset a progressed delay back to its base mid-outage.
+  const reconnectStateRef = useRef<{ companyId: string; attempt: number } | null>(null);
   const prevKnownRunIdsRef = useRef(new Set<string>());
   const [pruneTick, setPruneTick] = useState(0);
   const transcriptCacheRef = useRef(new Map<string, {
@@ -153,7 +171,7 @@ export function useLiveRunTranscripts({
 
   const runById = useMemo(() => new Map(normalizedRuns.map((run) => [run.id, run])), [normalizedRuns]);
   const activeRunIds = useMemo(
-    () => new Set(normalizedRuns.filter((run) => !isTerminalStatus(run.status)).map((run) => run.id)),
+    () => new Set(normalizedRuns.filter((run) => run.status === "running").map((run) => run.id)),
     [normalizedRuns],
   );
   const runIdsKey = useMemo(
@@ -233,6 +251,11 @@ export function useLiveRunTranscripts({
       return next.size === prev.size ? prev : next;
     });
 
+    setErrorsByRun((previous) => {
+      const next = new Map([...previous].filter(([id]) => retainedRunIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+
     for (const key of pendingLogRowsByRunRef.current.keys()) {
       const runId = key.replace(/:records$/, "");
       if (!retainedRunIds.has(runId)) {
@@ -272,19 +295,33 @@ export function useLiveRunTranscripts({
   }, [normalizedRuns, pruneTick]);
 
   useEffect(() => {
-    if (normalizedRuns.length === 0) return;
+    if (!visible) return;
+    const readableRuns = normalizedRuns.filter(canReadPersistedLog);
+    if (readableRuns.length === 0) return;
 
     let cancelled = false;
+    const controller = new AbortController();
+    const inFlightRunIds = new Set<string>();
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+      if (missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
         return;
       }
+      inFlightRunIds.add(run.id);
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
-        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
+        const result = await readTranscriptRequest(
+          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, { signal }),
+          controller.signal,
+        );
         if (cancelled) return;
 
+        setErrorsByRun((previous) => {
+          if (!previous.has(run.id)) return previous;
+          const next = new Map(previous);
+          next.delete(run.id);
+          return next;
+        });
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
         if (result.nextOffset !== undefined) {
@@ -295,10 +332,26 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 404) {
+          setErrorsByRun((previous) => {
+            if (!previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.delete(run.id);
+            return next;
+          });
+          // A newly started run may not have created its log yet.
+          if (isTerminalStatus(run.status)) missingTerminalLogRunIdsRef.current.add(run.id);
+        } else {
+          setErrorsByRun((previous) => {
+            if (previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.set(run.id, error instanceof Error ? error : new Error("Run history could not be loaded"));
+            return next;
+          });
         }
       } finally {
+        inFlightRunIds.delete(run.id);
         if (!cancelled) {
           setHydratedRunIds((prev) => {
             if (prev.has(run.id)) return prev;
@@ -311,11 +364,11 @@ export function useLiveRunTranscripts({
     };
 
     const readAll = async () => {
-      await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
+      await Promise.all(readableRuns.map((run) => readRunLog(run)));
     };
 
     void readAll();
-    const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
+    const activeRuns = readableRuns.filter((run) => run.status === "running");
     // The realtime websocket is the primary live source when enabled, so the
     // recurring poll only needs to run as a slow fallback rather than doubling
     // the live update work every couple of seconds.
@@ -330,21 +383,36 @@ export function useLiveRunTranscripts({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
+  }, [visible, enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
 
   useEffect(() => {
-    if (!enableRealtimeUpdates) return;
+    if (!visible || !enableRealtimeUpdates) return;
     if (!companyId || activeRunIds.size === 0) return;
 
     let closed = false;
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
 
+    // The attempt counter lives in a ref keyed to the company: this effect
+    // restarts whenever run metadata changes, and a per-effect counter would
+    // reset the backoff to its base delay mid-outage on every such restart.
+    if (reconnectStateRef.current?.companyId !== companyId) {
+      reconnectStateRef.current = { companyId, attempt: 0 };
+    }
+    const reconnectState = reconnectStateRef.current;
+
+    // Exponential backoff (1.5s → 15s cap), mirroring LiveUpdatesProvider.
+    // A flat retry hammers a backend that is still cold-starting — every
+    // failed handshake immediately queues the next one, so a stack that
+    // takes a minute to come up sees a steady stream of doomed connections.
     const scheduleReconnect = () => {
       if (closed) return;
-      reconnectTimer = window.setTimeout(connect, 1500);
+      reconnectState.attempt += 1;
+      const delayMs = Math.min(15_000, 1_500 * 2 ** Math.min(reconnectState.attempt - 1, 4));
+      reconnectTimer = window.setTimeout(connect, delayMs);
     };
 
     const connect = () => {
@@ -353,6 +421,11 @@ export function useLiveRunTranscripts({
         `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
       );
       socket = new WebSocket(url);
+
+      socket.onopen = () => {
+        if (closed) return;
+        reconnectState.attempt = 0;
+      };
 
       socket.onmessage = (message) => {
         const raw = typeof message.data === "string" ? message.data : "";
@@ -445,7 +518,7 @@ export function useLiveRunTranscripts({
         }
       }
     };
-  }, [activeRunIds, companyId, enableRealtimeUpdates, runById]);
+  }, [visible, activeRunIds, companyId, enableRealtimeUpdates, runById]);
 
   const transcriptByRun = useMemo(() => {
     const next = new Map<string, TranscriptEntry[]>();
@@ -490,7 +563,8 @@ export function useLiveRunTranscripts({
 
   return {
     transcriptByRun,
-    isInitialHydrating: normalizedRuns.some((run) => !hydratedRunIds.has(run.id)),
+    hydratedRunIds, errorsByRun, retry,
+    isInitialHydrating: normalizedRuns.some((run) => canReadPersistedLog(run) && !hydratedRunIds.has(run.id)),
     hasOutputForRun(runId: string) {
       return (chunksByRun.get(runId)?.length ?? 0) > 0 || runById.get(runId)?.hasStoredOutput === true;
     },

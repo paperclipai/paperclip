@@ -15,6 +15,7 @@ import {
   toolConnections,
   toolCallEvents,
   toolInvocations,
+  toolMcpGateways,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -42,7 +43,10 @@ import type {
 } from "@paperclipai/shared";
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
-import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
+import {
+  effectiveToolProfileBindings,
+  profileIdsInBindingOrder,
+} from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 
 type ToolAccessContext = {
@@ -1002,11 +1006,31 @@ export function toolAccessPolicyService(db: Db) {
 
   async function effectiveProfiles(ctx: ToolAccessContext) {
     const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
-    const activeBindings = narrowestScopeBindings(bindings.filter((binding) => targetMatches(binding, ctx)));
-    if (activeBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
+    const matchingBindings = bindings.filter((binding) => targetMatches(binding, ctx));
+    if (matchingBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
+    const candidateProfileIds = profileIdsInBindingOrder(matchingBindings);
+    const candidateProfiles = await db.select().from(toolProfiles).where(and(
+      eq(toolProfiles.companyId, ctx.companyId),
+      inArray(toolProfiles.id, candidateProfileIds),
+    ));
+    const [gateway] = ctx.gatewayId
+      ? await db
+          .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
+          .from(toolMcpGateways)
+          .where(and(
+            eq(toolMcpGateways.companyId, ctx.companyId),
+            eq(toolMcpGateways.id, ctx.gatewayId),
+          ))
+          .limit(1)
+      : [];
+    const activeBindings = effectiveToolProfileBindings(
+      matchingBindings,
+      candidateProfiles,
+      ctx.connectionId,
+      { includeAdditiveAppProfiles: gateway?.defaultProfileMode !== "gateway_only" },
+    );
     const profileIds = profileIdsInBindingOrder(activeBindings);
-    const profiles = await db.select().from(toolProfiles).where(and(eq(toolProfiles.companyId, ctx.companyId), inArray(toolProfiles.id, profileIds)));
-    const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+    const profilesById = new Map(candidateProfiles.map((profile) => [profile.id, profile]));
     const activeProfiles = profileIds
       .map((profileId) => profilesById.get(profileId) ?? null)
       .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
@@ -1190,6 +1214,7 @@ export function toolAccessPolicyService(db: Db) {
     const matchingPolicies = policies
       .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
       .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+    const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
     for (const { policy, conditionEvaluation } of matchingPolicies) {
       const policyExplanation = {
         policyId: policy.id,
@@ -1231,6 +1256,10 @@ export function toolAccessPolicyService(db: Db) {
         const rule = trustRuleConfig(policy);
         if (!rule || !trustRuleIsActive(policy)) continue;
         if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
+        // Remembered permissions cannot override an explicit block. Preserve
+        // priority semantics for ordinary allow/require-approval policies.
+        if (explicitBlock) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
+
         if (trustRuleNeedsReview(policy, ctx)) {
           return decision(
             "require_approval",
@@ -1654,7 +1683,12 @@ export function toolAccessPolicyService(db: Db) {
       scope: input.body.scope,
     });
     assertReviewedTrustRuleSelectors(selectors, reviewedSelectors);
-    const filters = assertReviewedTrustRuleArgumentFilters(invocation, input.body.argumentFilters);
+    if (input.body.argumentMode === "action" && (input.actor?.agentId || !invocation.agentId || !invocation.connectionId || actionRequest.approvalId)) {
+      throw unprocessable("Action-wide permission requires a human-approved agent connection action without a formal approval gate");
+    }
+    const filters = input.body.argumentMode === "action"
+      ? { allowAny: true }
+      : assertReviewedTrustRuleArgumentFilters(invocation, input.body.argumentFilters);
     const approvalThreshold = input.body.approvalThreshold ?? 2;
     const approvedCount = await matchingApprovedActionRequestCount({
       companyId: input.companyId,

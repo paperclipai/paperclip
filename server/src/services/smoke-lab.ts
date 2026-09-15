@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  connectionGrants,
   smokeRuns,
   smokeRunSteps,
   toolApplications,
@@ -741,8 +742,28 @@ export function smokeLabService(db: Db, options: {
       lastHealthAt: now,
       updatedAt: now,
     };
+    const ensureDefaultOrganizationGrant = async (connectionId: string) => {
+      const [existingGrant] = await db.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, input.companyId),
+        eq(connectionGrants.connectionId, connectionId),
+        eq(connectionGrants.kind, "organization"),
+        eq(connectionGrants.isDefault, true),
+      ));
+      if (existingGrant) return;
+      await db.insert(connectionGrants).values({
+        companyId: input.companyId,
+        connectionId,
+        kind: "organization",
+        status: "active",
+        isDefault: true,
+        credentialSecretRefs: [],
+        createdAt: now,
+        updatedAt: now,
+      });
+    };
     if (existing) {
       const [updated] = await db.update(toolConnections).set(values).where(eq(toolConnections.id, existing.id)).returning();
+      await ensureDefaultOrganizationGrant(existing.id);
       return { row: updated ?? existing, created: false };
     }
     const [created] = await db.insert(toolConnections).values({
@@ -754,6 +775,7 @@ export function smokeLabService(db: Db, options: {
       createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId : null,
       createdAt: now,
     }).returning();
+    await ensureDefaultOrganizationGrant(created.id);
     return { row: created, created: true };
   }
 
