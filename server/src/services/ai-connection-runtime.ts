@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { type Db, connectionGrants } from "@paperclipai/db";
+import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
   type AiConnectionBinding,
@@ -307,10 +307,28 @@ export async function prepareManagedAiRuntime(
                 // active copies, the merge decision below keeps the
                 // credential with the newest provider freshness field.
                 if (!grant || grant.status !== "active") return;
-                const current = await service.credential({
-                  ...selection,
-                  grant,
-                });
+                const ref = grant.credentialSecretRefs.find(
+                  (r) => r.configPath === "ai.credential",
+                );
+                if (!ref) return;
+                // Lock the referenced secret row for the rest of this
+                // transaction. The grant-row lock above does not cover it,
+                // so an authorized rotation of this secret could otherwise
+                // land between the read and the write below and be
+                // overwritten by this stale write-back.
+                await tx
+                  .select({ id: companySecrets.id })
+                  .from(companySecrets)
+                  .where(
+                    and(
+                      eq(companySecrets.id, ref.secretId),
+                      eq(companySecrets.companyId, input.companyId),
+                    ),
+                  )
+                  .for("update");
+                const current = await aiConnectionService(
+                  tx as unknown as Db,
+                ).credential({ ...selection, grant });
                 const destination = path.join(
                   providerHome,
                   "current-auth.json",
@@ -325,9 +343,6 @@ export async function prepareManagedAiRuntime(
                         errorLabel: "AI account refresh",
                       });
                 if (decision !== 10) return;
-                const ref = grant.credentialSecretRefs.find(
-                  (r) => r.configPath === "ai.credential",
-                )!;
                 await secretService(tx).rotate(
                   ref.secretId,
                   { value: refreshed },

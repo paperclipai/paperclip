@@ -419,6 +419,38 @@ describe("managed AI connections", () => {
     // credential here. Compare the stored secret version directly instead.
     expect(secretAfter.latestVersion).toBe(secretBefore.latestVersion);
   });
+  it("does not let a stale write-back overwrite an authorized secret rotation that commits while cleanup waits on the credential lock", async () => {
+    const userId = "credential-lock-race-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    const saved = await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Credential lock race fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", 10));
+    const runInput = { ...input, adapterType: "codex_local", responsibleUserId: userId, binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    const run = await prepareManagedAiRuntime(db, runInput);
+    // The run's own refresh looks newer than the value it started with, but
+    // it must lose to a company-authorized rotation that commits while
+    // cleanup is still waiting on the credential secret's row lock.
+    await writeFile(path.join(String(run.config.env.CODEX_HOME), "auth.json"), auth("run-refresh", 11));
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved.grantId));
+    const ref = grant.credentialSecretRefs.find(r => r.configPath === "ai.credential")!;
+    let holdAcquired!: () => void;
+    const holdAcquiredPromise = new Promise<void>(resolve => { holdAcquired = resolve; });
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>(resolve => { releaseHold = resolve; });
+    // An authorized rotation writes the new credential inside its own open
+    // transaction, so it still holds the secret row's lock when signaled.
+    const holder = db.transaction(async tx => {
+      await secretService(tx).rotate(ref.secretId, { value: auth("authorized-rotation", 12) }, { userId });
+      holdAcquired();
+      await holdReleased;
+    });
+    await holdAcquiredPromise;
+    const cleanupPromise = run.cleanup();
+    releaseHold();
+    await holder;
+    await cleanupPromise;
+    const stored = await service.credential(await service.select({ ...runInput, userId }));
+    expect(stored).toBe(auth("authorized-rotation", 12));
+  });
   it("enforces the shared transport discriminator and existing harness compatibility", () => {
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "ai", transport: "mcp_remote" }).success).toBe(false);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "tool", transport: "runtime_auth" }).success).toBe(false);
