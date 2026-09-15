@@ -609,7 +609,7 @@ Rules:
 Primary transport: websocket channel per company.
 
 - Endpoint: `GET /api/companies/:companyId/events/ws`
-- Auth: board session or agent API key (company-bound)
+- Auth: board session, agent API key, or board API key (`pcp_board_*`) — all company-bound
 
 ## 11.2 Event envelope
 
