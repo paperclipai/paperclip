@@ -56,6 +56,11 @@ interface AgentWakeOptions extends BaseClientOptions {
   forceFreshSession?: boolean;
 }
 
+interface AgentHeartbeatInvokeOptions extends BaseClientOptions {
+  issueId?: string;
+  allowUnscoped?: boolean;
+}
+
 interface AgentJsonPayloadOptions extends BaseClientOptions {
   companyId?: string;
   payloadJson: string;
@@ -420,7 +425,6 @@ export function registerAgentCommands(program: Command): void {
     ["resume", "resume", "Resume an agent"],
     ["approve", "approve", "Approve a pending agent"],
     ["terminate", "terminate", "Terminate an agent"],
-    ["heartbeat:invoke", "heartbeat/invoke", "Invoke an agent heartbeat"],
     ["claude-login", "claude-login", "Trigger Claude login for an agent"],
   ] as const) {
     addCommonClientOptions(
@@ -439,6 +443,53 @@ export function registerAgentCommands(program: Command): void {
         }),
     );
   }
+
+  addCommonClientOptions(
+    agent
+      .command("heartbeat:invoke")
+      .description("Invoke an issue-scoped agent heartbeat")
+      .argument("<agentId>", "Agent ID")
+      .option("--issue-id <idOrIdentifier>", "Issue UUID or identifier to bind to the run")
+      .option("--allow-unscoped", "Explicitly allow a run with no issue binding")
+      .action(async (agentId: string, opts: AgentHeartbeatInvokeOptions) => {
+        try {
+          if (opts.issueId && opts.allowUnscoped) {
+            throw new Error("Use either --issue-id or --allow-unscoped, not both");
+          }
+          if (!opts.issueId && !opts.allowUnscoped) {
+            throw new Error("Specify --issue-id for task work or --allow-unscoped for a generic heartbeat");
+          }
+
+          const ctx = resolveCommandContext(opts);
+          let body: Record<string, unknown> = {};
+          if (opts.issueId) {
+            const issue = await ctx.api.get<Issue>(`/api/issues/${encodeURIComponent(opts.issueId)}`);
+            if (!issue) {
+              throw new Error(`Issue not found: ${opts.issueId}`);
+            }
+            if (issue.assigneeAgentId !== agentId) {
+              throw new Error(`Issue ${issue.identifier} is not assigned to agent ${agentId}`);
+            }
+            body = {
+              reason: "manual_issue_wake",
+              payload: {
+                issueId: issue.id,
+                taskId: issue.id,
+                taskKey: issue.id,
+              },
+            };
+          }
+
+          const result = await ctx.api.post<AgentWakeupResponse>(
+            `${apiPath`/api/agents/${agentId}`}/heartbeat/invoke`,
+            body,
+          );
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 
   addCommonClientOptions(
     agent
