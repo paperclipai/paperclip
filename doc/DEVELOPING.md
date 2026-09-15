@@ -642,6 +642,9 @@ Environment overrides:
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_QUEUE_CAPACITY` (default `32`, range `0`–`1024`)
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_TIMEOUT_MS` (default `8000`, range `100`–`120000`)
 - `PAPERCLIP_WORKSPACE_GIT_SCAN_CACHE_TTL_MS` (default `10000`, range `0`–`60000`)
+- `PAPERCLIP_CLOSE_READINESS_GIT_CACHE_TTL_MS` (default `15000`, range `0`–`60000`)
+
+The close-readiness scan caches its result for this long. A value of `0` restores the always-fresh behavior. Keep this value at or above the heartbeat scheduler interval. The heartbeat tick reads workspace state for every active run, so a shorter value does not prevent a scan on each tick.
 
 Structured `workspace_git_scan` logs expose the operation name, a non-reversible workspace-path hash, queue and execution durations, active/queued counts, cache and single-flight use, and terminal outcome. Saturation and timeout warnings are rate-limited so an overload does not create a second logging storm.
 
