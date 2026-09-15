@@ -10,5 +10,6 @@ permissions:
 
 jobs:
   ci:
-    # Pin: #13457 merge — restore-only Rust dependency cache on the PR runner lane.
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@f97a3f886eb4baf19ea8eefaa53a44cb1c2d4636
+    # Master requires CODEOWNERS review for .github/**, including this workflow.
+    # The AWS runner group permits pr-trusted.yml@refs/heads/master.
+    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@master

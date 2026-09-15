@@ -23,6 +23,24 @@ GitHub Actions owns `pnpm-lock.yaml`.
 - Pull request CI validates dependency resolution when manifests change.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
 
+## Trusted PR Workflow
+
+The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
+The AWS runner group `paperclip-public-pr` must allow
+`paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
+New workflow versions merged into master then receive runner access without a
+separate SHA allowlist update. Dependabot leaves this first-party reference on
+master.
+
+Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
+code-owner review requirement enabled. This covers the caller, the trusted
+workflow, and CODEOWNERS itself. Existing administrator pull-request bypasses
+remain governed by the repository ruleset.
+
+When changing the workflow path or branch, authorize the new reference before
+updating the caller. Retain older authorized SHA references while queued runs or
+supported reruns still use them.
+
 ## Start Dev
 
 From repo root:
