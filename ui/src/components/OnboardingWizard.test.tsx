@@ -3178,6 +3178,84 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         } finally { await act(async () => root.unmount()); }
       });
 
+      it.each(providers)("prefers the personal default %s subscription over an earlier shared account", async (adapterType, provider, label) => {
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
+            currentUserId: "user-1",
+            connections: [
+              { id: "shared", grantId: "shared-grant", companyId: "company-new", provider, method: "subscription", name: "Shared", ownership: "shared", status: "connected" },
+              { id: "personal", grantId: "personal-grant", companyId: "company-new", provider, method: "subscription", name: "Personal", ownership: "personal", ownerUserId: "user-1", status: "connected", isDefault: true },
+            ],
+          }));
+          await pickSource(label);
+          await settle();
+          expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({
+            runtimeConfig: expect.objectContaining({ aiConnection: { provider, method: "subscription", mode: "responsible_user" } }),
+          }));
+          expect(managedApi.connectLocal).not.toHaveBeenCalled();
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("does not choose an arbitrary %s account when several shared subscriptions exist", async (adapterType, provider, label) => {
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
+            currentUserId: "user-1",
+            connections: ["first", "second"].map(id => ({ id, grantId: `${id}-grant`, companyId: "company-new", provider, method: "subscription", name: id, ownership: "shared", status: "connected" })),
+          }));
+          await pickSource(label);
+          await settle();
+          expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          expect(document.body.textContent).toContain("Run this in a terminal");
+          expect(button("Connect").disabled).toBe(false);
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(providers)("keeps %s verification pending through environment query updates", async (adapterType, _provider, label) => {
+        let finish!: (result: typeof passed) => void;
+        mockAgentsApi.testEnvironment.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+        const { root, queryClient } = await openStep4({ adapterType });
+        try {
+          await pickSource(label);
+          await detected();
+          expectTesting();
+          await act(async () => queryClient.setQueryData(queryKeys.environments.list("company-new"), [
+            { ...LOCAL_ENVIRONMENT, id: "new-local-default" },
+          ]));
+          await settle();
+          expectTesting();
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          await act(async () => finish(passed));
+          await settle();
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).toContain("is ready to work!");
+        } finally { await act(async () => root.unmount()); }
+      });
+
+      it.each(["back", "unmount"] as const)("ignores an already-submitted hire response after %s", async navigation => {
+        let finishHire!: (value: { agent: { id: string }; approval: null }) => void;
+        mockAgentsApi.hire.mockReturnValueOnce(new Promise(resolve => { finishHire = resolve; }));
+        const { root } = await openStep4({ adapterType: "codex_local" });
+        let mounted = true;
+        try {
+          await pickSource(/OpenAI/);
+          await detected();
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          if (navigation === "back") await click("Back");
+          else {
+            await act(async () => root.unmount());
+            mounted = false;
+          }
+          await act(async () => finishHire({ agent: { id: "agent-1" }, approval: null }));
+          await settle();
+          expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+          expect(document.body.textContent).not.toContain("is ready to work!");
+        } finally { if (mounted) await act(async () => root.unmount()); }
+      });
+
       it.each(providers)("offers a manual retry after failed %s verification without signing in again", async (adapterType, _provider, label) => {
         mockAgentsApi.testEnvironment.mockRejectedValueOnce(new Error("Provider request timed out. Try again."));
         const { root } = await openStep4({ adapterType });

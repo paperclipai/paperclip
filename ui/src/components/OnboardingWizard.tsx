@@ -676,7 +676,10 @@ function OnboardingWizardInner({
     apiKeyEnvKeyFor(adapterType),
     effectiveOnboardingOpen && step === 4,
   );
-  const savedSubscription = savedKeys.subscriptions[0];
+  // The chooser is absent in onboarding. Prefer the user's explicit default;
+  // otherwise only reuse an unambiguous account, regardless of list ordering.
+  const savedSubscription = savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
+    ?? (savedKeys.subscriptions.length === 1 ? savedKeys.subscriptions[0] : undefined);
   const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
   const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
     ? selectedSavedKey.id
@@ -996,6 +999,8 @@ function OnboardingWizardInner({
     Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
   { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
   // A result from a previous selection must not hire or advance this wizard.
+  // Environment query updates are not user navigation: the test resolves its
+  // own environment, and those updates must not interrupt the pending attempt.
   useEffect(() => {
     autoConnectStartedRef.current = false;
     hiringAgentRef.current = null;
@@ -1004,7 +1009,7 @@ function OnboardingWizardInner({
       setAdapterEnvLoading(false);
     }
     return () => { connectAttemptRef.current++; };
-  }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, resolvedLoginEnvironmentId, step]);
+  }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
 
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&
@@ -2159,6 +2164,9 @@ function OnboardingWizardInner({
         return;
       }
 
+      // Invalidation prevents sending a hire for an abandoned verification.
+      // Once submitted, this existing API has no rollback contract; navigation
+      // can only suppress its completion, just as it does for a manual hire.
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
