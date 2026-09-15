@@ -3,12 +3,11 @@
   "configurations": [
     {
       "name": "paperclip",
-      "runtimeExecutable": "/bin/sh",
+      "runtimeExecutable": "node",
       "runtimeArgs": [
-        "-c",
-        "TMPDIR=/tmp pnpm dev"
+        "scripts/dev-launch.mjs"
       ],
-      "port": 3108,
+      "port": 3100,
       "autoPort": true
     }
   ]
