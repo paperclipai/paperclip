@@ -209,6 +209,45 @@ describe("TaskChatRunnerActivityGroup", () => {
     expect(toggle().textContent).not.toMatch(/\d+ failed/);
   });
 
+  it("uses the compact runner group for a legacy persisted turn", () => {
+    act(() =>
+      root.render(
+        <TaskChatExpansionState.Provider value={memory}>
+          <MemoryRouter>
+            <ThemeProvider>
+              <TaskChatThreadView
+                scroll={false}
+                items={[{
+                  id: "legacy-turn",
+                  kind: "turn",
+                  settled: true,
+                  summary: { toolCount: 1, added: 0, removed: 0 },
+                  items: [{
+                    id: "legacy-phase",
+                    kind: "activity_phase",
+                    active: false,
+                    summary: "Ran a command",
+                    items: [tool("legacy", "completed")],
+                  }],
+                }]}
+              />
+            </ThemeProvider>
+          </MemoryRouter>
+        </TaskChatExpansionState.Provider>,
+      ),
+    );
+
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="task-chat-turn-summary"]')!
+        .click(),
+    );
+    expect(container.querySelector('[data-testid="task-chat-activity-phase-toggle"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-phase-summary"]')).toBeNull();
+    expect(container.textContent).toContain("Ran command");
+    expect(container.textContent).not.toContain("command-legacy");
+  });
+
   it("does not offer empty disclosures for sparse activities", () => {
     render([
       { id: "thinking-empty", kind: "thinking", lines: [], streaming: true },

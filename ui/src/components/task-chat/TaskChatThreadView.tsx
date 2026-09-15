@@ -195,35 +195,11 @@ function renderItem(
     case "usage":
       return <TaskChatUsageReadout item={item} />;
     case "activity_phase":
-      if (activityAppearance === "runner") return <TaskChatRunnerActivityGroup item={item} />;
-      return (
-        <TaskChatActivityPhase
-          item={item}
-          appearance={activityAppearance}
-          renderChild={(child) =>
-            child.kind === "protocol" && child.surface !== "runtime_request" ? (
-              <TaskChatProtocolActivityRow item={child} />
-            ) : (
-              renderItem(
-                child,
-                onApprovalDecision,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                onRuntimeRequestDecision,
-                activityAppearance,
-                undefined,
-                false,
-                undefined,
-                undefined,
-                undefined,
-                attachments,
-              )
-            )
-          }
-        />
-      );
+      // Legacy adapter transcripts and native runner transcripts now share the
+      // same compact activity treatment. Keeping this decision at the common
+      // renderer boundary also gives old persisted runs the current taxonomy,
+      // alignment, one-line targets, and collapsed-by-default behavior.
+      return <TaskChatRunnerActivityGroup item={item} />;
     case "interaction":
       return renderInteraction ? renderInteraction(item) : null;
     case "plan_document":
