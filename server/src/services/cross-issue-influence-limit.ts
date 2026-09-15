@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -109,7 +109,34 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    let sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    // Checkout-binding fallback: timer runs are registered without issueId or
+    // taskId in their context snapshot, so snapshot-only derivation made every
+    // issue write from a timer run fail closed with 403 even when the run held
+    // a server-persisted checkout binding. Fall back to the run's checkout /
+    // execution binding: exactly one bound issue acts as the source issue
+    // (same-issue writes short-circuit; every other target counts toward the
+    // cap). With zero or ambiguous bindings the guard still fails closed, and
+    // the binding cannot be spoofed via run headers because only the server's
+    // checkout route writes it.
+    //
+    // The issues lookup deliberately runs without `for update`. The run row
+    // lock above already serializes attempts from the same run, and the
+    // checkout-clearing paths lock `issues` before `heartbeat_runs`, so
+    // locking issues here would order the two sides against each other and
+    // deadlock. The decision is re-derived from the row on every request, so
+    // a released checkout refuses the next write.
+    if (!sourceIssueId) {
+      const boundRows = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          or(eq(issues.checkoutRunId, input.runId), eq(issues.executionRunId, input.runId)),
+        ));
+      const boundIssueIds = [...new Set(boundRows.map((row) => row.id))];
+      if (boundIssueIds.length === 1) sourceIssueId = boundIssueIds[0];
+    }
     if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
       sourceIssueId === input.targetIssueId ||
