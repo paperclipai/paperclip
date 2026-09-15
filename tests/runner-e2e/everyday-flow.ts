@@ -34,6 +34,10 @@ export interface EverydayEvidence {
   harnessDigest?: string;
   sourceRevision?: string;
   providerVersion?: string;
+  fixtureConfiguration?: {
+    apiToolsEnabled: boolean;
+    aiConnection?: LiveFixtureValues["aiConnection"];
+  };
   documents?: Row[];
   checks: StoryCheck[];
   timeline: Array<{ at: string; action: string; detail?: unknown }>;
@@ -104,6 +108,11 @@ export async function runEverydayFlow(input: Input) {
     schema: "paperclip.everyday-workflow.v1",
     caseId: execution.task.id,
     prompt: execution.task.buildPrompt(nonce),
+    fixtureConfiguration: {
+      apiToolsEnabled:
+        process.env.PAPERCLIP_RUNNER_API_TOOLS_ENABLED === "true",
+      aiConnection: fixtures.aiConnection,
+    },
     checks: [],
     timeline: [],
     issues: [],
@@ -391,6 +400,8 @@ export async function runEverydayFlow(input: Input) {
       "user-actions.ts",
       "runner.spec.ts",
       "api.ts",
+      "harness-env.ts",
+      "failure-classifier.ts",
       "live-fixtures.ts",
       "connection-reviews.ts",
       "catalog.ts",
@@ -900,16 +911,23 @@ export async function runEverydayFlow(input: Input) {
           hires[0]!.adapterType === "paperclip_runner" &&
           hires[0]!.adapterConfig?.model === lead?.adapterConfig?.model &&
           isDeepStrictEqual(
-            hires[0]!.adapterConfig?.env,
-            lead?.adapterConfig?.env,
+            hires[0]!.runtimeConfig?.aiConnection,
+            fixtures.aiConnection?.binding,
           ),
-        "The hire keeps the native model and encrypted connection bindings.",
+        "The hire keeps the native model and inherits the managed AI account binding.",
       );
       const children = ev.issues.filter((i) => i.parentId === parent!.id);
       check(
         "hired-agent-executed",
-        hires.length === 1 && ev.runs.some((r) => r.agentId === hires[0]!.id),
-        "The new hire must perform real work.",
+        hires.length === 1 &&
+          ev.runs.some(
+            (r) =>
+              r.agentId === hires[0]!.id &&
+              r.status === "succeeded" &&
+              (r.contextSnapshot?.aiConnection as Row | undefined)
+                ?.connectionId === fixtures.aiConnection?.connectionId,
+          ),
+        "The new hire must complete a run using the fixture managed account.",
       );
       if (children[0]) await download(children[0].id, "base", "hired-delivery");
       const reuseRequestedAt = Date.now();

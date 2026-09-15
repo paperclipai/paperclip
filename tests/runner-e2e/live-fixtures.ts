@@ -32,6 +32,15 @@ interface AgentRecord {
   name: string;
   companyId: string;
 }
+interface ManagedAccountFixture {
+  connectionId: string;
+  binding: {
+    provider: "openai" | "anthropic";
+    method: "api_key";
+    mode: "responsible_user";
+  };
+}
+
 interface ProjectRecord {
   id: string;
   name: string;
@@ -47,6 +56,7 @@ export interface LiveFixtureValues {
   environment: EnvironmentRecord;
   agent: AgentRecord;
   project?: ProjectRecord;
+  aiConnection?: ManagedAccountFixture;
   teardown(): Promise<void>;
 }
 
@@ -195,22 +205,72 @@ export async function setupLiveFixtures(input: {
     },
   });
 
+  const managedHiring =
+    execution.suite.id === "everyday-workflows" &&
+    execution.task.id === "hire-reuse";
+  if (managedHiring) {
+    registry.register<ManagedAccountFixture>({
+      id: "ai-connection",
+      dependencies: ["company"],
+      async setup(resolved) {
+        const company = value<CompanyRecord>(resolved, "company");
+        const provider =
+          execution.profile.provider === "acpx" ? "anthropic" : "openai";
+        const key =
+          provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+        const apiKey = input.credentials[key];
+        if (!apiKey) throw new Error(`Missing credential ${key}`);
+        const account = await api.postSensitive<{ connectionId: string }>(
+          `/api/companies/${company.id}/ai-connections`,
+          {
+            provider,
+            method: "api_key",
+            name: `Runner E2E account ${input.executionNonce}`,
+            ownership: "personal",
+            apiKey,
+            agentIds: [],
+            allAgents: false,
+          },
+        );
+        return {
+          connectionId: account.connectionId,
+          binding: { provider, method: "api_key", mode: "responsible_user" },
+        };
+      },
+    });
+  }
+
   registry.register<AgentRecord>({
     id: "agent",
-    dependencies: ["company", "secrets", "environment"],
+    dependencies: [
+      "company",
+      "secrets",
+      "environment",
+      ...(managedHiring ? ["ai-connection"] : []),
+    ],
     async setup(resolved) {
       const company = value<CompanyRecord>(resolved, "company");
       const environment = value<EnvironmentRecord>(resolved, "environment");
       const secretRefs = value<SecretReferenceMap>(resolved, "secrets");
+      const agent = execution.profile.buildAgent({
+        environmentId: environment.id,
+        environmentFixtureId: execution.environment.id,
+        workspacePath: input.workspacePath,
+        secretRefs,
+        executionId: input.executionNonce,
+      });
+      if (managedHiring) {
+        const account = value<ManagedAccountFixture>(resolved, "ai-connection");
+        const config = agent.adapterConfig as Record<string, unknown>;
+        delete config.env;
+        agent.runtimeConfig = {
+          ...(agent.runtimeConfig as Record<string, unknown>),
+          aiConnection: account.binding,
+        };
+      }
       return api.post<AgentRecord>(
         `/api/companies/${company.id}/agents`,
-        execution.profile.buildAgent({
-          environmentId: environment.id,
-          environmentFixtureId: execution.environment.id,
-          workspacePath: input.workspacePath,
-          secretRefs,
-          executionId: input.executionNonce,
-        }),
+        agent,
       );
     },
     async teardown() {
@@ -263,6 +323,14 @@ export async function setupLiveFixtures(input: {
     agent: value<AgentRecord>(setup.values, "agent"),
     ...(setup.values.has("project")
       ? { project: value<ProjectRecord>(setup.values, "project") }
+      : {}),
+    ...(managedHiring
+      ? {
+          aiConnection: value<ManagedAccountFixture>(
+            setup.values,
+            "ai-connection",
+          ),
+        }
       : {}),
     teardown: setup.teardown,
   };

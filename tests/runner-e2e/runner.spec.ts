@@ -210,6 +210,7 @@ async function restartIsolatedPaperclipServer(input: {
 
   await pollUntil({
     label: `isolated server restart ${input.requestId}`,
+    timeoutFailureClass: "transient_infrastructure",
     deadlineAt: input.deadlineAt,
     intervalMs: 250,
     load: async () => {
@@ -232,6 +233,7 @@ async function restartIsolatedPaperclipServer(input: {
   });
   await pollUntil({
     label: `replacement server health ${input.requestId}`,
+    timeoutFailureClass: "transient_infrastructure",
     deadlineAt: input.deadlineAt,
     intervalMs: 250,
     load: () => input.api.get<Record<string, unknown>>("/api/health"),

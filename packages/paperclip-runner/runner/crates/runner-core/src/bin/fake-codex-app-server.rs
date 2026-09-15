@@ -1182,7 +1182,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     send(json!({"method": "thread/started", "params": {"thread": {
                         "id": "descendant-overflow",
-                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        "parentThreadId": state.thread_id
                     }}}))?;
                 }
             }
@@ -1434,7 +1434,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     for index in 0..300 {
                         send(json!({"method": "thread/started", "params": {"thread": {
                             "id": format!("descendant-{index}"),
-                            "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                            "parentThreadId": state.thread_id
                         }}}))?;
                     }
                     send(json!({"method": "turn/completed", "params": {
@@ -1444,7 +1444,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if args.iter().any(|value| value == "--descendant-overflow") {
                     send(json!({"method": "thread/started", "params": {"thread": {
                         "id": "descendant-overflow",
-                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        "parentThreadId": state.thread_id
                     }}}))?;
                 }
                 if fail_after_second_turn_start && turn_start_count == 2 {

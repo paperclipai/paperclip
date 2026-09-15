@@ -6,6 +6,7 @@ import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm"
 import type { Db } from "@paperclipai/db";
 import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   chatActions,
@@ -766,6 +767,15 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
       maxAttempts: 3,
       wakePolicy: null,
       supersedeOnIdentityChange: true,
+    });
+  }
+  if (issue.status !== "blocked") {
+    await tx.update(issues).set({ status: "blocked", updatedAt: now })
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+    await tx.insert(activityLog).values({
+      companyId: issue.companyId, actorType: "system", actorId: "execution-recovery",
+      action: "issue.updated", entityType: "issue", entityId: issue.id, runId: run.id,
+      details: { status: "blocked", previousStatus: issue.status, reason: "native_continuation_requires_reconciliation" },
     });
   }
   return true;

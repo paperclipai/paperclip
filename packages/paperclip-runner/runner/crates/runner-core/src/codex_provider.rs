@@ -3214,13 +3214,19 @@ fn classify_notification_thread(
     if thread.is_none() || thread == Some(root) {
         return Ok(NotificationThread::Root);
     }
-    let parent = [
+    let parents: Vec<&str> = [
+        "/thread/parentThreadId",
         "/thread/source/subAgent/thread_spawn/parent_thread_id",
         "/thread/source/subAgent/threadSpawn/parentThreadId",
         "/thread/source/subagent/thread_spawn/parent_thread_id",
     ]
     .iter()
-    .find_map(|path| params.pointer(path).and_then(Value::as_str));
+    .filter_map(|path| params.pointer(path).and_then(Value::as_str))
+    .collect();
+    if parents.windows(2).any(|pair| pair[0] != pair[1]) {
+        return Err(LocalRunnerError::invalid("Codex notification has conflicting parent identity"));
+    }
+    let parent = parents.first().copied();
     if thread.is_some()
         && (thread.is_some_and(|id| descendants.contains(id))
             || (method == "thread/started"
@@ -4781,6 +4787,21 @@ mod notification_identity_tests {
             NotificationThread::Root
         );
     }
+    #[test]
+    fn recognizes_explicit_parent_thread_lineage_without_granting_root_authority() {
+        let children = BTreeSet::from(["child".to_owned()]);
+        for parent in ["root", "child"] {
+            assert_eq!(classify_notification_thread("thread/started", "root", &children,
+                &json!({"thread":{"id":"helper", "parentThreadId":parent}})).unwrap(), NotificationThread::Descendant);
+        }
+        assert_eq!(classify_notification_thread("thread/started", "root", &children,
+            &json!({"thread":{"id":"stranger", "parentThreadId":"foreign"}})).unwrap(), NotificationThread::UnrelatedInformation);
+        assert!(classify_notification_thread("turn/started", "root", &children,
+            &json!({"threadId":"stranger", "parentThreadId":"root", "turn":{"id":"foreign-turn"}})).is_err());
+        assert!(classify_notification_thread("thread/started", "root", &children,
+            &json!({"thread":{"id":"helper", "parentThreadId":"root", "source":{"subAgent":{"thread_spawn":{"parent_thread_id":"foreign"}}}}})).is_err());
+    }
+
     #[test]
     fn classifies_provider_lineage_before_root_authority() {
         let children = BTreeSet::from(["child".to_owned()]);

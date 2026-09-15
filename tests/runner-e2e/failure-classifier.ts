@@ -1,3 +1,4 @@
+import { ObservedStateTimeout } from "./api.js";
 import type { FailureClass } from "./types.js";
 
 const TRANSIENT =
@@ -16,6 +17,7 @@ const CANDIDATE =
   /(?:matcher|expected.*observed|marker|issue status|run status|runtime mode|wrong output|missing output)/i;
 
 export function classifyFailure(error: unknown): FailureClass {
+  if (error instanceof ObservedStateTimeout) return error.failureClass;
   const message =
     error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   if (/browser bootstrap failed before task creation/i.test(message))

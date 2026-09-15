@@ -4,6 +4,71 @@ import { runnerMatrix } from "./catalog.js";
 import { setupLiveFixtures } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
+  it.each(["runner-codex", "runner-acpx-claude"])(
+    "gives %s hiring fixtures a personal managed account without env overrides",
+    async (profile) => {
+      const execution = runnerMatrix.find(
+        (e) =>
+          e.suite.id === "everyday-workflows" &&
+          e.task.id === "hire-reuse" &&
+          e.profile.id === profile &&
+          e.environment.id === "local",
+      )!;
+      const provider =
+        profile === "runner-acpx-claude" ? "anthropic" : "openai";
+      let connected = false;
+      let agentBody: any;
+      const api = {
+        async post(url: string, data: any) {
+          if (url === "/api/companies") return { id: "company", name: "Test" };
+          if (url.endsWith("/agents")) {
+            agentBody = data;
+            return { id: "lead", ...data };
+          }
+          throw new Error(`Unexpected POST ${url}`);
+        },
+        async postSensitive(url: string, data: any) {
+          if (url.endsWith("/ai-connections")) {
+            expect(data).toMatchObject({
+              provider,
+              method: "api_key",
+              ownership: "personal",
+              apiKey: "test-value",
+              agentIds: [],
+              allAgents: false,
+            });
+            connected = true;
+            return { connectionId: "managed-account" };
+          }
+          return { id: "secret" };
+        },
+        async get() {
+          return [{ id: "local", driver: "local" }];
+        },
+      } as unknown as RunnerApi;
+      const fixtures = await setupLiveFixtures({
+        api,
+        execution,
+        executionNonce: "nonce",
+        workspacePath: "/tmp/test",
+        credentials: {
+          OPENAI_API_KEY: "test-value",
+          ANTHROPIC_API_KEY: "test-value",
+        },
+      });
+      expect(connected).toBe(true);
+      expect(agentBody.adapterConfig.env).toBeUndefined();
+      expect(agentBody.runtimeConfig.aiConnection).toEqual({
+        provider,
+        method: "api_key",
+        mode: "responsible_user",
+      });
+      expect((fixtures as any).aiConnection.connectionId).toBe(
+        "managed-account",
+      );
+    },
+  );
+
   it("installs the Daytona provider through the public API before creating its environment", async () => {
     const calls: string[] = [];
     const api = {

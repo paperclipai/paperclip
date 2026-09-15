@@ -176,6 +176,16 @@ describe("runner E2E provider environment", () => {
   });
 });
 
+describe("hiring capability opt-in", () => {
+  it("enables API tools only when the manual hiring story is selected", () => {
+    const hire = runnerMatrix.find((e) => e.suite.id === "everyday-workflows" && e.task.id === "hire-reuse")!;
+    const delegate = runnerMatrix.find((e) => e.suite.id === "everyday-workflows" && e.task.id === "delegate-feedback")!;
+    expect(buildRunnerE2EProcessEnvironment({}, [hire]).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBe("true");
+    expect(buildRunnerE2EProcessEnvironment({}, [delegate]).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBeUndefined();
+    expect(buildRunnerE2EProcessEnvironment({}, []).PAPERCLIP_RUNNER_API_TOOLS_ENABLED).toBeUndefined();
+  });
+});
+
 describe("runner E2E server port allocation", () => {
   it("rejects direct and derived embedded-Postgres collisions", () => {
     expect(runnerE2EServerPortConflictsWithDatabase(44_329)).toBe(true);
