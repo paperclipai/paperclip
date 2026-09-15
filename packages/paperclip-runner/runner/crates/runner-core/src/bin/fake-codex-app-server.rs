@@ -1140,6 +1140,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
             }
             "thread/read" => {
+                if descendant_notifications
+                    && message.pointer("/params/threadId").and_then(Value::as_str)
+                        == Some("descendant-1")
+                {
+                    send(json!({"id": id, "result": {"thread": {
+                        "id": "descendant-1", "parentThreadId": state.thread_id
+                    }}}))?;
+                    continue;
+                }
                 if args
                     .iter()
                     .any(|arg| arg == "--require-lightweight-history")
@@ -1443,7 +1452,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     send(json!({"method": "turn/started", "params": {
                         "threadId": "descendant-0", "turnId": "first-child-turn"
                     }}))?;
-                    for index in 1..300 {
+                    // A helper turn may arrive before either spawn completion or thread/started.
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-1", "turnId": "second-child-turn"
+                    }}))?;
+                    for index in 2..300 {
                         send(json!({"method": "thread/started", "params": {"thread": {
                             "id": format!("descendant-{index}"),
                             "parentThreadId": state.thread_id

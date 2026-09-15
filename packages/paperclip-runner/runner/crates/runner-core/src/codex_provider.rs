@@ -2457,11 +2457,53 @@ impl CodexProvider {
             ) {
                 Ok(identity) => identity,
                 Err(_) => {
-                    return Ok(Some(self.identity_failure(
-                        method,
-                        &params,
-                        "thread_binding_mismatch",
-                    )))
+                    // Helpers can start before Codex publishes their spawn receipt.
+                    // Verify lineage with the provider; never infer authority from
+                    // the arrival of an otherwise foreign execution event.
+                    let candidate = notification_thread_id(&params)
+                        .filter(|id| !id.is_empty() && id.len() <= 240 && *id != self.thread_id)
+                        .map(str::to_owned);
+                    let verified = candidate.as_ref().is_some_and(|candidate| {
+                        self.request(
+                            "thread/read",
+                            json!({"threadId": candidate, "includeTurns": false}),
+                        )
+                        .ok()
+                        .is_some_and(|metadata| {
+                            metadata.pointer("/thread/id").and_then(Value::as_str)
+                                == Some(candidate.as_str())
+                                && matches!(
+                                    classify_notification_thread(
+                                        "thread/started",
+                                        &self.thread_id,
+                                        &self.descendant_thread_ids,
+                                        &metadata
+                                    ),
+                                    Ok(NotificationThread::Descendant)
+                                )
+                        })
+                    });
+                    if verified {
+                        let mut known = self.descendant_thread_ids.clone();
+                        known.insert(candidate.expect("verified candidate"));
+                        match classify_notification_thread(method, &self.thread_id, &known, &params)
+                        {
+                            Ok(NotificationThread::Descendant) => NotificationThread::Descendant,
+                            _ => {
+                                return Ok(Some(self.identity_failure(
+                                    method,
+                                    &params,
+                                    "thread_binding_mismatch",
+                                )))
+                            }
+                        }
+                    } else {
+                        return Ok(Some(self.identity_failure(
+                            method,
+                            &params,
+                            "thread_binding_mismatch",
+                        )));
+                    }
                 }
             };
             if identity == NotificationThread::Descendant {
