@@ -37,7 +37,7 @@ For Hermes-specific configuration, set these in the agent's environment:
 
 Hermes maintains session state across heartbeats via its SQLite session store. Each heartbeat resumes from where the previous one left off, so the agent remembers its prior work without re-reading everything.
 
-To enable session continuity, pass `--resume` or `-c` in the adapter args:
+To enable session continuity, pass `-c` in the adapter args:
 
 - **Args:** `chat -c -q`
 
@@ -53,7 +53,7 @@ hermes skills create paperclip-integration
 
 Example skill content:
 
-```markdown
+````markdown
 ---
 name: paperclip-integration
 description: Interact with the Paperclip API to manage tasks, report status, and check assignments.
@@ -76,7 +76,7 @@ curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID" \
   -d '{"status": "in_progress"}'
 ```
-```
+````
 
 ## Tips
 
