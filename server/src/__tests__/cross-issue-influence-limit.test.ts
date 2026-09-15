@@ -213,4 +213,55 @@ describe("cross-issue influence limit rollout", () => {
     });
     expect(fake.inserted).toEqual([]);
   });
+
+  it("allows a timer run with no source issue to mutate its own checked-out assigned issue", async () => {
+    const fake = counterDb(0, { contextSnapshot: { wakeReason: "heartbeat_timer" } });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueIdentifier: "TEC-7319",
+      targetCheckoutRunId: "11111111-1111-4111-8111-111111111111",
+      targetAssigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("still fails closed when a timer run with no source issue targets an issue it does not hold", async () => {
+    const fake = counterDb(0, { contextSnapshot: { wakeReason: "heartbeat_timer" } });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetCheckoutRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      targetAssigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("counts a third-party run with source context as cross-issue on another agent's assigned issue", async () => {
+    const fake = counterDb();
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetCheckoutRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      targetAssigneeAgentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      kind: "update",
+    })).resolves.toMatchObject({ allowed: true, count: 1 });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({ action: "issue.cross_issue_influence_observed" }),
+    ]);
+  });
 });
