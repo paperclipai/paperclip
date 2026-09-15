@@ -40,13 +40,39 @@ describe("adapter-defaults (built-in)", () => {
       ]),
     );
   });
+
+  it("cursor_local carries the Cursor API key and both provider base URLs", () => {
+    const d = getAdapterDefaults("cursor_local");
+    expect(d.envKeys).toEqual([
+      "CURSOR_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "OPENAI_API_KEY",
+      "OPENAI_BASE_URL",
+      "OPENAI_API_BASE",
+    ]);
+  });
+
+  it('resolves the cursor adapter package type "cursor" to the cursor_local entry', () => {
+    expect(getAdapterDefaults("cursor")).toEqual(getAdapterDefaults("cursor_local"));
+  });
+
+  it('per-run adapter type "cursor" resolves instead of throwing', () => {
+    expect(resolveRunAdapterType("cursor", "claude_local")).toBe("cursor_local");
+  });
+
+  it("every entry allows the egress FQDNs for each API-key env it forwards", () => {
+    const d = getAdapterDefaults("opencode_local");
+    expect(d.envKeys).toContain("OPENROUTER_API_KEY");
+    expect(d.allowFqdns).toContain("openrouter.ai");
+  });
 });
 
 describe("getAdapterDefaults", () => {
   it("returns built-in defaults when no registry is supplied", () => {
     const d = getAdapterDefaults("claude_local");
     expect(d.runtimeImage).toContain("agent-runtime-claude");
-    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
     expect(d.defaultEnv).toBeUndefined();
   });
 
