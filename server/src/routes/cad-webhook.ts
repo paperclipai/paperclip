@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import { and, eq, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, lt, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agencyWebhookConfigs, cadWebhookDlq, solarisAlerts } from "@paperclipai/db";
+import { agencyWebhookConfigs, agencyTrials, agencyTrialEmails, cadWebhookDlq, solarisAlerts } from "@paperclipai/db";
 import { assertBoard } from "./authz.js";
 import { notFound } from "../errors.js";
 
@@ -508,6 +508,110 @@ export function cadAdminRoutes(db: Db) {
       incidentId: payload.incidentId,
       replayed: true,
     });
+  });
+
+  return router;
+}
+
+// ---------------------------------------------------------------------------
+// CS Admin trial routes
+// ---------------------------------------------------------------------------
+
+export function cadAdminTrialRoutes(db: Db) {
+  const router = Router();
+
+  /**
+   * GET /admin/agency/trials
+   *
+   * Query: status?, q? (search agency name / email), limit?, offset?
+   */
+  router.get("/admin/agency/trials", async (req, res) => {
+    assertBoard(req);
+
+    const status =
+      typeof req.query["status"] === "string" ? req.query["status"] : undefined;
+    const q =
+      typeof req.query["q"] === "string" ? req.query["q"].trim() : undefined;
+    const limit = Math.min(parseInt(String(req.query["limit"] ?? "50"), 10), 200);
+    const offset = parseInt(String(req.query["offset"] ?? "0"), 10);
+
+    const conditions = [];
+    if (status === "active" || status === "expired" || status === "converted" || status === "cancelled") {
+      conditions.push(eq(agencyTrials.trialStatus, status));
+    }
+
+    const rows = await db
+      .select({
+        id: agencyTrials.id,
+        contactEmail: agencyTrials.contactEmail,
+        contactName: agencyTrials.contactName,
+        trialStatus: agencyTrials.trialStatus,
+        incidentCount: agencyTrials.incidentCount,
+        incidentCap: agencyTrials.incidentCap,
+        trialStartedAt: agencyTrials.trialStartedAt,
+        trialEndsAt: agencyTrials.trialEndsAt,
+        upgradedAt: agencyTrials.upgradedAt,
+        agencyName: agencyWebhookConfigs.agencyName,
+        agencyCode: agencyWebhookConfigs.agencyCode,
+      })
+      .from(agencyTrials)
+      .innerJoin(agencyWebhookConfigs, eq(agencyTrials.agencyWebhookConfigId, agencyWebhookConfigs.id))
+      .where(
+        conditions.length > 0 ? and(...conditions) : undefined,
+      )
+      .orderBy(desc(agencyTrials.trialStartedAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Apply in-memory text filter (simpler than SQL ilike across two columns)
+    const filtered = q
+      ? rows.filter(
+          (r) =>
+            r.agencyName.toLowerCase().includes(q.toLowerCase()) ||
+            r.contactEmail.toLowerCase().includes(q.toLowerCase()) ||
+            r.agencyCode.toLowerCase().includes(q.toLowerCase()),
+        )
+      : rows;
+
+    res.json({ trials: filtered, total: filtered.length, limit, offset });
+  });
+
+  /**
+   * GET /admin/agency/trials/:trialId — trial detail with email history
+   */
+  router.get("/admin/agency/trials/:trialId", async (req, res) => {
+    assertBoard(req);
+    const { trialId } = req.params;
+
+    const [trial] = await db
+      .select({
+        id: agencyTrials.id,
+        contactEmail: agencyTrials.contactEmail,
+        contactName: agencyTrials.contactName,
+        trialStatus: agencyTrials.trialStatus,
+        incidentCount: agencyTrials.incidentCount,
+        incidentCap: agencyTrials.incidentCap,
+        trialStartedAt: agencyTrials.trialStartedAt,
+        trialEndsAt: agencyTrials.trialEndsAt,
+        upgradedAt: agencyTrials.upgradedAt,
+        agencyName: agencyWebhookConfigs.agencyName,
+        agencyCode: agencyWebhookConfigs.agencyCode,
+        companyId: agencyWebhookConfigs.companyId,
+      })
+      .from(agencyTrials)
+      .innerJoin(agencyWebhookConfigs, eq(agencyTrials.agencyWebhookConfigId, agencyWebhookConfigs.id))
+      .where(eq(agencyTrials.id, trialId))
+      .limit(1);
+
+    if (!trial) throw notFound("Trial not found");
+
+    const emailHistory = await db
+      .select({ emailType: agencyTrialEmails.emailType, sentAt: agencyTrialEmails.sentAt })
+      .from(agencyTrialEmails)
+      .where(eq(agencyTrialEmails.trialId, trialId))
+      .orderBy(asc(agencyTrialEmails.sentAt));
+
+    res.json({ ...trial, emailHistory });
   });
 
   return router;

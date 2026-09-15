@@ -48,7 +48,10 @@ import { meditationRoutes } from "./routes/meditation.js";
 import { habitsRoutes } from "./routes/habits.js";
 import { annotationRoutes } from "./routes/annotations.js";
 import { solarisAlertRoutes } from "./routes/solaris-alerts.js";
-import { cadWebhookRoutes, cadAdminRoutes } from "./routes/cad-webhook.js";
+import { cadWebhookRoutes, cadAdminRoutes, cadAdminTrialRoutes } from "./routes/cad-webhook.js";
+import { agencyRegistrationRoutes, agencyTrialRoutes } from "./routes/agency-registration.js";
+import { createAgencyEmailClient } from "./services/agency-email.js";
+import { AgencyTrialWorker } from "./services/agency-trial-worker.js";
 import { estateRoutes } from "./routes/estate.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -130,6 +133,9 @@ export async function createApp(
   );
   // CAD webhook: mounted before actorMiddleware — agencies authenticate via HMAC, not user sessions
   app.use(cadWebhookRoutes(db));
+  // Agency self-serve registration: public, no auth required
+  const agencyEmailClient = createAgencyEmailClient();
+  app.use(agencyRegistrationRoutes(db, agencyEmailClient));
 
   app.use(
     actorMiddleware(db, {
@@ -188,6 +194,8 @@ export async function createApp(
   api.use(annotationRoutes(db));
   api.use(solarisAlertRoutes(db));
   api.use(cadAdminRoutes(db));
+  api.use(cadAdminTrialRoutes(db));
+  api.use(agencyTrialRoutes(db, agencyEmailClient));
   api.use(estateRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
@@ -284,6 +292,14 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
+
+  // Start agency trial background worker
+  const trialWorker = new AgencyTrialWorker(
+    db,
+    agencyEmailClient,
+    `${opts.deploymentExposure === "public" ? "https" : "http"}://localhost:${opts.serverPort}`,
+  );
+  trialWorker.start();
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
@@ -389,6 +405,7 @@ export async function createApp(
     devWatcher?.close();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+    trialWorker.stop();
   });
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
