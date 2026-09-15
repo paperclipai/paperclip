@@ -1713,7 +1713,7 @@ export function NewIssueDialog() {
                     />
                   </div>
                 )}
-                {assigneeModelLane === "custom" && (
+                {assigneeModelLane === "custom" && thinkingEffortOptions.length > 1 && (
                   <div className="space-y-1.5">
                     <div className="text-xs text-muted-foreground">Thinking effort</div>
                     <div className="flex items-center gap-1.5 flex-wrap">
