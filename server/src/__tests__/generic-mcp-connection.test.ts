@@ -975,6 +975,75 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     ]);
   });
 
+  it("does not let another user take over an archived personal URL connection", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const input = { link: MCP_URL, name: "Archived personal URL", grantKind: "user" as const };
+    const first = await service.connectGalleryApp(company.id, input, { actorType: "user", actorId: "board-user" });
+    await db.update(toolConnections).set({ status: "archived" }).where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications).set({ status: "archived" }).where(eq(toolApplications.id, first.application.id));
+    await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: "other-user", status: "active", membershipRole: "admin",
+    });
+    fixture.fetchMock.mockClear();
+
+    await expect(service.connectGalleryApp(company.id, input, {
+      actorType: "user", actorId: "other-user",
+    })).rejects.toMatchObject({ status: 403, message: "Only the existing personal identity can reconnect this connection" });
+
+    expect(fixture.fetchMock).not.toHaveBeenCalled();
+    await expect(db.select().from(connectionGrants)).resolves.toHaveLength(0);
+    await expect(service.getConnection(first.connectionId)).resolves.toMatchObject({
+      status: "archived", createdByUserId: "board-user",
+    });
+    const resumed = await service.connectGalleryApp(company.id, input, { actorType: "user", actorId: "board-user" });
+    expect(resumed.connectionId).toBe(first.connectionId);
+    expect(resumed.auth).toMatchObject({ kind: "oauth" });
+  });
+
+  it("creates one personal grant when two public URL setup retries probe concurrently", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "public" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const first = await service.connectGalleryApp(company.id, {
+      link: MCP_URL, name: "Concurrent personal URL", grantKind: "user",
+    }, actor);
+    await service.connectGalleryApp(company.id, {
+      link: MCP_URL, grantKind: "user", resumeConnectionId: first.connectionId,
+    }, actor);
+    // Model an interrupted draft with catalog/defaults but no personal grant.
+    // This isolates the grant race from first-time catalog/profile insertion.
+    await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId));
+    await db.delete(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, first.connectionId));
+    fixture.fetchMock.mockRestore();
+    let probes = 0;
+    let release!: () => void;
+    const bothProbed = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      probes += 1;
+      if (probes === 2) release();
+      await bothProbed;
+      return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: FIXTURE_TOOLS } });
+    });
+
+    const results = await Promise.allSettled([0, 1].map(() => service.connectGalleryApp(company.id, {
+      link: MCP_URL, grantKind: "user", resumeConnectionId: first.connectionId,
+    }, actor)));
+
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
+    }
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    await expect(db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, first.connectionId)))
+      .resolves.toEqual([expect.objectContaining({ kind: "user", subjectUserId: actor.actorId, status: "active", credentialSecretRefs: [] })]);
+    await expect(db.select().from(toolAccessAuditEvents).where(and(
+      eq(toolAccessAuditEvents.connectionId, first.connectionId),
+      eq(toolAccessAuditEvents.action, "connection_grant.created"),
+    ))).resolves.toHaveLength(1);
+  });
+
   it("creates an empty user grant after a personal public URL probe succeeds", async () => {
     // Use a real loopback MCP server here: neither fetch nor the transport is mocked.
     const receivedMethods: string[] = [];

@@ -13330,22 +13330,32 @@ export function toolAccessService(
             isDefault: false,
             createdByUserId: personalIdentityUserId!,
           })
+          .onConflictDoNothing()
           .returning();
-        if (!grant)
-          throw new Error("Failed to create personal connection grant");
-        if (revivedConnectionPrevious) {
-          revivedGrantMutation = { previous: null, current: grant };
+        if (grant) {
+          if (revivedConnectionPrevious) {
+            revivedGrantMutation = { previous: null, current: grant };
+          }
+          await db.insert(toolAccessAuditEvents).values({
+            companyId,
+            connectionId: connectionRow.id,
+            actorType: "user",
+            actorId: personalIdentityUserId!,
+            action: "connection_grant.created",
+            outcome: "success",
+            reasonCode: "personal_identity_created",
+            details: { kind: "user", credentialSecretRefCount: 0 },
+          });
+        } else {
+          // Another setup attempt may have created this user's grant while
+          // both probes were in flight. Reuse only an active personal grant;
+          // never overwrite credentials, revive a revoked grant, or claim its
+          // audit/rollback ownership in this attempt.
+          const existingGrant = await vaultGrantForConnection(connectionRow, actor);
+          if (existingGrant?.kind !== "user" || existingGrant.subjectUserId !== personalIdentityUserId) {
+            throw conflict("The personal credential changed during setup. Please try again.");
+          }
         }
-        await db.insert(toolAccessAuditEvents).values({
-          companyId,
-          connectionId: connectionRow.id,
-          actorType: "user",
-          actorId: personalIdentityUserId!,
-          action: "connection_grant.created",
-          outcome: "success",
-          reasonCode: "personal_identity_created",
-          details: { kind: "user", credentialSecretRefCount: 0 },
-        });
       }
       if (galleryEntry?.slug === COMPOSIO_GALLERY_KEY) {
         const [application] = await db
