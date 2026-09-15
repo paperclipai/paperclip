@@ -129,6 +129,84 @@ describe("plugin database SQL validation", () => {
     ).toThrow(/namespace/i);
   });
 
+  it.each([
+    "UPDATE plugin_test.rows SET label = $1 WHERE EXISTS (SELECT 1 FROM public.issues WHERE id = $2 AND company_id = $3 FOR SHARE)",
+    "INSERT INTO plugin_test.rows (id) SELECT id FROM public.issues WHERE company_id = $1",
+    "DELETE FROM plugin_test.rows WHERE issue_id IN (SELECT id FROM public.issues WHERE company_id = $1)",
+    '/* update guard */ UPDATE "plugin_test"."rows" SET label = $1 WHERE EXISTS (SELECT 1 FROM "public"."issues" WHERE id = $2 FOR SHARE)',
+  ])("allows whitelisted core reads in namespace writes: %s", (statement) => {
+    expect(() => validatePluginRuntimeExecute(statement, "plugin_test", ["issues"])).not.toThrow();
+  });
+
+  it.each([
+    "INSERT INTO public.issues (title) VALUES ('bad')",
+    "UPDATE public.issues SET title = 'bad'",
+    "DELETE FROM public.issues WHERE id = $1",
+    "WITH removed AS (DELETE FROM public.issues RETURNING id) INSERT INTO plugin_test.rows (id) SELECT id FROM removed",
+    "WITH removed AS (DELETE FROM plugin_test.rows RETURNING id) INSERT INTO public.issues (id) SELECT id FROM removed",
+    "WITH removed AS (DELETE FROM plugin_test.rows RETURNING id) UPDATE public.issues SET title = 'bad' WHERE id IN (SELECT id FROM removed)",
+    "UPDATE plugin_test.rows SET label = (WITH removed AS (DELETE FROM public.issues RETURNING title) SELECT title FROM removed)",
+    "UPDATE plugin_test.rows SET label = (WITH removed AS (DELETE /* remove */ FROM ONLY public . issues RETURNING title) SELECT title FROM removed)",
+    "UPDATE plugin_test.rows SET label = (WITH changed AS (UPDATE public.issues SET title = 'bad' RETURNING title) SELECT title FROM changed)",
+    "UPDATE plugin_test.rows SET label = (WITH added AS (INSERT INTO public.issues (title) VALUES ('bad') RETURNING title) SELECT title FROM added)",
+  ])("rejects core mutation targets even when whitelisted: %s", (statement) => {
+    expect(() => validatePluginRuntimeExecute(statement, "plugin_test", ["issues"])).toThrow();
+  });
+
+  it.each([
+    "UPDATE rows SET label = (SELECT label FROM plugin_test.rows LIMIT 1)",
+    "UPDATE rows SET label = $1 WHERE EXISTS (SELECT 1 FROM public.issues)",
+    "UPDATE rows SET label = 'UPDATE plugin_test.rows SET label = 1'",
+    "UPDATE rows SET label = $1 /* UPDATE plugin_test.rows SET label = 1 */",
+    'UPDATE "plugin_test.rows" SET label = $1',
+  ])("requires a qualified namespace mutation target: %s", (statement) => {
+    expect(() => validatePluginRuntimeExecute(statement, "plugin_test", ["issues"])).toThrow(/namespace/i);
+  });
+
+  it("denies undeclared core reads and other schemas in namespace writes", () => {
+    const query = "UPDATE plugin_test.rows SET label = $1 WHERE EXISTS (SELECT 1 FROM public.issues)";
+    expect(() => validatePluginRuntimeExecute(query, "plugin_test")).toThrow();
+    expect(() => validatePluginRuntimeExecute(query, "plugin_test", ["companies"])).toThrow(/whitelisted/i);
+    expect(() => validatePluginRuntimeExecute(
+      "UPDATE plugin_test.rows SET label = $1 WHERE EXISTS (SELECT 1 FROM public /* core */ . companies)",
+      "plugin_test",
+      ["issues"],
+    )).toThrow(/whitelisted/i);
+    expect(() => validatePluginRuntimeExecute(
+      "UPDATE plugin_test.rows SET label = $1 WHERE EXISTS (SELECT 1 FROM other_plugin.rows)",
+      "plugin_test",
+      ["issues"],
+    )).toThrow(/schema/i);
+  });
+
+  it.each([
+    'INSERT INTO plugin_test.rows (label) SELECT name AS "--" FROM public.companies',
+    "UPDATE plugin_test.rows SET label = $tag$'$tag$ WHERE EXISTS (SELECT 1 FROM public.companies WHERE name = $tag$'$tag$)",
+    String.raw`INSERT INTO plugin_test.rows (label) VALUES (E'\''); DELETE FROM public.issues WHERE title = E'\''`,
+    "INSERT INTO plugin_test.rows (label) SELECT c.name FROM public.issues i, public.companies c",
+    'INSERT INTO plugin_test.rows (label) SELECT c.name FROM public.issues AS "(", public.companies c',
+    "INSERT INTO plugin_test.rows (label) SELECT c.name FROM public.issues AS set, public.companies c",
+    "DELETE FROM plugin_test.rows USING public.companies WHERE true",
+    "UPDATE plugin_test.rows SET label = (SELECT name FROM ONLY (public.companies) LIMIT 1)",
+    "UPDATE plugin_test.rows SET label = (SELECT name FROM companies LIMIT 1)",
+    "UPDATE plugin_test.rows SET label = (TABLE public.companies LIMIT 1)",
+    "UPDATE plugin_test.rows SET label = extract(epoch FROM (SELECT created_at FROM public.companies LIMIT 1))::text",
+    String.raw`INSERT INTO plugin_test.rows (label) SELECT name FROM U&"pub\006cic".companies`,
+  ])("does not hide undeclared reads or mutations in SQL syntax: %s", (statement) => {
+    expect(() => validatePluginRuntimeExecute(statement, "plugin_test", ["issues"])).toThrow();
+  });
+
+  it("preserves quoted aliases and string contents while checking real references", () => {
+    expect(() => validatePluginRuntimeExecute(
+      'INSERT INTO plugin_test.rows (label) SELECT title AS "--" FROM public.issues',
+      "plugin_test", ["issues"],
+    )).not.toThrow();
+    expect(() => validatePluginRuntimeExecute(
+      "UPDATE plugin_test.rows SET label = 'FROM public.companies; -- it''s literal' WHERE EXISTS (SELECT 1 FROM public.issues)",
+      "plugin_test", ["issues"],
+    )).not.toThrow();
+  });
+
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
     expect(() =>
       validatePluginRuntimeQuery(
@@ -190,7 +268,7 @@ describe("buildPluginWorkerEnv", () => {
 
   it("does not pass provider keys to non-environment plugins", () => {
     const env = buildPluginWorkerEnv({
-      manifest: { capabilities: ["ui.slots.register"] },
+      manifest: { capabilities: [] },
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",
@@ -559,6 +637,30 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     );
     expect(rows).toEqual([{ label: "alpha", title: "Joined issue" }]);
 
+    const [issueVersion] = await pluginDb.query<{ revision: string }>(
+      pluginId,
+      "SELECT (xmin::text || ':' || extract(epoch from updated_at)::text) AS revision FROM public.issues WHERE id = $1",
+      [issueId],
+    );
+    const guardedUpdate = `UPDATE ${namespace}.mission_rows SET label = $1
+      WHERE issue_id = $2 AND EXISTS (
+        SELECT 1 FROM public.issues
+        WHERE id = $2 AND company_id = $3 AND (xmin::text || ':' || extract(epoch from updated_at)::text) = $4 FOR SHARE
+      )`;
+    // The allowlist grants table access; the plugin still supplies company scoping.
+    await expect(pluginDb.execute(pluginId, guardedUpdate, [
+      "wrong company", issueId, randomUUID(), issueVersion!.revision,
+    ])).resolves.toEqual({ rowCount: 0 });
+    await expect(pluginDb.execute(pluginId, guardedUpdate, [
+      "guarded", issueId, companyId, issueVersion!.revision,
+    ])).resolves.toEqual({ rowCount: 1 });
+    await db.update(issues).set({ title: "Changed issue" }).where(eq(issues.id, issueId));
+    await expect(pluginDb.execute(pluginId, guardedUpdate, [
+      "stale", issueId, companyId, issueVersion!.revision,
+    ])).resolves.toEqual({ rowCount: 0 });
+    expect(await pluginDb.query(pluginId, `SELECT label FROM ${namespace}.mission_rows`))
+      .toEqual([{ label: "guarded" }]);
+
     const migrations = await db
       .select()
       .from(pluginMigrations)
@@ -580,6 +682,27 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     await expect(
       pluginDb.execute(pluginId, "UPDATE public.issues SET title = $1", ["bad"]),
     ).rejects.toThrow(/plugin namespace/i);
+    const companyId = randomUUID(), rowId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Inverse CTE fixture", issuePrefix: "ICTE" });
+    await pluginDb.execute(pluginId, `INSERT INTO ${namespace}.notes (id, body) VALUES ($1, $2)`, [rowId, "retained"]);
+    await expect(pluginDb.execute(pluginId, `
+      WITH removed AS (DELETE FROM ${namespace}.notes WHERE id = $1 RETURNING id, body)
+      INSERT INTO public.issues (id, company_id, title) SELECT id, $2, body FROM removed
+    `, [rowId, companyId])).rejects.toThrow(/only allows INSERT, UPDATE, or DELETE/);
+    expect(await pluginDb.query(pluginId, `SELECT id, body FROM ${namespace}.notes WHERE id = $1`, [rowId]))
+      .toEqual([{ id: rowId, body: "retained" }]);
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.id, rowId))).toEqual([]);
+
+    await expect(
+      pluginDb.execute(pluginId, `UPDATE ${namespace}.notes SET body = 'bad' WHERE EXISTS (SELECT 1 FROM public.companies)`),
+    ).rejects.toThrow(/whitelisted/i);
+
+    await db.update(plugins).set({
+      manifestJson: { ...pluginManifest, database: { ...pluginManifest.database!, coreReadTables: [] } },
+    }).where(eq(plugins.id, pluginId));
+    await expect(
+      pluginDb.execute(pluginId, `UPDATE ${namespace}.notes SET body = 'bad' WHERE EXISTS (SELECT 1 FROM public.issues)`),
+    ).rejects.toThrow(/whitelisted/i);
   });
 
   it("records a failed migration when SQL escapes the plugin namespace", async () => {
