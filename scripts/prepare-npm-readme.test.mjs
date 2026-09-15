@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { prepareNpmReadme } from "./prepare-npm-readme.mjs";
@@ -24,5 +25,15 @@ test("rewrites repository-relative image sources for npm", () => {
       '<img src="https://example.com/already-absolute.png">',
       '<img src="https://example.com/doc/assets/already-absolute.png">',
     ].join("\n"),
+  );
+});
+
+test("prepares the repository README without package-relative image sources", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const npmReadme = prepareNpmReadme(readme);
+
+  assert.doesNotMatch(
+    npmReadme,
+    /(?:src|srcset)=["'](?:doc\/assets\/|[^"']*,\s*doc\/assets\/)/,
   );
 });
