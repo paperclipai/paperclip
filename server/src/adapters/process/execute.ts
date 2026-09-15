@@ -80,6 +80,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
+  if (proc.signal) {
+    return {
+      exitCode: proc.exitCode,
+      signal: proc.signal,
+      timedOut: false,
+      errorMessage: `Process terminated by signal ${proc.signal}`,
+      resultJson: {
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+      },
+    };
+  }
+
   if ((proc.exitCode ?? 0) !== 0) {
     return {
       exitCode: proc.exitCode,
