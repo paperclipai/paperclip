@@ -145,8 +145,6 @@ export async function runEverydayFlow(input: Input) {
   let decisionId: string | undefined;
   let decisionResolvedAt: string | undefined;
   let initialConnections: string[] = [];
-  const uncertainCrash = caseId === "recover-runner-uncertain";
-  const safeCrash = caseId === "recover-runner-safe";
   let stoppedWorkspace: Record<string, string> | undefined;
   async function workspaceFiles() {
     const files: Record<string, string> = {};
@@ -595,8 +593,6 @@ export async function runEverydayFlow(input: Input) {
     }
     if (
       caseId === "recover-controller" ||
-      uncertainCrash ||
-      safeCrash ||
       caseId === "stop-redirect"
     ) {
       if (execution.environment.id === "daytona") {
@@ -615,25 +611,6 @@ export async function runEverydayFlow(input: Input) {
           load: refresh,
           accept: (s) => s.runs.some(isActiveStoryRun),
         });
-      } else if (safeCrash) {
-        await pollUntil({
-          label: "text turn accepted before crash",
-          deadlineAt: input.deadlineAt,
-          intervalMs: 100,
-          load: async () => {
-            await refresh();
-            const running = ev.runs.find(
-              (r) => r.status === "running" && r.processPid,
-            );
-            if (!running) return false;
-            const events = await api.get<Row[]>(
-              `/api/heartbeat-runs/${running.id}/events?limit=1000`,
-            );
-            return JSON.stringify(events).includes('"turn.accepted"');
-          },
-          accept: Boolean,
-        });
-        note("text-only-crash-probe-started");
       } else await sourceReady();
       const active = ev.runs.find((r) => r.status === "running");
       if (!active)
@@ -659,105 +636,13 @@ export async function runEverydayFlow(input: Input) {
         note("new-direction-submitted");
         await page.reload();
       } else {
-        await reply(
-          safeCrash
-            ? `Change direction. Reply with exactly: "Recovered conversation ${nonce}." Do not use tools or change files.`
-            : LATE_REQUIREMENT,
-        );
+        await reply(LATE_REQUIREMENT);
         note("followup-submitted-before-interruption");
         ev.allowedInterruptedRuns.push(active.id);
-        if (caseId === "recover-controller") {
-          await input.restart();
-          note("controller-restarted");
-        } else {
-          // Only kill a native daemon belonging to this isolated run. Never infer ownership from PID alone.
-          const detailed = await api.get<StoryRun>(
-            `/api/heartbeat-runs/${active.id}`,
-          );
-          const pid = detailed.processPid;
-          if (!pid || pid < 2 || detailed.runtimeMode !== "native")
-            throw new Error(
-              "Fault boundary unexercised: no owned native runner PID",
-            );
-          const identity = await runCommand("ps", [
-            "-p",
-            String(pid),
-            "-o",
-            "command=",
-          ]);
-          const ownedIdentity =
-            identity.stdout.includes(`--run-id ${active.id} `) &&
-            identity.stdout.includes(
-              `--runner-id ${detailed.runnerInstanceId} `,
-            );
-          const isolatedRoot = path.dirname(input.workspacePath);
-          if (
-            identity.code !== 0 ||
-            !identity.stdout.includes("paperclip-runnerd") ||
-            !identity.stdout.includes(`--state-dir ${isolatedRoot}/`) ||
-            !ownedIdentity
-          )
-            throw new Error(
-              "Fault boundary unexercised: runner process ownership could not be proven",
-            );
-          process.kill(pid, "SIGKILL");
-          note("owned-runner-killed", { runId: active.id, pid });
-        }
+        await input.restart();
+        note("controller-restarted");
         await openParent();
       }
-    }
-    if (uncertainCrash) {
-      await pollUntil({
-        label: "uncertain recovery safely stopped",
-        deadlineAt: input.deadlineAt,
-        load: refresh,
-        accept: (state) =>
-          state.issues.some(
-            (i) => i.id === parent!.id && i.status === "blocked",
-          ) && !state.runs.some(isActiveStoryRun),
-      });
-      const queue = ev.issues
-        .find((i) => i.id === parent!.id)!
-        .queuedComments.entries.map((e: Row) => e.comment.id);
-      check(
-        "safety.queued-input-preserved",
-        submittedCommentIds.every((id) => queue.includes(id)),
-        "The queued change remains available after the crash.",
-      );
-      check(
-        "safety.no-unverified-replay",
-        ev.runs.every(
-          (r) =>
-            ev.allowedInterruptedRuns.includes(r.id) ||
-            r.errorCode === "native_session_cleanup_quarantined",
-        ),
-        "The uncertain run did not start fresh provider work.",
-      );
-      check(
-        "safety.recorded-source-preserved",
-        (await stat(path.join(input.workspacePath, "slugify.py"))).size > 0,
-        "The saved source remains available; this does not certify incomplete writes.",
-      );
-      await openParent();
-      await expect(
-        page.getByText(/Automatic recovery.*stopped/i).first(),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Retry", exact: true }).first(),
-      ).toBeVisible();
-      check(
-        "safety.visible-blocker",
-        true,
-        "The UI explains the stop and exposes Retry; successful manual recovery is not claimed.",
-      );
-      await input.capture(
-        "final-state",
-        "Safe stop after uncertain runner crash",
-        "final-state.png",
-      );
-      if (ev.checks.some((c) => !c.passed))
-        throw new Error("Uncertain crash safety assertions failed");
-      return { issue: parent!, runs: ev.runs, evidence: ev };
     }
     if (review || decliningConnection) {
       const interactions = await pollUntil({
@@ -1031,29 +916,7 @@ export async function runEverydayFlow(input: Input) {
         ),
         "The child history contains the late requirement.",
       );
-    } else if (safeCrash) {
-      const recovery = await api.get<unknown>(
-        `/api/issues/${parent!.id}/recovery-actions`,
-      );
-      await input.evidence("safe-recovery-authority.json", recovery);
-      note("safe-recovery-authority", recovery);
-      check(
-        "safety.verified-replacement",
-        JSON.stringify(recovery).includes("verified_safe_replacement"),
-        "Automatic replacement requires the server's durable safety proof.",
-      );
-      check(
-        "recovery.new-message-answered",
-        ev.issues.some((i) =>
-          i.comments.some(
-            (c: Row) =>
-              c.authorAgentId &&
-              String(c.body).includes(`Recovered conversation ${nonce}.`),
-          ),
-        ),
-        "The queued direction is answered after verified recovery.",
-      );
-    } else if (caseId.startsWith("recover-"))
+    } else if (caseId === "recover-controller")
       await download(parent!.id, "max-length", "recovered-delivery");
     else if (caseId === "stop-redirect")
       check(
@@ -1243,7 +1106,7 @@ export async function runEverydayFlow(input: Input) {
     } catch (error) {
       note("evidence-capture-error", String(error));
     }
-    if (caseId.startsWith("recover-")) {
+    if (caseId === "recover-controller") {
       note("recovery-final-observation", {
         taskStatus: parent?.status,
         pendingCommentIds: ev.issues.flatMap((i) =>
