@@ -13261,6 +13261,7 @@ export function toolAccessService(
       const unauthenticatedPersonalProbe = Boolean(
         !galleryEntry &&
           genericAuthKind === "none" &&
+          credentialSecretRefs.length === 0 &&
           personalIdentityUserId &&
           !retainedPersonalIdentity?.grant,
       );

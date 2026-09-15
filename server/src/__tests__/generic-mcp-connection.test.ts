@@ -411,7 +411,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(profiles).toEqual([]);
   });
 
-  it("vaults a credential-bearing MCP URL and never returns or logs its token", async () => {
+  it.each(["organization", "user"] as const)("vaults a credential-bearing MCP URL for %s and never returns or logs its token", async (grantKind) => {
     const secretUrl = `${MCP_URL}?token=zapier-secret&region=us`;
     const publicUrl = `${MCP_URL}?region=us`;
     const requests: string[] = [];
@@ -434,7 +434,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     const response = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
-      .send({ link: secretUrl, name: "Token URL fixture" })
+      .send({ link: secretUrl, name: "Token URL fixture", grantKind })
       .expect(201);
 
     expect(requests).toContain(secretUrl);
@@ -450,8 +450,18 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       response.body.connectionId,
     ));
     expect(connection!.config.url).toBe(publicUrl);
-    expect(connection!.credentialSecretRefs).toEqual([
-      expect.objectContaining({ configPath: "remote.url", label: "MCP server URL" }),
+    const expectedRefs = [expect.objectContaining({ configPath: "remote.url", label: "MCP server URL" })];
+    expect(connection!.credentialSecretRefs).toEqual(grantKind === "user" ? [] : expectedRefs);
+    const grants = await db.select().from(connectionGrants).where(eq(
+      connectionGrants.connectionId,
+      response.body.connectionId,
+    ));
+    expect(grants).toEqual([
+      expect.objectContaining({
+        kind: grantKind,
+        credentialSecretRefs: expectedRefs,
+        ...(grantKind === "user" ? { subjectUserId: "board-user" } : {}),
+      }),
     ]);
     expect(await db.select().from(companySecrets)).toHaveLength(1);
     expect(JSON.stringify(await db.select().from(activityLog))).not.toContain("zapier-secret");
