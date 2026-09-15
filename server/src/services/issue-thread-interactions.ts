@@ -41,6 +41,8 @@ import type {
   ConnectionIntentInteraction,
   CreateIssueThreadInteraction,
   InteractionResolverGovernance,
+  IssueCommentAuthorType,
+  IssueCommentPresentation,
   IssueReviewPolicy,
   IssueThreadInteraction,
   IssueThreadInteractionCanonicalResolverPolicy,
@@ -71,6 +73,7 @@ import {
   connectionIntentResultSchema,
   createIssueThreadInteractionSchema,
   legacyIssueThreadInteractionResolverPolicyAlias,
+  NON_HUMAN_SENTINEL_AUTHOR_USER_IDS,
   normalizeIssueThreadInteractionResolverPolicy,
   rejectIssueThreadInteractionSchema,
   requestCheckboxConfirmationPayloadSchema,
@@ -816,6 +819,53 @@ function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSuperse
   if (interaction.kind === "connection_intent") return false;
   if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) return false;
   return interaction.payload.supersedeOnUserComment === true;
+}
+
+// Server-derived provenance: the comment demonstrably came from a machine, on evidence no
+// caller can forge. `createdByRunId` covers anything posted from a heartbeat run;
+// `authorType: "system"` covers the internal producers (pipeline monitors, watchdogs,
+// recovery) that insert notices directly; `derivedAuthorAgentId` covers the comments the
+// server later reattributed to an agent from run logs — the tier that exists precisely
+// because agents post under the `local-board` sentinel.
+function isMachineAuthoredComment(comment: {
+  authorType?: IssueCommentAuthorType | null;
+  createdByRunId?: string | null;
+  derivedAuthorAgentId?: string | null;
+}) {
+  return Boolean(comment.createdByRunId)
+    || comment.authorType === "system"
+    || Boolean(comment.derivedAuthorAgentId);
+}
+
+// Declared intent: the comment is a status notice, not an answer to a pending question.
+// `presentation` is caller-supplied, so on its own it proves nothing — a genuine user could
+// set it and stall their own card indefinitely. It is therefore only honoured from a
+// non-human sentinel author, which is assigned by authentication and never read from a
+// request body. That combination is what local automation looks like and what a real signup
+// cannot produce: automation on a board token has no run context and is forced to
+// `authorType: "user"` by assertIssueCommentAuthorTypeAllowed, so the sentinel id plus the
+// notice framing is the only evidence left that its "no PR yet, your move" nudge is not an
+// answer to the very question the work is waiting on.
+function isNonAnswerComment(comment: {
+  authorUserId?: string | null;
+  presentation?: IssueCommentPresentation | null;
+}) {
+  if (comment.presentation?.kind !== "system_notice") return false;
+  const authorUserId = comment.authorUserId;
+  if (!authorUserId) return false;
+  return NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(authorUserId);
+}
+
+// A pending decision card waits on a human answer, so only a comment that could be one may
+// consume it.
+function commentCanSupersedeDecision(comment: {
+  authorUserId?: string | null;
+  authorType?: IssueCommentAuthorType | null;
+  createdByRunId?: string | null;
+  derivedAuthorAgentId?: string | null;
+  presentation?: IssueCommentPresentation | null;
+}) {
+  return !isMachineAuthoredComment(comment) && !isNonAnswerComment(comment);
 }
 
 function normalizeCreateInteractionInput(
@@ -4127,14 +4177,18 @@ export function issueThreadInteractionService(
         id: string;
         createdAt: Date | string;
         authorUserId?: string | null;
+        authorType?: IssueCommentAuthorType | null;
         createdByRunId?: string | null;
+        derivedAuthorAgentId?: string | null;
+        presentation?: IssueCommentPresentation | null;
       },
       actor: InteractionActor,
     ) => {
       if (!comment.authorUserId) return [];
-      // Local-CLI adapters post under user auth, so authorUserId can't tell a human from a
-      // machine; createdByRunId can. Only genuine human comments (no run context) supersede.
-      if (comment.createdByRunId) return [];
+      // Local-CLI adapters and board-token automation both post under user auth, so
+      // authorUserId alone can't tell a human from a machine. Only a comment that could be
+      // a human answer supersedes.
+      if (!commentCanSupersedeDecision(comment)) return [];
 
       const rows = await db
         .select()
@@ -4236,14 +4290,18 @@ export function issueThreadInteractionService(
               eq(issueComments.companyId, issue.companyId),
               eq(issueComments.issueId, issue.id),
               isNotNull(issueComments.authorUserId),
-              // Only genuine human comments supersede; machine-originated ones carry createdByRunId.
+              // Cheap SQL prefilter for the common machine case; the remaining
+              // non-answer shapes live in jsonb and are filtered below.
               isNull(issueComments.createdByRunId),
             ),
           )
           .orderBy(asc(issueComments.createdAt)),
       ]);
 
-      if (rows.length === 0 || comments.length === 0) return [];
+      // Only a comment that could be a human answer supersedes a card waiting on one.
+      const answerComments = comments.filter(commentCanSupersedeDecision);
+
+      if (rows.length === 0 || answerComments.length === 0) return [];
 
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
@@ -4261,7 +4319,7 @@ export function issueThreadInteractionService(
         ) as UserCommentSupersedableInteraction;
         if (!shouldSupersedeInteractionOnUserComment(interaction)) continue;
 
-        const supersedingComment = comments.find((comment) =>
+        const supersedingComment = answerComments.find((comment) =>
           isCommentAtOrAfterInteraction({
             commentCreatedAt: comment.createdAt,
             interactionCreatedAt: row.createdAt,
