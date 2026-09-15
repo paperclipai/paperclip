@@ -692,7 +692,9 @@ const cursorCloudAdapter: ServerAdapterModule = {
   sessionCodec: cursorCloudSessionCodec,
   sessionManagement: getAdapterSessionManagement("cursor_cloud") ?? undefined,
   models: [],
-  supportsLocalAgentJwt: false,
+  // Mint a run JWT so remote Cursor Cloud workers can call Paperclip APIs.
+  // Injected as PAPERCLIP_TOKEN (not PAPERCLIP_API_KEY) because Cursor strips *_API_KEY from envVars.
+  supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,

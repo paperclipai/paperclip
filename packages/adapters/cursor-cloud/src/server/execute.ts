@@ -112,9 +112,11 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
     PAPERCLIP_RUN_ID: runId,
   };
-  // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
-  // token is the only source of Paperclip API identity.
+  // Paperclip API identity comes only from the harness-minted run JWT.
+  // Cursor Cloud strips envVars matching *_API_KEY, so never inject
+  // PAPERCLIP_API_KEY into remote env — use PAPERCLIP_TOKEN instead.
   delete env.PAPERCLIP_API_KEY;
+  delete env.PAPERCLIP_TOKEN;
 
   const wakeTaskId = trimNullable(context.taskId) ?? trimNullable(context.issueId);
   const wakeReason = trimNullable(context.wakeReason);
@@ -136,19 +138,16 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
   if (authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+    env.PAPERCLIP_TOKEN = authToken;
   }
 
-  // cursor_cloud runs remotely in Cursor's cloud and is intentionally not
-  // issued a Paperclip run JWT (registry: supportsLocalAgentJwt=false).
-  // buildPaperclipEnv always sets PAPERCLIP_API_URL, defaulting to the local
-  // runtime host — which a remote worker can neither reach nor authenticate
-  // against, so any agent-initiated Paperclip API call would fail with a 401
-  // (or be unreachable) and add noise. When there is no usable key, drop the
-  // callback wiring so cloud-side Paperclip tools degrade to a clean no-op.
-  // Run results are delivered server-side via the Cursor Agent SDK (getRun /
-  // wait), not through this callback, so nothing is lost.
-  if (!trimNullable(env.PAPERCLIP_API_KEY)) {
+  // When no run JWT is available, drop callback URL/bridge wiring so cloud-side
+  // Paperclip tools degrade to a clean no-op (no dead localhost URL, no 401 noise).
+  // With a token present, keep PAPERCLIP_API_URL from buildPaperclipEnv (prefer
+  // process.env.PAPERCLIP_API_URL / public base URL on deployed hosts).
+  // Run results are also delivered server-side via the Cursor Agent SDK (getRun /
+  // wait); the callback is for agent-initiated board API calls during the run.
+  if (!trimNullable(env.PAPERCLIP_TOKEN)) {
     delete env.PAPERCLIP_API_URL;
     delete env.PAPERCLIP_API_BRIDGE_MODE;
   }
@@ -541,6 +540,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runId: run.id,
       ...(model?.id ? { model: model.id } : {}),
     }));
+    await onLog(
+      "stdout",
+      `${JSON.stringify({
+        type: "cursor_cloud.env",
+        reuseSession: Boolean(canReuseSession && session),
+        envKeys: Object.keys(remoteEnv).sort(),
+        hasPaperclipToken: Boolean(remoteEnv.PAPERCLIP_TOKEN),
+        hasPaperclipApiUrl: Boolean(remoteEnv.PAPERCLIP_API_URL),
+        paperclipApiUrlHost: (() => {
+          try {
+            return remoteEnv.PAPERCLIP_API_URL ? new URL(remoteEnv.PAPERCLIP_API_URL).host : null;
+          } catch {
+            return null;
+          }
+        })(),
+      })}\n`,
+    );
     await emitStatus(onLog, "running", `Started Cursor run ${run.id}.`);
 
     const streamPromise = streamRun(run, onLog).catch((err) => {

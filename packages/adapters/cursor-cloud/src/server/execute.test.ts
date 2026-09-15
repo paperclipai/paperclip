@@ -203,11 +203,13 @@ describe("cursor_cloud execute", () => {
       PAPERCLIP_RUN_ID: "run-heartbeat-1",
       PAPERCLIP_TASK_ID: "issue-1",
       PAPERCLIP_WAKE_REASON: "issue_commented",
-      PAPERCLIP_API_KEY: "paperclip-run-jwt",
+      PAPERCLIP_TOKEN: "paperclip-run-jwt",
     });
     // When a run JWT is present the callback URL is retained so the worker can
-    // authenticate its Paperclip API calls.
+    // authenticate its Paperclip API calls. Cursor strips *_API_KEY from envVars,
+    // so the token is injected as PAPERCLIP_TOKEN instead of PAPERCLIP_API_KEY.
     expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).toHaveProperty("PAPERCLIP_API_URL");
+    expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("PAPERCLIP_API_KEY");
     expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("CURSOR_API_KEY");
 
     expect(result).toMatchObject({
@@ -276,14 +278,14 @@ describe("cursor_cloud execute", () => {
     const run = createMockRun({ agentId: "agent-no-jwt" });
     const sdkAgent = createMockSdkAgent({ agentId: "agent-no-jwt", sendRun: run });
     createMock.mockResolvedValue(sdkAgent);
-    // cursor_cloud is registered with supportsLocalAgentJwt=false, so heartbeat
-    // passes no authToken. A remote cloud worker must not receive a callback URL
-    // it can neither reach nor authenticate against (the source of 401 noise).
+    // When heartbeat cannot mint a run JWT, a remote cloud worker must not
+    // receive a callback URL it can neither reach nor authenticate against.
     const ctx = createContext({ authToken: undefined });
 
     await execute(ctx);
 
     const envVars = (createMock.mock.calls[0]?.[0]?.cloud?.envVars ?? {}) as Record<string, string>;
+    expect(envVars).not.toHaveProperty("PAPERCLIP_TOKEN");
     expect(envVars).not.toHaveProperty("PAPERCLIP_API_KEY");
     expect(envVars).not.toHaveProperty("PAPERCLIP_API_URL");
     expect(envVars).not.toHaveProperty("PAPERCLIP_API_BRIDGE_MODE");
