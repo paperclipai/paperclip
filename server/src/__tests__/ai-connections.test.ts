@@ -358,6 +358,46 @@ describe("managed AI connections", () => {
     const stored = await service.credential(await service.select({ ...runInput, userId }));
     expect(stored).toBe(auth("newer", 12));
   });
+  it("resolves two concurrent OpenAI subscription write-backs by freshness in reverse arrival order", async () => {
+    const userId = "concurrent-freshness-reverse-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (marker: string, hour: number) => JSON.stringify({ tokens: { account_id: "fixture-account", id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await service.save(companyId, userId, { provider: "openai", method: "subscription", ownership: "personal", name: "Reverse freshness fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", 10));
+    const runInput = { ...input, adapterType: "codex_local", responsibleUserId: userId, binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    // Two runs use the same OpenAI subscription grant at the same time.
+    // Neither call below throws ai_connection_busy.
+    const older = await prepareManagedAiRuntime(db, runInput);
+    const newer = await prepareManagedAiRuntime(db, runInput);
+    await writeFile(path.join(String(older.config.env.CODEX_HOME), "auth.json"), auth("older", 11));
+    await writeFile(path.join(String(newer.config.env.CODEX_HOME), "auth.json"), auth("newer", 12));
+    // The run with the older last_refresh writes back first. The run with
+    // the newer last_refresh writes back last and must win.
+    await older.cleanup();
+    await newer.cleanup();
+    const stored = await service.credential(await service.select({ ...runInput, userId }));
+    expect(stored).toBe(auth("newer", 12));
+  });
+  it("resolves two concurrent xAI subscription write-backs by freshness, not by order", async () => {
+    const userId = "concurrent-freshness-xai-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const identityKey = "https://auth.x.ai::33333333-3333-3333-3333-333333333333";
+    const auth = (marker: string, expiresAtMs: number) => JSON.stringify({ [identityKey]: { key: `key-${marker}`, refresh_token: `refresh-${marker}`, expires_at: new Date(expiresAtMs).toISOString() } });
+    const now = Date.now();
+    await service.save(companyId, userId, { provider: "xai", method: "subscription", ownership: "personal", name: "Grok freshness fixture", loginSessionId: "fixture", allAgents: true, agentIds: [] }, auth("start", now));
+    const runInput = { ...input, adapterType: "grok_local", responsibleUserId: userId, binding: { provider: "xai", method: "subscription", mode: "responsible_user" } as const, config: { model: "same-model" } };
+    // Two runs use the same xAI subscription grant at the same time.
+    // Neither call below throws ai_connection_busy.
+    const older = await prepareManagedAiRuntime(db, runInput);
+    const newer = await prepareManagedAiRuntime(db, runInput);
+    await writeFile(path.join(String(older.config.env.GROK_HOME), "auth.json"), auth("older", now + 60 * 60 * 1000));
+    await writeFile(path.join(String(newer.config.env.GROK_HOME), "auth.json"), auth("newer", now + 2 * 60 * 60 * 1000));
+    // The run with the older expiry writes back first. The run with the
+    // newer expiry writes back last and must win.
+    await older.cleanup();
+    await newer.cleanup();
+    const stored = await service.credential(await service.select({ ...runInput, userId }));
+    expect(stored).toBe(auth("newer", now + 2 * 60 * 60 * 1000));
+  });
   it("discards a credential write-back when the grant is revoked while the run is open", async () => {
     const userId = "revoked-write-back-user";
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
