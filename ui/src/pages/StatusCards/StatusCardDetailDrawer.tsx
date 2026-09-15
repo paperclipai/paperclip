@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySearchIssueSummary, StatusCardUpdate, SummarySlotIssueRef } from "@paperclipai/shared";
 import { AlertTriangle, ChevronDown, ExternalLink, History, Loader2, RefreshCw, Wand2 } from "lucide-react";
@@ -30,6 +30,7 @@ import {
   type StatusCardSettingsValue,
 } from "./StatusCardSettingsForm";
 import { SummarizerAgentSelect } from "./SummarizerAgentSelect";
+import type { StatusCardTab } from "./routes";
 import {
   formatCents,
   formatTokens,
@@ -44,16 +45,17 @@ export function StatusCardDetailDrawer({
   companyId,
   open,
   onOpenChange,
-  initialTab = "summary",
+  tab,
+  onTabChange,
 }: {
   card: StatusCardView | null;
   companyId: string | null | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  initialTab?: string;
+  tab: StatusCardTab;
+  onTabChange: (tab: StatusCardTab) => void;
 }) {
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState("summary");
   const [settings, setSettings] = useState<StatusCardSettingsValue>(defaultSettingsValue());
   // Rename + interest ("query") are edited in Settings alongside the policy.
   const [title, setTitle] = useState("");
@@ -78,12 +80,6 @@ export function StatusCardDetailDrawer({
       setSelectedRevisionId(null);
     }
   }, [card]);
-
-  // Open to the requested tab (e.g. "Query debug" on the tile deep-links to
-  // Settings) whenever the drawer (re)opens.
-  useEffect(() => {
-    if (open) setTab(initialTab);
-  }, [open, initialTab]);
 
   const updatesQuery = useQuery({
     queryKey: card ? queryKeys.statusCards.updates(card.id) : ["status-cards", "detail", "none", "updates"],
@@ -246,7 +242,7 @@ export function StatusCardDetailDrawer({
           </p>
         </SheetHeader>
 
-        <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-0">
+        <Tabs value={tab} onValueChange={(value) => onTabChange(value as StatusCardTab)} className="flex min-h-0 flex-1 flex-col gap-0">
           <TabsList variant="line" className="w-full justify-start gap-4 border-b border-border px-4">
             <TabsTrigger value="summary">Summary</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
@@ -408,6 +404,15 @@ export function StatusCardDetailDrawer({
                           {update.model ? ` · ${update.model}` : ""}
                           {update.changes.length > 0 ? ` · ${update.changes.length} changes` : ""}
                         </p>
+                        {update.generationIssueId ? (
+                          <Link
+                            to={`/issues/${update.generationIssueId}`}
+                            className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-foreground underline-offset-2 hover:underline"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            View update task
+                          </Link>
+                        ) : null}
                         {update.error ? <p className="mt-1 text-xs text-destructive">{update.error}</p> : null}
                       </div>
                     ))}
