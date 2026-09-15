@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import { and, asc, desc, eq, ilike, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agencyWebhookConfigs, agencyTrials, agencyTrialEmails, cadWebhookDlq, solarisAlerts } from "@paperclipai/db";
 import { assertBoard } from "./authz.js";
@@ -388,6 +388,32 @@ export function cadWebhookRoutes(db: Db) {
       // Override agencyCode from authenticated config
       payload.agencyCode = config.agencyCode;
 
+      // Check trial cap before ingesting (only new incidents count against the cap)
+      const [activeTrial] = await db
+        .select({
+          id: agencyTrials.id,
+          incidentCount: agencyTrials.incidentCount,
+          incidentCap: agencyTrials.incidentCap,
+          trialStatus: agencyTrials.trialStatus,
+        })
+        .from(agencyTrials)
+        .where(
+          and(
+            eq(agencyTrials.agencyWebhookConfigId, config.id),
+            eq(agencyTrials.trialStatus, "active"),
+          ),
+        )
+        .limit(1);
+
+      if (activeTrial && activeTrial.incidentCount >= activeTrial.incidentCap) {
+        res.status(429).json({
+          error: "Trial incident cap reached",
+          cap: activeTrial.incidentCap,
+          count: activeTrial.incidentCount,
+        });
+        return;
+      }
+
       let row: { id: string; createdAt: Date; updatedAt: Date };
       try {
         row = await ingestPayload(db, { companyId: config.companyId, agencyCode: config.agencyCode }, payload);
@@ -413,11 +439,26 @@ export function cadWebhookRoutes(db: Db) {
       }
 
       const isNew = row.createdAt.getTime() === row.updatedAt.getTime();
+
+      // Increment trial incident count for new incidents only (upserts don't count twice)
+      if (isNew && activeTrial) {
+        await db
+          .update(agencyTrials)
+          .set({ incidentCount: sql`${agencyTrials.incidentCount} + 1`, updatedAt: new Date() })
+          .where(eq(agencyTrials.id, activeTrial.id));
+      }
+
       res.status(isNew ? 201 : 200).json({
         alertId: row.id,
         created: isNew,
         incidentId: payload.incidentId,
         vendor: payload.vendor,
+        ...(activeTrial && {
+          trial: {
+            incidentCount: activeTrial.incidentCount + (isNew ? 1 : 0),
+            incidentCap: activeTrial.incidentCap,
+          },
+        }),
       });
     },
   );

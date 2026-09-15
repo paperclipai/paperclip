@@ -523,3 +523,83 @@ describe("POST /admin/cad/dlq/:id/replay", () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Trial cap enforcement
+// ---------------------------------------------------------------------------
+
+describe("POST /api/cad/webhook — trial cap enforcement", () => {
+  const body = JSON.stringify({
+    CallNumber: "INC-CAP-001",
+    NatureOfCall: "Medical",
+    CallType: "EMS",
+    Latitude: 37.78,
+    Longitude: -122.41,
+    CallEnteredDateTime: "2026-09-14T12:00:00Z",
+    Agency: AGENCY_CODE,
+  });
+
+  function makeTrialDb(trial: { id: string; incidentCount: number; incidentCap: number } | null): Db {
+    let selectCallCount = 0;
+    const alert = makeAlert({ id: "alert-cap-1" });
+    return {
+      select: vi.fn().mockImplementation(() => {
+        selectCallCount++;
+        return {
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockImplementation(() => {
+            if (selectCallCount === 1) return Promise.resolve([makeConfig()]);
+            if (selectCallCount === 2) return Promise.resolve(trial ? [{ ...trial, trialStatus: "active" }] : []);
+            return Promise.resolve([]);
+          }),
+        };
+      }),
+      insert: vi.fn().mockReturnThis(),
+      values: vi.fn().mockReturnThis(),
+      onConflictDoUpdate: vi.fn().mockReturnThis(),
+      returning: vi.fn().mockResolvedValue([alert]),
+      update: vi.fn().mockReturnThis(),
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([]),
+    } as unknown as Db;
+  }
+
+  it("allows ingestion when trial has remaining capacity", async () => {
+    const db = makeTrialDb({ id: "trial-1", incidentCount: 500, incidentCap: 1000 });
+    const res = await request(createWebhookApp(db))
+      .post("/api/cad/webhook")
+      .set("Content-Type", "application/json")
+      .set(SIGNATURE_HEADER, sign(body))
+      .set(AGENCY_CODE_HEADER, AGENCY_CODE)
+      .send(body);
+    expect(res.status).toBe(201);
+    expect(res.body.trial.incidentCount).toBe(501);
+    expect(res.body.trial.incidentCap).toBe(1000);
+  });
+
+  it("returns 429 when trial incident cap is reached", async () => {
+    const db = makeTrialDb({ id: "trial-1", incidentCount: 1000, incidentCap: 1000 });
+    const res = await request(createWebhookApp(db))
+      .post("/api/cad/webhook")
+      .set("Content-Type", "application/json")
+      .set(SIGNATURE_HEADER, sign(body))
+      .set(AGENCY_CODE_HEADER, AGENCY_CODE)
+      .send(body);
+    expect(res.status).toBe(429);
+    expect(res.body.error).toMatch(/cap/i);
+    expect(res.body.cap).toBe(1000);
+  });
+
+  it("allows ingestion when there is no active trial (non-trial agency)", async () => {
+    const db = makeTrialDb(null);
+    const res = await request(createWebhookApp(db))
+      .post("/api/cad/webhook")
+      .set("Content-Type", "application/json")
+      .set(SIGNATURE_HEADER, sign(body))
+      .set(AGENCY_CODE_HEADER, AGENCY_CODE)
+      .send(body);
+    expect(res.status).toBe(201);
+    expect(res.body.trial).toBeUndefined();
+  });
+});
