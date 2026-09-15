@@ -67,9 +67,11 @@ node "$REPO_ROOT/scripts/generate-npm-package-json.mjs"
 # Copy the root README so npm shows the repo README on the package page, but
 # rewrite repository-relative image assets because npm resolves README links
 # under the package's `repository.directory` (`cli`), not the repository root.
+README_ASSET_REF="${PAPERCLIP_README_ASSET_REF:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
 node "$REPO_ROOT/scripts/prepare-npm-readme.mjs" \
   "$REPO_ROOT/README.md" \
-  "$CLI_DIR/README.md"
+  "$CLI_DIR/README.md" \
+  "$README_ASSET_REF"
 
 # ── Step 6: Summary ───────────────────────────────────────────────────────────
 BUNDLE_SIZE=$(wc -c < "$DIST_DIR/index.js" | xargs)
