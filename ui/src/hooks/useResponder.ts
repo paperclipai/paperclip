@@ -23,7 +23,7 @@ export function useResponderStatus(alertId: string | null | undefined, responder
 export function usePostResponderStatus(alertId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { status: ResponderStatus; responderId?: string; responderName?: string; note?: string }) =>
+    mutationFn: (input: { status: ResponderStatus; responderId?: string; responderName?: string; note?: string; eta?: string; lat?: number; lng?: number }) =>
       postResponderStatus(alertId, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["responder-status", alertId] });

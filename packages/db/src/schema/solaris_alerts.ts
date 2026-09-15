@@ -1,4 +1,4 @@
-import { boolean, index, jsonb, pgEnum, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
+import { boolean, doublePrecision, index, jsonb, pgEnum, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 
@@ -136,6 +136,9 @@ export const responderStatusUpdates = pgTable(
     responderId: text("responder_id"),
     responderName: text("responder_name"),
     note: text("note"),
+    eta: text("eta"),
+    lat: doublePrecision("lat"),
+    lng: doublePrecision("lng"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

@@ -573,6 +573,9 @@ export function solarisAlertRoutes(db: Db) {
     const responderId = typeof body["responderId"] === "string" ? body["responderId"].trim() : actor.actorId;
     const responderName = typeof body["responderName"] === "string" ? body["responderName"].trim() : null;
     const note = typeof body["note"] === "string" ? body["note"].trim() : null;
+    const eta = typeof body["eta"] === "string" ? body["eta"].trim() : null;
+    const lat = typeof body["lat"] === "number" && isFinite(body["lat"]) ? body["lat"] : null;
+    const lng = typeof body["lng"] === "number" && isFinite(body["lng"]) ? body["lng"] : null;
 
     const [update] = await db
       .insert(responderStatusUpdates)
@@ -583,6 +586,9 @@ export function solarisAlertRoutes(db: Db) {
         responderId,
         responderName,
         note: note || null,
+        eta: eta || null,
+        lat,
+        lng,
       })
       .returning();
 

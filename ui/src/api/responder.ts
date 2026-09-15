@@ -22,6 +22,9 @@ export interface ResponderStatusUpdate {
   responderId: string | null;
   responderName: string | null;
   note: string | null;
+  eta: string | null;
+  lat: number | null;
+  lng: number | null;
   createdAt: string;
 }
 
@@ -52,7 +55,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function postResponderStatus(
   alertId: string,
-  input: { status: ResponderStatus; responderId?: string; responderName?: string; note?: string },
+  input: { status: ResponderStatus; responderId?: string; responderName?: string; note?: string; eta?: string; lat?: number; lng?: number },
 ): Promise<ResponderStatusUpdate> {
   return apiFetch<ResponderStatusUpdate>(`/api/solaris/alerts/${encodeURIComponent(alertId)}/responder-status`, {
     method: "POST",

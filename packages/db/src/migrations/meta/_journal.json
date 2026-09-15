@@ -603,6 +603,13 @@
       "when": 1789600000000,
       "tag": "0085_responder_pwa",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1789700000000,
+      "tag": "0086_responder_dispatcher_sync",
+      "breakpoints": true
     }
   ]
 }

@@ -675,6 +675,9 @@ describe("POST /solaris/alerts/:alertId/responder-status", () => {
       responderId: "user-1",
       responderName: "Alice",
       note: null,
+      eta: null,
+      lat: null,
+      lng: null,
       createdAt: new Date().toISOString(),
     };
     const db = {
@@ -694,6 +697,68 @@ describe("POST /solaris/alerts/:alertId/responder-status", () => {
     expect(res.body.status).toBe("acknowledged");
     expect(publishLiveEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "solaris.alert.responder_status" }),
+    );
+  });
+
+  it("stores eta and location when provided", async () => {
+    const statusUpdate = {
+      id: "rsu-2",
+      alertId: "alert-1",
+      companyId: "company-1",
+      status: "en_route",
+      responderId: "user-1",
+      responderName: "Bob",
+      note: null,
+      eta: "10 min",
+      lat: 34.052,
+      lng: -118.243,
+      createdAt: new Date().toISOString(),
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([statusUpdate]),
+    });
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+      insert: vi.fn().mockReturnValue({ values: insertValues }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/alerts/alert-1/responder-status")
+      .send({ status: "en_route", responderName: "Bob", eta: "10 min", lat: 34.052, lng: -118.243 });
+    expect(res.status).toBe(201);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eta: "10 min", lat: 34.052, lng: -118.243 }),
+    );
+  });
+
+  it("ignores non-finite lat/lng values", async () => {
+    const statusUpdate = {
+      id: "rsu-3",
+      alertId: "alert-1",
+      companyId: "company-1",
+      status: "on_scene",
+      responderId: "user-1",
+      responderName: null,
+      note: null,
+      eta: null,
+      lat: null,
+      lng: null,
+      createdAt: new Date().toISOString(),
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([statusUpdate]),
+    });
+    const db = {
+      select: vi.fn(() => ({ from: vi.fn().mockReturnThis(), where: vi.fn().mockResolvedValue([baseAlert]) })),
+      insert: vi.fn().mockReturnValue({ values: insertValues }),
+    } as unknown as Db;
+    const app = createApp(db);
+    const res = await request(app)
+      .post("/solaris/alerts/alert-1/responder-status")
+      .send({ status: "on_scene", lat: "not-a-number", lng: Infinity });
+    expect(res.status).toBe(201);
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ lat: null, lng: null }),
     );
   });
 });
