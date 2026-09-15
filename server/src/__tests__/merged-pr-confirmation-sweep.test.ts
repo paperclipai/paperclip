@@ -270,7 +270,12 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
       resolvePullRequestState,
     });
 
-    await expect(service.sweepMergedPullRequestConfirmations()).resolves.toEqual({
+    await expect(service.sweepMergedPullRequestConfirmations([{
+      companyId,
+      owner: "paperclipai",
+      repo: "paperclip",
+      number: 39,
+    }])).resolves.toEqual({
       checked: 6,
       candidates: 3,
       accepted: 2,
@@ -299,7 +304,9 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
       requestedByActorId: "system:pr-merged",
       idempotencyKey: `interaction:${interactionIds.boardOrAgents}:accepted`,
     }));
-    expect(resolvePullRequestState).toHaveBeenCalledTimes(2);
+    // The webhook hint resolves #39 immediately; only the other referenced PR
+    // needs the periodic provider resolver.
+    expect(resolvePullRequestState).toHaveBeenCalledTimes(1);
 
     const audit = await db.select().from(activityLog);
     expect(audit).toEqual(expect.arrayContaining([

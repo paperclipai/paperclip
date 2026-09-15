@@ -120,4 +120,64 @@ describe("setupLiveEventsWebSocketServer", () => {
     expect(socket.listenerCount("close")).toBe(0);
     expect(socket.listenerCount("finish")).toBe(0);
   });
+
+  it("authorizes a cloud-proxied browser for a company in its membership scope", async () => {
+    const server = new EventEmitter();
+    const resolveSessionFromHeaders = vi.fn(async () => null);
+    const socket = new FakeUpgradeSocket();
+    setupLiveEventsWebSocketServer(server as never, {} as never, {
+      deploymentMode: "authenticated",
+      resolveSessionFromHeaders,
+      resolveCloudActor: async () => {
+        // Stop before the ws handshake writes to the fake socket; the
+        // assertion is that authorization passed without any rejection.
+        socket.writable = false;
+        return { userId: "cloud-user-1", companyIds: ["company-1", "company-2"] };
+      },
+    });
+
+    server.emit("upgrade", createUpgradeRequest(), socket as unknown as Duplex, Buffer.alloc(0));
+    await flushPromises();
+    await flushPromises();
+
+    expect(socket.endedChunks).toEqual([]);
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cloud actor for a company outside its membership scope", async () => {
+    const server = new EventEmitter();
+    const resolveSessionFromHeaders = vi.fn(async () => null);
+    setupLiveEventsWebSocketServer(server as never, {} as never, {
+      deploymentMode: "authenticated",
+      resolveSessionFromHeaders,
+      resolveCloudActor: async () => ({ userId: "cloud-user-1", companyIds: ["company-other"] }),
+    });
+    const socket = new FakeUpgradeSocket();
+
+    server.emit("upgrade", createUpgradeRequest(), socket as unknown as Duplex, Buffer.alloc(0));
+    await flushPromises();
+    await flushPromises();
+
+    expect(socket.endedChunks[0]).toContain("403 Forbidden");
+    // A resolved cloud actor is authoritative; the session path must not run.
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
+
+  it("falls through to session auth when no cloud actor resolves", async () => {
+    const server = new EventEmitter();
+    const resolveSessionFromHeaders = vi.fn(async () => null);
+    setupLiveEventsWebSocketServer(server as never, {} as never, {
+      deploymentMode: "authenticated",
+      resolveSessionFromHeaders,
+      resolveCloudActor: async () => null,
+    });
+    const socket = new FakeUpgradeSocket();
+
+    server.emit("upgrade", createUpgradeRequest(), socket as unknown as Duplex, Buffer.alloc(0));
+    await flushPromises();
+    await flushPromises();
+
+    expect(resolveSessionFromHeaders).toHaveBeenCalledTimes(1);
+    expect(socket.endedChunks[0]).toContain("403 Forbidden");
+  });
 });

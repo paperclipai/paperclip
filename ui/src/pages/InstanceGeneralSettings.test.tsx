@@ -84,6 +84,7 @@ describe("InstanceGeneralSettings sign-out", () => {
       );
     });
     await vi.waitFor(() => expect(container.textContent).toContain("Deployment and auth"));
+    expect(container.querySelector('[data-slot="card"]')).toBeNull();
   }
 
   function signOutButton() {
@@ -101,17 +102,27 @@ describe("InstanceGeneralSettings sign-out", () => {
     expect(mockAuthApi.signOut).not.toHaveBeenCalled();
   });
 
-  it("keeps authenticated self-hosted sign-out local and invalidates auth caches", async () => {
+  it("keeps authenticated self-hosted sign-out local and drops the account caches", async () => {
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
     await renderPage(SELF_HOSTED_HEALTH);
+    queryClient.setQueryData(queryKeys.auth.session, { session: { id: "session-1" } });
+    queryClient.setQueryData(queryKeys.companies.all, {
+      companies: [{ id: "company-a", name: "Account A Co" }],
+      unauthorized: false,
+    });
 
     flushSync(() => signOutButton()?.click());
 
     await vi.waitFor(() => expect(mockAuthApi.signOut).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: queryKeys.auth.session,
-    }));
+    // Account-scoped entries are cleared outright, not marked stale — a stale
+    // entry keeps serving the previous account's data until a refetch succeeds.
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryData(queryKeys.auth.session)).toBeUndefined(),
+    );
+    expect(queryClient.getQueryData(queryKeys.companies.all)).toBeUndefined();
+    // Health describes the instance, so it is refreshed rather than dropped.
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.health });
+    expect(queryClient.getQueryData(queryKeys.health)).toEqual(SELF_HOSTED_HEALTH);
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
   });
 
@@ -192,5 +203,69 @@ describe("InstanceGeneralSettings sign-out", () => {
 
     resolveSettings?.();
     await vi.waitFor(() => expect(signOutButton()?.disabled).toBe(false));
+  });
+});
+
+describe("InstanceGeneralSettings operator-hidden sections", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+    });
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderPage(health: Record<string, unknown>) {
+    mockHealthApi.get.mockResolvedValue(health);
+    queryClient.setQueryData(queryKeys.health, health);
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceGeneralSettings />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Keyboard shortcuts"));
+  }
+
+  it("hides an operator-hidden field-backed section and a UI-only section", async () => {
+    await renderPage({
+      ...SELF_HOSTED_HEALTH,
+      hiddenSettings: [
+        "instance.general.censorUsernameInLogs",
+        "instance.general.deploymentStatus",
+      ],
+    });
+
+    expect(container.textContent).not.toContain("Censor username in logs");
+    expect(container.textContent).not.toContain("Deployment and auth");
+    expect(container.textContent).toContain("Backup retention");
+    expect(container.textContent).toContain("AI feedback sharing");
+    expect(container.textContent).toContain("Sign out");
+  });
+
+  it("shows every section when nothing is hidden", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    expect(container.textContent).toContain("Deployment and auth");
+    expect(container.textContent).toContain("Censor username in logs");
+    expect(container.textContent).toContain("Backup retention");
   });
 });

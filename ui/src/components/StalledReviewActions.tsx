@@ -1,11 +1,13 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Loader2, RotateCcw, Undo2 } from "lucide-react";
-import type { StalledReviewDecisionAction } from "@paperclipai/shared";
+import type { IssueReviewPolicy, StalledReviewDecisionAction } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { issueReviewPolicyBadge } from "../lib/review-policy";
 import { cn } from "../lib/utils";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 
@@ -16,6 +18,12 @@ interface StalledReviewActionsProps {
   footerSlot?: ReactNode;
   /** Fired after a decision lands so the surface can navigate / close / refetch extras. */
   onResolved?: (action: StalledReviewDecisionAction) => void;
+  /**
+   * The issue's `reviewPolicy` (PAP-16506). Only an opt-in constraint is shown;
+   * the default — `null`/`"anyone"` — renders nothing, because "anyone can
+   * approve" is what every issue already does.
+   */
+  reviewPolicy?: IssueReviewPolicy | null;
   className?: string;
 }
 
@@ -40,6 +48,7 @@ export function StalledReviewActions({
   companyId,
   footerSlot,
   onResolved,
+  reviewPolicy,
   className,
 }: StalledReviewActionsProps) {
   const queryClient = useQueryClient();
@@ -73,9 +82,25 @@ export function StalledReviewActions({
   const noteEmpty = note.trim().length === 0;
   const runningFor = (action: StalledReviewDecisionAction) =>
     pending && decide.variables === action;
+  const policyBadge = issueReviewPolicyBadge(reviewPolicy);
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
+      {/* Only a constrained policy gets a badge: the server refuses a verdict
+          from the wrong actor, so the card has to warn before offering Approve.
+          The default needs no line — anyone with write access can approve. */}
+      {policyBadge ? (
+        <Badge
+          variant="outline"
+          className="max-w-full min-w-0 self-start font-normal"
+          data-testid="review-policy-badge"
+          data-review-policy={policyBadge.value}
+          title={policyBadge.description}
+        >
+          <policyBadge.Icon aria-hidden />
+          <span className="min-w-0 truncate">{policyBadge.label}</span>
+        </Badge>
+      ) : null}
       <Textarea
         value={note}
         onChange={(event) => setNote(event.target.value)}

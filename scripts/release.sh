@@ -11,6 +11,8 @@ release_date=""
 dry_run=false
 skip_verify=false
 print_version_only=false
+from_candidate=false
+notes_file_override=
 tag_name=""
 
 cleanup_on_exit=false
@@ -18,13 +20,14 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
+  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--notes-file PATH]
 
 Examples:
   ./scripts/release.sh canary
   ./scripts/release.sh canary --date 2026-03-17 --dry-run
   ./scripts/release.sh nightly --dry-run
   ./scripts/release.sh beta --dry-run
+  ./scripts/release.sh beta --from-candidate --dry-run
   ./scripts/release.sh stable
   ./scripts/release.sh stable --date 2026-03-17 --dry-run
   ./scripts/release.sh stable --date 2026-03-18 --print-version
@@ -41,9 +44,15 @@ Notes:
   - Beta releases republish a commit that already shipped a nightly (HEAD
     must carry a nightly/v* tag) as YYYY.MDD.P-beta.N under the npm
     dist-tag "beta", with the git tag beta/vYYYY.MDD.P-beta.N.
+  - --from-candidate (beta only) waives the nightly-tag requirement for
+    cherry-picked candidate-branch builds; callers are responsible for
+    validating the candidate branch before using it.
   - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
     create the git tag vYYYY.MDD.P.
-  - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md.
+  - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md,
+    or be supplied explicitly with --notes-file (stable only). The override
+    exists so promotions can read notes maintained on master instead of
+    requiring them inside the promoted source commit's tree.
   - The script rewrites versions temporarily and restores the working tree on
     exit. Tags always point at the original source commit, not a generated
     release commit.
@@ -108,6 +117,12 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=true ;;
     --skip-verify) skip_verify=true ;;
     --print-version) print_version_only=true ;;
+    --from-candidate) from_candidate=true ;;
+    --notes-file)
+      shift
+      [ $# -gt 0 ] || release_fail "--notes-file requires a path."
+      notes_file_override="$1"
+      ;;
     -h|--help)
       usage
       exit 0
@@ -123,6 +138,14 @@ done
   usage
   exit 1
 }
+
+if [ "$from_candidate" = true ] && [ "$channel" != "beta" ]; then
+  release_fail "--from-candidate only applies to the beta channel."
+fi
+
+if [ -n "$notes_file_override" ] && [ "$channel" != "stable" ]; then
+  release_fail "--notes-file only applies to the stable channel."
+fi
 
 PUBLISH_REMOTE="$(resolve_release_remote)"
 fetch_release_remote "$PUBLISH_REMOTE"
@@ -167,8 +190,15 @@ elif [ "$channel" = "nightly" ]; then
   DIST_TAG="nightly"
   tag_name="$(prerelease_tag_name nightly "$TARGET_PUBLISH_VERSION")"
 elif [ "$channel" = "beta" ]; then
-  # Beta promotes an already-shipped nightly commit.
-  require_channel_tag_at_head nightly
+  if [ "$from_candidate" = true ]; then
+    # Candidate builds carry targeted cherry-picks that never shipped as a
+    # nightly, so the nightly-tag requirement does not apply; the workflow
+    # validates the candidate branch identity before invoking this path.
+    :
+  else
+    # Beta promotes an already-shipped nightly commit.
+    require_channel_tag_at_head nightly
+  fi
   require_channel_tag_absent_at_head beta
   TARGET_PUBLISH_VERSION="$(next_prerelease_version beta "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
   DIST_TAG="beta"
@@ -186,6 +216,9 @@ if [ "$print_version_only" = true ]; then
 fi
 
 NOTES_FILE="$(release_notes_file "$TARGET_STABLE_VERSION")"
+if [ -n "$notes_file_override" ]; then
+  NOTES_FILE="$notes_file_override"
+fi
 
 require_clean_worktree
 require_npm_publish_auth "$dry_run"

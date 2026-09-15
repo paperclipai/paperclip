@@ -19,3 +19,17 @@ describe("project query keys", () => {
     expect(queryKeys.projects.all("company-1")).toEqual(["projects", "company-1"]);
   });
 });
+
+describe("audit query keys", () => {
+  it("separates entity-scoped activity from the unscoped feed", () => {
+    const unscoped = queryKeys.audit.agentActions("company-1", { actorScope: "all" });
+    const routine = queryKeys.audit.agentActions("company-1", {
+      actorScope: "all",
+      entityType: "routine",
+      entityId: "routine-1",
+    });
+
+    expect(routine).not.toEqual(unscoped);
+    expect(routine).toContain("routine-1");
+  });
+});

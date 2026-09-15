@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.6
-ARG NODE_VERSION=22
+ARG NODE_VERSION=24
 ARG TARGETARCH
 
 # ---------- Stage 1: build agent-shim ----------

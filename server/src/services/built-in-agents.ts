@@ -471,6 +471,12 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
 
 const DEFINITIONS_BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.key, definition]));
 
+// Bundled built-in agents that should be provisioned automatically when a
+// company is created (and re-ensured on startup reconcile). Empty by default so
+// a new user starts clean — the Reflection Coach and Summarizer are opt-in, not
+// seeded. Add a definition key here to restore automatic provisioning.
+const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
+
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
 const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
   "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
@@ -1917,7 +1923,17 @@ export function builtInAgentService(db: Db) {
     const company = await ensureCompany(companyId);
     let autoEnsured = 0;
     let pendingApprovals = 0;
+    // A fresh company starts with only its own lead agent — the Reflection
+    // Coach and Summarizer are no longer auto-created for new users. They stay
+    // available to enable on demand (via ensure / provision / the built-in
+    // bundle panel). We still reconcile any bundled agent that already exists
+    // (e.g. one an operator enabled) so its instructions/skill/routine keep
+    // tracking stock. Add a key to AUTO_PROVISION_ON_COMPANY_CREATE_KEYS to
+    // restore automatic creation for that definition.
     for (const definition of DEFINITIONS.filter((entry) => entry.bundle)) {
+      const existing = await findSingleAgent(companyId, definition);
+      const shouldProvision = existing !== null || AUTO_PROVISION_ON_COMPANY_CREATE_KEYS.has(definition.key);
+      if (!shouldProvision) continue;
       if (company.requireBoardApprovalForNewAgents) {
         const result = await provision(companyId, definition.key);
         if (result.approval) pendingApprovals += 1;

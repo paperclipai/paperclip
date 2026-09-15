@@ -7,16 +7,12 @@ import {
 describe("grok local skill sync", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
 
-  it("reports Grok skills as ephemeral workspace-mounted state", async () => {
+  it("defaults the operational Paperclip skill as ephemeral workspace-mounted state", async () => {
     const snapshot = await listGrokSkills({
       agentId: "agent-1",
       companyId: "company-1",
       adapterType: "grok_local",
-      config: {
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
-        },
-      },
+      config: {},
     });
 
     expect(snapshot.adapterType).toBe("grok_local");

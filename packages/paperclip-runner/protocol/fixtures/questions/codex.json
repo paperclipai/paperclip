@@ -1,0 +1,41 @@
+{
+  "schema": "paperclip.question_adapter_fixture.v1",
+  "adapter": "codex",
+  "nativeRequest": {
+    "method": "item/tool/requestUserInput",
+    "params": {
+      "title": "Deployment input",
+      "questions": [{
+        "id": "environment",
+        "header": "Environment",
+        "question": "Where should we deploy?",
+        "required": true,
+        "options": [
+          { "label": "Staging", "description": "Deploy to staging first." },
+          { "label": "Production", "description": "Deploy directly to production." }
+        ]
+      }]
+    }
+  },
+  "canonicalQuestionSet": {
+    "schema": "paperclip.question_set.v1",
+    "title": "Deployment input",
+    "submitLabel": "Submit answers",
+    "questions": [{
+      "id": "environment",
+      "header": "Environment",
+      "prompt": "Where should we deploy?",
+      "required": true,
+      "answerMode": "single_select",
+      "options": [
+        { "id": "option-1", "label": "Staging", "description": "Deploy to staging first." },
+        { "id": "option-2", "label": "Production", "description": "Deploy directly to production." }
+      ]
+    }]
+  },
+  "canonicalResponse": {
+    "schema": "paperclip.question_response.v1",
+    "answers": { "environment": { "selectedOptionIds": ["option-1"] } }
+  },
+  "nativeResponse": { "answers": { "environment": { "answers": ["Staging"] } } }
+}

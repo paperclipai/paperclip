@@ -30,14 +30,22 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     ).toBe(false);
   });
 
-  it("still resets for the existing reset reasons", () => {
+  it("keeps assignment, approval, and review-participant recovery as fresh boundaries", () => {
     for (const wakeReason of [
       "issue_assigned",
-      "execution_review_requested",
       "execution_approval_requested",
-      "execution_changes_requested",
+      "execution_review_participant_recovery",
     ] as const) {
       expect(shouldResetTaskSessionForWake({ wakeReason })).toBe(true);
+    }
+  });
+
+  it("does not reset execution handoffs by wake reason alone", () => {
+    for (const wakeReason of [
+      "execution_review_requested",
+      "execution_changes_requested",
+    ] as const) {
+      expect(shouldResetTaskSessionForWake({ wakeReason })).toBe(false);
     }
   });
 
@@ -80,19 +88,21 @@ describe("PF-4 describeSessionResetReason", () => {
     ).toBeNull();
   });
 
-  it("returns the existing reasons for the existing reset triggers", () => {
+  it("returns reasons for wake reasons that still force a fresh task session", () => {
     expect(describeSessionResetReason({ wakeReason: "issue_assigned" })).toBe(
       "wake reason is issue_assigned",
-    );
-    expect(describeSessionResetReason({ wakeReason: "execution_review_requested" })).toBe(
-      "wake reason is execution_review_requested",
     );
     expect(describeSessionResetReason({ wakeReason: "execution_approval_requested" })).toBe(
       "wake reason is execution_approval_requested",
     );
-    expect(describeSessionResetReason({ wakeReason: "execution_changes_requested" })).toBe(
-      "wake reason is execution_changes_requested",
-    );
+    expect(
+      describeSessionResetReason({ wakeReason: "execution_review_participant_recovery" }),
+    ).toBe("wake reason is execution_review_participant_recovery");
+  });
+
+  it("does not report review/change-request handoffs as reset reasons", () => {
+    expect(describeSessionResetReason({ wakeReason: "execution_review_requested" })).toBeNull();
+    expect(describeSessionResetReason({ wakeReason: "execution_changes_requested" })).toBeNull();
   });
 
   it("returns the forceFreshSession message when explicitly requested", () => {
@@ -116,6 +126,7 @@ describe("PF-4 describeSessionResetReason", () => {
       { wakeReason: "issue_assigned" },
       { wakeReason: "execution_review_requested" },
       { wakeReason: "execution_approval_requested" },
+      { wakeReason: "execution_review_participant_recovery" },
       { wakeReason: "execution_changes_requested" },
       { forceFreshSession: true },
       { wakeReason: "issue_commented" },

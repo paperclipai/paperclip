@@ -123,6 +123,18 @@ export function toggleIssueFilterValue(values: string[], value: string): string[
   return values.includes(value) ? values.filter((existing) => existing !== value) : [...values, value];
 }
 
+export function searchIssueFilterOptions<T>(
+  options: readonly T[] | undefined,
+  search: string,
+  getSearchText: (option: T) => string,
+): T[] {
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  if (!normalizedSearch) return [...(options ?? [])];
+  return (options ?? []).filter((option) =>
+    getSearchText(option).toLocaleLowerCase().includes(normalizedSearch),
+  );
+}
+
 export function resolveIssueFilterWorkspaceId(
   issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
   context: IssueFilterWorkspaceContext = {},

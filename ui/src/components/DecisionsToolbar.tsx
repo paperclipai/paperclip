@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { ArrowUpDown, Check, GraduationCap, Layers, ListFilter } from "lucide-react";
+import { ArrowUpDown, Check, Layers, ListFilter } from "lucide-react";
 import {
   ATTENTION_GROUP_BY_OPTIONS,
   ATTENTION_SORT_OPTIONS,
@@ -34,12 +34,10 @@ interface DecisionsToolbarProps {
   onGroupByChange: (next: AttentionGroupBy) => void;
   sortOrder: AttentionSortOrder;
   onSortOrderChange: (next: AttentionSortOrder) => void;
-  /** Open the decision-training index. */
-  onOpenTraining: () => void;
 }
 
 /**
- * The decisions filter / group / sort / training toolbar, shared verbatim by the
+ * The decisions filter / group / sort toolbar, shared verbatim by the
  * desk (WhatNeedsMe) and the per-queue page so both surfaces expose an identical
  * control set. All state lives in the parent; this is presentation
  * plus the filter popover only.
@@ -53,7 +51,6 @@ export function DecisionsToolbar({
   onGroupByChange,
   sortOrder,
   onSortOrderChange,
-  onOpenTraining,
 }: DecisionsToolbarProps) {
   const activeFilterCount = countActiveAttentionFilters(filters);
   return (
@@ -114,17 +111,6 @@ export function DecisionsToolbar({
           </div>
         </PopoverContent>
       </Popover>
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        className="h-8 w-8 shrink-0"
-        title="Training"
-        aria-label="Training"
-        onClick={onOpenTraining}
-      >
-        <GraduationCap className="h-3.5 w-3.5" />
-      </Button>
       {/* Sort */}
       <Popover>
         <PopoverTrigger asChild>

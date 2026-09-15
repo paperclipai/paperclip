@@ -8,12 +8,11 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { useLocation } from "@/lib/router";
-import { IssuePlanConfirmationActionBar } from "./IssuePlanConfirmationActionBar";
 
 interface IssuePropertiesPlansTabProps {
   issue: Issue;
-  /** True when hosted outside the properties panel (mobile sheet) — the plan
-   * confirmation bar then renders in place instead of the pane footer slot. */
+  /** Retained for host parity with the other tabs; the Plans tab no longer
+   * renders its own approval control (PAP-418). */
   inline?: boolean;
 }
 
@@ -28,15 +27,15 @@ function hasPendingPlanConfirmation(interactions: IssueThreadInteraction[] | und
 }
 
 /**
- * Plans tab of the redesigned properties pane (flag: enableTaskChatRedesign).
+ * Plans tab of the properties pane.
  *
- * Owns the plan surface with the flag ON: the `plan` document itself (formerly
- * pinned above the tabs via IssueDocumentsSection, which the chat shell gates
- * off) rendered above the accepted-plan decomposition history. Structured live
+ * Owns the plan surface: the `plan` document itself (formerly pinned above
+ * the tabs via IssueDocumentsSection, which the chat shell gates off)
+ * rendered above the accepted-plan decomposition history. Structured live
  * PlanEntry/todo streaming is a flagged protocol dependency (demonstrated in
  * the /dev/task-chat-lab harness).
  */
-export function IssuePropertiesPlansTab({ issue, inline }: IssuePropertiesPlansTabProps) {
+export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps) {
   const { data: planDocument, isLoading: planDocumentLoading } = useIssuePlanDocument(issue.id);
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -53,35 +52,31 @@ export function IssuePropertiesPlansTab({ issue, inline }: IssuePropertiesPlansT
 
   if (!planDocument && !hasPlans) {
     return (
-      <>
-        {/* This is deliberately outside the plan-document gate: an interaction
-            can arrive before its plan document query resolves or persists. */}
-        <IssuePlanConfirmationActionBar issue={issue} inline={inline} />
-        <div className="px-1 py-6 text-sm text-muted-foreground">
-          {planDocumentLoading ? (
-            "Loading plan…"
-          ) : issue.workMode === "planning" ? (
-            <div className="space-y-2">
-              <p>This task is in plan mode but no plan document has been written yet.</p>
-              {pendingPlanConfirmation ? (
-                <p className="text-amber-foreground">
-                  A plan confirmation is pending, but the plan document it should confirm is missing.
-                </p>
-              ) : null}
-            </div>
-          ) : (
-            "No plan yet. The plan document, accepted plans, and their revisions will appear here."
-          )}
-        </div>
-      </>
+      <div className="px-1 py-6 text-sm text-muted-foreground">
+        {planDocumentLoading ? (
+          "Loading plan…"
+        ) : issue.workMode === "planning" ? (
+          <div className="space-y-2">
+            <p>This task is in plan mode but no plan document has been written yet.</p>
+            {pendingPlanConfirmation ? (
+              <p className="text-amber-foreground">
+                A plan confirmation is pending, but the plan document it should confirm is missing.
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          "No plan yet. The plan document, accepted plans, and their revisions will appear here."
+        )}
+      </div>
     );
   }
 
   return (
     <div className="space-y-4 py-2">
-      {/* Pending plan confirmation: its CTAs pin to the pane's footer slot so
-          they stay visible while the plan scrolls. */}
-      <IssuePlanConfirmationActionBar issue={issue} inline={inline} />
+      {/* Plan approval lives in ONE place — the plan confirmation card in the
+          conversation thread (PAP-418). This tab now only shows the plan itself
+          and its accepted-revision history, so there is no second surface to
+          approve from. */}
       {planDocument ? (
         <section data-testid="issue-plan-document" className="space-y-2">
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -112,7 +107,7 @@ export function IssuePropertiesPlansTab({ issue, inline }: IssuePropertiesPlansT
             locationHash={location.hash}
             panelOpen={annotationPanelOpen}
             onPanelOpenChange={setAnnotationPanelOpen}
-            panelPlacement="inline"
+            panelPlacement="popover"
           >
             <MarkdownBody>{planDocument.body}</MarkdownBody>
           </IssueDocumentAnnotations>

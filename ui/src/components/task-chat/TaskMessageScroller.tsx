@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { readThreadScrollAnchor, threadScrollAnchorDelta, type ThreadScrollAnchor } from "./scroll-anchor";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { ArrowDown } from "lucide-react";
+import { parseCssTimeMs } from "./motion-tokens";
+import { useTaskChatScrollNavigation } from "./scroll-navigation";
 
 const PIN_THRESHOLD_PX = 48;
 
@@ -41,10 +45,36 @@ interface TaskMessageScrollerProps {
  * while pinned stays instant, so no reflow/jump happens during streaming.
  */
 export function TaskMessageScroller({ children, contentKey, className }: TaskMessageScrollerProps) {
+  const streamlined = useStreamlinedTaskChatPresentation();
+  const navigation = useTaskChatScrollNavigation();
+  const initialPositionApplied = useRef(false);
+  const appliedNavigation = useRef({ key: navigation.key, hash: navigation.hash });
   const ref = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<ThreadScrollAnchor | null>(null);
   const pinnedRef = useRef(true);
   const easingRef = useRef(false);
+  const clientHeightRef = useRef<number | null>(null);
+  const scrollbarIdleTimerRef = useRef<number | null>(null);
+  const scrollbarIdleDelayRef = useRef<number | null>(null);
   const [pillPhase, setPillPhase] = useState<PillPhase>("hidden");
+
+  const showScrollbarWhileScrolling = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.dataset.scrollActive = "true";
+    if (scrollbarIdleTimerRef.current !== null) {
+      window.clearTimeout(scrollbarIdleTimerRef.current);
+    }
+    const idleDelay = scrollbarIdleDelayRef.current ?? parseCssTimeMs(
+      getComputedStyle(document.documentElement).getPropertyValue("--motion-scrollbar-idle-delay"),
+    );
+    scrollbarIdleDelayRef.current = idleDelay;
+    scrollbarIdleTimerRef.current = window.setTimeout(() => {
+      delete el.dataset.scrollActive;
+      scrollbarIdleTimerRef.current = null;
+      scrollbarIdleDelayRef.current = null;
+    }, idleDelay);
+  }, []);
 
   const showPill = useCallback(() => {
     setPillPhase("in");
@@ -68,7 +98,62 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
     el.scrollTop = el.scrollHeight; // instant, never smooth
   }, []);
 
+  const followViewportResize = useCallback(() => {
+    const el = ref.current;
+    if (!el) return false;
+    const previousClientHeight = clientHeightRef.current;
+    const nextClientHeight = el.clientHeight;
+    clientHeightRef.current = nextClientHeight;
+    if (
+      previousClientHeight == null ||
+      previousClientHeight <= 0 ||
+      previousClientHeight === nextClientHeight ||
+      !pinnedRef.current
+    ) {
+      return false;
+    }
+    scrollToBottom();
+    return true;
+  }, [scrollToBottom]);
+
+  const rememberAnchor = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    anchorRef.current = readThreadScrollAnchor(el, rect.top, rect.bottom);
+    if (initialPositionApplied.current) navigation.remember(el.scrollTop, anchorRef.current);
+  }, [navigation.key, navigation.hash, navigation.ready]);
+
+  const reconcileContent = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Clicking latest is an explicit follow intent. If content or the composer
+    // changes during its glide, finish at the new bottom instead of restoring
+    // the old reading anchor and cancelling the browser's smooth scroll.
+    if (easingRef.current) {
+      easingRef.current = false;
+      pinnedRef.current = true;
+      hidePill();
+    }
+    if (pinnedRef.current) scrollToBottom();
+    else {
+      const delta = threadScrollAnchorDelta(el, anchorRef.current, el.getBoundingClientRect().top);
+      if (delta) el.scrollTop += delta;
+    }
+    rememberAnchor();
+  }, [rememberAnchor, scrollToBottom, hidePill]);
+
   const handleScroll = useCallback(() => {
+    rememberAnchor();
+    showScrollbarWhileScrolling();
+    // A growing composer shrinks this viewport. Some browsers dispatch the
+    // resulting scroll event before ResizeObserver, so preserve the previous
+    // pinned state here instead of mistaking the layout change for a user
+    // scroll away from the bottom.
+    if (followViewportResize()) {
+      hidePill();
+      return;
+    }
     const pinned = isPinned();
     if (easingRef.current) {
       // Smooth re-follow in flight: intermediate scroll events must not
@@ -83,7 +168,14 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
     pinnedRef.current = pinned;
     if (pinned) hidePill();
     else showPill();
-  }, [isPinned, hidePill, showPill]);
+  }, [
+    rememberAnchor,
+    followViewportResize,
+    isPinned,
+    hidePill,
+    showPill,
+    showScrollbarWhileScrolling,
+  ]);
 
   const handleJumpToLatest = useCallback(() => {
     const el = ref.current;
@@ -95,7 +187,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       return;
     }
     easingRef.current = true;
-    if (typeof el.scrollTo === "function") {
+    if (typeof el.scrollTo === "function" && !motionDisabled()) {
       el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     } else {
       // Environments without scrollTo (older jsdom): fall back to instant.
@@ -125,25 +217,65 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
     };
   }, [showPill]);
 
+  useEffect(() => () => {
+    if (scrollbarIdleTimerRef.current !== null) {
+      window.clearTimeout(scrollbarIdleTimerRef.current);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    clientHeightRef.current = el.clientHeight;
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (followViewportResize()) hidePill();
+      reconcileContent();
+    });
+    observer.observe(el);
+    // The viewport itself does not resize when an image or historical row
+    // grows. Observe the content box too, before the browser paints it.
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => observer.disconnect();
+  }, [followViewportResize, hidePill, reconcileContent]);
+
   // Follow new content only when already pinned; otherwise hold position.
   useLayoutEffect(() => {
-    if (pinnedRef.current) scrollToBottom();
-  }, [contentKey, scrollToBottom]);
-
-  useEffect(() => {
-    scrollToBottom();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const el = ref.current;
+    if (appliedNavigation.current.key !== navigation.key || appliedNavigation.current.hash !== navigation.hash) {
+      appliedNavigation.current = { key: navigation.key, hash: navigation.hash };
+      initialPositionApplied.current = false;
+    }
+    if (el && navigation.ready && !initialPositionApplied.current) {
+      const top = navigation.initialPosition(el, el.getBoundingClientRect().top, el.scrollTop);
+      if (top !== null) {
+        el.scrollTop = top;
+        pinnedRef.current = isPinned();
+        rememberAnchor();
+      }
+      initialPositionApplied.current = true;
+    }
+    reconcileContent();
+  }, [contentKey, reconcileContent, navigation.key, navigation.hash, navigation.ready]);
 
   return (
     <div className="relative min-h-0 flex-1">
       <div
         ref={ref}
         onScroll={handleScroll}
-        // absolute inset-0 (not h-full): the viewport must equal the flex-sized
-        // wrapper exactly — percentage heights don't reliably resolve against
-        // flex-determined block heights, which let the thread overflow the page.
-        className={cn("absolute inset-0 overflow-y-auto", className)}
+        // Keep the viewport tied to the flex-sized wrapper vertically —
+        // percentage heights don't reliably resolve against flex-determined
+        // block heights, which let the thread overflow the page. In the
+        // streamlined shell, extend only the scroll box through the page's
+        // right gutter; matching padding preserves the message column while
+        // placing the scrollbar against the properties-panel boundary.
+        className={cn(
+          "task-chat-scroll-viewport scrollbar-while-scrolling absolute inset-y-0 left-0 overflow-y-auto",
+          streamlined
+            ? "-right-4 overflow-x-hidden pr-4 md:-right-6 md:pr-6"
+            : "right-0",
+          className,
+        )}
         data-testid="task-chat-scroller"
       >
         {children}
@@ -159,7 +291,8 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
           // The tc-scroll-pill-* keyframes carry the translate(-50%) X-centering
           // (fill: both keeps it after the animation) — no -translate-x-1/2 here.
           className={cn(
-            "absolute bottom-3 left-1/2 flex size-8 items-center justify-center rounded-full border border-border bg-background shadow-sm hover:bg-muted",
+            "absolute left-1/2 flex size-8 items-center justify-center rounded-full border border-border bg-background shadow-sm hover:bg-muted",
+            streamlined ? "bottom-7" : "bottom-3",
             pillPhase === "out" ? "tc-scroll-pill-out" : "tc-scroll-pill-in",
           )}
         >

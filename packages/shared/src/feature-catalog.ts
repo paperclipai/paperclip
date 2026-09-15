@@ -50,6 +50,25 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableNativeRunner: {
+    title: "Paperclip Runner",
+    description:
+      "Allow explicitly configured local Codex, OpenCode, and qualified ACPX agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required. Onboarding remains on legacy adapters.",
+    tier: "managed",
+    cloudDefault: false,
+    // On by default for self-hosted instances. Requires a Rust toolchain (or
+    // PAPERCLIP_RUNNER_BINARY) for `pnpm dev`, which builds runnerd whenever
+    // this is on.
+    selfHostedDefault: true,
+  },
+  enableManagedSandboxOnly: {
+    title: "Managed Environment Only",
+    description:
+      "Hide the local environment and run all agents in the platform-managed environment.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableIsolatedWorkspaces: {
     title: "Isolated Workspaces",
     description:
@@ -65,10 +84,26 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
-  enableApps: {
-    title: "Apps",
+  enableStreamlinedUi: {
+    title: "Streamlined UI",
     description:
-      "Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling.",
+      "Use the streamlined application shell, shared task collections, focused task detail layout, contextual navigation, and simplified main sidebar.",
+    tier: "preference",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
+  enableApps: {
+    title: "Apps (compatibility)",
+    description:
+      "Deprecated compatibility key. Apps is always enabled; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
+  enableChatConnectors: {
+    title: "Chat connectors",
+    description:
+      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; GitHub and other tool connectors are unaffected.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -88,6 +123,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableAgentChat: {
+    title: "Agent Chat",
+    description: "Persistent task-backed conversations that clarify goals and hand work off to tasks.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableConferenceRoomChat: {
     title: "Conference Room Chat",
     description:
@@ -96,24 +138,16 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableTaskChatRedesign: {
-    title: "Chat-Style Tasks",
+  enableClassicTaskInterface: {
+    title: "Classic Task Interface",
     description:
-      "Reimagines the task detail page as a live conversation with your agents: chat bubbles for people and agents, streaming activity — thinking, tool calls, diffs — that folds into a one-line summary when a turn finishes, inline plan/question/permission cards, a three-mode composer (Agent · Plan · Ask), and a resizable Properties · Plan · Artifacts pane.",
+      "Restore the pre-chat task detail page: the page-level header with inline description editor, the plain comment thread, and the fixed Properties sidebar. Chat-only features (streaming activity folding, inline plan/question cards, the three-mode composer) are unavailable in the classic view.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableTaskWatchdogs: {
-    title: "Task Watchdogs",
-    description:
-      "Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore live paths when work should continue.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
   enableIssuePlanDecompositions: {
-    title: "Task Plan Decomposition Panel",
+    title: "Task Plan Decomposition",
     description: "Show accepted-plan decomposition history on task detail pages.",
     tier: "managed",
     cloudDefault: false,
@@ -205,19 +239,19 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enablePaperclipDeveloperMode: {
+    title: "Paperclip Developer Mode",
+    description:
+      "Show internal Paperclip maintainer tools and observability links, including Honeycomb trace queries on run pages.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   autoRestartDevServerWhenIdle: {
     title: "Auto-Restart Dev Server When Idle",
     description:
       "In local development, wait for queued and running agent runs to finish, then restart the server automatically when backend changes make the current boot stale.",
     tier: "preference",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
-  enableIssueGraphLivenessAutoRecovery: {
-    title: "Auto-Create Recovery Tasks",
-    description:
-      "Let the heartbeat scheduler create recovery tasks for task dependency chains found inside the configured lookback window.",
-    tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },
@@ -245,11 +279,35 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: false,
   },
+  enableSandboxDuplexBridge: {
+    title: "Sandbox Duplex Bridge",
+    description:
+      "Let a run open the sandbox duplex command-stream bridge when the provider grants the capability. The host reads this per run before it selects the transport. Off keeps the file bridge for every run.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableRunnerPreviewIngress: {
+    title: "Runner Preview Ingress (Deprecated)",
+    description:
+      "Compatibility-only key retained for older managed configs. Runner ingress follows the Paperclip Runner setting.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableWorktreeRunExecution: {
     title: "Worktree Run Execution",
     description:
       "Let the scheduler execute runs inside an isolated git-worktree preview instance for tasks created after activation.",
     tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableFirstTaskPlanProposal: {
+    title: "First task: propose with a plan document",
+    description:
+      "When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped.",
+    tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
   },

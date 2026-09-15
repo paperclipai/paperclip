@@ -2,6 +2,178 @@ type HotRestartShutdownPreparation = {
   skipDrain: boolean;
 };
 
+type ShutdownLogger = {
+  info(obj: object, msg: string): void;
+  error(obj: object, msg: string): void;
+};
+
+export async function drainRunExecutionFinalizersForShutdown(input: {
+  signal: "SIGINT" | "SIGTERM";
+  drain: (() => Promise<void>) | null;
+  timeoutMs?: number;
+  log: ShutdownLogger;
+}): Promise<"drained" | "timed_out" | "unavailable"> {
+  if (!input.drain) return "unavailable";
+  const timeoutMs = input.timeoutMs ?? 5_000;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const result = await Promise.race([
+      input.drain().then(() => "drained" as const),
+      new Promise<"timed_out">((resolve) => {
+        timer = setTimeout(() => resolve("timed_out"), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (result === "timed_out") {
+      input.log.info(
+        { signal: input.signal, timeoutMs },
+        "bounded heartbeat execution finalizer drain timed out",
+      );
+    }
+    return result;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+type ShutdownHttpListener = {
+  listening: boolean;
+  close(callback?: (err?: Error) => void): unknown;
+  closeIdleConnections?: () => void;
+  closeAllConnections?: () => void;
+};
+
+/**
+ * Stops the HTTP listener from accepting new requests and waits, for at most
+ * `timeoutMs`, for the open connections to finish. Idle keep-alive sockets
+ * close at once; whatever is still open when the grace period ends is closed
+ * forcibly, so the teardown never hangs on a long-lived client. Call this
+ * before the database pool ends, so no request can reach a route after
+ * `sql.end()` and fail with a connection-ended error.
+ */
+export async function closeHttpListenerForShutdown(input: {
+  server: ShutdownHttpListener;
+  signal: "SIGINT" | "SIGTERM";
+  timeoutMs?: number;
+  log: ShutdownLogger;
+}): Promise<"closed" | "timed_out" | "not_listening"> {
+  if (!input.server.listening) return "not_listening";
+  const timeoutMs = input.timeoutMs ?? 5_000;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      new Promise<"closed">((resolve) => {
+        input.server.close((err) => {
+          if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+            input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
+          }
+          resolve("closed");
+        });
+        input.server.closeIdleConnections?.();
+      }),
+      new Promise<"timed_out">((resolve) => {
+        timer = setTimeout(() => {
+          input.log.info(
+            { signal: input.signal, timeoutMs },
+            "HTTP listener drain timed out; closing the remaining connections",
+          );
+          input.server.closeAllConnections?.();
+          resolve("timed_out");
+        }, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Runs the final, ordered teardown of the server. It awaits the application
+ * service cleanup first, so a live setup-token login session stops and releases
+ * its sandbox lease before the database and the provider stop. The caller runs
+ * `process.exit(0)` only after this helper resolves, so an orderly shutdown
+ * never leaves a sandbox lease or confidential login state alive past the
+ * process exit.
+ *
+ * A step that rejects does not stop the teardown. The helper logs the error and
+ * continues to the next step. A failed setup-token lease release stays a
+ * durable record for the startup reaper; the helper surfaces it in the log
+ * instead of blocking the exit path.
+ */
+export async function finalizeServerShutdown(input: {
+  signal: "SIGINT" | "SIGTERM";
+  shutdownAppServices: (() => Promise<void>) | undefined;
+  /**
+   * Stops the HTTP listener and drains its connections (see
+   * `closeHttpListenerForShutdown`). Runs first, while every application
+   * service is still available to the requests being drained, so no request
+   * runs against a half-dismantled service or an ended pool.
+   */
+  closeHttpListener?: (() => Promise<unknown>) | null;
+  /**
+   * Ends the server's PostgreSQL client pools. Runs after the application
+   * services (which still need the database) and before the embedded
+   * provider stops, so the backends close in order and none outlive the
+   * process.
+   */
+  closeDatabase?: (() => Promise<void>) | null;
+  stopEmbeddedPostgres: (() => Promise<void>) | null;
+  shutdownInstrumentation: () => Promise<void>;
+  shutdownSentry: () => Promise<void>;
+  log: ShutdownLogger;
+}): Promise<void> {
+  const { signal } = input;
+
+  // Stop accepting requests and drain the open ones before any service goes
+  // away, so a request that is still in flight sees a fully working server.
+  if (input.closeHttpListener) {
+    try {
+      await input.closeHttpListener();
+    } catch (err) {
+      input.log.error({ err, signal }, "HTTP listener shutdown failed");
+    }
+  }
+
+  // Await the application service cleanup, so a live setup-token login session
+  // releases its sandbox lease before the database and the provider stop. A
+  // rejected cleanup stays durable for the reaper; it does not block the exit.
+  try {
+    await input.shutdownAppServices?.();
+  } catch (err) {
+    input.log.error({ err, signal }, "Application service shutdown failed");
+  }
+
+  // End the client pools once nothing needs them any more. Without this the
+  // process exit leaves the pooled backends to PostgreSQL's own TCP keepalive
+  // reaping, and a restart loop can pile up enough of them to hit
+  // `max_connections` before the next boot gets a connection.
+  if (input.closeDatabase) {
+    try {
+      await input.closeDatabase();
+    } catch (err) {
+      input.log.error({ err, signal }, "Database client shutdown failed");
+    }
+  }
+
+  if (input.stopEmbeddedPostgres) {
+    input.log.info({ signal }, "Stopping embedded PostgreSQL");
+    try {
+      await input.stopEmbeddedPostgres();
+    } catch (err) {
+      input.log.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+    }
+  }
+
+  // Flush buffered OTel spans before the process goes away; without this await
+  // the exporter's final batch is dropped on exit.
+  await input.shutdownInstrumentation();
+
+  // Flush buffered Sentry events before the process goes away; without this
+  // await the last events are dropped on exit.
+  await input.shutdownSentry();
+}
+
 const COORDINATED_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM"] as const;
 
 type ShutdownSignalTarget = {

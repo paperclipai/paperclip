@@ -20,7 +20,14 @@ const config: StorybookConfig = {
   viteFinal: async (baseConfig) =>
     mergeConfig(baseConfig, {
       plugins: [tailwindcss()],
+      optimizeDeps: { include: ["motion/react", "react", "react-dom"] },
       resolve: {
+        // Storybook's core and the react-vite builder each resolve their own
+        // React under pnpm's strict tree. Any component that calls a hook from
+        // a third-party package — `motion`'s useReducedMotion, in the agent
+        // capsule — then gets a second copy and fails with "Invalid hook call".
+        // The app's own dev server hoists one React and never hit this.
+        dedupe: ["react", "react-dom"],
         alias: {
           "@": path.resolve(storybookConfigDir, "../../src"),
           lexical: path.resolve(storybookConfigDir, "../../node_modules/lexical/dist/Lexical.mjs"),

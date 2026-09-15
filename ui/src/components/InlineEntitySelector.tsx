@@ -27,6 +27,12 @@ interface InlineEntitySelectorProps {
   disablePortal?: boolean;
   /** Open the popover when the trigger receives keyboard/programmatic focus. */
   openOnFocus?: boolean;
+  /** Disable the trigger and prevent the popover from opening. */
+  disabled?: boolean;
+  /** Optional test id forwarded to the trigger button. */
+  triggerTestId?: string;
+  /** Optional slot name used by consuming surfaces for scoped presentation rules. */
+  triggerDataSlot?: string;
 }
 
 const EMPTY_RECENT_OPTION_IDS: string[] = [];
@@ -48,6 +54,9 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       recentOptionIds = EMPTY_RECENT_OPTION_IDS,
       disablePortal,
       openOnFocus = true,
+      disabled = false,
+      triggerTestId,
+      triggerDataSlot,
     },
     ref,
   ) {
@@ -104,6 +113,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       <Popover
         open={open}
         onOpenChange={(next) => {
+          if (disabled) return;
           setOpen(next);
           if (!next) setQuery("");
         }}
@@ -112,12 +122,16 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           <button
             ref={ref}
             type="button"
+            disabled={disabled}
+            data-testid={triggerTestId}
+            data-slot={triggerDataSlot}
             className={cn(
-              "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none",
               className,
             )}
             onPointerDown={() => { isPointerDownRef.current = true; }}
             onFocus={() => {
+              if (disabled) return;
               if (openOnFocus && !isPointerDownRef.current) setOpen(true);
               isPointerDownRef.current = false;
             }}
@@ -128,6 +142,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           </button>
         </PopoverTrigger>
         <PopoverContent
+          data-mobile-entity-picker=""
           align="start"
           side="bottom"
           collisionPadding={16}
@@ -145,7 +160,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
         >
           <input
             ref={inputRef}
-            className="w-full border-b border-border bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/60"
+            className="w-full border-b border-border bg-transparent px-2 py-1.5 text-base outline-none placeholder:text-muted-foreground/60 md:text-sm"
             placeholder={searchPlaceholder}
             value={query}
             onChange={(event) => {

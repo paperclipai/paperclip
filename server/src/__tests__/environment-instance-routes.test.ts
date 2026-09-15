@@ -14,6 +14,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({
@@ -72,6 +73,9 @@ vi.mock("../services/secrets.js", () => ({
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
+  // The runtime reads this published constant at import time. Mirror the real
+  // value so the mocked module keeps the same reusable-lease method contract.
+  REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: vi.fn(async () => []),
   resolvePluginSandboxProviderDriverByKey: vi.fn(async () => null),
   validatePluginEnvironmentDriverConfig: vi.fn(async ({ config }) => config),
@@ -129,6 +133,8 @@ describe("environment instance routes", () => {
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
     mockEnvironmentService.list.mockReset();
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.create.mockReset();

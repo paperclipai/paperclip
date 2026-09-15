@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "slug": "bitly",
+  "name": "Bitly",
+  "description": "Connect Bitly's provider-hosted MCP server.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/bitly.svg"
+  },
+  "urlPatterns": [
+    "https://api-ssl.bitly.com/*"
+  ],
+  "docsUrl": "https://dev.bitly.com/bitly-mcp/overview/quickstart/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api-ssl.bitly.com/v4/mcp"
+      },
+      "guidanceMd": "Connect Bitly in the browser. A Bitly account with either browser authorization or an API token.",
+      "riskTier": "S2",
+      "label": "Sign in with Bitly",
+      "consoleLinks": {
+        "docs": "https://dev.bitly.com/bitly-mcp/overview/quickstart/"
+      },
+      "warnings": [
+        "A Bitly account with either browser authorization or an API token."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://api-ssl.bitly.com/v4/mcp"
+      },
+      "guidanceMd": "Use a customer-created Bitly key. A Bitly account with either browser authorization or an API token.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Bitly API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Bitly API token",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://dev.bitly.com/bitly-mcp/overview/quickstart/",
+        "docs": "https://dev.bitly.com/bitly-mcp/overview/quickstart/"
+      },
+      "warnings": [
+        "A Bitly account with either browser authorization or an API token."
+      ]
+    }
+  ]
+}

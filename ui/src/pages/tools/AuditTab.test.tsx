@@ -125,30 +125,55 @@ describe("AuditTab", () => {
     });
   }
 
-  it("renders humanized sentences, the outcome chip, and the footer note", async () => {
+  it("renders humanized sentences and the outcome chip without the old footer note", async () => {
     await render();
 
     expect(container.textContent).toContain("Fable");
     expect(container.textContent).toContain("Send Email");
     expect(container.textContent).toContain("Gmail");
     expect(container.textContent).toContain("Blocked");
-    expect(container.textContent).toContain("Recorded by Paperclip — entries can't be edited.");
+    expect(container.textContent).not.toContain("Recorded by Paperclip — entries can't be edited.");
+    expect(listActivityMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ window: "all" }));
     // Vocabulary gate: no raw tool ID or ops terms in the sentence list.
     expect(container.textContent).not.toContain("mail:send_email");
     expect(container.textContent).not.toContain("server-authoritative");
   });
 
-  it("expands a row to show the plain reason, the linked rule, and the Details collapse", async () => {
+  it("renders connection lifecycle rows from the per-connection activity source", async () => {
+    listActivityMock.mockResolvedValue({
+      events: [event({
+        id: "lifecycle-1",
+        action: "tool_connection.app_connected",
+        actorType: "user",
+        actorId: "user-1",
+        agentId: null,
+        agentDisplayName: null,
+        actorDisplayName: "Dotta",
+        lifecycleType: "app_connected",
+        normalizedOutcome: "unknown",
+        toolDisplayName: null,
+        details: { lifecycleType: "app_connected" },
+      })],
+      nextCursor: null,
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Dotta connected Gmail");
+    expect(container.textContent).not.toContain("RecordedDotta connected Gmail");
+  });
+
+  it("expands a row to show the plain reason, the matched rule, and the Details collapse", async () => {
     await render();
 
     await clickButton("used Send Email");
     await flushReact();
 
     expect(container.textContent).toContain("Blocked by a rule.");
-    const ruleLink = Array.from(container.querySelectorAll("a")).find((a) =>
+    expect(container.textContent).toContain("destructive actions");
+    expect(Array.from(container.querySelectorAll("a")).some((a) =>
       a.textContent?.includes("destructive actions"),
-    );
-    expect(ruleLink?.getAttribute("href")).toBe("/apps/advanced/policies");
+    )).toBe(false);
 
     // Raw tool name + reason code only appear once Details is opened.
     expect(container.textContent).not.toContain("mail:send_email");
