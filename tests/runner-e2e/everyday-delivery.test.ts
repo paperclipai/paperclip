@@ -42,6 +42,13 @@ describe("delegated user delivery", () => {
       latestStoryDelivery([old, revised], ["parent", "child"], cutoff)?.id,
     ).toBe("revised");
   });
+  it("ignores the preserved original even when it is republished after the revision", () => {
+    const revised = { ...attachment("child", "revised", "2026-09-14T12:06:00Z"), sha256: "new-content" };
+    const preserved = { ...attachment("parent", "original-copy", "2026-09-14T12:07:00Z"), sha256: "original-content" };
+    const cutoff = Date.parse("2026-09-14T12:05:00Z");
+    expect(latestStoryDelivery([revised, preserved], ["parent", "child"], cutoff, ["original-content"])?.id).toBe("revised");
+    expect(latestStoryDelivery([preserved], ["parent", "child"], cutoff, ["original-content"])).toBeUndefined();
+  });
   it("rejects source files and malformed timestamps", () => {
     expect(
       latestStoryDelivery(

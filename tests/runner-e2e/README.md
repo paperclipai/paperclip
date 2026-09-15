@@ -507,3 +507,5 @@ Delegated ZIP delivery can appear on the user-facing parent or its child task.
 The grader selects the newest ZIP only within that task family; a reuse request
 requires a new attachment after the request. The hired-agent execution/account
 checks and independent downloaded-code checks remain mandatory.
+
+Revision delivery checks exclude preserved originals by their content hash, even when the agent republishes an original after the revised ZIP. The browser downloads the exact selected attachment ID; its bytes still pass through the independent artifact checker.

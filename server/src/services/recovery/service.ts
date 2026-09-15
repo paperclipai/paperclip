@@ -2849,7 +2849,7 @@ export function recoveryService(
       });
       if (
         childState.hasActiveExecutionPath ||
-        childState.hasDurableWaitingPath
+        (!sameWorkspaceOnly && childState.hasDurableWaitingPath)
       ) {
         openChildren.push({ id: child.id, identifier: child.identifier });
       }

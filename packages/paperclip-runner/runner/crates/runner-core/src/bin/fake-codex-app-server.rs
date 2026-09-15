@@ -1431,7 +1431,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
                 if descendant_notifications {
-                    for index in 0..300 {
+                    // Codex can announce a helper through the root's spawn receipt
+                    // before emitting any thread/started notification for that helper.
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": {"id": "spawn-first-child", "type": "collabAgentToolCall",
+                            "tool": "spawnAgent", "status": "completed",
+                            "senderThreadId": state.thread_id,
+                            "receiverThreadIds": ["descendant-0"]}
+                    }}))?;
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-0", "turnId": "first-child-turn"
+                    }}))?;
+                    for index in 1..300 {
                         send(json!({"method": "thread/started", "params": {"thread": {
                             "id": format!("descendant-{index}"),
                             "parentThreadId": state.thread_id

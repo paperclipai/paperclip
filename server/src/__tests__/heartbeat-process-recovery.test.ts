@@ -12606,6 +12606,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (next) await waitForRunToSettle(heartbeat, next.id);
   });
 
+  it("resumes a shared-workspace lead when its child needs review", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "succeeded", livenessState: "advanced" });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWorkspace: { mode: "shared_workspace" } } }).where(eq(heartbeatRuns.id, runId));
+    const projectId = randomUUID(), workspaceId = randomUUID(), childId = randomUUID(), workerId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Shared project" });
+    await db.insert(projectWorkspaces).values({ id: workspaceId, companyId, projectId, name: "Primary", sourceType: "local_path", cwd: "/tmp/recovery-shared", isPrimary: true });
+    await db.update(issues).set({ projectId, projectWorkspaceId: workspaceId }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({ id: workerId, companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {} });
+    await db.insert(issues).values({ id: childId, companyId, parentId: issueId, title: "Review the project", status: "in_review", assigneeAgentId: workerId, projectId, projectWorkspaceId: workspaceId });
+    await db.insert(issueThreadInteractions).values({ companyId, issueId: childId, kind: "request_confirmation", status: "pending", addresseeAgentId: agentId, payload: { prompt: "Review this delivery" } });
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    const next = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).find((r) => r.id !== runId);
+    if (next) await waitForRunToSettle(heartbeat, next.id);
+  });
+
   it("leaves the productive-but-stranded continuation path unchanged under the new classifier", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

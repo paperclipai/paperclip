@@ -315,6 +315,7 @@ export async function runEverydayFlow(input: Input) {
       attachments,
       related.map((issue) => issue.id),
       after,
+      after === undefined ? [] : ev.downloads.map((d) => d.sha256),
     );
     if (!delivery) {
       check(
@@ -324,13 +325,15 @@ export async function runEverydayFlow(input: Input) {
       );
       return;
     }
-    await download(delivery.issueId, mode, phase);
+    note("delivery-selected", { attachmentId: delivery.id, issueId: delivery.issueId, sha256: delivery.sha256, after });
+    await download(delivery.issueId, mode, phase, delivery.id);
   }
 
   async function download(
     issueId: string,
     mode: "base" | "separator" | "max-length",
     phase: string,
+    selectedAttachmentId?: string,
   ) {
     const attachments = await api.get<Row[]>(
       `/api/issues/${issueId}/attachments`,
@@ -350,7 +353,10 @@ export async function runEverydayFlow(input: Input) {
       );
       return;
     }
-    const attachment = zips[zips.length - 1]!;
+    const attachment = selectedAttachmentId
+      ? zips.find((a) => a.id === selectedAttachmentId)
+      : zips[zips.length - 1];
+    if (!attachment) throw new Error("Selected delivery is no longer available");
     const issue = ev.issues.find((i) => i.id === issueId)!;
     await page.goto(taskUrl(issue), { waitUntil: "domcontentloaded" });
     const links = page.locator(

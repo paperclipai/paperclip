@@ -65,6 +65,39 @@ fn remember_descendant_thread(ids: &mut BTreeSet<String>, id: &str) -> Result<bo
     }
     Ok(ids.insert(id.to_owned()))
 }
+// Call only after validating the outer notification against the active root turn.
+fn remember_spawned_descendants(
+    ids: &mut BTreeSet<String>,
+    root: &str,
+    method: &str,
+    params: &Value,
+) -> Result<(), &'static str> {
+    let item = &params["item"];
+    if method != "item/completed"
+        || item["type"] != "collabAgentToolCall"
+        || item["tool"] != "spawnAgent"
+        || item["status"] != "completed"
+    {
+        return Ok(());
+    }
+    if params["threadId"] != root || item["senderThreadId"] != root {
+        return Err("invalid_spawn_lineage");
+    }
+    let receivers = item["receiverThreadIds"]
+        .as_array()
+        .ok_or("invalid_spawn_lineage")?;
+    if receivers.iter().any(|id| {
+        id.as_str()
+            .is_none_or(|id| id.is_empty() || id.len() > 240 || id == root)
+    }) {
+        return Err("invalid_spawn_lineage");
+    }
+    for id in receivers {
+        remember_descendant_thread(ids, id.as_str().expect("validated receiver"))?;
+    }
+    Ok(())
+}
+
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
 
@@ -2535,6 +2568,22 @@ impl CodexProvider {
                     "turn_binding_mismatch",
                 )));
             }
+            if let Err(code) = remember_spawned_descendants(
+                &mut self.descendant_thread_ids,
+                &self.thread_id,
+                method,
+                &params,
+            ) {
+                if code == "provider_descendant_capacity_exhausted" {
+                    return Ok(Some(CodexProviderEvent::ResourceLimit {
+                        diagnostic: json!({"code": code, "recoverable": false,
+                            "classification": "resource_capacity", "limit": MAX_DESCENDANT_THREAD_IDS,
+                            "message": "Codex reached the child-thread inventory limit.",
+                            "method": bounded_method(method), "expectedThreadId": self.thread_id}),
+                    }));
+                }
+                return Ok(Some(self.identity_failure(method, &params, code)));
+            }
             if let Some(terminal_event_type) = terminal_event_type {
                 if self.active_provider_turn_id.is_none() {
                     return Err(LocalRunnerError::invalid(
@@ -3224,7 +3273,9 @@ fn classify_notification_thread(
     .filter_map(|path| params.pointer(path).and_then(Value::as_str))
     .collect();
     if parents.windows(2).any(|pair| pair[0] != pair[1]) {
-        return Err(LocalRunnerError::invalid("Codex notification has conflicting parent identity"));
+        return Err(LocalRunnerError::invalid(
+            "Codex notification has conflicting parent identity",
+        ));
     }
     let parent = parents.first().copied();
     if thread.is_some()
@@ -4788,16 +4839,88 @@ mod notification_identity_tests {
         );
     }
     #[test]
+    fn spawn_receipts_require_completed_root_authority_and_preserve_capacity() {
+        let receipt = json!({"threadId":"root", "turnId":"turn", "item":{
+            "type":"collabAgentToolCall", "tool":"spawnAgent", "status":"completed",
+            "senderThreadId":"root", "receiverThreadIds":["helper"]}});
+        let mut ids = BTreeSet::new();
+        remember_spawned_descendants(&mut ids, "root", "item/completed", &receipt).unwrap();
+        assert!(ids.contains("helper"));
+        assert_eq!(
+            classify_notification_thread(
+                "turn/started",
+                "root",
+                &ids,
+                &json!({"threadId":"helper", "turn":{"id":"child-turn"}})
+            )
+            .unwrap(),
+            NotificationThread::Descendant
+        );
+        for (field, value) in [
+            ("senderThreadId", "foreign"),
+            ("receiverThreadIds", "malformed"),
+        ] {
+            let mut bad = receipt.clone();
+            bad["item"][field] = json!(value);
+            let mut empty = BTreeSet::new();
+            assert!(
+                remember_spawned_descendants(&mut empty, "root", "item/completed", &bad).is_err()
+            );
+            assert!(empty.is_empty());
+        }
+        for (field, value) in [
+            ("tool", "sendInput"),
+            ("status", "failed"),
+            ("status", "inProgress"),
+        ] {
+            let mut non_spawn = receipt.clone();
+            non_spawn["item"][field] = json!(value);
+            let mut empty = BTreeSet::new();
+            remember_spawned_descendants(&mut empty, "root", "item/completed", &non_spawn).unwrap();
+            assert!(empty.is_empty());
+        }
+        let mut full: BTreeSet<String> = (0..MAX_DESCENDANT_THREAD_IDS)
+            .map(|n| format!("child-{n}"))
+            .collect();
+        assert_eq!(
+            remember_spawned_descendants(&mut full, "root", "item/completed", &receipt),
+            Err("provider_descendant_capacity_exhausted")
+        );
+        assert_eq!(full.len(), MAX_DESCENDANT_THREAD_IDS);
+    }
+
+    #[test]
     fn recognizes_explicit_parent_thread_lineage_without_granting_root_authority() {
         let children = BTreeSet::from(["child".to_owned()]);
         for parent in ["root", "child"] {
-            assert_eq!(classify_notification_thread("thread/started", "root", &children,
-                &json!({"thread":{"id":"helper", "parentThreadId":parent}})).unwrap(), NotificationThread::Descendant);
+            assert_eq!(
+                classify_notification_thread(
+                    "thread/started",
+                    "root",
+                    &children,
+                    &json!({"thread":{"id":"helper", "parentThreadId":parent}})
+                )
+                .unwrap(),
+                NotificationThread::Descendant
+            );
         }
-        assert_eq!(classify_notification_thread("thread/started", "root", &children,
-            &json!({"thread":{"id":"stranger", "parentThreadId":"foreign"}})).unwrap(), NotificationThread::UnrelatedInformation);
-        assert!(classify_notification_thread("turn/started", "root", &children,
-            &json!({"threadId":"stranger", "parentThreadId":"root", "turn":{"id":"foreign-turn"}})).is_err());
+        assert_eq!(
+            classify_notification_thread(
+                "thread/started",
+                "root",
+                &children,
+                &json!({"thread":{"id":"stranger", "parentThreadId":"foreign"}})
+            )
+            .unwrap(),
+            NotificationThread::UnrelatedInformation
+        );
+        assert!(classify_notification_thread(
+            "turn/started",
+            "root",
+            &children,
+            &json!({"threadId":"stranger", "parentThreadId":"root", "turn":{"id":"foreign-turn"}})
+        )
+        .is_err());
         assert!(classify_notification_thread("thread/started", "root", &children,
             &json!({"thread":{"id":"helper", "parentThreadId":"root", "source":{"subAgent":{"thread_spawn":{"parent_thread_id":"foreign"}}}}})).is_err());
     }
