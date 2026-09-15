@@ -52,8 +52,9 @@ const path = require("node:path");
 const argv = process.argv.slice(2);
 const addDirIndex = argv.indexOf("--add-dir");
 const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
-const instructionsIndex = argv.indexOf("--append-system-prompt-file");
-const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
+const instructionsIndex = argv.indexOf("--append-system-prompt");
+const instructionsFilePath = instructionsIndex >= 0 ? "inline" : null;
+const instructionsContentsFromArgv = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
 const mcpConfigIndex = argv.indexOf("--mcp-config");
 const mcpConfigPath = mcpConfigIndex >= 0 ? argv[mcpConfigIndex + 1] : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
@@ -62,7 +63,7 @@ const payload = {
   prompt: fs.readFileSync(0, "utf8"),
   addDir,
   instructionsFilePath,
-  instructionsContents: instructionsFilePath ? fs.readFileSync(instructionsFilePath, "utf8") : null,
+  instructionsContents: instructionsContentsFromArgv,
   mcpConfigPath,
   mcpConfigContents: mcpConfigPath ? fs.readFileSync(mcpConfigPath, "utf8") : null,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
@@ -101,15 +102,16 @@ if (argv.includes("--effort")) {
 }
 const addDirIndex = argv.indexOf("--add-dir");
 const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
-const instructionsIndex = argv.indexOf("--append-system-prompt-file");
-const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
+const instructionsIndex = argv.indexOf("--append-system-prompt");
+const instructionsFilePath = instructionsIndex >= 0 ? "inline" : null;
+const instructionsContentsFromArgv = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv,
   prompt: fs.readFileSync(0, "utf8"),
   addDir,
   instructionsFilePath,
-  instructionsContents: instructionsFilePath ? fs.readFileSync(instructionsFilePath, "utf8") : null,
+  instructionsContents: instructionsContentsFromArgv,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
 };
 if (capturePath) {
@@ -140,15 +142,16 @@ if (argv.includes("--help")) {
 }
 const addDirIndex = argv.indexOf("--add-dir");
 const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
-const instructionsIndex = argv.indexOf("--append-system-prompt-file");
-const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
+const instructionsIndex = argv.indexOf("--append-system-prompt");
+const instructionsFilePath = instructionsIndex >= 0 ? "inline" : null;
+const instructionsContentsFromArgv = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv,
   prompt: fs.readFileSync(0, "utf8"),
   addDir,
   instructionsFilePath,
-  instructionsContents: instructionsFilePath ? fs.readFileSync(instructionsFilePath, "utf8") : null,
+  instructionsContents: instructionsContentsFromArgv,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
 };
 if (capturePath) {
@@ -174,7 +177,6 @@ type CapturePayload = {
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
-  appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
 };
 
@@ -254,14 +256,13 @@ const fs = require("node:fs");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
-const promptFileFlagIndex = process.argv.indexOf("--append-system-prompt-file");
-const appendedSystemPromptFilePath = promptFileFlagIndex >= 0 ? process.argv[promptFileFlagIndex + 1] : null;
+const promptFlagIndex = process.argv.indexOf("--append-system-prompt");
+const appendedSystemPromptFileContents = promptFlagIndex >= 0 ? process.argv[promptFlagIndex + 1] : null;
 const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
-  appendedSystemPromptFilePath,
-  appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
+  appendedSystemPromptFileContents,
 };
 if (capturePath) {
   const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
@@ -435,11 +436,11 @@ describe("claude execute", () => {
   /**
    * Regression tests for https://github.com/paperclipai/paperclip/issues/2848
    *
-   * --append-system-prompt-file should only be passed on fresh sessions.
+   * --append-system-prompt should only be passed on fresh sessions.
    * On resumed sessions the instructions are already in the session cache;
    * re-injecting them wastes tokens and may be rejected by the CLI.
    */
-  it("passes --append-system-prompt-file on a fresh session when instructionsFile is set", async () => {
+  it("passes --append-system-prompt on a fresh session when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-fresh-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
@@ -466,14 +467,14 @@ describe("claude execute", () => {
       expect(captured.argv).toContain("--print");
       expect(captured.argv).not.toContain("-");
       expect(captured.prompt).toContain("Do work.");
-      expect(captured.argv).toContain("--append-system-prompt-file");
+      expect(captured.argv).toContain("--append-system-prompt");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
 
-  it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
+  it("omits --append-system-prompt on a resumed session even when instructionsFile is set", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
@@ -497,7 +498,7 @@ describe("claude execute", () => {
         onMeta: async () => {},
       });
       const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
-      expect(captured.argv).not.toContain("--append-system-prompt-file");
+      expect(captured.argv).not.toContain("--append-system-prompt");
       expect(captured.argv).toContain("--resume");
     } finally {
       restore();
@@ -535,7 +536,7 @@ describe("claude execute", () => {
         onLog: async () => {},
         onMeta: async (meta) => { capturedNotes = (meta.commandNotes as string[]) ?? []; },
       });
-      expect(capturedNotes.some((n) => n.includes("--append-system-prompt-file"))).toBe(true);
+      expect(capturedNotes.some((n) => n.includes("--append-system-prompt"))).toBe(true);
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });
@@ -609,16 +610,13 @@ describe("claude execute", () => {
       });
       const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as Array<{
         argv: string[];
-        appendedSystemPromptFilePath: string | null;
         appendedSystemPromptFileContents: string | null;
       }>;
       expect(captured).toHaveLength(2);
       expect(captured[0]?.argv).toContain("--resume");
-      expect(captured[0]?.argv).not.toContain("--append-system-prompt-file");
+      expect(captured[0]?.argv).not.toContain("--append-system-prompt");
       expect(captured[1]?.argv).not.toContain("--resume");
-      expect(captured[1]?.argv).toContain("--append-system-prompt-file");
-      expect(captured[1]?.appendedSystemPromptFilePath).toContain("agent-instructions.md");
-      expect(captured[1]?.appendedSystemPromptFilePath).not.toBe(instructionsFile);
+      expect(captured[1]?.argv).toContain("--append-system-prompt");
       expect(captured[1]?.appendedSystemPromptFileContents).toContain("# Agent instructions");
       expect(captured[1]?.appendedSystemPromptFileContents).toContain(
         `The above agent instructions were loaded from ${instructionsFile}. ` +
@@ -628,7 +626,7 @@ describe("claude execute", () => {
       );
       expect(metaEvents).toHaveLength(2);
       expect(metaEvents[0]?.commandNotes).toHaveLength(0);
-      expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
+      expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt"))).toBe(true);
       expect(result.sessionId).toBe("22222222-2222-4222-8222-222222222222");
       expect(result.clearSession).toBe(false);
     } finally {
@@ -1271,7 +1269,6 @@ describe("claude execute", () => {
       expect(capture1.instructionsFilePath).toBeTruthy();
       expect(capture2.instructionsFilePath ?? null).toBeNull();
       expect(capture1.addDir?.startsWith(expectedRoot)).toBe(true);
-      expect(capture1.instructionsFilePath?.startsWith(expectedRoot)).toBe(true);
       expect(capture1.instructionsContents).toContain("You are managed instructions.");
       expect(capture1.instructionsContents).toContain(`The above agent instructions were loaded from ${instructionsPath}.`);
       expect(capture1.skillEntries).toContain("paperclip");
@@ -1382,7 +1379,7 @@ describe("claude execute", () => {
       const before = JSON.parse(await fs.readFile(capturePath1, "utf8")) as CapturePayload;
       const after = JSON.parse(await fs.readFile(capturePath2, "utf8")) as CapturePayload;
 
-      expect(before.instructionsFilePath).not.toBe(after.instructionsFilePath);
+      expect(before.instructionsContents).not.toBe(after.instructionsContents);
       expect(after.argv).not.toContain("--resume");
       expect(after.prompt).toContain("Follow the paperclip heartbeat.");
       expect(logs.join("")).toContain("will not be resumed with");

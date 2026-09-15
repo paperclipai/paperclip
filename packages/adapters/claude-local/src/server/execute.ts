@@ -899,10 +899,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (effectiveEffort) args.push("--effort", effectiveEffort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
     // On resumed sessions the instructions are already in the session cache;
-    // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
-    // per heartbeat and the Claude CLI may reject the combination outright.
-    if (attemptInstructionsFilePath && !resumeSessionId) {
-      args.push("--append-system-prompt-file", attemptInstructionsFilePath);
+    // re-injecting them wastes 5-10K tokens per heartbeat and the Claude CLI
+    // may reject the combination outright.
+    // The installed Claude CLI has no --append-system-prompt-file flag (only
+    // --append-system-prompt <value>), so pass the already-loaded contents
+    // inline rather than by path.
+    if (attemptInstructionsFilePath && !resumeSessionId && combinedInstructionsContents) {
+      args.push("--append-system-prompt", combinedInstructionsContents);
     }
     if (runtimeMcpServers.length > 0) {
       args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
@@ -942,7 +945,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
       commandNotes.push(
-        `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+        `Injected agent instructions via --append-system-prompt (inline, sourced from ${instructionsFilePath}, with path directive appended)`,
       );
     }
     if (runtimeMcpServers.length > 0) {
