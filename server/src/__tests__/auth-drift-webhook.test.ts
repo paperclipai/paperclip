@@ -118,6 +118,45 @@ describe("createAuthDriftWebhookDispatcher", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
+  it("debounces a concurrent same-key dispatch while the first delivery is in flight", async () => {
+    const fetchImpl = vi.fn(async () => new Response("ok", { status: 200 }));
+    const dispatcher = createAuthDriftWebhookDispatcher({
+      url: "https://hooks.example/ops",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      log: silentLogger(),
+      debounceMs: 60_000,
+    });
+    const [first, second] = await Promise.all([
+      dispatcher.dispatchAndWait(samplePayload()),
+      dispatcher.dispatchAndWait(samplePayload()),
+    ]);
+    expect(first).toBe("sent");
+    expect(second).toBe("debounced");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("debounces repeat events within the window after a failed delivery", async () => {
+    const fetchImpl = vi.fn(async () => new Response("nope", { status: 500 }));
+    let nowMs = 1_000_000;
+    const dispatcher = createAuthDriftWebhookDispatcher({
+      url: "https://hooks.example/ops",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      log: silentLogger(),
+      debounceMs: 60_000,
+      maxAttempts: 2,
+      now: () => nowMs,
+      sleep: async () => undefined,
+    });
+    const first = await dispatcher.dispatchAndWait(samplePayload());
+    expect(first).toBe("failed");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    nowMs += 1000;
+    const second = await dispatcher.dispatchAndWait(samplePayload());
+    expect(second).toBe("debounced");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("retries on failure up to maxAttempts and reports 'failed' when exhausted", async () => {
     const fetchImpl = vi
       .fn()
