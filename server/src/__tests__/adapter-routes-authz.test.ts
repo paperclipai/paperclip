@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => {
     reloadExternalAdapter: vi.fn(),
     getUiParserSource: vi.fn(),
     getOrExtractUiParserSource: vi.fn(),
+    getMultiFileReloadWarning: vi.fn(),
   };
 });
 
@@ -67,6 +68,7 @@ vi.mock("../adapters/plugin-loader.js", () => ({
   getUiParserSource: mocks.getUiParserSource,
   getOrExtractUiParserSource: mocks.getOrExtractUiParserSource,
   reloadExternalAdapter: mocks.reloadExternalAdapter,
+  getMultiFileReloadWarning: mocks.getMultiFileReloadWarning,
 }));
 
 function registerRouteMocks() {
@@ -90,6 +92,7 @@ function registerRouteMocks() {
     getUiParserSource: mocks.getUiParserSource,
     getOrExtractUiParserSource: mocks.getOrExtractUiParserSource,
     reloadExternalAdapter: mocks.reloadExternalAdapter,
+  getMultiFileReloadWarning: mocks.getMultiFileReloadWarning,
   }));
 }
 
