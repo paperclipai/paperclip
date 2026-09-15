@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -101,6 +101,30 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it.each([undefined, { PATH: process.env.PATH }])("does not inherit ambient GitHub access with environment %j", async (environment) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-no-ambient-"));
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    roots.push(root);
+    vi.stubEnv("PAPERCLIP_GITHUB_BROKER_TOKEN", "ambient-host-secret");
+    vi.stubEnv("BASH_ENV", "/ambient/shell-hook");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root, command: fixture, environment,
+    });
+    let session;
+    try {
+      session = await driver.openSession({runId: "run-no-ambient", normalizedSessionId: "no-ambient", workingDirectory: workspace});
+      const child = JSON.parse(await readFile(join(root, "no-ambient", "data", "fake-environment.json"), "utf8"));
+      expect(child.keys).not.toContain("PAPERCLIP_GITHUB_BROKER_TOKEN");
+      expect(child.keys).not.toContain("BASH_ENV");
+    } finally {
+      await session?.close({reason: "test"});
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("advertises within-turn plans as unsupported", async () => {
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
@@ -604,6 +628,14 @@ describe("OpenCodeServerDriver", () => {
         OPENROUTER_API_KEY: "test-openrouter-key",
         PAPERCLIP_API_KEY: "must-not-leak",
         UNRELATED_SECRET: "must-not-leak",
+        PAPERCLIP_GITHUB_BROKER_TOKEN: "fixture-github-capability",
+        PAPERCLIP_GITHUB_BRIDGE_TOKEN: "fixture-github-bridge",
+        PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3456",
+        BASH_ENV: "/runtime/github-launcher/profile.sh",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.helper",
+        GIT_CONFIG_VALUE_0: "",
+        GIT_CONFIG_KEY_1: "must-not-reach-provider",
         PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
         PAPERCLIP_PROVIDER_TRACE_MAX_BYTES: String(64 * 1024 * 1024),
       },
@@ -750,6 +782,12 @@ describe("OpenCodeServerDriver", () => {
     expect(environment.keys).not.toContain("PAPERCLIP_API_KEY");
     expect(environment.keys).not.toContain("UNRELATED_SECRET");
     expect(environment.keys).not.toContain("PAPERCLIP_PROVIDER_TRACE_PATH");
+    expect(environment.keys).toEqual(expect.arrayContaining([
+      "PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+      "PAPERCLIP_GITHUB_BROKER_URL", "BASH_ENV", "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+    ]));
+    expect(environment.keys).not.toContain("GIT_CONFIG_KEY_1");
     expect(environment.projectConfigDisabled).toBe("true");
     expect(mcpEvidence.tools).toEqual(
       expect.arrayContaining(["paperclip_finish", "paperclip_block"]),
@@ -1792,7 +1830,7 @@ describe("OpenCodeServerDriver", () => {
     const exitingFixture = join(root, "exit-before-health.mjs");
     await writeFile(
       exitingFixture,
-      "#!/usr/bin/env node\nprocess.stderr.write(`credential=${process.env.OPENROUTER_API_KEY}\\nauthorization=super-secret-opencode-token\\n`);\nprocess.exit(17);\n",
+      "#!/usr/bin/env node\nprocess.stderr.write(`credential=${process.env.OPENROUTER_API_KEY}\\nauthorization=super-secret-opencode-token\\n${process.env.PAPERCLIP_GITHUB_BROKER_TOKEN}\\n${process.env.PAPERCLIP_GITHUB_BRIDGE_TOKEN}\\n${process.env.GIT_CONFIG_VALUE_0}\\n`);\nprocess.exit(17);\n",
       { mode: 0o755 },
     );
     const driver = new OpenCodeServerDriver({
@@ -1802,6 +1840,11 @@ describe("OpenCodeServerDriver", () => {
       environment: {
         PATH: process.env.PATH,
         OPENROUTER_API_KEY: "fixture-key",
+        PAPERCLIP_GITHUB_BROKER_TOKEN: "fixture-github-capability",
+        PAPERCLIP_GITHUB_BRIDGE_TOKEN: "fixture-github-bridge",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.extraHeader",
+        GIT_CONFIG_VALUE_0: "fixture-github-header",
       },
     });
     const error = await driver
@@ -1820,5 +1863,8 @@ describe("OpenCodeServerDriver", () => {
     expect(error).toContain("[REDACTED]");
     expect(error).not.toContain("fixture-key");
     expect(error).not.toContain("super-secret-opencode-token");
+    expect(error).not.toContain("fixture-github-capability");
+    expect(error).not.toContain("fixture-github-bridge");
+    expect(error).not.toContain("fixture-github-header");
   });
 });

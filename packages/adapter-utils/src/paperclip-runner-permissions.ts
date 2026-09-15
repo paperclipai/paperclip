@@ -16,6 +16,12 @@ export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 
+export const PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS = {
+  claude: PAPERCLIP_RUNNER_DEFAULT_MODELS.acpx,
+  codex: PAPERCLIP_RUNNER_DEFAULT_MODELS.codex,
+  pi: "openrouter/deepseek/deepseek-v4-flash-0731",
+} as const;
+
 export interface PaperclipRunnerPermissionOption<
   TMode extends string = string,
 > {

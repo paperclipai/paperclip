@@ -106,7 +106,7 @@ function acpxExecution(
           agent === "codex"
             ? "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3"
             : agent === "pi"
-              ? "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f"
+              ? "sha256:24ff73fda6e3c76ddce2d359a79f5c4b8f292eb290e4d2ab85aac94676b2c2dc"
               : "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       },
     },
@@ -487,12 +487,12 @@ describe("native backend factory", () => {
     },
   );
 
-  it("rejects Pi before constructing an ACPX backend", () => {
+  it("constructs Pi through the verified ACPX backend", () => {
     expect(() =>
       createNativeSessionBackend(acpxExecution("pi"), {
         acpxRuntimeDirectory: "/runtime",
       }),
-    ).toThrow("descriptor-confined verified launch");
+    ).not.toThrow();
   });
 
   it("rejects a Codex ACPX snapshot that drifts from its qualified profile", () => {

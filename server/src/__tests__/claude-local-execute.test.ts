@@ -1176,6 +1176,8 @@ describe("claude execute", () => {
         cwd: workspace,
       });
       expect(typeof first.sessionParams?.promptBundleKey).toBe("string");
+      expect(sessionCodec.deserialize(sessionCodec.serialize(first.sessionParams ?? null))?.promptCompatibilityKey)
+        .toBe(first.sessionParams?.promptCompatibilityKey);
 
       const second = await execute({
         runId: "run-2",
@@ -1289,6 +1291,64 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["sandbox", "local"])("allows an old shipped-skill bundle upgrade only in sandbox execution (%s)", async (mode) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-shipped-upgrade-"));
+    const command = path.join(root, "claude");
+    const instructions = path.join(root, "AGENTS.md");
+    await writeFakeClaudeCommand(command);
+    await fs.writeFile(instructions, "Unchanged agent instructions.");
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    // The stable CI runner isolates each invocation in a non-default instance.
+    const instanceId = process.env.PAPERCLIP_INSTANCE_ID || "claude-upgrade-fixture";
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", instanceId);
+    const capture = path.join(root, "capture.json");
+    const oldServers = [
+      { name: "Paperclip connections", url: "http://localhost:3100/mcp/runtime-tools", connectionId: "paperclip-runtime-tools", token: "old-run-token" },
+      { name: "paperclip-assigned", url: "http://localhost:3100/mcp/gateways/gw_same", connectionId: "assignment:same", token: "gateway-token" },
+    ];
+    const base = {
+      agent: { id: "agent", companyId: "company", name: "Claude", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+      config: { engine: "cli", command, cwd: root, instructionsFilePath: instructions,
+        paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/paperclip"] },
+        env: { PAPERCLIP_TEST_CAPTURE_PATH: capture } },
+      ...(mode === "sandbox" ? { executionTarget: { kind: "remote" as const, transport: "sandbox" as const,
+        providerKey: "e2b", environmentId: "environment", leaseId: "lease", remoteCwd: root,
+        runner: createLocalSandboxRunner(), timeoutMs: 30_000 } } : {}),
+      context: {}, authToken: "test", onLog: async () => {}, runtimeMcp: { getServers: () => oldServers },
+    };
+    try {
+      const first = await execute({ ...base, runId: "first", runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "task" } });
+      const initial = JSON.parse(await fs.readFile(capture, "utf8"));
+      const oldKey = "a".repeat(64);
+      // Sandbox addDir points at the copied remote bundle, not this host cache.
+      const oldDir = path.join(root, "instances", instanceId, "companies", "company", "claude-prompt-cache", oldKey);
+      await fs.mkdir(path.join(oldDir, ".claude", "skills"), { recursive: true });
+      await fs.copyFile(initial.instructionsFilePath, path.join(oldDir, "agent-instructions.md"));
+      await fs.symlink(await fs.realpath(path.join(path.dirname(oldDir), String(first.sessionParams!.promptBundleKey), ".claude", "skills", "paperclip")), path.join(oldDir, ".claude", "skills", "paperclip"));
+      const legacy = { ...first.sessionParams, promptBundleKey: oldKey };
+      delete legacy.promptCompatibilityKey;
+      await execute({ ...base, runId: "second", runtimeMcp: { getServers: () => [
+        { name: "Paperclip projects", url: "http://localhost:3100/api/mcp/project-tools", connectionId: "paperclip-project-tools", token: "new-run-token" },
+        ...oldServers,
+      ] }, runtime: { sessionId: null, sessionParams: legacy, sessionDisplayId: null, taskKey: "task" } });
+      const resumed = JSON.parse(await fs.readFile(capture, "utf8"));
+      if (mode === "sandbox") {
+        expect(resumed.argv).toContain("--resume");
+        expect(resumed.argv).toContain(first.sessionParams!.sessionId);
+        expect(resumed.argv).not.toContain("--append-system-prompt-file");
+      } else {
+        expect(resumed.argv).not.toContain("--resume");
+        expect(resumed.argv).toContain("--append-system-prompt-file");
+      }
+      expect(resumed.addDir).toBe(initial.addDir);
+      expect(resumed.skillEntries).toEqual(["paperclip"]);
+      expect(JSON.parse(resumed.mcpConfigContents).mcpServers).toHaveProperty("Paperclip projects");
+      expect(JSON.parse(resumed.mcpConfigContents).mcpServers).toHaveProperty("paperclip-assigned");
+    } finally { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); }
+  }, 15_000);
 
   it("starts a fresh Claude session when the stable prompt bundle changes", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-reset-"));

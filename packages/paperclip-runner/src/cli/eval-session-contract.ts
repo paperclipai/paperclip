@@ -66,7 +66,7 @@ export interface EvalSessionRequest {
   provider?: EvalSessionProvider;
   driver?: EvalSessionDriver;
   opencodeVersion?: string;
-  acpxAgent?: Exclude<QualifiedAcpxAgent, "pi">;
+  acpxAgent?: QualifiedAcpxAgent;
   managedProfile?: EvalSessionManagedProfile;
   agentCoreProfile?: EvalSessionAgentCoreProfile;
   runnerd: { path: string; sha256: string };
@@ -237,13 +237,13 @@ export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
   // options as JSON null. Preserve compatibility with those immutable request
   // artifacts while continuing to reject non-null values for the wrong lane.
   const acpxAgent = input.acpxAgent === null ? undefined : input.acpxAgent;
-  if (acpxAgent === "pi") throw new Error("The Pi ACPX profile is not available");
   if (
     acpxAgent !== undefined &&
     acpxAgent !== "codex" &&
-    acpxAgent !== "claude"
+    acpxAgent !== "claude" &&
+    acpxAgent !== "pi"
   ) {
-    throw new Error("eval-session acpxAgent must be codex or claude");
+    throw new Error("eval-session acpxAgent must be codex, claude, or pi");
   }
   if (provider !== "acpx" && acpxAgent !== undefined) {
     throw new Error("eval-session acpxAgent requires provider acpx");
@@ -305,9 +305,6 @@ export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
     session.requestedModel !== model
   ) {
     throw new Error("request.session.requestedModel must match request.model");
-  }
-  if (session.acpxAgent === "pi") {
-    throw new Error("The Pi ACPX profile is not available");
   }
 
   return {

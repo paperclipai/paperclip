@@ -32,11 +32,18 @@ import {
   snapshotDescriptorAncestorIndex,
   snapshotDescriptorResolution,
   verifiedExecutableOpenFlags,
-  verifyQualifiedAcpxInstallation,
+  verifyQualifiedAcpxInstallation as verifyProductionInstallation,
   probeAcpxClaudeInstallation,
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
+
+// Synthetic provider commands exercise the generic descriptor/module confinement
+// independently of the production Pi ELF. Real profiles always use production checks.
+const verifyQualifiedAcpxInstallation: typeof verifyProductionInstallation = (profile, resolver) =>
+  verifyProductionInstallation(profile, resolver, profile.agent === "pi" &&
+    profile.commandDigest !== resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731").commandDigest
+    ? { runtimeExecutable: async () => null, dependencies: [] } : {});
 
 const temporaryDirectories: string[] = [];
 const descriptorCommandPath = "/proc/self/fd/4/server.js";
@@ -101,7 +108,7 @@ describe("ACPX installation integrity", () => {
       JSON.stringify({
         name: "qualified-dependency",
         version: "1.0.0",
-        exports: "./index.js",
+        exports: { ".": { import: "./index.js" } },
       }),
     );
     await writeFile(join(nestedDependencyDirectory, "index.js"), "export {};");
@@ -430,7 +437,7 @@ describe("ACPX installation integrity", () => {
     });
   });
 
-  it("pins Claude ACP direct dependencies outside its package root", async () => {
+  it.each(["exports", "main"])("pins ACP direct dependencies with %s metadata outside its package root", async (entryField) => {
     const fixture = await installationFixture();
     const command = [
       'import { qualifiedValue } from "@anthropic-ai/claude-agent-sdk";',
@@ -485,7 +492,7 @@ describe("ACPX installation integrity", () => {
             name: dependency.name,
             version: dependency.version,
             type: "module",
-            exports: "./index.js",
+            [entryField]: "./index.js",
           }),
         ),
       ),
@@ -588,8 +595,9 @@ describe("ACPX installation integrity", () => {
       await (await installation.openCommand()).close();
     },
     // This hashes the real installed SDK tree and competes with the complete
-    // package suite for filesystem I/O; the small fixture tests keep the default.
-    30_000,
+    // package suite for filesystem I/O, especially on macOS. It is an integrity
+    // check, not a startup benchmark; small fixtures keep the default timeout.
+    60_000,
   );
 
   it.runIf(process.platform === "linux" && process.arch === "x64")(
@@ -737,6 +745,57 @@ describe("ACPX installation integrity", () => {
     await symlink(outside, fixture.commandPath);
 
     await expectPinnedOutput(lease.spawn(), "verified");
+  });
+
+  it("keeps command leases single-use unless reuse is explicitly requested", async () => {
+    const fixture = await installationFixture();
+    const installation = await verifyQualifiedAcpxInstallation(fixture.profile, fixture.resolve);
+    const lease = await installation.openCommand();
+    await expectPinnedOutput(lease.spawn(), "verified");
+    expect(() => lease.spawn()).toThrow("Verified ACPX command lease is closed");
+    await lease.close();
+  });
+
+  it("reconnects with the same verified bytes after the entry path changes", async () => {
+    const fixture = await installationFixture();
+    const installation = await verifyQualifiedAcpxInstallation(fixture.profile, fixture.resolve);
+    const lease = await installation.openCommand({ reusable: true });
+    try {
+      await expectPinnedOutput(lease.spawn(), "verified");
+      await writeFile(fixture.commandPath, '#!/usr/bin/env node\nprocess.stdout.write("replacement");\n');
+      await expectPinnedOutput(lease.spawn(), "verified");
+      await expectPinnedOutput(lease.spawn(), "verified");
+    } finally {
+      await lease.close();
+    }
+    expect(() => lease.spawn()).toThrow("Verified ACPX command lease is closed");
+  });
+
+  it("closing a reusable lease does not erase bytes already handed to a child", async () => {
+    const fixture = await installationFixture();
+    const installation = await verifyQualifiedAcpxInstallation(fixture.profile, fixture.resolve);
+    const lease = await installation.openCommand({ reusable: true });
+    const output = expectPinnedOutput(lease.spawn(), "verified");
+    await lease.close();
+    await output;
+    await lease.close();
+    expect(() => lease.spawn()).toThrow("Verified ACPX command lease is closed");
+  });
+
+  it("a failed reusable launch preserves the snapshot of an already spawned child", async () => {
+    const fixture = await installationFixture();
+    const installation = await verifyQualifiedAcpxInstallation(fixture.profile, fixture.resolve);
+    const lease = await installation.openCommand({ reusable: true });
+    try {
+      const output = expectPinnedOutput(lease.spawn(), "verified");
+      // Node rejects this argument synchronously, before creating another child.
+      expect(() => lease.spawn(["invalid\0argument"])).toThrow();
+      await lease.close();
+      await output;
+      expect(() => lease.spawn()).toThrow("Verified ACPX command lease is closed");
+    } finally {
+      await lease.close();
+    }
   });
 
   it("launches the verified bytes after the open inode is modified", async () => {
@@ -1563,7 +1622,8 @@ describe("ACPX installation integrity", () => {
           `const profile = ${JSON.stringify(fixture.profile)};`,
           `const credential = await credentials.stageManagedCodexCredential({ agentHomeDirectory: ${JSON.stringify(credentialHome)}, environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"original"}' } });`,
           `const paths = new Map(${JSON.stringify([...fixture.paths])});`,
-          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name));",
+          // This synthetic fixture exercises lifetime fencing, not the Pi ELF.
+          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name), { runtimeExecutable: async () => null, dependencies: [] });",
           "const lease = await installation.openCommand();",
           `const provider = lease.spawn([], { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: ${JSON.stringify(pidFile)} } }, { credentialFenceFds: credential.lifetimeFenceFds, activateCredentialFenceOwner: (pid) => credential.activateLifetimeOwner(pid) });`,
           "await module.awaitVerifiedAcpxProviderOwnership(provider);",
@@ -1662,7 +1722,7 @@ describe("ACPX installation integrity", () => {
           `const profile = ${JSON.stringify(fixture.profile)};`,
           `const credential = await credentials.stageManagedCodexCredential({ agentHomeDirectory: ${JSON.stringify(credentialHome)}, environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"original"}' } });`,
           `const paths = new Map(${JSON.stringify([...fixture.paths])});`,
-          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name));",
+          "const installation = await module.verifyQualifiedAcpxInstallation(profile, (name) => paths.get(name), { runtimeExecutable: async () => null, dependencies: [] });",
           "const lease = await installation.openCommand();",
           `const provider = lease.spawn([], { env: { ...process.env, PAPERCLIP_PROVIDER_PID_FILE: ${JSON.stringify(pidFile)} } }, { credentialFenceFds: credential.lifetimeFenceFds, activateCredentialFenceOwner: (pid) => credential.activateLifetimeOwner(pid) });`,
           "await module.awaitVerifiedAcpxProviderOwnership(provider);",

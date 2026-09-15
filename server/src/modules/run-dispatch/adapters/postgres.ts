@@ -835,6 +835,13 @@ export function createPostgresRunDispatchAdapter(
           resultJson: {
             ...parseObject(run.resultJson),
             stopReason: decision.errorCode,
+            // This row is locked against claiming. A fresh, never-started
+            // queued run cannot have reached a provider; retain that proof so
+            // its cancellation does not strand the next assignee's wake.
+            ...(expectedStatus === "queued" && !run.startedAt &&
+              !run.executionStage && !run.runtimeModeResolvedAt
+              ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+              : {}),
             ...(decision.errorCode === "execution_reconciliation_required"
               ? { executionWait: decision.details }
               : {}),

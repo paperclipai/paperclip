@@ -1,0 +1,342 @@
+{
+  "baseInput": {
+    "adapterType": "paperclip_runner",
+    "effectiveAdapterConfig": {
+      "command": "codex",
+      "model": "gpt-5.4-mini",
+      "env": {
+        "OPENAI_API_KEY": "resolved-secret-value",
+        "PLAIN_FLAG": "plain-value"
+      }
+    },
+    "agentRuntimeConfig": {
+      "heartbeat": {
+        "maxConcurrentRuns": 1
+      }
+    },
+    "issueOverrides": null,
+    "workspaceConfig": {
+      "requestedMode": "shared_workspace",
+      "effectiveMode": "shared_workspace",
+      "projectConfigRevisionAt": "2026-06-01T00:00:00.000Z",
+      "projectPolicy": {
+        "enabled": true,
+        "defaultMode": "shared_workspace"
+      },
+      "issueSettings": {
+        "mode": "shared_workspace"
+      }
+    },
+    "environment": {
+      "selectionSource": "default",
+      "selectedEnvironmentId": "environment-1",
+      "selectedEnvironment": {
+        "id": "environment-1",
+        "driver": "local",
+        "configRevisionAt": "2026-06-01T00:00:00.000Z"
+      }
+    },
+    "environmentEnv": {
+      "ENVIRONMENT_FLAG": "enabled"
+    },
+    "projectEnv": {
+      "PROJECT_FLAG": "enabled"
+    },
+    "routineEnv": null,
+    "secretManifest": [
+      {
+        "configPath": "env.OPENAI_API_KEY",
+        "envKey": "OPENAI_API_KEY",
+        "secretId": "secret-1",
+        "bindingId": "binding-1",
+        "secretKey": "openai-api-key",
+        "version": 7,
+        "provider": "local_encrypted",
+        "outcome": "success"
+      }
+    ],
+    "runtimeSkills": [
+      {
+        "key": "paperclip",
+        "runtimeName": "paperclip",
+        "source": "/tmp/paperclip/runtime-skills/paperclip",
+        "versionId": null,
+        "currentVersionId": "skill-version-1",
+        "sourceStatus": "available",
+        "missingDetail": null
+      }
+    ],
+    "agentConfigRevision": {
+      "id": "agent-config-revision-1",
+      "changedKeys": [
+        "adapterConfig"
+      ],
+      "configRevisionAt": "2026-06-01T00:00:00.000Z"
+    }
+  },
+  "cases": [
+    {
+      "overrides": {
+        "adapterType": "codex_local",
+        "workspaceConfig": {
+          "requestedMode": "shared_workspace",
+          "effectiveMode": "shared_workspace",
+          "projectConfigRevisionAt": "2026-06-01T00:00:00.000Z",
+          "projectPolicy": {
+            "enabled": true,
+            "defaultMode": "shared_workspace"
+          },
+          "issueSettings": null
+        }
+      },
+      "metadata": {
+        "version": 1,
+        "fingerprint": "v1:sha256:65ff7f85f57a0c224b10d24d160fcbeff2a0cd3765d6c3953611a60289830ca0",
+        "categories": [
+          "adapter",
+          "adapterConfig",
+          "agentRuntimeConfig",
+          "instructions",
+          "issueOverrides",
+          "workspaceConfig",
+          "environment",
+          "envBindings",
+          "secrets",
+          "runtimeSkills"
+        ],
+        "categoryFingerprints": {
+          "adapter": "v1:sha256:29804f650528878073c2438dfce2a079a9dd31cc2518c0fba591828dfbc67322",
+          "adapterConfig": "v1:sha256:127c71e718fe73bf91c94dcc8879f17ed484ea736b0f2e90d81bc873468ea634",
+          "agentRuntimeConfig": "v1:sha256:3c37c19f6928661cb205435737aa3283039119567a08df6d1a06c7e785326594",
+          "instructions": "v1:sha256:8ab53c8385958d7cc11bcd9833f77cb82f02f6b4061954c5ac2cf9d27630d4f6",
+          "issueOverrides": "v1:sha256:54a9d829899ea51ff0fa3b2b7ce8fa0e3f5b46b26862931646c05cc2bb623b48",
+          "workspaceConfig": "v1:sha256:6eb9a524164e629c0bd3690c30bb0580ff744a169333126c399415975b09ac27",
+          "environment": "v1:sha256:b2c8a01983988b1d799b543a0f98dc57c4d557f4ea1d9c018be1dec039a82815",
+          "envBindings": "v1:sha256:a93a8befb4e04e7cd65dbb9a4eb32b585b9f9a03171513576bcc6872aa30dea8",
+          "secrets": "v1:sha256:65d3dc5cc91f9076003b489701585236e7f54e68c5cdfa08b625a4536b4b7f96",
+          "runtimeSkills": "v1:sha256:9c70a22f33f7b6672f688675bb9bc5b7b9c9a2e3b4b3b3a9d313b6748cdc592d"
+        }
+      }
+    },
+    {
+      "overrides": {
+        "adapterType": "codex_local",
+        "workspaceConfig": {
+          "requestedMode": "shared_workspace",
+          "effectiveMode": "shared_workspace",
+          "projectConfigRevisionAt": "2026-06-01T00:00:00.000Z",
+          "projectPolicy": {
+            "enabled": true,
+            "defaultMode": "shared_workspace"
+          },
+          "issueSettings": {}
+        }
+      },
+      "metadata": {
+        "version": 1,
+        "fingerprint": "v1:sha256:cfb12b7b170c2b1b16e6f179e201add4287d04f1d468044be32d42e01d4a903a",
+        "categories": [
+          "adapter",
+          "adapterConfig",
+          "agentRuntimeConfig",
+          "instructions",
+          "issueOverrides",
+          "workspaceConfig",
+          "environment",
+          "envBindings",
+          "secrets",
+          "runtimeSkills"
+        ],
+        "categoryFingerprints": {
+          "adapter": "v1:sha256:29804f650528878073c2438dfce2a079a9dd31cc2518c0fba591828dfbc67322",
+          "adapterConfig": "v1:sha256:127c71e718fe73bf91c94dcc8879f17ed484ea736b0f2e90d81bc873468ea634",
+          "agentRuntimeConfig": "v1:sha256:3c37c19f6928661cb205435737aa3283039119567a08df6d1a06c7e785326594",
+          "instructions": "v1:sha256:8ab53c8385958d7cc11bcd9833f77cb82f02f6b4061954c5ac2cf9d27630d4f6",
+          "issueOverrides": "v1:sha256:54a9d829899ea51ff0fa3b2b7ce8fa0e3f5b46b26862931646c05cc2bb623b48",
+          "workspaceConfig": "v1:sha256:3c2a1ecc7d58ac2006e3be9d7af9ce37567fb439aab52c9cecfda254ec63e045",
+          "environment": "v1:sha256:b2c8a01983988b1d799b543a0f98dc57c4d557f4ea1d9c018be1dec039a82815",
+          "envBindings": "v1:sha256:a93a8befb4e04e7cd65dbb9a4eb32b585b9f9a03171513576bcc6872aa30dea8",
+          "secrets": "v1:sha256:65d3dc5cc91f9076003b489701585236e7f54e68c5cdfa08b625a4536b4b7f96",
+          "runtimeSkills": "v1:sha256:9c70a22f33f7b6672f688675bb9bc5b7b9c9a2e3b4b3b3a9d313b6748cdc592d"
+        }
+      }
+    },
+    {
+      "overrides": {
+        "adapterType": "codex_local",
+        "workspaceConfig": {
+          "requestedMode": "shared_workspace",
+          "effectiveMode": "shared_workspace",
+          "projectConfigRevisionAt": "2026-06-01T00:00:00.000Z",
+          "projectPolicy": {
+            "enabled": true,
+            "defaultMode": "shared_workspace"
+          },
+          "issueSettings": {
+            "mode": "shared_workspace"
+          }
+        }
+      },
+      "metadata": {
+        "version": 1,
+        "fingerprint": "v1:sha256:c26eb71a3919d667731d1af324628cfbcdd8252fb83dc208502b2c85c10d6e80",
+        "categories": [
+          "adapter",
+          "adapterConfig",
+          "agentRuntimeConfig",
+          "instructions",
+          "issueOverrides",
+          "workspaceConfig",
+          "environment",
+          "envBindings",
+          "secrets",
+          "runtimeSkills"
+        ],
+        "categoryFingerprints": {
+          "adapter": "v1:sha256:29804f650528878073c2438dfce2a079a9dd31cc2518c0fba591828dfbc67322",
+          "adapterConfig": "v1:sha256:127c71e718fe73bf91c94dcc8879f17ed484ea736b0f2e90d81bc873468ea634",
+          "agentRuntimeConfig": "v1:sha256:3c37c19f6928661cb205435737aa3283039119567a08df6d1a06c7e785326594",
+          "instructions": "v1:sha256:8ab53c8385958d7cc11bcd9833f77cb82f02f6b4061954c5ac2cf9d27630d4f6",
+          "issueOverrides": "v1:sha256:54a9d829899ea51ff0fa3b2b7ce8fa0e3f5b46b26862931646c05cc2bb623b48",
+          "workspaceConfig": "v1:sha256:601f668086c690a142041137dfc69543eabb0c2f73ae28f57eed51d31b7911c2",
+          "environment": "v1:sha256:b2c8a01983988b1d799b543a0f98dc57c4d557f4ea1d9c018be1dec039a82815",
+          "envBindings": "v1:sha256:a93a8befb4e04e7cd65dbb9a4eb32b585b9f9a03171513576bcc6872aa30dea8",
+          "secrets": "v1:sha256:65d3dc5cc91f9076003b489701585236e7f54e68c5cdfa08b625a4536b4b7f96",
+          "runtimeSkills": "v1:sha256:9c70a22f33f7b6672f688675bb9bc5b7b9c9a2e3b4b3b3a9d313b6748cdc592d"
+        }
+      }
+    },
+    {
+      "overrides": {
+        "adapterType": "paperclip_runner",
+        "workspaceConfig": {
+          "requestedMode": "shared_workspace",
+          "effectiveMode": "shared_workspace",
+          "projectConfigRevisionAt": "2026-06-01T00:00:00.000Z",
+          "projectPolicy": {
+            "enabled": true,
+            "defaultMode": "shared_workspace"
+          },
+          "issueSettings": null
+        }
+      },
+      "metadata": {
+        "version": 1,
+        "fingerprint": "v1:sha256:aefbeafb1378268238414c7510376bb93c4f647f1a052fc766f93fb9997b6b13",
+        "categories": [
+          "adapter",
+          "adapterConfig",
+          "agentRuntimeConfig",
+          "instructions",
+          "issueOverrides",
+          "workspaceConfig",
+          "environment",
+          "envBindings",
+          "secrets",
+          "runtimeSkills"
+        ],
+        "categoryFingerprints": {
+          "adapter": "v1:sha256:f6d7d8a401559cb95feafadaba9f60d56d2c80cca8295d6a3f650e2ddc9c5c1e",
+          "adapterConfig": "v1:sha256:127c71e718fe73bf91c94dcc8879f17ed484ea736b0f2e90d81bc873468ea634",
+          "agentRuntimeConfig": "v1:sha256:3c37c19f6928661cb205435737aa3283039119567a08df6d1a06c7e785326594",
+          "instructions": "v1:sha256:8ab53c8385958d7cc11bcd9833f77cb82f02f6b4061954c5ac2cf9d27630d4f6",
+          "issueOverrides": "v1:sha256:54a9d829899ea51ff0fa3b2b7ce8fa0e3f5b46b26862931646c05cc2bb623b48",
+          "workspaceConfig": "v1:sha256:6eb9a524164e629c0bd3690c30bb0580ff744a169333126c399415975b09ac27",
+          "environment": "v1:sha256:b2c8a01983988b1d799b543a0f98dc57c4d557f4ea1d9c018be1dec039a82815",
+          "envBindings": "v1:sha256:a93a8befb4e04e7cd65dbb9a4eb32b585b9f9a03171513576bcc6872aa30dea8",
+          "secrets": "v1:sha256:65d3dc5cc91f9076003b489701585236e7f54e68c5cdfa08b625a4536b4b7f96",
+          "runtimeSkills": "v1:sha256:9c70a22f33f7b6672f688675bb9bc5b7b9c9a2e3b4b3b3a9d313b6748cdc592d"
+        }
+      }
+    },
+    {
+      "overrides": {
+        "adapterType": "paperclip_runner",
+        "workspaceConfig": {
+          "requestedMode": "shared_workspace",
+          "effectiveMode": "shared_workspace",
+          "projectConfigRevisionAt": "2026-06-01T00:00:00.000Z",
+          "projectPolicy": {
+            "enabled": true,
+            "defaultMode": "shared_workspace"
+          },
+          "issueSettings": {}
+        }
+      },
+      "metadata": {
+        "version": 1,
+        "fingerprint": "v1:sha256:d923a618fb1bd04e30a63f5d98bbc46508c330ef36a1a1187c2a2752e0b7e5cf",
+        "categories": [
+          "adapter",
+          "adapterConfig",
+          "agentRuntimeConfig",
+          "instructions",
+          "issueOverrides",
+          "workspaceConfig",
+          "environment",
+          "envBindings",
+          "secrets",
+          "runtimeSkills"
+        ],
+        "categoryFingerprints": {
+          "adapter": "v1:sha256:f6d7d8a401559cb95feafadaba9f60d56d2c80cca8295d6a3f650e2ddc9c5c1e",
+          "adapterConfig": "v1:sha256:127c71e718fe73bf91c94dcc8879f17ed484ea736b0f2e90d81bc873468ea634",
+          "agentRuntimeConfig": "v1:sha256:3c37c19f6928661cb205435737aa3283039119567a08df6d1a06c7e785326594",
+          "instructions": "v1:sha256:8ab53c8385958d7cc11bcd9833f77cb82f02f6b4061954c5ac2cf9d27630d4f6",
+          "issueOverrides": "v1:sha256:54a9d829899ea51ff0fa3b2b7ce8fa0e3f5b46b26862931646c05cc2bb623b48",
+          "workspaceConfig": "v1:sha256:3c2a1ecc7d58ac2006e3be9d7af9ce37567fb439aab52c9cecfda254ec63e045",
+          "environment": "v1:sha256:b2c8a01983988b1d799b543a0f98dc57c4d557f4ea1d9c018be1dec039a82815",
+          "envBindings": "v1:sha256:a93a8befb4e04e7cd65dbb9a4eb32b585b9f9a03171513576bcc6872aa30dea8",
+          "secrets": "v1:sha256:65d3dc5cc91f9076003b489701585236e7f54e68c5cdfa08b625a4536b4b7f96",
+          "runtimeSkills": "v1:sha256:9c70a22f33f7b6672f688675bb9bc5b7b9c9a2e3b4b3b3a9d313b6748cdc592d"
+        }
+      }
+    },
+    {
+      "overrides": {
+        "adapterType": "paperclip_runner",
+        "workspaceConfig": {
+          "requestedMode": "shared_workspace",
+          "effectiveMode": "shared_workspace",
+          "projectConfigRevisionAt": "2026-06-01T00:00:00.000Z",
+          "projectPolicy": {
+            "enabled": true,
+            "defaultMode": "shared_workspace"
+          },
+          "issueSettings": {
+            "mode": "shared_workspace"
+          }
+        }
+      },
+      "metadata": {
+        "version": 1,
+        "fingerprint": "v1:sha256:649054ef19224addf2d28d1d145cdfab310fcd6aa5c7b81892b3717f6071a01e",
+        "categories": [
+          "adapter",
+          "adapterConfig",
+          "agentRuntimeConfig",
+          "instructions",
+          "issueOverrides",
+          "workspaceConfig",
+          "environment",
+          "envBindings",
+          "secrets",
+          "runtimeSkills"
+        ],
+        "categoryFingerprints": {
+          "adapter": "v1:sha256:f6d7d8a401559cb95feafadaba9f60d56d2c80cca8295d6a3f650e2ddc9c5c1e",
+          "adapterConfig": "v1:sha256:127c71e718fe73bf91c94dcc8879f17ed484ea736b0f2e90d81bc873468ea634",
+          "agentRuntimeConfig": "v1:sha256:3c37c19f6928661cb205435737aa3283039119567a08df6d1a06c7e785326594",
+          "instructions": "v1:sha256:8ab53c8385958d7cc11bcd9833f77cb82f02f6b4061954c5ac2cf9d27630d4f6",
+          "issueOverrides": "v1:sha256:54a9d829899ea51ff0fa3b2b7ce8fa0e3f5b46b26862931646c05cc2bb623b48",
+          "workspaceConfig": "v1:sha256:601f668086c690a142041137dfc69543eabb0c2f73ae28f57eed51d31b7911c2",
+          "environment": "v1:sha256:b2c8a01983988b1d799b543a0f98dc57c4d557f4ea1d9c018be1dec039a82815",
+          "envBindings": "v1:sha256:a93a8befb4e04e7cd65dbb9a4eb32b585b9f9a03171513576bcc6872aa30dea8",
+          "secrets": "v1:sha256:65d3dc5cc91f9076003b489701585236e7f54e68c5cdfa08b625a4536b4b7f96",
+          "runtimeSkills": "v1:sha256:9c70a22f33f7b6672f688675bb9bc5b7b9c9a2e3b4b3b3a9d313b6748cdc592d"
+        }
+      }
+    }
+  ],
+  "sourceCommit": "b58c10611ae5fe5b2f41e4c67e24835195fb604d"
+}

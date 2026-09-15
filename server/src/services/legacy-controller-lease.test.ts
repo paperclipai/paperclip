@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, issueRecoveryActions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
 import { hasLiveLegacyController, legacyControllerBootId, legacyControllerClaim,
@@ -58,6 +58,48 @@ const support = await getEmbeddedPostgresTestSupport();
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
     expect(saved.executionStage).toBe("dispatching");
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
+  });
+  it("a cancellation fence prevents dispatch before the terminal status is written", async () => {
+    const run = await seed();
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: {
+      requestedAt: new Date().toISOString(), beforeLegacyDispatch: true,
+    } } }).where(eq(heartbeatRuns.id, run.id));
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, run, controller);
+    try {
+      await expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
+      expect(controller.signal.aborted).toBe(true);
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(saved).toMatchObject({ status: "running", executionStage: "preparing" });
+    } finally { watch.stop(); }
+  });
+  it.each([
+    { stage: "preparing", foreign: false, resolved: false, bootstrap: true },
+    { stage: "preparing", foreign: false, resolved: true, bootstrap: true },
+    { stage: "dispatching", foreign: false, resolved: false, bootstrap: false },
+    { stage: null, foreign: false, resolved: false, bootstrap: false },
+    { stage: "preparing", foreign: true, resolved: false, bootstrap: false },
+  ])("records safe startup cancellation only for a fenced local controller: %j", async input => {
+    const run = await seed();
+    const [issue] = await db.insert(issues).values({ companyId: run.companyId,
+      title: "Reviewer handing off", status: "in_progress", assigneeAgentId: run.agentId,
+      executionRunId: run.id,
+    }).returning();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: issue.id },
+      executionStage: input.stage, controllerBootId: input.foreign ? randomUUID() : legacyControllerBootId,
+      runtimeModeResolvedAt: input.resolved ? new Date() : null,
+    }).where(eq(heartbeatRuns.id, run.id));
+    const cancelled = await heartbeatService(db).cancelRun(run.id, "Cancelled before issue reassignment", {
+      errorCode: "issue_reassigned", suppressImmediateRecovery: true,
+      resultJson: { reassignmentStopConfirmed: true },
+    });
+    expect(cancelled?.status).toBe("cancelled");
+    expect(cancelled?.resultJson?.executionRecovery).toEqual(input.bootstrap
+      ? { kind: "bootstrap", providerWorkStarted: false } : undefined);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id));
+    expect(actions).toHaveLength(input.bootstrap ? 0 : 1);
+    if (!input.bootstrap) expect(actions[0]?.cause).toBe("legacy_execution_requires_reconciliation");
+    expect(await renewLegacyControllerLease(db, run, "dispatching")).toBe(false);
   });
   it("an expired controller cannot renew or dispatch even before a reaper claims it", async () => {
     const run = await seed();

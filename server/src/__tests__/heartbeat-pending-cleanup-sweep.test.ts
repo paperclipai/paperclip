@@ -127,7 +127,10 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
   function fakeRuntime(
     destroyRunLease: HeartbeatEnvironmentRuntime["destroyRunLease"],
   ): HeartbeatEnvironmentRuntime {
-    return { destroyRunLease } as unknown as HeartbeatEnvironmentRuntime;
+    return {
+      destroyRunLease,
+      reconcileRetainedWorkFolderExecutions: vi.fn(async () => {}),
+    } as unknown as HeartbeatEnvironmentRuntime;
   }
 
   // An orphan ephemeral lease that a failed acquire records. The sweep tears it

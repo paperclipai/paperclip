@@ -30,8 +30,9 @@ No schema migration is required. Selected repositories are normal project worksp
 with `metadata.githubRepositoryId`. Existing manual `repoUrl` workspaces remain
 editable through Configuration and the workspace API. One workspace remains primary.
 Tasks materialize the other distinct repositories as editable checkouts inside their
-workspace, including when no local folders are configured. Local execution and sandbox
-staging use the same layout; sandbox restore preserves each repository's Git history.
+workspace, including when no local folders are configured. Local checkouts live under
+`.paperclip-repositories/`; sandbox work folders use the sandbox user's `$HOME/repos/`
+and preserve each repository's Git history through durable checkpoints.
 See [Project Repository Checkouts](DEVELOPING.md#project-repository-checkouts) for paths,
 ignore rules, and reuse behavior. Responsible-user credential rules still apply.
 A repository selection never delegates credentials.

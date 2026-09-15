@@ -10,7 +10,7 @@ import { agents, companies, createDb, heartbeatRuns, issues, projects, projectWo
 import { runLocalGit, setExpensiveWorkspaceGitExecutor } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, prepareProjectRepositoryWorkspaces } from "../services/heartbeat.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
@@ -19,6 +19,28 @@ vi.mock("../adapters/index.js", () => ({
   findActiveServerAdapter: () => ({ type: "codex_local", execute, supportsLocalAgentJwt: false }),
   runningProcesses: new Map(),
 }));
+
+describe("project repository ownership", () => {
+  it("leaves sandbox checkouts to the remote work-folder coordinator without touching host paths", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-repo-owner-"));
+    const hostFile = path.join(root, "host-owned");
+    await writeFile(hostFile, "preserve host file");
+    try {
+      const resolveGitAuth = vi.fn();
+      const repositories = await prepareProjectRepositoryWorkspaces({
+        // A host file cannot contain a checkout. A mistaken local clone must fail.
+        cwd: hostFile,
+        environmentDriver: "sandbox",
+        anchorRepoUrl: "https://example.test/main.git",
+        workspaces: [{ id: randomUUID(), repoUrl: "https://example.test/secondary.git", repoRef: "main" }],
+        resolveGitAuth,
+      });
+      expect(repositories).toEqual([]);
+      expect(resolveGitAuth).not.toHaveBeenCalled();
+      expect(await readFile(hostFile, "utf8")).toBe("preserve host file");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;

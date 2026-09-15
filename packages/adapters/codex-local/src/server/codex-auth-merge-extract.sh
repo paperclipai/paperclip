@@ -47,8 +47,15 @@ if [ "$keep_sandbox" -eq 1 ]; then
   fi
 fi
 
-rm -rf "$asset_dir" || exit 1
+# Refresh the managed config contribution, not the sandbox's provider state.
+# Removing CODEX_HOME also removed sessions/ and the SQLite rollout index before
+# every resume. Keep sandbox-created state in place, including WAL sidecars.
+# These names match CODEX_SYNC_ALLOWLIST; omitted managed entries are revoked.
+[ ! -L "$asset_dir" ] || exit 1
 mkdir -p "$asset_dir" || exit 1
+for managed_entry in auth.json config.json config.toml instructions.md skills; do
+  rm -rf "$asset_dir/$managed_entry" || exit 1
+done
 find "$stage_dir" -mindepth 1 -maxdepth 1 ! -name "$auth_name" -exec mv -f -- {} "$asset_dir/" \; || exit 1
 
 source_auth="$host_auth"

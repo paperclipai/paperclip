@@ -513,6 +513,15 @@ describe("IssueProperties", () => {
     document.body.innerHTML = "";
   });
 
+  it.each([false, true])("gates cached files in properties with the opt-in flag (%s)", async (enabled) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCachedTaskFiles: enabled });
+    const root = renderProperties(container, { issue: createIssue({ projectId: null }), childIssues: [], onUpdate: vi.fn(), inline: true });
+    await waitForAssertion(() => expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.textContent?.includes("View cached files")).toBe(enabled);
+    act(() => root.unmount());
+  });
+
   it("marks the task-detail property typography and section rhythm", () => {
     const root = renderProperties(container, {
       issue: createIssue(),

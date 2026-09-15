@@ -146,6 +146,30 @@ The payload never carries a command, an argument, a path, an environment value,
 or a raw identifier. The event rides the `ctx.onEvent` run-event bridge and is
 run-log-only. It needs no OTLP endpoint.
 
+## Sandbox performance batches
+
+When full sandbox diagnostics are enabled by `OTEL_EXPORTER_OTLP_ENDPOINT`, the
+host writes `sandbox.performance.batch` system events after measured execution.
+These rows stay in the instance database; they are neither first-party Telemetry
+events nor a replacement for inspecting actual OpenTelemetry exports. No batch
+is produced with the endpoint unset.
+
+The payload schema is `paperclip.sandbox-performance.v1`, with a hashed
+`runHash`, `records` (at most 250 per event), and the run's `dropped` count.
+Each record contains a fixed operation name, span id, optional parent/trace id,
+start time, duration, operation outcome, and closed safe attributes. Host times
+use epoch milliseconds and monotonic durations. Records with
+`clock: "remote_relative"` instead contain offsets from a remote command's
+start and must not be placed on the host timeline as absolute timestamps.
+The root has numeric retained-record and dropped-record counts.
+
+The default buffer holds 20,000 records per run; additional records increment
+the drop count. A missing root or a nonzero drop count means the local record
+set is incomplete. Event persistence happens in bounded batches after the
+operation timings end, not synchronously for each file. A sink failure stops
+batch persistence without changing the original task outcome. A successful
+task alone therefore does not prove that all timing records were saved.
+
 ## Related instrumentation
 
 The sandbox duplex transport also writes one run-log event as one of its three
@@ -153,6 +177,22 @@ sinks. See the
 [Sandbox Duplex Transport Instrumentation](observability.md#sandbox-duplex-transport-instrumentation)
 section in the Observability contract.
 
+## Native Process Rotation
+
+`native.session.process_rotation` records a controller-initiated close of a
+settled warm session before opening the next run. Its system-stream payload
+contains `reason` (`run_scoped_github_capability` or `configuration_changed`),
+`previousRunId` (nullable), `runId`, `companyId`, `agentId`, `nativeSessionId`,
+and `runnerInstanceId`. It contains no token, environment, path, or credential
+value. The event records rotation intent after the prior process closes; the
+new run must still succeed to establish successful continuation.
+
+A subsequent run uses a fresh process for its own GitHub capability while
+preserving the durable conversation. Warm qualification accepts a changed
+process fingerprint only with a matching system rotation event for that exact
+run transition and a process start inside the new run. Unexpected restarts,
+configuration changes, and conversation, runner-instance or sandbox changes
+remain failures. Same-process warm reuse remains required without a rotation.
 ## Execution recovery
 
 Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.

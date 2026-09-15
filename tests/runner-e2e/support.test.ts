@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { packageEvidence } from "./evidence.js";
+import { createBundleManifest, publicScreenshotPaths, prunePrivateHistoryEvidence } from "./history-publish.js";
+import { PUBLIC_RUNNER_SCREENSHOT_MARKER } from "./screenshot-policy.js";
 import { RunnerApi } from "./api.js";
 import { FixtureRegistry } from "./fixture-registry.js";
 import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
@@ -38,6 +40,7 @@ import {
 } from "./ports.js";
 import {
   acceptedPlanSessionResetFailures,
+  hasConsistentPrpEventVersion,
   hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
@@ -779,6 +782,14 @@ describe("runner E2E failure policy", () => {
 });
 
 describe("runner E2E server isolation", () => {
+  it.each(["", "; cleanup: provider failed to start"])("does not retry an explicitly nonretryable provider rejection%s", (suffix) => {
+    const failure = classifyFailure(new Error(
+      "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=effective_model_mismatch)" + suffix,
+    ));
+    expect(failure).toBe("permanent_infrastructure");
+    expect(shouldRetryFailure(failure)).toBe(false);
+  });
+
   it("shares restart control files beneath the isolated temporary root", () => {
     expect(runnerE2EServerControlPaths("/tmp/cell")).toEqual({
       controlDirectory: path.join("/tmp/cell", "control"),
@@ -1180,6 +1191,53 @@ describe("runner E2E evidence redaction", () => {
     }
   });
 
+  it("retains canonical positive warm-turn captures through report and public manifest validation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-warm-captures-"));
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    const uploadDir = path.join(root, "upload");
+    const output = path.join(root, "report");
+    await mkdir(privateDir);
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l1sAAAAASUVORK5CYII=", "base64");
+    const captures = ["final-state.png", "warm-turn-1.png", "warm-turn-2.png", "warm-turn-12.png"];
+    const rejected = ["warm-turn-0.png", "warm-turn-01.png", "warm-turn--1.png", "warm-turn-1.5.png", "warm-turn-secret.png", "warm-turn-1.png.backup", "warm-turn-1.svg"];
+    for (const file of [...captures, ...rejected]) await writeFile(path.join(privateDir, file), png);
+    const executionId = "daytona-warm-continuity.legacy-codex.daytona.warm-three-turn";
+    await writeFile(path.join(privateDir, "result.json"), JSON.stringify({
+      schema: "paperclip.runner-e2e.result/v1", executionId, attempt: 1,
+      status: "passed", profileId: "legacy-codex", environmentId: "daytona",
+      caseId: "warm-three-turn", provider: "codex", model: "fixture-model", runtimeMode: "legacy",
+      startedAt: "2026-09-12T00:00:00.000Z", finishedAt: "2026-09-12T00:00:01.000Z",
+      durationMs: 1000, runIds: ["fixture-run"], cleanup: "passed",
+      screenshots: captures.map(file => ({ id: file, label: file, file, publication: PUBLIC_RUNNER_SCREENSHOT_MARKER })),
+    }));
+    const packaged = await packageEvidence({ privateDir, uploadDir, secrets: [secret], expectPassScreenshot: false });
+    expect(packaged.leaks).toEqual([]);
+    for (const file of captures) {
+      expect(packaged.files).toContain(file);
+      expect(await readFile(path.join(uploadDir, file))).toEqual(png);
+    }
+    for (const file of rejected) expect(packaged.files).not.toContain(file);
+    const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+    execFileSync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"),
+      path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: uploadDir,
+        PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]),
+        PAPERCLIP_E2E_CAMPAIGN_ID: "warm-capture-fixture" },
+      stdio: "pipe", timeout: 20_000,
+    });
+    const campaign = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    const declared = publicScreenshotPaths(campaign);
+    await prunePrivateHistoryEvidence(output, declared);
+    await expect(createBundleManifest(output, campaign.campaignId, false, declared)).resolves.toBeDefined();
+    const canonical = path.join(output, "evidence", executionId, "attempt-1", "warm-turn-2.png");
+    expect(await readFile(canonical)).toEqual(png);
+    await rm(canonical);
+    await expect(createBundleManifest(output, campaign.campaignId, false, declared))
+      .rejects.toThrow("Declared public screenshots are missing");
+  });
+
   it("keeps raster evidence private to CI and rejects active SVG content", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "runner-e2e-visual-evidence-test-"),
@@ -1299,5 +1357,23 @@ describe("runner E2E macOS shared-memory cleanup", () => {
         creatorPid: 52172,
       },
     ]);
+  });
+});
+
+describe("persisted native event versions", () => {
+  it.each([1, 2])("accepts matching PRP v%i events", (version) => {
+    expect(hasConsistentPrpEventVersion({
+      schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+    }, version)).toBe(true);
+  });
+  it.each([
+    ["paperclip.prp.event.v1", 2, 2],
+    ["paperclip.prp.event.v2", 1, 1],
+    ["paperclip.prp.event.v2", 2, 1],
+    ["paperclip.prp.event.v3", 3, 3],
+    ["***REDACTED***", 2, 2],
+    ["paperclip.prp.event.v2", "2", 2],
+  ])("rejects inconsistent version metadata %s/%s/%s", (schema, version, outer) => {
+    expect(hasConsistentPrpEventVersion({schema, schemaVersion: version}, outer)).toBe(false);
   });
 });

@@ -63,6 +63,7 @@ export {
   fetchWithTimeout,
   codexHomeDir,
 } from "./quota.js";
+import { serializeSessionExecutionIdentity } from "@paperclipai/adapter-utils/session-execution-identity";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
@@ -83,9 +84,11 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
+    const remoteExecution = serializeSessionExecutionIdentity(record.remoteExecution);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
@@ -102,9 +105,11 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
+    const remoteExecution = serializeSessionExecutionIdentity(params.remoteExecution);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),

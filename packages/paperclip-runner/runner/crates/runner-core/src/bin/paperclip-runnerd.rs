@@ -119,6 +119,7 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "capabilities": ["codex.warm-attachment.passive-notices.v1", "durable.unbounded-runtime.v1", "durable.command-frames-4mib.v1", "acpx.verified-launch-upgrade.v1", "acpx.native-mcp-gateway.v1"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -327,7 +328,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         opencode_launch_profile: opencode_launch_profile(args)?,
         max_outbox_bytes: usize_value(args, "--max-outbox-bytes", 16 * 1024 * 1024)?,
         p0_reserve_bytes: usize_value(args, "--p0-reserve-bytes", 1024 * 1024)?,
-        max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
+        max_frame_bytes: usize_value(args, "--max-frame-bytes", 4 * 1024 * 1024)?,
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
@@ -398,6 +399,16 @@ mod tests {
         let metadata = build_metadata();
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
+        assert_eq!(
+            metadata["capabilities"],
+            json!([
+                "codex.warm-attachment.passive-notices.v1",
+                "durable.unbounded-runtime.v1",
+                "durable.command-frames-4mib.v1",
+                "acpx.verified-launch-upgrade.v1",
+                "acpx.native-mcp-gateway.v1"
+            ])
+        );
         assert_eq!(
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])

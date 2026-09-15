@@ -596,6 +596,12 @@ that file, not as the main completion path for deliverables.
 
 ## Default Agent Workspaces
 
+Sandbox execution uses the scoped `$HOME/task`, `agent`, `user`, `project`, and
+`repos` directories, with object-storage checkpoints every 180 seconds and at
+run completion. See [Sandbox work folders](sandbox-work-folders.md) for the
+ownership, recovery, API, and dedicated staging acceptance contract. The local
+execution paths below remain unchanged.
+
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:
 
 - `~/.paperclip/instances/default/workspaces/<agent-id>`
@@ -614,13 +620,13 @@ Local adapters require their corresponding CLI/session setup on the machine runn
 
 ## Project Repository Checkouts
 
-Tasks use every distinct repository attached to their project, including repository-only sources with no local folder. Paperclip creates a managed checkout when no local folder is configured. The selected repository remains at the task workspace root. Other project repositories have editable, independent Git checkouts under `.paperclip-repositories/<name>-<key>`. Workspace hints expose each checkout path to the agent.
+Tasks use every distinct repository attached to their project, including repository-only sources with no local folder. For local execution, Paperclip creates a managed checkout when no local folder is configured. The selected repository remains at the task workspace root. Other project repositories have editable, independent Git checkouts under `.paperclip-repositories/<name>-<key>`. Workspace hints expose each checkout path to the agent.
 
 When an additional repository has a configured local checkout, Paperclip seeds the task copy from its current commit and uncommitted files. Git-ignored files stay out of that copy. Subsequent task edits stay in the task copy. They do not overwrite the configured source folder. Existing task copies retain their work across runs.
 
-Sandbox staging, including Daytona, transfers each repository's Git history and working files. Restore merges files and commits back into each local task checkout independently. Durable sandbox recovery keeps the same repository snapshots. Normal ignore and workspace exclusion rules still apply. A clone failure stops task preparation with an error so the agent does not start with only part of the project.
+Sandbox execution, including Daytona, uses the shared [work-folder lifecycle](sandbox-work-folders.md): each attached repository has a task-owned checkout under the sandbox user's actual `$HOME/repos/`. The coordinator clones or restores those repositories directly in the sandbox; it does not first create a second set of host checkouts. Complete repository checkpoints preserve Git history, index state, tracked changes, and nonignored untracked files in object storage. Both legacy adapters and native runners use this layout. A required clone failure stops startup with a specific error.
 
-If a repository is detached or its source configuration changes, its previous task copy is retained under `.paperclip-runtime/detached-repositories/` and excluded from future sandbox transfers. Referenced projects continue to use the separate read-only multi-project workspace behavior.
+For local checkouts, detaching a repository or changing its source configuration retains the previous task copy under `.paperclip-runtime/detached-repositories/`. Sandbox work folders preserve detached repository work through their existing bindings and checkpoints. Referenced projects continue to use the separate read-only multi-project workspace behavior.
 
 ## Config Freshness
 

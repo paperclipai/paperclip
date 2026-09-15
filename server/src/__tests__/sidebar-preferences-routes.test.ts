@@ -10,12 +10,10 @@ const mockSidebarPreferenceService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-function registerModuleMocks() {
-  vi.doMock("../services/index.js", () => ({
-    sidebarPreferenceService: () => mockSidebarPreferenceService,
-    logActivity: mockLogActivity,
-  }));
-}
+vi.mock("../services/index.js", () => ({
+  sidebarPreferenceService: () => mockSidebarPreferenceService,
+  logActivity: mockLogActivity,
+}));
 
 async function createApp(actor: Record<string, unknown>) {
   const [{ sidebarPreferenceRoutes }, { errorHandler }] = await Promise.all([
@@ -29,6 +27,12 @@ async function createApp(actor: Record<string, unknown>) {
     next();
   });
   app.use("/api", sidebarPreferenceRoutes({} as never));
+  // Keep unexpected route exceptions visible when a status assertion fails.
+  app.locals.routeErrors = [] as string[];
+  app.use((error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    app.locals.routeErrors.push(error instanceof Error ? error.stack ?? error.message : String(error));
+    next(error);
+  });
   app.use(errorHandler);
   return app;
 }
@@ -40,12 +44,6 @@ const ORDERED_IDS = [
 
 describe("sidebar preference routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/sidebar-preferences.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockSidebarPreferenceService.getCompanyOrder.mockResolvedValue({
       orderedIds: ORDERED_IDS,
@@ -76,7 +74,7 @@ describe("sidebar preference routes", () => {
 
     const res = await request(app).get("/api/sidebar-preferences/me");
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(res.body).toEqual({
       orderedIds: ORDERED_IDS,
       updatedAt: null,
@@ -97,7 +95,7 @@ describe("sidebar preference routes", () => {
       .put("/api/sidebar-preferences/me")
       .send({ orderedIds: ORDERED_IDS });
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(mockSidebarPreferenceService.upsertCompanyOrder).toHaveBeenCalledWith("user-1", ORDERED_IDS);
   });
 
@@ -112,7 +110,7 @@ describe("sidebar preference routes", () => {
 
     const res = await request(app).get("/api/companies/company-1/sidebar-preferences/me");
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(mockSidebarPreferenceService.getProjectOrder).toHaveBeenCalledWith("company-1", "user-1");
   });
 
@@ -130,7 +128,7 @@ describe("sidebar preference routes", () => {
       .put("/api/companies/company-1/sidebar-preferences/me")
       .send({ orderedIds: ORDERED_IDS });
 
-    expect(res.status).toBe(200);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(200);
     expect(mockSidebarPreferenceService.upsertProjectOrder).toHaveBeenCalledWith("company-1", "user-1", ORDERED_IDS);
     expect(mockLogActivity).toHaveBeenCalledWith(
       {} as never,
@@ -156,7 +154,7 @@ describe("sidebar preference routes", () => {
 
     const res = await request(app).get("/api/companies/company-1/sidebar-preferences/me");
 
-    expect(res.status).toBe(403);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(403);
     expect(mockSidebarPreferenceService.getProjectOrder).not.toHaveBeenCalled();
   });
 
@@ -170,7 +168,7 @@ describe("sidebar preference routes", () => {
 
     const res = await request(app).get("/api/sidebar-preferences/me");
 
-    expect(res.status).toBe(403);
+    expect(res.status, app.locals.routeErrors.join("\n")).toBe(403);
     expect(mockSidebarPreferenceService.getCompanyOrder).not.toHaveBeenCalled();
   });
 });

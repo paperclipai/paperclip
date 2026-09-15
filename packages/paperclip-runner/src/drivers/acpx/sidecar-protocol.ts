@@ -1,3 +1,4 @@
+import { DURABLE_MAX_FRAME_BYTES } from "../../protocol/frame-limits.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
@@ -12,7 +13,7 @@ import {
 
 export const ACPX_SIDECAR_PROTOCOL_VERSION =
   GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
-export const ACPX_SIDECAR_MAX_FRAME_BYTES = 1024 * 1024;
+export const ACPX_SIDECAR_MAX_FRAME_BYTES = DURABLE_MAX_FRAME_BYTES;
 
 export interface AcpxSidecarRequest {
   protocolVersion: typeof ACPX_SIDECAR_PROTOCOL_VERSION;

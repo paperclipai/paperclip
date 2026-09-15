@@ -463,20 +463,71 @@ async function withLivenessTimeout<T>(
   }
 }
 
-async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number): Promise<void> {
-  if (sandbox.state === "started") return;
-  // Bound the lifecycle call just past its own SDK deadline. A normal slow start
-  // finishes within `timeoutSeconds`; only a connection-level hang the SDK
-  // deadline misses reaches this wrapper bound.
-  const startBoundMs = timeoutSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS;
-  if (sandbox.state === "error") {
-    if (sandbox.recoverable) {
-      await withLivenessTimeout("sandbox.recover", startBoundMs, () => sandbox.recover(timeoutSeconds));
-      return;
+const SANDBOX_START_TRANSITION_STATES = new Set([
+  "creating", "restoring", "starting", "stopping", "archiving", "resuming",
+  "pending_build", "building_snapshot", "pulling_snapshot", "resizing",
+  "snapshotting", "forking", "pausing",
+]);
+
+async function ensureSandboxStarted(
+  sandbox: Sandbox,
+  timeoutSeconds: number,
+  scope: SandboxScope,
+): Promise<void> {
+  const deadline = Date.now() + timeoutSeconds * 1_000;
+  let transitionError: unknown;
+  const remainingMs = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error(
+        `Daytona sandbox ${sandbox.id} did not finish its state transition within ${timeoutSeconds} seconds `
+          + `(last state: ${sandbox.state ?? "unknown"}); the existing sandbox was preserved.`,
+        { cause: transitionError },
+      );
     }
-    throw new Error(`Daytona sandbox ${sandbox.id} is in an unrecoverable error state: ${sandbox.errorReason ?? "unknown error"}`);
+    return remaining;
+  };
+  const refreshAfterTransition = async () => {
+    await sleep(Math.min(1_000, remainingMs()));
+    const remaining = remainingMs();
+    const bound = scope.config.livenessTimeoutMs > 0
+      ? Math.min(remaining, scope.config.livenessTimeoutMs)
+      : remaining;
+    await withLivenessTimeout("sandbox.refreshData", bound, () => sandbox.refreshData());
+  };
+  while (true) {
+    // Teardown waits for this activity gate. Do not restart the sandbox while a
+    // stop/delete is waiting for our transition poll to finish.
+    if (sandboxHandleTeardownGates.current(scope)) {
+      throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is stopping; resume was cancelled.`);
+    }
+    if (sandbox.state === "started") return;
+    const remaining = remainingMs();
+    if (SANDBOX_START_TRANSITION_STATES.has(sandbox.state ?? "")) {
+      await refreshAfterTransition();
+      continue;
+    }
+    if (sandbox.state === "error" && !sandbox.recoverable) {
+      throw new Error(`Daytona sandbox ${sandbox.id} is in an unrecoverable error state: ${sandbox.errorReason ?? "unknown error"}`);
+    }
+    if (!["stopped", "archived", "paused", "error"].includes(sandbox.state ?? "")) {
+      throw new Error(`Daytona sandbox ${sandbox.id} cannot be started from state ${sandbox.state ?? "unknown"}.`);
+    }
+    const operation = sandbox.state === "error" ? "recover" : "start";
+    try {
+      // All polls and retries share one deadline. Keep the SDK's existing
+      // connection-hang margin, and never retry a timeout/ambiguous network error.
+      await withLivenessTimeout(`sandbox.${operation}`, remaining + LIVENESS_START_TIMEOUT_MARGIN_MS,
+        () => sandbox[operation](toTimeoutSeconds(remaining)));
+      return;
+    } catch (error) {
+      if (!/^Sandbox state change in progress[.!]?$/i.test(formatErrorMessage(error).trim())) throw error;
+      transitionError = error;
+      // Auto-stop can begin between refresh and start. Re-read before another
+      // mutation; if the provider already started it, no second start is sent.
+      await refreshAfterTransition();
+    }
   }
-  await withLivenessTimeout("sandbox.start", startBoundMs, () => sandbox.start(timeoutSeconds));
 }
 
 async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string> {
@@ -1420,8 +1471,11 @@ const sandboxHandleSessionStore = (() => {
     idByKey.set(sandboxHandleCacheKey(scope), sessionId);
   }
 
-  function clear(scope: SandboxScope): void {
-    idByKey.delete(sandboxHandleCacheKey(scope));
+  function clear(scope: SandboxScope, expectedSessionId?: string): void {
+    const key = sandboxHandleCacheKey(scope);
+    if (expectedSessionId === undefined || idByKey.get(key) === expectedSessionId) {
+      idByKey.delete(key);
+    }
   }
 
   // Single-flight guard for the first-command session create. Two overlapping
@@ -1801,6 +1855,12 @@ async function readSessionExitCode(
   return null;
 }
 
+class MissingSessionBeforeDispatchError extends Error {
+  constructor(cause: Error) {
+    super("Daytona session was unavailable before command dispatch", { cause });
+  }
+}
+
 // Dispatch one user command into the persistent session and return its true
 // stdout and stderr.
 //
@@ -1857,7 +1917,17 @@ async function executeInSession(
       sessionId,
       { command, runAsync: true },
       timeoutSeconds,
-    );
+    ).catch((error: unknown) => {
+      // The daemon rejected the session lookup before accepting a command.
+      // Never classify errors from polling/logs this way: that command may
+      // already have executed and must not be replayed.
+      if (error instanceof DaytonaNotFoundError
+        && error.code === "PROCESS_NOT_FOUND"
+        && error.message.trim().toLowerCase() === "session not found") {
+        throw new MissingSessionBeforeDispatchError(error);
+      }
+      throw error;
+    });
     const commandId = dispatched.cmdId;
 
     // Log-stream path. A session command always tries the stream first: it
@@ -2204,6 +2274,10 @@ const plugin = definePlugin({
         return { providerLeaseId: null, metadata: { expired: true } };
       }
 
+        // Explicit resume must observe external stops even when the warm handle
+        // cache is younger than the auto-stop refresh threshold.
+        await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
+
         // A stopped sandbox loses its session shell, so the stored session id is
         // stale after a real restart. Clear the id only when the sandbox is not
         // already running, and clear it before the restart. A stopped sandbox has
@@ -2220,7 +2294,7 @@ const plugin = definePlugin({
           await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
         }
         const resumedFromState = sandbox.state ?? null;
-        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
         try {
           const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
           // C3: a resumed lease must clear the workspace sentinel before it is
@@ -2240,6 +2314,7 @@ const plugin = definePlugin({
               metadata: { expired: true, workspaceSentinel },
             };
           }
+          if (config.autoDeleteInterval === -1) await sandbox.setAutoDeleteInterval(-1);
           const shellCommand = await detectSandboxShellCommand(
             sandbox,
             toTimeoutSeconds(config.timeoutMs),
@@ -2295,13 +2370,22 @@ const plugin = definePlugin({
 
       evictSandboxHandle(scope);
       if (params.cancelActiveWork) {
-        // Graceful release waits for activity below. Stop must not wait on the
-        // command it is cancelling. Admission is already closed for this lease.
+        // Stop first to interrupt execution, then settle admitted SDK calls.
+        // A late call can restart or mutate the sandbox after that first stop.
+        // No receipt is safe until those calls drain and the provider is stopped
+        // again. If draining times out, keep admission closed and report failure.
         const timeoutSeconds = Math.min(toTimeoutSeconds(config.timeoutMs), 30);
-        await withLivenessTimeout("sandbox.refreshData", Math.min(config.livenessTimeoutMs, 30_000), () => sandbox.refreshData());
-        if (sandbox.state !== "stopped") await sandbox.stop(timeoutSeconds);
-        sandboxHandleSessionStore.clear(scope);
+        const settleTimeoutMs = config.livenessTimeoutMs > 0
+          ? Math.min(config.livenessTimeoutMs, 30_000) : 30_000;
+        const stop = async () => {
+          await withLivenessTimeout("sandbox.refreshData", settleTimeoutMs, () => sandbox.refreshData());
+          if (sandbox.state !== "stopped" && sandbox.state !== "archived") await sandbox.stop(timeoutSeconds);
+        };
+        await stop();
         await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+        await withLivenessTimeout("cancelled sandbox activity", settleTimeoutMs, () => sandboxHandleActivityGates.waitForIdle(scope));
+        sandboxHandleSessionStore.clear(scope);
+        await stop();
         return { providerLeaseId: params.providerLeaseId, state: "stopped" };
       }
       await sandboxHandleActivityGates.waitForIdle(scope);
@@ -2314,16 +2398,12 @@ const plugin = definePlugin({
       // resumed since the handle was cached. Read provider state at this boundary.
       await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
       if (config.reuseLease) {
-        if (sandbox.state !== "stopped") {
-          try {
-            await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
-          } catch (error) {
-            console.warn(
-              `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
-            );
-            await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
-            return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
-          }
+        // Auto-archiving preserves the disk and has no live executor. Daytona
+        // rejects stop() in this state; do not wake or delete it to prove a stop.
+        if (sandbox.state !== "stopped" && sandbox.state !== "archived") {
+          // A failed stop says nothing about the safety of deleting the working
+          // copy. Surface the failure so the host retains the lease for retry.
+          await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
         }
         return { providerLeaseId: params.providerLeaseId, state: "stopped" };
       }
@@ -2405,7 +2485,7 @@ const plugin = definePlugin({
       };
       await withSandboxActivityGate(scope, async () => {
         const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
         await sandbox.fs.createFolder(remoteCwd, "755");
       });
     }
@@ -2496,7 +2576,7 @@ const plugin = definePlugin({
         };
       }
 
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
     const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
     const connection = params.includeConnectionPayload === true
@@ -2719,7 +2799,7 @@ const plugin = definePlugin({
         // new session instead of retrying a dead one for its whole grace.
         sandboxHandleSessionStore.clear(scope);
       }
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)), scope);
       // Dispatch the command. A normal command runs in the persistent session:
       // the provider opens the one session on a cache miss and runs every command
       // in it. The provider never falls back to a one-shot command to open a
@@ -2734,7 +2814,23 @@ const plugin = definePlugin({
       let result: PluginEnvironmentExecuteResult;
       if (!params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);
-        result = await executeInSession(sandbox, sessionId, params, config);
+        const configuredTimeout = resolveTimeoutMs(params.timeoutMs, config);
+        const dispatchDeadline = Date.now() + (isGitNetworkCommand(params.command, params.args ?? [])
+          ? Math.min(configuredTimeout, GIT_NETWORK_TIMEOUT_MS) : configuredTimeout);
+        try {
+          result = await executeInSession(sandbox, sessionId, params, config);
+        } catch (error) {
+          if (!(error instanceof MissingSessionBeforeDispatchError)) throw error;
+          // A stopped/restarted provider can lose its shell independently of
+          // this worker's cache. Replace only the rejected id; overlapping
+          // callers must share, rather than invalidate, its replacement.
+          sandboxHandleSessionStore.clear(scope, sessionId);
+          if (Date.now() >= dispatchDeadline) throw error;
+          const replacementId = await getOrCreateSession(sandbox, scope);
+          const remainingMs = dispatchDeadline - Date.now();
+          if (remainingMs <= 0) throw error;
+          result = await executeInSession(sandbox, replacementId, { ...params, timeoutMs: remainingMs }, config);
+        }
       } else {
         result = await executeOneShot(sandbox, params, config);
       }
@@ -2762,23 +2858,18 @@ const plugin = definePlugin({
       throw new Error("Daytona runner ingress requires a provider lease id.");
     }
     const config = parseDriverConfig(params.config);
+    const scope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId,
+      config,
+    };
     return await withSandboxActivityGate(
-      {
-        driverKey: params.driverKey,
-        companyId: params.companyId,
-        environmentId: params.environmentId,
-        providerLeaseId,
-        config,
-      },
+      scope,
       async () => {
-        const sandbox = await getSandbox({
-          driverKey: params.driverKey,
-          companyId: params.companyId,
-          environmentId: params.environmentId,
-          providerLeaseId,
-          config,
-        });
-        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        const sandbox = await getSandbox(scope);
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
         await withLivenessTimeout(
           "sandbox.refreshData",
           config.livenessTimeoutMs,
@@ -2839,7 +2930,7 @@ const plugin = definePlugin({
     sandboxHandleWritableDirs.recordWritableTargets(scope, params.operations);
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-      await ensureSandboxStarted(sandbox, timeoutSeconds);
+      await ensureSandboxStarted(sandbox, timeoutSeconds, scope);
       const result = await performSyncIn({
         sandbox,
         operations: params.operations,
@@ -2871,7 +2962,7 @@ const plugin = definePlugin({
     try {
       return await withSandboxActivityGate(scope, async () => {
         const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-        await ensureSandboxStarted(sandbox, timeoutSeconds);
+        await ensureSandboxStarted(sandbox, timeoutSeconds, scope);
         const result = await performSyncOut({
           sandbox,
           operations: params.operations,

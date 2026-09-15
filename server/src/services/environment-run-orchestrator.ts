@@ -543,13 +543,14 @@ export function environmentRunOrchestrator(
           : [],
       };
       if (executionTarget) {
-        executionTarget = {
-          ...executionTarget,
+        // Runner callbacks retain this host-owned target. Keep its identity so
+        // the later work-folder binding reaches native file-sync callbacks.
+        Object.assign(executionTarget, {
           ...(executionTarget.kind === "remote" && realizationMode === "in_place"
             ? { remoteCwd: authoritativeRoot }
             : {}),
           workspaceRealization: workspaceTargetMetadata,
-        } as AdapterExecutionTarget;
+        });
       }
     } catch (err) {
       throw new EnvironmentRunError(

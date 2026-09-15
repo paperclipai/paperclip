@@ -6,6 +6,8 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { Readable } from "node:stream";
+import { finished } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -63,6 +65,32 @@ function toDate(value: Date | undefined): Date | undefined {
   return value instanceof Date ? value : undefined;
 }
 
+async function retryCanceledRead<T>(read: () => Promise<T>): Promise<T> {
+  let attempts = 0;
+  for (;;) {
+    try {
+      return await read();
+    } catch (error) {
+      const failure = error as {
+        name?: string;
+        Code?: string;
+        $metadata?: { httpStatusCode?: number; attempts?: number };
+      } | null;
+      const sdkAttempts = failure?.$metadata?.attempts;
+      attempts += typeof sdkAttempts === "number" && Number.isSafeInteger(sdkAttempts) && sdkAttempts > 0
+        ? sdkAttempts : 1;
+      // Some S3-compatible stores return RequestCanceled/408, which the SDK
+      // treats as a permanent client error. Retry only that server response,
+      // before a body has been handed to the caller. Local aborts, partial
+      // streams, and writes must retain their existing failure semantics.
+      if (failure?.$metadata?.httpStatusCode !== 408
+        || (failure.name !== "RequestCanceled" && failure.Code !== "RequestCanceled")
+        || attempts >= 3) throw error;
+      await delay(250 * attempts);
+    }
+  }
+}
+
 export function createS3StorageProvider(config: S3ProviderConfig): StorageProvider {
   const bucket = config.bucket.trim();
   const region = config.region.trim();
@@ -74,6 +102,11 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     region,
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
+    // The SDK's optional streaming checksum wrapper does not propagate source
+    // errors: its detached digest promise can reject unhandled and stop the
+    // server. Keep ordinary streaming/backpressure for fallible file sources.
+    // Work-folder content integrity is independently checked before publication.
+    requestChecksumCalculation: "WHEN_REQUIRED",
   });
 
   return {
@@ -81,27 +114,44 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
 
     async putObject(input) {
       const key = buildKey(prefix, input.objectKey);
-      await client.send(
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: key,
-          Body: input.body,
-          ContentType: input.contentType,
-          ContentLength: input.contentLength,
-        }),
-      );
+      const command = new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: input.body,
+        ContentType: input.contentType,
+        ContentLength: input.contentLength,
+      });
+      if (!(input.body instanceof Readable)) {
+        await client.send(command);
+        return;
+      }
+      const body = input.body;
+      const abort = new AbortController();
+      // Observe the source before the SDK starts asynchronous signing. An early
+      // source failure or a successful HTTP response must not escape validation.
+      const completed = finished(body, { cleanup: true }).catch((error) => {
+        abort.abort();
+        throw error;
+      });
+      try {
+        await Promise.all([completed, client.send(command, { abortSignal: abort.signal })]);
+      } finally {
+        // A rejected request must release a remote file reader too. Promise.all
+        // already observes completion's rejection when destruction closes it.
+        body.destroy();
+      }
     },
 
     async getObject(input): Promise<GetObjectResult> {
       const key = buildKey(prefix, input.objectKey);
       try {
-        const output = await client.send(
+        const output = await retryCanceledRead(() => client.send(
           new GetObjectCommand({
             Bucket: bucket,
             Key: key,
             Range: input.range ? `bytes=${input.range.start}-${input.range.end}` : undefined,
           }),
-        );
+        ));
 
         return {
           stream: await toReadableStream(output.Body),

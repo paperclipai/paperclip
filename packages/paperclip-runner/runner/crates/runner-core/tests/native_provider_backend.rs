@@ -84,6 +84,10 @@ fn qualified_artifact(path: PathBuf) -> QualifiedLaunchArtifact {
 }
 
 fn opencode_config(state_dir: &Path) -> DurableRunnerConfig {
+    opencode_config_with_switches(state_dir, "")
+}
+
+fn opencode_config_with_switches(state_dir: &Path, switches: &str) -> DurableRunnerConfig {
     let command = state_dir.join("qualified-opencode-proxy-command");
     let proxy_script = state_dir.join("qualified-opencode-proxy-script");
     let executable = state_dir.join("qualified-opencode-executable");
@@ -95,7 +99,7 @@ fn opencode_config(state_dir: &Path) -> DurableRunnerConfig {
     fs::write(
         &proxy_script,
         format!(
-            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract\n",
+            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract {switches}\n",
             env!("CARGO_BIN_EXE_fake-codex-app-server"),
             state_dir.join("fake-opencode-state.json").display(),
             state_dir.join("fake-opencode-calls.log").display(),
@@ -407,6 +411,15 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
 
 #[test]
 fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
+    assert_idle_acpx_session_replacement(false);
+}
+
+#[test]
+fn resumes_an_idle_acpx_session_after_a_qualified_sidecar_upgrade() {
+    assert_idle_acpx_session_replacement(true);
+}
+
+fn assert_idle_acpx_session_replacement(upgrade: bool) {
     let directory = temporary_directory("acpx-cold-idle-recovery");
     let config = acpx_config(&directory, "turns-reserved-result-terminal");
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
@@ -438,10 +451,25 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let mut replacement_config = config.clone();
     replacement_config.run_id = "run-2".to_owned();
     replacement_config.turn_id = "turn-2".to_owned();
+    if upgrade {
+        let profile = replacement_config.acpx_launch_profile.as_mut().unwrap();
+        let new_command = directory.join("upgraded-qualified-sidecar");
+        fs::copy(&profile.command, &new_command).unwrap();
+        profile.command = new_command.clone();
+        profile.artifacts = vec![qualified_artifact(new_command)];
+        profile.authority_digest = format!("sha256:{}", "e".repeat(64));
+    }
     let mut replacement =
         NativeProviderCommandExecutor::with_runner_config(&directory, &replacement_config);
     let mut payload = prepare_payload(&directory, "codex");
     payload["provider"]["runId"] = json!("run-2");
+    payload["provider"]["sidecarCommand"] = json!(
+        replacement_config
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .command
+    );
     let resumed = replacement
         .execute(&command(1, "run.attach", payload))
         .unwrap();
@@ -450,6 +478,7 @@ fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
         resumed.result["providerSessionId"],
         original.result["providerSessionId"]
     );
+    assert_eq!(resumed.result["sessionId"], original.result["sessionId"]);
     // Admission itself must preserve the provider identity before any new
     // model turn. The fixture's scripted terminal events belong to run-1.
     replacement.shutdown().unwrap();
@@ -630,6 +659,101 @@ fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
 }
 
 #[test]
+fn opencode_result_survives_controller_interruption_and_durable_close() {
+    let directory = temporary_directory("opencode-result-interruption");
+    let config = opencode_config_with_switches(&directory, "--emit-opencode-result");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Complete, then await interruption."}),
+        ))
+        .unwrap();
+    let mut observed = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = executor.poll_events().unwrap();
+        let count = events.len();
+        observed.extend(events);
+        executor.acknowledge_events(count).unwrap();
+        if observed
+            .iter()
+            .any(|event| event.event_type == "run.result.proposed")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(observed
+        .iter()
+        .any(|event| event.event_type == "run.result.proposed"));
+    let read_state = || -> Value {
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap()
+    };
+    let active = read_state();
+    assert!(active["activeProviderTurnId"].is_string());
+    executor
+        .execute(&command(4, "turn.interrupt", json!({})))
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = executor
+            .poll_events()
+            .expect("interruption retains the validated result's exact process and turn authority");
+        let count = events.len();
+        observed.extend(events);
+        executor.acknowledge_events(count).unwrap();
+        if observed
+            .iter()
+            .any(|event| event.event_type == "run.terminal")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|event| event.event_type == "run.result.proposed")
+            .count(),
+        1
+    );
+    let terminal = observed
+        .iter()
+        .find(|event| event.event_type == "run.terminal")
+        .expect("accepted result remains terminal");
+    assert_eq!(terminal.payload["reportedWorkDisposition"], "done");
+    let settled = read_state();
+    assert_eq!(settled["completedTurnAuthoritative"], true);
+    assert_eq!(
+        settled["completedProviderTurnId"],
+        active["activeProviderTurnId"]
+    );
+    assert_eq!(
+        settled["completedTurnProcessGeneration"],
+        active["providerProcessGeneration"]
+    );
+    assert!(settled["activeProviderTurnId"].is_null());
+    executor
+        .execute(&command(5, "session.close", json!({})))
+        .expect("durably close after interrupted completion");
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn replacement_shutdown_restores_the_persisted_provider_before_cleanup() {
     let directory = temporary_directory("opencode-replacement-shutdown");
     let config = opencode_config(&directory);
@@ -736,7 +860,7 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
 }
 
 #[test]
-fn rejects_pi_before_starting_a_sidecar() {
+fn rejects_pi_with_codex_artifacts_before_starting_a_sidecar() {
     let directory = temporary_directory("pi");
     let config = config(&directory);
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
@@ -747,7 +871,9 @@ fn rejects_pi_before_starting_a_sidecar() {
             prepare_payload(&directory, "pi"),
         ))
         .unwrap_err();
-    assert!(error.to_string().contains("agent pi is not executable"));
+    assert!(error
+        .to_string()
+        .contains("does not match a qualified immutable profile"));
     assert!(!directory.join("acpx-runtime").exists());
     fs::remove_dir_all(directory).unwrap();
 }

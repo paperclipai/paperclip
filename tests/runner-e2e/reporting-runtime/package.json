@@ -1,0 +1,19 @@
+{
+  "name": "paperclip-runner-reporting-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Integrity-locked dependencies for trusted runner reports and publication only.",
+  "dependencies": {
+    "@playwright/test": "1.62.1",
+    "ajv": "8.20.0",
+    "tsx": "4.23.12",
+    "zod": "4.4.3"
+  },
+  "overrides": {
+    "fast-uri": "3.1.6"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}

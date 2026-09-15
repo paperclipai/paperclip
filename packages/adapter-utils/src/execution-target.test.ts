@@ -7,6 +7,7 @@ import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetManagedHomeDir,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
@@ -199,6 +200,18 @@ describe("runAdapterExecutionTargetShellCommand", () => {
     });
     expect(onLog).toHaveBeenCalledWith("stdout", "partial stdout");
     expect(onLog).toHaveBeenCalledWith("stderr", "partial stderr");
+  });
+
+  it("uses the host-bound sandbox home while retaining managed CLI configuration", () => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const,
+      remoteCwd: "/home/daytona/repos/main", workFolderHome: "/home/daytona" };
+    expect(adapterExecutionTargetManagedHomeDir(target, "/private/run-runtime")).toBe("/home/daytona");
+    expect(adapterExecutionTargetManagedHomeDir(target, null)).toBe("/home/daytona");
+    expect(adapterExecutionTargetUsesManagedHome(target)).toBe(true);
+    expect(adapterExecutionTargetManagedHomeDir({ ...target, workFolderHome: undefined }, "/private/run-runtime"))
+      .toBe("/private/run-runtime");
+    expect(adapterExecutionTargetManagedHomeDir(null, "/private/run-runtime")).toBeNull();
+    expect(adapterExecutionTargetManagedHomeDir({ kind: "local" }, "/private/run-runtime")).toBeNull();
   });
 
   it("keeps managed homes disabled for both local and SSH targets", () => {

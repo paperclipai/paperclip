@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
-import { MAX_REMOTE_DELIVERABLE_BYTES, readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
+import { MAX_REMOTE_DELIVERABLE_BYTES, createVerifiedRemoteWorkspaceFileReader, readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 
 const digest = (body: Buffer) => createHash("sha256").update(body).digest("hex");
 const image = "node:24-bookworm-slim";
@@ -13,6 +13,31 @@ const hasLinuxNode = process.platform === "linux" || spawnSync("docker", ["image
 const body = Buffer.from("newsletter checklist\n");
 const request = { workspaceRoot: "/workspace", contentRef: "checklist.md", byteSize: body.length, sha256: digest(body) };
 const success = { pid: null, startedAt: "2026-09-12T00:00:00Z", exitCode: 0, signal: null, timedOut: false, stdout: body.toString("base64"), stderr: "" };
+
+describe("remote deliverable capability qualification", () => {
+  it.each([
+    { exitCode: 127, stderr: "node: not found" },
+    { exitCode: 1, stdout: "" },
+    { timedOut: true },
+    { stdout: "unexpected-output" },
+  ])("withholds the reader when the runtime is not qualified: %j", async (override) => {
+    const execute = vi.fn().mockResolvedValue({ ...success, stdout: "paperclip-remote-file-reader/v1", ...override });
+    await expect(createVerifiedRemoteWorkspaceFileReader({ runner: { execute }, workspaceRoot: request.workspaceRoot })).resolves.toBeUndefined();
+  });
+
+  it("withholds the reader on transport failure", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("private transport details"));
+    await expect(createVerifiedRemoteWorkspaceFileReader({ runner: { execute }, workspaceRoot: request.workspaceRoot })).resolves.toBeUndefined();
+  });
+
+  it("returns a verified reader only after the target passes qualification", async () => {
+    const execute = vi.fn().mockResolvedValueOnce({ ...success, stdout: "paperclip-remote-file-reader/v1" }).mockResolvedValueOnce(success);
+    const reader = await createVerifiedRemoteWorkspaceFileReader({ runner: { execute }, workspaceRoot: request.workspaceRoot });
+    expect(reader).toBeTypeOf("function");
+    await expect(reader!(request)).resolves.toEqual(body);
+    expect(execute).toHaveBeenNthCalledWith(1, expect.objectContaining({ command: "node", bypassSession: true, timeoutMs: 10_000, env: { NODE_OPTIONS: "", NODE_PATH: "" } }));
+  });
+});
 
 describe("remote deliverable admission", () => {
   it.each([
@@ -70,6 +95,12 @@ describe.skipIf(!hasLinuxNode)("remote deliverable real Linux descriptor reads",
     }) };
   });
   afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+  it("qualifies the real Linux descriptor facility before publishing", async () => {
+    const reader = await createVerifiedRemoteWorkspaceFileReader({ runner, workspaceRoot });
+    expect(reader).toBeTypeOf("function");
+    await expect(reader!({ contentRef: request.contentRef, byteSize: request.byteSize, sha256: request.sha256 })).resolves.toEqual(body);
+  });
 
   it("reads verified remote bytes without touching controller paths", async () => {
     const result = await readVerifiedRemoteWorkspaceFile({ ...request, workspaceRoot, runner });

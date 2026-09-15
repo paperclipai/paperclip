@@ -47,6 +47,7 @@ async function buildSandboxTarget(input: {
   snapshot: EffectiveExecutionCapabilities | null;
   supportsSync: boolean;
   config?: Record<string, unknown>;
+  leaseMetadata?: Record<string, unknown>;
   // Reject the capability resolution to exercise the fail-closed error path.
   rejectResolution?: boolean;
 }) {
@@ -82,15 +83,15 @@ async function buildSandboxTarget(input: {
     adapterType: "codex_local",
     environment: { id: "env-1", driver: "sandbox", config: { provider: "daytona" } },
     leaseId: "lease-1",
-    leaseMetadata: { remoteCwd: "/work" },
-    lease: { id: "lease-1", leasePolicy: "reuse_by_environment" } as never,
+    leaseMetadata: { remoteCwd: "/work", ...input.leaseMetadata },
+    lease: { id: "lease-1", leasePolicy: "reuse_by_environment", metadata: { remoteCwd: "/work", marker: "preserved" } } as never,
     environmentRuntime,
   });
 
   if (target?.kind !== "remote" || target.transport !== "sandbox") {
     throw new Error("expected a sandbox target");
   }
-  return { target, execute };
+  return { target, execute, environmentRuntime };
 }
 
 describe("resolveEnvironmentExecutionTarget effective capability snapshot", () => {
@@ -218,7 +219,13 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     expect(target.reusableLeaseConfigured).toBe(true);
   });
 
-  it("carries host-owned sandbox acquisition provenance without persisting provider ids in metadata", async () => {
+  it.each([
+    { layout: "legacy", outcome: "resumed", adopt: true },
+    { layout: "legacy", outcome: "created", adopt: false },
+    { layout: "legacy", outcome: "replacement", adopt: false },
+    { layout: "scoped", outcome: "resumed", adopt: false },
+    { layout: undefined, outcome: "resumed", adopt: false },
+  ])("carries host-owned acquisition and legacy adoption for $layout/$outcome", async ({layout, outcome, adopt}) => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
       config: { provider: "daytona", reuseLease: true, timeoutMs: 30_000 },
@@ -234,13 +241,14 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
       leaseId: "lease-row-1",
       leaseMetadata: {
         remoteCwd: "/work",
+        workFolderLayout: "legacy",
         sandboxLeaseAcquisition: { outcome: "resumed" },
       },
       lease: {
         id: "lease-row-1",
         providerLeaseId: "daytona-sandbox-1",
         leasePolicy: "reuse_by_environment",
-        metadata: { sandboxLeaseAcquisition: { outcome: "resumed" } },
+        metadata: { workFolderLayout: layout, sandboxLeaseAcquisition: { outcome } },
       } as never,
       environmentRuntime: {
         supportsSync: () => false,
@@ -251,9 +259,10 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
       throw new Error("expected a sandbox target");
     }
     expect(target.sandboxLeaseAcquisition).toEqual({
-      outcome: "resumed",
+      outcome,
       providerLeaseId: "daytona-sandbox-1",
     });
+    expect(target.legacyWorkspaceResume).toBe(adopt);
   });
 });
 
@@ -266,6 +275,33 @@ describe("effective snapshot gates the sync decision", () => {
     const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
     expect(target.runner?.syncIn).toBeTypeOf("function");
     expect(target.runner?.syncOut).toBeTypeOf("function");
+  });
+
+  it("uses the host-bound home for sync after work folders are prepared without changing the primary workspace", async () => {
+    const { target, environmentRuntime } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
+    await target.runner!.syncOut!([]);
+    expect(environmentRuntime.syncOut).toHaveBeenLastCalledWith(expect.objectContaining({
+      lease: expect.objectContaining({ metadata: { remoteCwd: "/work", marker: "preserved" } }),
+    }));
+    target.workFolderHome = "/home/daytona";
+    await target.runner!.syncIn!([]);
+    await target.runner!.syncOut!([]);
+    for (const sync of [environmentRuntime.syncIn, environmentRuntime.syncOut]) {
+      expect(sync).toHaveBeenLastCalledWith(expect.objectContaining({
+        lease: expect.objectContaining({ metadata: { remoteCwd: "/home/daytona", marker: "preserved" } }),
+      }));
+    }
+    expect(target.remoteCwd).toBe("/work");
+  });
+
+  it("restores the host-bound sync home when reconstructing a target from its saved lease", async () => {
+    const { target, environmentRuntime } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true,
+      leaseMetadata: { workFolderHome: "/home/daytona" } });
+    expect(target.workFolderHome).toBe("/home/daytona");
+    await target.runner!.syncOut!([]);
+    expect(environmentRuntime.syncOut).toHaveBeenLastCalledWith(expect.objectContaining({
+      lease: expect.objectContaining({ metadata: expect.objectContaining({ remoteCwd: "/home/daytona" }) }),
+    }));
   });
 
   it("omits the native sync hooks when the snapshot removes a sync verb", async () => {

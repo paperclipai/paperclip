@@ -210,7 +210,7 @@ These envelopes are local Local runner implementation contracts.
   beyond its produced source cursor.
 - An equal repeated command ID and canonical digest returns its stored result.
   Reuse with different bytes fails closed and cannot repeat an effect.
-- Frames are bounded at 1 MiB and upgrade headers at 16 KiB. Unknown or invalid
+- Frames are bounded at 4 MiB and upgrade headers at 16 KiB. Unknown or invalid
   required protocol data fails closed; malformed JSON is a bounded diagnostic.
 
 Runnerd build-metadata contract v2 advertises the exact transport inventory:

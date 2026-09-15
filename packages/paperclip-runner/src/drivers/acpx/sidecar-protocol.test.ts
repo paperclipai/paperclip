@@ -12,6 +12,13 @@ import {
 } from "./sidecar-protocol.js";
 
 describe("ACPX sidecar request parsing", () => {
+  it("preserves a large task history through the ACPX request boundary", () => {
+    const message = "task history ".repeat(110_000);
+    expect(Buffer.byteLength(message)).toBeGreaterThan(1024 * 1024);
+    const request = { protocolVersion: 2, id: 1, command: "turn.start", params: { message, turnId: "large-turn" } };
+    expect(parseAcpxSidecarRequest(JSON.parse(JSON.stringify(request)))).toEqual(request);
+  });
+
   it("accepts only bounded, versioned, generated commands", () => {
     expect(
       parseAcpxSidecarRequest({

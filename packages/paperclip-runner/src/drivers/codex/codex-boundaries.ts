@@ -1,3 +1,4 @@
+import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
 import { realpathSync, statSync } from "node:fs";
 import {
   basename,
@@ -150,7 +151,10 @@ function validateRemoteRunnerWorkingDirectory(
   // The controller cannot inspect a provider-owned filesystem. Pin the facade
   // to the exact remote workspace while runnerd validates existence, type, and
   // canonical identity inside the authoritative filesystem before launch.
-  if (workingDirectory !== configuredRoot) {
+  const scoped = externalWorkFolderEnvironment(environment);
+  const scopedHome = scoped.HOME;
+  const hostBoundHome = scopedHome && scoped.PAPERCLIP_PRIMARY_REPO === configuredRoot;
+  if (workingDirectory !== configuredRoot && !(hostBoundHome && workingDirectory === scopedHome)) {
     throw new Error(
       "Remote Codex working directory does not match the assigned workspace",
     );

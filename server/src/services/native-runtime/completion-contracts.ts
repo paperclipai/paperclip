@@ -14,7 +14,11 @@ export function nativeCompletionRequestsForComments(
     body: string;
     attachments?: readonly unknown[];
   }[],
-  options: { requiredFullWakeCommentCount?: number } = {},
+  options: {
+    requiredFullWakeCommentCount?: number;
+    /** Current server-selected direction, never an arbitrary historical comment. */
+    continuationObjective?: string | null;
+  } = {},
 ): string[] {
   if (
     Number.isSafeInteger(options.requiredFullWakeCommentCount) &&
@@ -24,7 +28,7 @@ export function nativeCompletionRequestsForComments(
       `Read every server-bound pending external-chat comment with read_current_wake_comments until complete=true, then answer all ${options.requiredFullWakeCommentCount} accepted comments in order without omitting a request. Report any unavailable attachment honestly; metadata alone is not its content.`,
     ];
   }
-  return comments.flatMap((comment, index) => {
+  const requests = comments.flatMap((comment, index) => {
     const body = comment.body.trim();
     if (body) return [body];
     // A file-only message is still the current request. Never fall back to an
@@ -33,6 +37,18 @@ export function nativeCompletionRequestsForComments(
       ? [`Inspect and respond to the attached file(s) on pending comment ${index + 1}.`]
       : [];
   });
+  const objective = options.continuationObjective?.trim();
+  // A description-only edit or reconciled recovery has no pending comment.
+  // Its authoritative objective must not be replaced by older conversation text.
+  // File-only and truncated wakes retain their own complete-reading contract.
+  if (
+    objective &&
+    (comments.length === 0 || comments.some((comment) => comment.body.trim())) &&
+    !requests.includes(objective)
+  ) {
+    requests.push(objective);
+  }
+  return requests;
 }
 
 export function resolveNativeCompletionPolicy(issue: {

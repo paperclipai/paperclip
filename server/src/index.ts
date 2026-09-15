@@ -3,6 +3,8 @@
 // OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
+import { collectWorkFolderGarbage } from "./services/work-folder-garbage.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
@@ -122,6 +124,7 @@ import {
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { systemdNotify } from "./services/systemd-notify.js";
+import { closeIdleSandboxNativeSessionsForShutdown } from "./services/native-runtime/native-session-executor.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
   createEmbeddedPostgresSupervisor,
@@ -1181,6 +1184,16 @@ async function startServerWithDatabaseTeardown(
     heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
   };
+  let workFolderCleanupInFlight = false;
+  let nextWorkFolderCleanupAt = 0;
+  const scheduleWorkFolderCleanup = () => {
+    if (heartbeatSchedulerStopped || workFolderCleanupInFlight || Date.now() < nextWorkFolderCleanupAt) return;
+    workFolderCleanupInFlight = true;
+    nextWorkFolderCleanupAt = Date.now() + 180_000;
+    trackHeartbeatSchedulerWork(collectWorkFolderGarbage(db, createStorageProviderFromConfig(config))
+      .catch((err) => logger.error({ err }, "Work folder object cleanup failed; durable deletion journal retained"))
+      .finally(() => { workFolderCleanupInFlight = false; }));
+  };
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -1666,6 +1679,7 @@ async function startServerWithDatabaseTeardown(
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
+      scheduleWorkFolderCleanup();
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines
@@ -1818,6 +1832,7 @@ async function startServerWithDatabaseTeardown(
     startHeartbeatSchedulerInterval(() => {
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
+      scheduleWorkFolderCleanup();
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });
@@ -1991,6 +2006,9 @@ async function startServerWithDatabaseTeardown(
     await finalizeServerShutdown({
       signal,
       shutdownAppServices: appShutdown,
+      closeIdleSandboxSessions: () => closeIdleSandboxNativeSessionsForShutdown({
+        reason: `server shutdown (${signal})`,
+      }),
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
       drainPendingRunFailureReports: waitForPendingRunFailureReports,

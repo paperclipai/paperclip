@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   PRP_V1_EVENT_TYPES,
+  PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
   redactEventPayload,
@@ -21,6 +22,36 @@ describe("redaction", () => {
       ),
     ) as { properties: { eventType: { enum: string[] } } };
     expect([...PRP_V1_EVENT_TYPES]).toEqual(schema.properties.eventType.enum);
+  });
+
+  it("keeps the discriminator allowlist in exact PRP v2 schema parity", () => {
+    const schema = JSON.parse(readFileSync(new URL(
+      "../../../packages/paperclip-runner/protocol/schemas/event-v2.schema.json",
+      import.meta.url,
+    ), "utf8")) as { properties: { eventType: { enum: string[] } } };
+    expect([...PRP_V2_EVENT_TYPES].sort()).toEqual(schema.properties.eventType.enum.sort());
+  });
+
+  it("preserves v2 goal envelopes while redacting secrets and mismatched versions", () => {
+    for (const eventType of PRP_V2_EVENT_TYPES) {
+      const envelope = {
+        schema: "paperclip.prp.event.v2", schemaVersion: 2, eventType,
+        payload: { apiKey: "secret", opaque: "aaa.bbb.ccc" },
+      };
+      expect(sanitizeRecord(envelope)).toEqual({
+        ...envelope,
+        payload: { apiKey: REDACTED_EVENT_VALUE, opaque: REDACTED_EVENT_VALUE },
+      });
+    }
+    for (const envelope of [
+      { schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "session.goal.snapshot" },
+      { schema: "paperclip.prp.event.v2", schemaVersion: 1, eventType: "session.goal.snapshot" },
+      { schema: "paperclip.prp.event.v1", schemaVersion: 2, eventType: "session.goal.snapshot" },
+      { schema: "paperclip.prp.event.v2", schemaVersion: 2, eventType: "aaa.bbb.ccc" },
+      { schema: "paperclip.prp.event.v3", schemaVersion: 3, eventType: "session.goal.snapshot" },
+    ]) {
+      expect(sanitizeRecord(envelope).eventType).toBe(REDACTED_EVENT_VALUE);
+    }
   });
 
   it("preserves every discriminator in the cross-language replay stream", () => {

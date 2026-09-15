@@ -32,7 +32,11 @@ const inputClass =
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
 const defaultOpenCodeRunnerModel = "openrouter/deepseek/deepseek-v4-flash-0731";
-const defaultAcpxClaudeModel = "claude-sonnet-5";
+const acpxRunnerModels = {
+  claude: "claude-sonnet-5",
+  codex: "gpt-5.6-sol",
+  pi: "openrouter/deepseek/deepseek-v4-flash-0731",
+} as const;
 const defaultClaudeManagedModel = "claude-sonnet-5";
 const defaultAwsAgentCoreModel = "global.anthropic.claude-sonnet-4-6";
 
@@ -113,6 +117,13 @@ export function CodexLocalConfigFields({
       mark("adapterConfig", key, value);
     }
   };
+  const configuredAcpxAgent =
+    runnerManaged && runnerProvider === "acpx"
+      ? isCreate
+        ? values!.adapterSchemaValues?.acpxAgent
+        : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")
+      : "claude";
+  const acpxAgent = configuredAcpxAgent === "pi" ? "pi" : configuredAcpxAgent === "codex" ? "codex" : "claude";
   const runnerLifecycleMode = runnerManaged
     ? isCreate
       ? (values!.paperclipRunnerLifecycleMode ?? "per_turn")
@@ -208,7 +219,7 @@ export function CodexLocalConfigFields({
                     : provider === "aws_agentcore"
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
-                        ? defaultAcpxClaudeModel
+                        ? acpxRunnerModels[acpxAgent]
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
                 set!({
@@ -232,7 +243,7 @@ export function CodexLocalConfigFields({
             <option value="opencode">OpenCode 1.18.29</option>
             <option value="claude_managed">Claude Managed</option>
             <option value="aws_agentcore">AWS AgentCore</option>
-            <option value="acpx">ACPX Claude</option>
+            <option value="acpx">ACPX</option>
           </select>
         </Field>
       )}
@@ -369,6 +380,37 @@ export function CodexLocalConfigFields({
             }
           />
         </>
+      )}
+      {runnerManaged && runnerProvider === "acpx" && (
+        <Field
+          label="ACP agent"
+          hint="Uses the pinned Claude, Codex, or Pi profile."
+        >
+          <select
+            className={inputClass}
+            value={acpxAgent}
+            onChange={(event) => {
+              const agent = event.target.value === "pi" ? "pi" : event.target.value === "codex" ? "codex" : "claude";
+              const model = acpxRunnerModels[agent];
+              if (isCreate) {
+                set!({
+                  model,
+                  adapterSchemaValues: {
+                    ...values!.adapterSchemaValues,
+                    acpxAgent: agent,
+                  },
+                });
+              } else {
+                mark("adapterConfig", "acpxAgent", agent);
+                mark("adapterConfig", "model", model);
+              }
+            }}
+          >
+            <option value="claude">Claude via ACPX</option>
+            <option value="codex">Codex via ACPX</option>
+            <option value="pi">Pi via ACPX</option>
+          </select>
+        </Field>
       )}
       {runnerManaged && runnerPermissionCapability.configurable && (runnerPermissionCapability.options.length > 1 || runnerPermissionModeUnsupported) && (
         <Field

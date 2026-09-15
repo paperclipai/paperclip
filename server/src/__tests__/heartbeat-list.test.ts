@@ -6,6 +6,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { boundHeartbeatRunEventPayloadForStorage, heartbeatService } from "../services/heartbeat.ts";
+import { measureSandboxOperation, runWithSandboxPerformanceTrace, type SandboxPerformanceRecord } from "../services/sandbox-performance.js";
+import { redactEventPayload } from "../redaction.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -283,6 +285,23 @@ describeEmbeddedPostgres("heartbeat list", () => {
 });
 
 describe("heartbeat run event payload bounding", () => {
+  it("preserves every performance record through the actual storage bounds and redaction", async () => {
+    const original: SandboxPerformanceRecord[] = [];
+    const stored: SandboxPerformanceRecord[] = [];
+    await runWithSandboxPerformanceTrace({ runId: "trace-batch-boundary", enabled: true,
+      onBatch: async (batch) => {
+        original.push(...batch.records);
+        const payload = redactEventPayload(boundHeartbeatRunEventPayloadForStorage(batch));
+        stored.push(...payload!.records as SandboxPerformanceRecord[]);
+      } }, async () => {
+      for (let i = 0; i < 350; i++) await measureSandboxOperation("sandbox.read", { fileIndex: i }, async () => undefined);
+    });
+    expect(stored).toHaveLength(351);
+    expect(stored).toEqual(original.map((record) => ({ ...record, traceId: record.traceId ?? null })));
+    expect(new Set(stored.map((record) => record.id)).size).toBe(351);
+    expect(stored.find((record) => record.name === "sandbox.run")?.attributes).toMatchObject({ recordCount: 351, dropped: 0 });
+  });
+
   it("truncates oversized adapter metadata before storage", () => {
     const payload = boundHeartbeatRunEventPayloadForStorage({
       adapterType: "codex_local",

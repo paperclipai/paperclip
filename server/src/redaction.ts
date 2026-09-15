@@ -1,8 +1,8 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
-const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
+const SECRET_FIELD_KEYWORD_PATTERN = String.raw`(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)`;
 
-const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
+const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_KEYWORD_PATTERN, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
 // remain visible in audit receipts even though the field name contains
 // "authorization". JWT-shaped values are still caught by the value guard below.
@@ -110,6 +110,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.prp.command.v1",
   "paperclip.prp.contract_manifest.v1",
   "paperclip.prp.event.v1",
+  "paperclip.prp.event.v2",
   "paperclip.prp.fixture.v1",
   "paperclip.prp.identity.v1",
   "paperclip.prp.semantic_tool.v1",
@@ -194,7 +195,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
 // Keep this closed catalog aligned with PRP v1's event.schema.json. These
 // values are public protocol discriminators, but their dotted shape overlaps
 // the deliberately broad JWT heuristic. They are exempt only in the
-// discriminator field of a PRP v1 event envelope; the same string anywhere
+// discriminator field of a supported PRP event envelope; the same string anywhere
 // else remains subject to redaction.
 export const PRP_V1_EVENT_TYPES = new Set([
   "runner.connected",
@@ -303,6 +304,17 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "issue.status.decision.superseded",
   "run.terminal",
 ]);
+// V2 removes backpressure and semantic reconciliation, and adds goal events.
+// Exact parity with both protocol schemas is enforced by redaction.test.ts.
+export const PRP_V2_EVENT_TYPES = new Set([
+  ...[...PRP_V1_EVENT_TYPES].filter(
+    (type) => type !== "runner.backpressure" && type !== "semantic_tool.reconciled",
+  ),
+  "session.capabilities.updated",
+  "session.goal.snapshot",
+  "session.goal.updated",
+  "session.goal.cleared",
+]);
 const NATIVE_RUN_SPAN_SCHEMA = "paperclip.run-performance-span.v1";
 const NATIVE_RUN_SPAN_FIELDS = ["span", "parentSpan"] as const;
 const NATIVE_RUN_SPAN_NAMES = new Set([
@@ -334,20 +346,14 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "task.run.measured",
   "task.settle",
 ]);
-const CLI_SECRET_FLAG_RE = new RegExp(
-  String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`,
-  "i",
-);
-const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
-    "`" +
-    String.raw`\r\n]+((?:"|'))`,
-  "gi",
-);
-const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
-  "gi",
-);
+// Match a complete identifier once, then classify it. Searching for a secret
+// keyword between two unbounded identifier wildcards retries every suffix of
+// long ordinary words (for example an encoded task brief) on the event loop.
+const CLI_FLAG_RE = /^-{1,2}[A-Za-z0-9_-]+$/;
+const JSON_FIELD_HEADER_RE =
+  /(?<![A-Za-z0-9_-])(?:"|')?([A-Za-z0-9_-]+)(?:"|')?\s*:\s*(?:"|')/g;
+const ESCAPED_JSON_FIELD_HEADER_RE =
+  /(?<![A-Za-z0-9_-])(?:\\")?([A-Za-z0-9_-]+)(?:\\")?\s*:\s*\\"/g;
 const SECRET_TEXT_HINTS = [
   "api",
   "key",
@@ -636,12 +642,13 @@ function authorizationCredentialRange(
 function redactAuthorizationCredentials(input: string): string {
   // Include compound diagnostic labels such as proxyAuthorization while the
   // value parser still requires a Basic/Bearer scheme before redacting.
-  const authorizationWord = /\b[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
+  const authorizationWord = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]+/g;
   const parts: string[] = [];
   let copiedThrough = 0;
   let match: RegExpExecArray | null;
 
   while ((match = authorizationWord.exec(input)) !== null) {
+    if (!match[0].toLowerCase().includes("authorization")) continue;
     const range = authorizationCredentialRange(
       input,
       match.index + match[0].length,
@@ -828,7 +835,7 @@ function sanitizeCommandArgs(args: unknown[]): unknown[] {
       return REDACTED_EVENT_VALUE;
     }
     if (typeof arg !== "string") return sanitizeValue(arg);
-    if (CLI_SECRET_FLAG_RE.test(arg.trim())) {
+    if (CLI_FLAG_RE.test(arg.trim()) && SECRET_PAYLOAD_KEY_RE.test(arg.trim())) {
       redactNext = true;
       return arg;
     }
@@ -843,10 +850,13 @@ function isKnownPrpEventDiscriminator(
 ): value is string {
   return (
     key === "eventType" &&
-    container.schema === "paperclip.prp.event.v1" &&
-    container.schemaVersion === 1 &&
     typeof value === "string" &&
-    PRP_V1_EVENT_TYPES.has(value)
+    ((container.schema === "paperclip.prp.event.v1" &&
+      container.schemaVersion === 1 &&
+      PRP_V1_EVENT_TYPES.has(value)) ||
+      (container.schema === "paperclip.prp.event.v2" &&
+        container.schemaVersion === 2 &&
+        PRP_V2_EVENT_TYPES.has(value)))
   );
 }
 
@@ -973,15 +983,43 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
+function redactJsonTextFields(input: string, escaped: boolean): string {
+  const header = escaped ? ESCAPED_JSON_FIELD_HEADER_RE : JSON_FIELD_HEADER_RE;
+  header.lastIndex = 0;
+  const parts: string[] = [];
+  let copiedThrough = 0;
+  let match: RegExpExecArray | null;
+  while ((match = header.exec(input)) !== null) {
+    // Do not consume a non-secret field's value: it can itself contain quoted
+    // diagnostics with secret fields that still need redacting.
+    if (!SECRET_PAYLOAD_KEY_RE.test(match[1])) continue;
+    const start = header.lastIndex;
+    let end = start;
+    const delimiter = escaped ? /[\\\r\n]/ : /["'`\r\n]/;
+    while (end < input.length && !delimiter.test(input[end])) end += 1;
+    header.lastIndex = end;
+    const hasClosingQuote = escaped
+      ? input.startsWith('\\"', end)
+      : input[end] === '"' || input[end] === "'";
+    if (end === start || !hasClosingQuote) continue;
+    parts.push(input.slice(copiedThrough, start), REDACTED_EVENT_VALUE);
+    copiedThrough = end;
+  }
+  if (copiedThrough === 0) return input;
+  parts.push(input.slice(copiedThrough));
+  return parts.join("");
+}
+
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(
-    redactStandaloneBearerCredentials(redactAuthorizationCredentials(input))
-      .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-      .replace(
-        ESCAPED_JSON_SECRET_FIELD_TEXT_RE,
-        `$1${REDACTED_EVENT_VALUE}$2`,
+    redactJsonTextFields(
+      redactJsonTextFields(
+        redactStandaloneBearerCredentials(redactAuthorizationCredentials(input)),
+        false,
       ),
+      true,
+    ),
     REDACTED_EVENT_VALUE,
   );
 }

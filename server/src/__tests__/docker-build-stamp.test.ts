@@ -78,6 +78,36 @@ describe("docker build-stamp wiring", () => {
 });
 
 
+describe("staging dependency integrity", () => {
+  it("verifies the reviewed resolved lock before installing the migrator", () => {
+    const migrator = workflow.split("  staging-migrator:")[1].split("  build-and-push:")[0];
+    const verification = migrator.indexOf('echo "$EXPECTED_LOCK_SHA256  pnpm-lock.yaml" | sha256sum --check --strict');
+    expect(migrator).toContain("EXPECTED_LOCK_SHA256: ${{ inputs.staging_lock_sha256 }}");
+    expect(migrator).toContain('[[ "$EXPECTED_LOCK_SHA256" =~ ^[a-f0-9]{64}$ ]]');
+    expect(verification).toBeGreaterThan(migrator.indexOf("pnpm install --resolution-only --ignore-scripts"));
+    expect(verification).toBeLessThan(migrator.indexOf("pnpm install --frozen-lockfile"));
+  });
+
+  it("checks the same lock in both staging app build contexts", () => {
+    const caller = workflow.split("  build-and-push-cloud:")[1].split("  # Moves")[0];
+    expect(caller).toContain("uses: ./.github/workflows/docker-cloud.yml");
+    expect(caller).toContain("staging_artifact_base_url: ${{ inputs.staging_artifact_base_url || '' }}");
+    expect(caller).toContain("staging_lock_sha256: ${{ inputs.staging_lock_sha256 || '' }}");
+    const contexts = [workflow, cloudWorkflow].flatMap((source) =>
+      source.split("      - name: Refresh lockfile for Docker build context").slice(1));
+    expect(contexts).toHaveLength(2);
+    for (const context of contexts) {
+      const refresh = context.split("      - name:")[0];
+      expect(refresh).toContain("STAGING_ARTIFACT_BASE_URL: ${{ inputs.staging_artifact_base_url }}");
+      expect(refresh).toContain("EXPECTED_LOCK_SHA256: ${{ inputs.staging_lock_sha256 }}");
+      expect(refresh).toContain('if [ -n "$STAGING_ARTIFACT_BASE_URL" ]; then');
+      const verification = refresh.indexOf('echo "$EXPECTED_LOCK_SHA256  pnpm-lock.yaml" | sha256sum --check --strict');
+      expect(verification).toBeGreaterThan(refresh.indexOf("pnpm install --resolution-only --ignore-scripts"));
+      expect(verification).toBeLessThan(refresh.indexOf('changed="$(git status --porcelain)"'));
+    }
+  });
+});
+
 describe("Docker Rust dependency cache", () => {
   it("caches the locked dependency recipe separately from source and per-build metadata", () => {
     const chef = stageBody(dockerfile, "rust-chef");

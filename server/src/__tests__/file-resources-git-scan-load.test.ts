@@ -1,4 +1,5 @@
 import express from "express";
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -134,50 +135,65 @@ describe("workspace Git scan route load regression", () => {
       ...unavailableMethods(),
     };
     const app = createLoadApp(db, companyId, service);
-    const pendingResponses = Array.from({ length: 500 }, (_, index) => request(app)
+    // All requests hit one listening endpoint. Supertest otherwise creates a
+    // separate ephemeral server per request, exercising port churn as well as
+    // the scheduler and intermittently resetting a loopback connection on macOS.
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const pendingResponses = Array.from({ length: 500 }, (_, index) => request(server)
       .get(`/api/issues/issue-${index}/file-resources/list`)
       .set("x-test-actor", `actor-${index % 73}`)
       .query({ mode: "changed" })
+      .timeout(30_000)
       .then((response) => response));
+    const allResponses = Promise.all(pendingResponses);
+    // Observe a transport rejection immediately while scans wait on the gate;
+    // awaiting the same promise below still fails the test on any lost request.
+    void allResponses.catch(() => undefined);
+    try {
+      await vi.waitFor(
+        () => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(498),
+        { timeout: 15_000, interval: 20 },
+      );
+      const loadedSnapshot = scheduler.snapshot();
+      expect(loadedSnapshot).toMatchObject({ activeCount: 2, queuedCount: 0, inFlightCount: 2 });
 
-    await vi.waitFor(
-      () => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(498),
-      { timeout: 15_000, interval: 20 },
-    );
-    const loadedSnapshot = scheduler.snapshot();
-    expect(loadedSnapshot).toMatchObject({ activeCount: 2, queuedCount: 0, inFlightCount: 2 });
+      const healthLatencies: number[] = [];
+      for (let index = 0; index < 25; index += 1) {
+        const startedAt = performance.now();
+        const response = await request(server).get("/api/health");
+        healthLatencies.push(performance.now() - startedAt);
+        expect(response.status).toBe(200);
+      }
+      healthLatencies.sort((left, right) => left - right);
+      const healthP99Ms = healthLatencies[Math.ceil(healthLatencies.length * 0.99) - 1]!;
+      expect(healthP99Ms).toBeLessThan(250);
 
-    const healthLatencies: number[] = [];
-    for (let index = 0; index < 25; index += 1) {
-      const startedAt = performance.now();
-      const response = await request(app).get("/api/health");
-      healthLatencies.push(performance.now() - startedAt);
-      expect(response.status).toBe(200);
+      releaseScans();
+      const responses = await allResponses;
+      const outcomeCounts = responses.reduce<Record<number, number>>((counts, response) => {
+        counts[response.status] = (counts[response.status] ?? 0) + 1;
+        return counts;
+      }, {});
+      expect(outcomeCounts).toEqual({ 200: 500 });
+      expect({ runnerCalls, peakActive }).toEqual({ runnerCalls: 2, peakActive: 2 });
+      expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
+
+      console.info("workspace Git scan regression metrics", {
+        requests: responses.length,
+        repositories: roots.length,
+        underlyingScans: runnerCalls,
+        peakActive,
+        peakQueued: loadedSnapshot.queuedCount,
+        outcomes: outcomeCounts,
+        healthP99Ms: Math.round(healthP99Ms * 100) / 100,
+        unreapedChildCount: 0,
+      });
+    } finally {
+      releaseScans();
+      await Promise.allSettled(pendingResponses);
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
-    healthLatencies.sort((left, right) => left - right);
-    const healthP99Ms = healthLatencies[Math.ceil(healthLatencies.length * 0.99) - 1]!;
-    expect(healthP99Ms).toBeLessThan(250);
-
-    releaseScans();
-    const responses = await Promise.all(pendingResponses);
-    const outcomeCounts = responses.reduce<Record<number, number>>((counts, response) => {
-      counts[response.status] = (counts[response.status] ?? 0) + 1;
-      return counts;
-    }, {});
-    expect(outcomeCounts).toEqual({ 200: 500 });
-    expect({ runnerCalls, peakActive }).toEqual({ runnerCalls: 2, peakActive: 2 });
-    expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
-
-    console.info("workspace Git scan regression metrics", {
-      requests: responses.length,
-      repositories: roots.length,
-      underlyingScans: runnerCalls,
-      peakActive,
-      peakQueued: loadedSnapshot.queuedCount,
-      outcomes: outcomeCounts,
-      healthP99Ms: Math.round(healthP99Ms * 100) / 100,
-      unreapedChildCount: 0,
-    });
   }, 60_000);
 
   it.each([

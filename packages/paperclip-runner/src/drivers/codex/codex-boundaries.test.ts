@@ -162,6 +162,21 @@ describe("Codex value and workspace boundaries", () => {
     ).toThrow("filesystem root");
   });
 
+  it("accepts only the host-bound scoped home in external sandboxes", () => {
+    const home = "/home/daytona";
+    const env = { HOME: home, PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+      PAPERCLIP_WORKSPACE_CWD: `${home}/repos/main`, PAPERCLIP_PRIMARY_REPO: `${home}/repos/main`,
+      PAPERCLIP_TASK_DIR: `${home}/task`, PAPERCLIP_AGENT_DIR: `${home}/agent`,
+      PAPERCLIP_USER_DIR: `${home}/user`, PAPERCLIP_PROJECT_DIR: `${home}/project`, PAPERCLIP_REPOS_DIR: `${home}/repos` };
+    expect(validateCodexWorkingDirectory(home, env, "remote_runner")).toBe(home);
+    for (const cwd of ["/home", `${home}/.codex`, `${home}/repos/other`]) {
+      expect(() => validateCodexWorkingDirectory(cwd, env, "remote_runner")).toThrow("does not match");
+    }
+    expect(() => validateCodexWorkingDirectory(home, { ...env, PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: undefined }, "remote_runner")).toThrow("does not match");
+    expect(() => validateCodexWorkingDirectory(home, { ...env, PAPERCLIP_PRIMARY_REPO: `${home}/repos/other` }, "remote_runner")).toThrow("does not match");
+    expect(() => validateCodexWorkingDirectory(home, { ...env, PAPERCLIP_USER_DIR: "/etc" }, "remote_runner")).toThrow("does not match its home");
+  });
+
   it("bounds retained values and redacts protected diagnostics", () => {
     const bounded = boundedCodexPayload({
       short: "ok",

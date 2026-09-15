@@ -109,7 +109,7 @@ function middleTruncatePath(path: string, maxLen = 80): string {
   return `${head}…${tail}`;
 }
 
-function isMarkdownResource(resource: ResolvedWorkspaceResource): boolean {
+function isMarkdownResource(resource: Pick<ResolvedWorkspaceResource, "title" | "displayPath" | "contentType">): boolean {
   const contentType = resource.contentType?.toLowerCase() ?? "";
   if (contentType.includes("markdown")) return true;
   const path = (resource.displayPath || resource.title).toLowerCase();
@@ -231,7 +231,10 @@ export function FileViewerMetadataRow({
 }
 
 interface FileContentViewerProps {
-  content: WorkspaceFileContent;
+  content: {
+    resource: Pick<ResolvedWorkspaceResource, "title" | "displayPath" | "contentType" | "previewKind">;
+    content: WorkspaceFileContent["content"];
+  };
   highlightedLine: number | null;
   onLoaded?: (summary: string) => void;
 }

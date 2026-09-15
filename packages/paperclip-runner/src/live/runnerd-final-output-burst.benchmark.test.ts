@@ -104,11 +104,10 @@ it.skipIf(!enabled).each(cases)(
           authority = core;
           // Test-only observation of the existing durable save boundary. This
           // delegates every save unchanged and never edits a cursor or receipt.
-          const store = core.store as typeof core.store & { save(): void };
+          const store = core.store as typeof core.store & { save(): void; saveEvent(): Promise<void> };
           const original = store.save.bind(store);
-          store.save = () => {
-            const started = performance.now();
-            original();
+          const originalEventSave = store.saveEvent.bind(store);
+          const observeSave = (started: number) => {
             saveMs += performance.now() - started;
             saves += 1;
             const now = Date.now();
@@ -140,6 +139,16 @@ it.skipIf(!enabled).each(cases)(
                 });
               }
             }
+          };
+          store.save = () => {
+            const started = performance.now();
+            original();
+            observeSave(started);
+          };
+          store.saveEvent = async () => {
+            const started = performance.now();
+            await originalEventSave();
+            observeSave(started);
           };
           await core.start();
           return { connectUrl: core.connectUrl, release: () => undefined };

@@ -69,6 +69,41 @@ async function noSymlinks(root, relative) {
 });
 `;
 
+// Qualify the actual execution target before advertising file publication.
+// Native SSH execution alone does not imply a Linux host or an installed Node.
+const PROBE_REMOTE_READER = String.raw`
+const fs = require('node:fs');
+let fd;
+try {
+  if (process.platform !== 'linux') process.exit(1);
+  const root = fs.realpathSync(process.argv[1]);
+  fd = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+  if (fs.realpathSync('/proc/self/fd/' + fd) !== root) process.exitCode = 1;
+  else process.stdout.write('paperclip-remote-file-reader/v1');
+} catch { process.exitCode = 1; }
+finally { if (fd !== undefined) fs.closeSync(fd); }
+`;
+
+type RemoteFileRequest = { contentRef: string; byteSize: number; sha256: string };
+
+export async function createVerifiedRemoteWorkspaceFileReader(input: {
+  runner: Pick<CommandManagedRuntimeRunner, "execute">;
+  workspaceRoot: string;
+}): Promise<((file: RemoteFileRequest) => Promise<Buffer>) | undefined> {
+  const result = await input.runner.execute({
+    command: "node",
+    args: ["--input-type=commonjs", "-e", PROBE_REMOTE_READER, input.workspaceRoot],
+    cwd: input.workspaceRoot,
+    env: { NODE_OPTIONS: "", NODE_PATH: "" },
+    timeoutMs: READ_TIMEOUT_MS,
+    bypassSession: true,
+  }).catch(() => null);
+  if (!result || result.timedOut || result.exitCode !== 0 || result.stdout !== "paperclip-remote-file-reader/v1") {
+    return undefined;
+  }
+  return (file) => readVerifiedRemoteWorkspaceFile({ ...file, ...input });
+}
+
 /** The caller supplies the authorized lease runner and remote workspace root. */
 export async function readVerifiedRemoteWorkspaceFile(input: {
   runner: Pick<CommandManagedRuntimeRunner, "execute">;

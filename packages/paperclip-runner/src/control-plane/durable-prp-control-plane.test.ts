@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { connect, type Socket } from "node:net";
 import nodeFs from "node:fs";
+import nodeFsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -31,6 +32,8 @@ import {
 } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
 
+import { DURABLE_MAX_COMMAND_BYTES, DURABLE_MAX_FRAME_BYTES } from "../protocol/frame-limits.js";
+
 const identity: DurableRecoveryIdentity = {
   runnerInstanceId: "runner-test-1",
   environmentLeaseId: "environment-test-1",
@@ -41,6 +44,52 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("replays a large command within the encrypted frame limit after controller restart", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-large-command-"));
+  let core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let client: AuthenticatedClient | null = null;
+  // Exercise the admitted upper bound, not merely the 1.27-MiB staging failure.
+  const text = "x".repeat(DURABLE_MAX_COMMAND_BYTES - 1024);
+  try {
+    const queued = core.queueCommand("turn.start", { text, turnId: "large-turn" }, "large-command");
+    expect(core.queueCommand("turn.start", { text, turnId: "large-turn" }, "large-command")).toEqual(queued);
+    await core.start();
+    client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    expect(client.welcome.payload).toMatchObject({
+      maxFrameBytes: DURABLE_MAX_FRAME_BYTES,
+      pendingCommands: [{ commandId: "large-command", payload: { text } }],
+    });
+    const token = client.leaseToken!;
+    client.socket.destroy();
+    await core.stop();
+    core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+    expect(core.store.state.commands).toHaveLength(1);
+    await core.start();
+    client = (await authenticate(core, token))!;
+    expect(client.welcome.payload).toMatchObject({ pendingCommands: [{ commandId: "large-command", payload: { text } }] });
+    expect(() => core.queueCommand("turn.start", { text: text + "changed" }, "large-command"))
+      .toThrow("replay conflicts");
+  } finally {
+    client?.socket.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it("rejects oversized UTF-8 commands before changing the durable journal", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-command-limit-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  try {
+    expect(() => core.queueCommand("turn.start", { text: "🚀".repeat(Math.ceil(DURABLE_MAX_COMMAND_BYTES / 4)) }))
+      .toThrow(`Durable PRP command exceeds the ${DURABLE_MAX_COMMAND_BYTES}-byte limit`);
+    expect(core.store.state.commands).toEqual([]);
+    expect(core.queueCommand("turn.start", { text: "A later valid command" }).controllerSeq).toBe(1);
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function renewalRequest(client: AuthenticatedClient, expiresAt: number): Record<string, unknown> {
   return {
@@ -263,6 +312,40 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it("retains asynchronously resolved process identity through the restart wrapper", async () => {
+  const starts: Array<{ startedAt?: string }> = [];
+  const handle = spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    processLauncher: () => {
+      const process: { startedAt?: string } = {};
+      starts.push(process);
+      return {
+        child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+        completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }),
+        get startedAt() { return process.startedAt; },
+      };
+    },
+  });
+
+  expect(handle.startedAt).toBeUndefined();
+  await Promise.resolve();
+  starts[0]!.startedAt = "2026-09-10T20:09:39.848Z";
+  expect(handle.startedAt).toBe(starts[0]!.startedAt);
+
+  const replacement = handle.restart("replacement-ticket");
+  expect(replacement.startedAt).toBeUndefined();
+  starts[1]!.startedAt = "2026-09-10T20:10:00.000Z";
+  expect(replacement.startedAt).toBe(starts[1]!.startedAt);
+  expect(handle.startedAt).toBe(starts[0]!.startedAt);
+});
+
 it("pins the ACPX launch profile in runner startup arguments and restarts", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
   const handle = spawnRunner({
@@ -484,6 +567,46 @@ it("preserves only bounded GitHub credential projection at the runner spawn boun
   expect(launches[0]!.environment.GIT_CONFIG_KEY_1).toBeUndefined();
   expect(launches[0]!.environment.GIT_CONFIG_VALUE_1).toBeUndefined();
   expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
+});
+
+it.each(["codex", "claude", "pi"] as const)("carries scoped HOME through the runner launch boundary to the %s ACPX environment", async (agent) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-scoped-home-"));
+  const home = resolve(root, "sandbox-home");
+  const scoped = {
+    HOME: home,
+    PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+    PAPERCLIP_TASK_DIR: resolve(home, "task"),
+    PAPERCLIP_AGENT_DIR: resolve(home, "agent"),
+    PAPERCLIP_USER_DIR: resolve(home, "user"),
+    PAPERCLIP_PROJECT_DIR: resolve(home, "project"),
+    PAPERCLIP_REPOS_DIR: resolve(home, "repos"),
+    PAPERCLIP_PRIMARY_REPO: resolve(home, "repos", "primary"),
+    PAPERCLIP_WORKSPACE_CWD: resolve(home, "repos", "primary"),
+    AGENT_HOME: resolve(home, "agent"),
+  };
+  const launches: RunnerProcessLaunchSpec[] = [];
+  try {
+    spawnRunner({
+      connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+      stateDirectory: root, identity, ticket: "bootstrap-ticket",
+      maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+      runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+      environment: { ...scoped, DATABASE_URL: "must-not-cross" },
+      processLauncher: (spec) => {
+        launches.push(spec);
+        return {
+          child: { pid: 42, exitCode: null, signalCode: null, kill: () => true },
+          completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }),
+        };
+      },
+    });
+    expect(launches[0]!.environment).toMatchObject(scoped);
+    expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
+    const { createSanitizedAcpxSpawnInput } = await import("../drivers/acpx/environment.js");
+    expect(createSanitizedAcpxSpawnInput(launches[0]!.environment, agent).env).toMatchObject(scoped);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it("preserves the controller-selected ACPX provider package root", () => {
@@ -981,6 +1104,98 @@ it.each([
   },
 );
 
+it.each([false, true])("preserves pending v2 goals across an incompatible reconnect (v1 prefix: %s)", async (withPrefix) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-goal-downgrade-test-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const clients: AuthenticatedClient[] = [];
+  const connectVersion = async (version: number) => {
+    const client = await authenticate(core, core.issueBootstrapTicket(), identity,
+      expectedRunnerDigest, undefined, false, version);
+    if (client) clients.push(client);
+    return client;
+  };
+  try {
+    await core.start();
+    const original = (await connectVersion(2))!;
+    const prefix = withPrefix ? core.queueCommand("run.prepare") : null;
+    const goal = core.queueCommand("session.goal.get", {}, "pending-v2-goal");
+    const suspend = core.queueCommand("runner.suspend");
+    const originalGoal = structuredClone(goal);
+    original.socket.destroy();
+    await vi.waitFor(() => expect(core.activeRunnerConnectionCount()).toBe(0));
+
+    const oldRunner = await connectVersion(1);
+    if (prefix) {
+      expect(oldRunner).not.toBeNull();
+      expect(oldRunner!.welcome.payload).toMatchObject({ pendingCommands: [expect.objectContaining({ commandId: prefix.commandId })] });
+      sendSecure(oldRunner!, {
+        protocol: "paperclip.runner", version: 1, kind: "command_result",
+        payload: { commandId: prefix.commandId, commandType: prefix.type,
+          controllerSeq: prefix.controllerSeq, status: "completed", result: {} },
+      });
+      await expect(receiveSecure(oldRunner!)).resolves.toBeNull();
+    } else {
+      expect(oldRunner).toBeNull();
+    }
+    expect(core.store.state.commands.find((command) => command.commandId === goal.commandId)).toEqual(originalGoal);
+    expect(core.store.state.commandDeliveryCounts[goal.commandId] ?? 0).toBe(0);
+
+    const compatible = (await connectVersion(2))!;
+    expect(compatible.welcome.payload).toMatchObject({ pendingCommands: [expect.objectContaining({ commandId: goal.commandId, schema: "paperclip.prp.command.v2" })] });
+    sendSecure(compatible, {
+      protocol: "paperclip.runner", version: 2, kind: "command_result",
+      payload: { commandId: goal.commandId, commandType: goal.type,
+        controllerSeq: goal.controllerSeq, status: "completed", result: {} },
+    });
+    await expect(receiveSecure(compatible)).resolves.toMatchObject({
+      kind: "command", payload: { commandId: suspend.commandId, schema: "paperclip.prp.command.v1" },
+    });
+    expect(core.commandOutcome(goal.commandId)?.status).toBe("completed");
+  } finally {
+    for (const client of clients) client.socket.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([1, 2])("only journals session goals after negotiating PRP v2 (version %s)", async (version) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-goal-version-test-"));
+  const core = new DurablePrpControlPlane({
+    stateDirectory: root,
+    identity,
+    expectedRunnerVersion,
+    expectedRunnerDigest,
+  });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    expect(core.negotiatedProtocolVersion).toBeNull();
+    expect(() => core.queueCommand("session.goal.get")).toThrow("authenticated PRP v2");
+    expect(core.store.state.commands).toHaveLength(0);
+    client = await authenticate(core, core.issueBootstrapTicket(), identity,
+      expectedRunnerDigest, undefined, false, version);
+    expect(client).not.toBeNull();
+    expect(core.negotiatedProtocolVersion).toBe(version);
+    for (const type of ["session.goal.get", "session.goal.set", "session.goal.clear"]) {
+      if (version === 1) {
+        expect(() => core.queueCommand(type)).toThrow("authenticated PRP v2");
+        expect(core.store.state.commands).toHaveLength(0);
+      } else {
+        expect(core.queueCommand(type).schema).toBe("paperclip.prp.command.v2");
+      }
+    }
+    // Unsupported probes must not consume journal slots ahead of suspension.
+    expect(core.queueCommand("runner.suspend")).toMatchObject({
+      schema: "paperclip.prp.command.v1",
+      controllerSeq: version === 1 ? 1 : 4,
+    });
+  } finally {
+    client?.socket.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function secureAad(
   client: AuthenticatedClient,
   direction: "client_to_core" | "core_to_client",
@@ -1087,6 +1302,7 @@ async function receiveSecure(
 ): Promise<Record<string, unknown> | null> {
   const frame = await client.reader.next();
   if (frame === null) return null;
+  expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThanOrEqual(DURABLE_MAX_FRAME_BYTES);
   const counter = BigInt(frame.counter as number);
   expect(counter).toBe(client.receiveCounter);
   const binding = Buffer.from(client.sessionId.slice("sha256:".length), "hex");
@@ -2249,6 +2465,68 @@ describe.sequential("DurablePrpControlPlane", () => {
       client?.socket.destroy();
     } finally {
       await recovered.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("keeps asynchronous event sync durable before acknowledgement or retirement (retire=%s)", async (retire) => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-event-sync-"));
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const syncing = new Promise<void>((resolve) => { entered = resolve; });
+    let spy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const open = nodeFsPromises.open.bind(nodeFsPromises);
+      spy = vi.spyOn(nodeFsPromises, "open").mockImplementation(async (...args) => {
+        const file = await open(...args);
+        const sync = file.sync.bind(file);
+        file.sync = async () => { entered(); await gate; await sync(); };
+        return file;
+      });
+      syncBuiltinESMExports();
+      const envelope = semanticInputEvent();
+      const event = envelope.payload as Record<string, unknown>;
+      event.eventType = "harness.diagnostic";
+      event.payload = {};
+      sendSecure(client, envelope);
+      let replied = false;
+      const reply = receiveSecure(client).then((value) => { replied = true; return value; });
+      await syncing;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(replied).toBe(false);
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      expect(core.store.state.committedEvents).toEqual([]);
+      expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(0);
+      if (retire) {
+        await core.stop();
+        let retired = false;
+        const retirement = core.retireStoppedAuthority().then(() => { retired = true; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(retired).toBe(false);
+        release();
+        await retirement;
+        await expect(reply).resolves.toBeNull();
+        const replacement = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+        replacement.issueBootstrapTicket();
+        const newerBytes = readFileSync(core.store.path, "utf8");
+        expect(() => core.queueCommand("runner.drain", {})).toThrow("retired");
+        expect(readFileSync(core.store.path, "utf8")).toBe(newerBytes);
+        await replacement.stop();
+      } else {
+        release();
+        await expect(reply).resolves.toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+      }
+      expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(1);
+    } finally {
+      release();
+      spy?.mockRestore();
+      syncBuiltinESMExports();
+      await core.stop();
+      await core.drainPendingConnectionProcessing();
       rmSync(root, { recursive: true, force: true });
     }
   });
