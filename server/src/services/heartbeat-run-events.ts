@@ -13,6 +13,12 @@ export interface AppendHeartbeatRunEventInput {
   color?: string | null;
   message?: string | null;
   payload?: Record<string, unknown> | null;
+  /** Reuse an existing exhaustion receipt, including receipts from older builds. */
+  retryExhaustion?: {
+    retryReason: string;
+    scheduledRetryAttempt: number;
+    maxAttempts: number;
+  };
   nativeSource?: {
     sourceInstanceId: string;
     sourceEventId: string;
@@ -72,6 +78,32 @@ export async function appendHeartbeatRunEvent(
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
       throw new Error("heartbeat_run_event_binding_mismatch");
+    }
+
+    if (input.retryExhaustion && !input.nativeSource) {
+      // The run lock also serializes concurrent recovery checks across server
+      // instances. Reusing the receipt must not allocate a sequence or publish
+      // another live event on each scheduler tick.
+      const existing = await tx
+        .select()
+        .from(heartbeatRunEvents)
+        .where(and(
+          eq(heartbeatRunEvents.companyId, input.companyId),
+          eq(heartbeatRunEvents.runId, input.runId),
+          eq(heartbeatRunEvents.agentId, input.agentId),
+          eq(heartbeatRunEvents.eventType, "lifecycle"),
+          sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
+          sql`${heartbeatRunEvents.payload} @> ${JSON.stringify(input.retryExhaustion)}::jsonb`,
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existing) {
+        return {
+          row: existing,
+          disposition: "duplicate" as const,
+          highestContiguousSourceSeq: 0,
+        };
+      }
     }
 
     const sourceHash = input.nativeSource
