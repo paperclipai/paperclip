@@ -451,8 +451,17 @@ function planTransitions(
   return { outcomes, activations };
 }
 
+// The remote caps idempotencyKey at 128 chars; recoverReplayMisses appends a
+// `-r<8 hex>` retry suffix, so the base key must leave room for it.
+const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
+const RETRY_KEY_SUFFIX_LENGTH = "-r".length + 8;
+
 function idempotencyKeyFor(name: string, contentHash: string): string {
-  return `sync-${name}-${contentHash.slice("sha256:".length)}`;
+  const prefix = `sync-${name}-`;
+  // SKILL_ID_RE bounds names at 64 chars, so at least 48 hex chars of the
+  // content hash always survive the truncation.
+  const hashBudget = MAX_IDEMPOTENCY_KEY_LENGTH - RETRY_KEY_SUFFIX_LENGTH - prefix.length;
+  return `${prefix}${contentHash.slice("sha256:".length).slice(0, hashBudget)}`;
 }
 
 /** Executes activations sequentially, fail-fast on 401/403 (LD-1): the
