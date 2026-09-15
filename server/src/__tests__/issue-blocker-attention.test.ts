@@ -145,13 +145,17 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   }
 
-  async function pendingInteraction(input: { companyId: string; issueId: string }) {
+  async function pendingInteraction(input: {
+    companyId: string;
+    issueId: string;
+    continuationPolicy?: string;
+  }) {
     await db.insert(issueThreadInteractions).values({
       companyId: input.companyId,
       issueId: input.issueId,
       kind: "request_confirmation",
       status: "pending",
-      continuationPolicy: "wake_assignee",
+      continuationPolicy: input.continuationPolicy ?? "wake_assignee",
       payload: { version: 1, prompt: "Proceed?" },
     });
   }
@@ -431,6 +435,61 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       coveredBlockerCount: 1,
       attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PBW-2",
+    });
+  });
+
+  // Greptile finding on PR #13380: `request_confirmation` interactions default
+  // to `continuationPolicy: "none"` (see `createIssueThreadInteractionSchema`),
+  // and `queueResolvedInteractionContinuationWakeup` never queues a wakeup for
+  // that policy. An assigned, open host is not enough — the interaction itself
+  // has to be capable of waking someone.
+  it("does not treat a pending interaction as a covered path when its continuation policy cannot wake anyone", async () => {
+    const { companyId, agentId } = await createCompany("PBN");
+    const parentId = await insertIssue({ companyId, identifier: "PBN-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBN-2",
+      title: "Assigned blocker with a non-waking pending interaction",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+    await pendingInteraction({ companyId, issueId: blockerId, continuationPolicy: "none" });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBN-2",
+    });
+  });
+
+  it("treats a pending interaction with continuation policy wake_assignee_on_accept as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBA2");
+    const parentId = await insertIssue({ companyId, identifier: "PBA2-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBA2-2",
+      title: "Assigned blocker with a wake_assignee_on_accept interaction",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+    await pendingInteraction({ companyId, issueId: blockerId, continuationPolicy: "wake_assignee_on_accept" });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBA2-2",
     });
   });
 

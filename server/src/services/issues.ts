@@ -4243,8 +4243,14 @@ async function readIssueBlockerAttentionBatch(
       explicitWaitCandidateIds,
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
-      const interactionRows: Array<{ issueId: string }> = await dbOrTx
-        .select({ issueId: issueThreadInteractions.issueId })
+      const interactionRows: Array<{
+        issueId: string;
+        continuationPolicy: string;
+      }> = await dbOrTx
+        .select({
+          issueId: issueThreadInteractions.issueId,
+          continuationPolicy: issueThreadInteractions.continuationPolicy,
+        })
         .from(issueThreadInteractions)
         .where(
           and(
@@ -4259,13 +4265,20 @@ async function readIssueBlockerAttentionBatch(
       // A pending interaction only represents a live waiting path if accepting
       // it could actually reach someone: `queueResolvedInteractionContinuationWakeup`
       // (server/src/routes/issues.ts) silently no-ops when the host issue has no
-      // assignee agent or is already closed, so the acceptance itself would wake
-      // nobody. Counting it as `covered` here reports a card as self-resolving
-      // when it is really parked forever (e.g. an assignee-less anchor issue
-      // with a pending interaction sitting on it).
+      // assignee agent, is already closed, or the interaction's own
+      // `continuationPolicy` cannot queue a wakeup (`request_confirmation`
+      // defaults to `"none"` — see `createIssueThreadInteractionSchema` — which
+      // never wakes anyone). Counting any of those as `covered` here reports a
+      // card as self-resolving when it is really parked forever (e.g. an
+      // assignee-less anchor issue, or a default-policy confirmation sitting on
+      // an otherwise-live issue).
       for (const row of interactionRows) {
         const interactionHost = nodesById.get(row.issueId);
+        const policyCanWake =
+          row.continuationPolicy === "wake_assignee" ||
+          row.continuationPolicy === "wake_assignee_on_accept";
         if (
+          policyCanWake &&
           interactionHost?.assigneeAgentId &&
           interactionHost.status !== "done" &&
           interactionHost.status !== "cancelled"
