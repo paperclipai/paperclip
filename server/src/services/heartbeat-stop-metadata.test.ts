@@ -4,6 +4,7 @@ import {
   mergeHeartbeatRunStopMetadata,
   resolveHeartbeatRunTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
+import { MAX_HTTP_TIMEOUT_MS } from "../adapters/http/timeout.js";
 
 describe("heartbeat stop metadata", () => {
   it("keeps local coding adapters at no timeout by default", () => {
@@ -39,6 +40,63 @@ describe("heartbeat stop metadata", () => {
       timeoutSource: "config",
       stopReason: "timeout",
       timeoutFired: true,
+    });
+  });
+
+  it("resolves the http timeout policy from the documented timeoutSec field", () => {
+    expect(resolveHeartbeatRunTimeoutPolicy("http", { timeoutSec: 2 })).toEqual({
+      effectiveTimeoutSec: 2,
+      effectiveTimeoutMs: 2000,
+      timeoutConfigured: true,
+      timeoutSource: "config",
+    });
+  });
+
+  it("prefers timeoutMs over timeoutSec for the http adapter", () => {
+    expect(resolveHeartbeatRunTimeoutPolicy("http", { timeoutMs: 1000, timeoutSec: 9 })).toEqual({
+      effectiveTimeoutSec: 1,
+      effectiveTimeoutMs: 1000,
+      timeoutConfigured: true,
+      timeoutSource: "config",
+    });
+  });
+
+  it("keeps the http adapter at no timeout when neither field is set", () => {
+    expect(resolveHeartbeatRunTimeoutPolicy("http", {})).toEqual({
+      effectiveTimeoutSec: 0,
+      effectiveTimeoutMs: 0,
+      timeoutConfigured: false,
+      timeoutSource: "default",
+    });
+  });
+
+  it("keeps the http policy in step with the timeout the adapter arms", () => {
+    // `adapterConfig` holds arbitrary JSON, so the `timeoutMs` alias can be
+    // present and carry no number. The adapter then falls back to `timeoutSec`,
+    // and the recorded policy has to follow it rather than report no timeout.
+    expect(resolveHeartbeatRunTimeoutPolicy("http", { timeoutMs: null, timeoutSec: 5 })).toEqual({
+      effectiveTimeoutSec: 5,
+      effectiveTimeoutMs: 5000,
+      timeoutConfigured: true,
+      timeoutSource: "config",
+    });
+  });
+
+  it("records no http timeout for a value the adapter cannot use", () => {
+    expect(resolveHeartbeatRunTimeoutPolicy("http", { timeoutMs: "1000" })).toEqual({
+      effectiveTimeoutSec: 0,
+      effectiveTimeoutMs: 0,
+      timeoutConfigured: false,
+      timeoutSource: "config",
+    });
+  });
+
+  it("holds an oversized http timeout at the same ceiling the adapter uses", () => {
+    expect(resolveHeartbeatRunTimeoutPolicy("http", { timeoutSec: 3_000_000_000 })).toEqual({
+      effectiveTimeoutSec: MAX_HTTP_TIMEOUT_MS / 1000,
+      effectiveTimeoutMs: MAX_HTTP_TIMEOUT_MS,
+      timeoutConfigured: true,
+      timeoutSource: "config",
     });
   });
 
