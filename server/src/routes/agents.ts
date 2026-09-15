@@ -5154,6 +5154,8 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    const replaceRuntimeConfig = patchData.replaceRuntimeConfig === true;
+    delete patchData.replaceRuntimeConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed
     // reference to the owner stored value with no login round trip. Remove it
     // from the patch so it never reaches the update values.
@@ -5197,7 +5199,9 @@ export function agentRoutes(
       // debug.providerTrace whenever the caller simply left `debug` out, and
       // would then demand instance-admin rights for an unrelated edit.
       const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
-      requestedRuntimeConfig = { ...existingRuntimeConfig, ...runtimeConfig };
+      requestedRuntimeConfig = replaceRuntimeConfig
+        ? runtimeConfig
+        : { ...existingRuntimeConfig, ...runtimeConfig };
       assertProviderTraceSettingTransition(
         req,
         requestedRuntimeConfig,

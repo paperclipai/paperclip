@@ -118,6 +118,27 @@ describe("buildAgentUpdatePatch", () => {
           },
         },
       },
+      replaceRuntimeConfig: true,
+    });
+  });
+
+  it("replaces runtime config when provider tracing is turned off", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      debug: { providerTrace: "raw" },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({ debug: { providerTrace: undefined } }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 300 },
+      },
+      replaceRuntimeConfig: true,
     });
   });
 

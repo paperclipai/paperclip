@@ -511,6 +511,52 @@ describe("agent routes adapter validation", () => {
     expect(runtimeConfig.workspaceRuntime).toEqual({ desiredState: "running" });
   });
 
+  it("allows complete runtimeConfig snapshots to remove omitted keys", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId: "company-1",
+      name: "Codex",
+      urlKey: "codex",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        debug: { providerTrace: "raw" },
+        heartbeat: { enabled: true, intervalSec: 300 },
+      },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+          replaceRuntimeConfig: true,
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(patch.runtimeConfig).toEqual({
+      heartbeat: { enabled: true, intervalSec: 300 },
+    });
+  });
+
   it("forwards a claude_local→process adapter move that drops the OAuth binding to the service unchanged", async () => {
     // The agent has the fixed Claude Code OAuth binding on the claude_local
     // adapter. A PATCH moves the agent to the process adapter and sends an empty
