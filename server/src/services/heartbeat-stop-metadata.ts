@@ -12,6 +12,33 @@ export type HeartbeatRunStopReason =
   | "unmanaged_background_task_stopped"
   | "adapter_failed";
 
+// Terminations caused by the host or the control plane rather than by the
+// agent: a host restart or preemption, a graceful server shutdown, or a run
+// reaped after its process disappeared. These runs are destroyed before the
+// agent can record progress, so they carry no signal about agent performance
+// and must never be scored as agent faults.
+export const INFRA_TERMINATION_ERROR_CODES = [
+  "process_lost",
+  "server_shutdown_interrupted",
+  "orphaned_running_run",
+] as const;
+
+export type InfraTerminationErrorCode = (typeof INFRA_TERMINATION_ERROR_CODES)[number];
+
+export function isInfraTerminationErrorCode(value: unknown): value is InfraTerminationErrorCode {
+  return typeof value === "string" && (INFRA_TERMINATION_ERROR_CODES as readonly string[]).includes(value);
+}
+
+export function isInfraTerminatedRun(
+  run: { errorCode?: string | null; resultJson?: unknown } | null | undefined,
+): boolean {
+  if (!run) return false;
+  if (isInfraTerminationErrorCode(run.errorCode)) return true;
+  const result = run.resultJson;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  return isInfraTerminationErrorCode((result as Record<string, unknown>).stopReason);
+}
+
 export interface HeartbeatRunTimeoutPolicy {
   effectiveTimeoutSec: number | null;
   effectiveTimeoutMs?: number | null;

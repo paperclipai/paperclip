@@ -105,6 +105,7 @@ import {
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
+import { isInfraTerminatedRun } from "../heartbeat-stop-metadata.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -229,7 +230,7 @@ type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & {
 export type StrandedRecoveryCause =
   | "stranded_assigned_issue"
   | "deliberate_wait_without_target"
-  | "process_lost"
+  | "infra_terminated"
   | "provider_quota"
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
@@ -252,7 +253,7 @@ export function shouldRouteRecoveryToOriginalAgent(
   cause: StrandedRecoveryCause,
 ): boolean {
   return (
-    cause === "process_lost" ||
+    cause === "infra_terminated" ||
     cause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
     cause === "codex_output_inactivity_monitor" ||
     NATIVE_RUNNER_RECOVERY_CAUSES.has(cause)
@@ -285,8 +286,8 @@ function compactRecoveryPresentation(title: string): IssueCommentPresentation {
 
 function recoveryCauseTitle(cause: StrandedRecoveryCause) {
   switch (cause) {
-    case "process_lost":
-      return "retries exhausted";
+    case "infra_terminated":
+      return "infrastructure-terminated run";
     case "codex_output_inactivity_monitor":
       return "output-inactivity retry exhausted";
     case "workspace_validation_failed":
@@ -376,13 +377,22 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   );
 }
 
+// Causes that are environmental rather than agent faults. They never take an
+// agent owner: the action waits, then re-dispatches the original assignee.
+function isEnvironmentalWaitRecoveryCause(cause: StrandedRecoveryCause) {
+  return cause === "provider_quota" || cause === "infra_terminated";
+}
+
 function resolveStrandedRecoveryCause(
   latestRun: LatestIssueRun,
   explicitCause?: StrandedRecoveryCause,
 ): StrandedRecoveryCause {
   if (explicitCause) return explicitCause;
   if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
-  if (latestRun?.errorCode === "process_lost") return "process_lost";
+  // Host restarts, graceful server shutdowns, and reaped orphan runs are
+  // platform faults. They get a wait-and-redispatch action, never an
+  // assignee-directed one.
+  if (isInfraTerminatedRun(latestRun)) return "infra_terminated";
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
   }
@@ -508,6 +518,7 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+export const INFRA_TERMINATION_RECOVERY_BACKOFF_MS = 2 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
@@ -2440,7 +2451,8 @@ export function recoveryService(
       issue: input.issue,
       latestRun: input.latestRun,
     });
-    const isProviderQuotaWait = recoveryCause === "provider_quota";
+    const isEnvironmentalWaitRecovery =
+      isEnvironmentalWaitRecoveryCause(recoveryCause);
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2452,7 +2464,7 @@ export function recoveryService(
       supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
-      ownerType: isProviderQuotaWait ? "system" : "board",
+      ownerType: isEnvironmentalWaitRecovery ? "system" : "board",
       ownerAgentId: null,
       ownerUserId: null,
       previousOwnerAgentId: input.issue.assigneeAgentId,
@@ -2474,14 +2486,14 @@ export function recoveryService(
         failureSummary:
           summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
       },
-      evidenceOnCreate: isProviderQuotaWait
+      evidenceOnCreate: isEnvironmentalWaitRecovery
         ? {}
         : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
       nextAction:
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."
-          : recoveryCause === "process_lost"
-            ? "Board operator: inspect the retry history, then explicitly retry the original owner, reassign, or intentionally resolve the task."
+          : recoveryCause === "infra_terminated"
+            ? "Wait for the scheduled re-dispatch of the original assignee. The previous run was terminated by host/platform infrastructure, not by an agent fault; do not wake a takeover owner."
             : recoveryCause === "provider_quota"
               ? "Wait for provider quota recovery, then retry the original assignee; do not wake a takeover owner."
               : recoveryCause === "codex_output_inactivity_monitor"
@@ -2510,7 +2522,7 @@ export function recoveryService(
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
                       : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
-      wakePolicy: isProviderQuotaWait
+      wakePolicy: isEnvironmentalWaitRecovery
         ? {
             type: "monitor_only",
             reason: recoveryCause,
@@ -2520,7 +2532,7 @@ export function recoveryService(
             reason: recoveryCause,
             preservesSourceAssignee: true,
           },
-      monitorPolicy: isProviderQuotaWait
+      monitorPolicy: isEnvironmentalWaitRecovery
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
         : null,
       maxAttempts: null,
@@ -2551,12 +2563,17 @@ export function recoveryService(
     return new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
   }
 
-  async function ensureProviderQuotaWaitRecoveryMonitor(input: {
+  async function ensureWaitRecoveryMonitor(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     actionId: string;
     agentId: string;
+    recoveryCause: StrandedRecoveryCause;
   }) {
+    const isInfraTermination = input.recoveryCause === "infra_terminated";
+    const retryReason = isInfraTermination
+      ? "infra_termination_recovery"
+      : "provider_quota_recovery";
     const existing = await db
       .select()
       .from(heartbeatRuns)
@@ -2574,7 +2591,17 @@ export function recoveryService(
     if (existing) return existing;
 
     const now = new Date();
-    const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    // A host restart is over by the time the reaper notices, so infra
+    // terminations re-dispatch on a short fixed backoff rather than waiting out
+    // a provider quota window.
+    const retryAt = isInfraTermination
+      ? new Date(now.getTime() + INFRA_TERMINATION_RECOVERY_BACKOFF_MS)
+      : readProviderQuotaRetryAt(input.latestRun, now);
+    // Leave the quota payload exactly as it was; only the infra path uses the
+    // cause-neutral key.
+    const retryNotBeforeContext = isInfraTermination
+      ? { retryNotBefore: retryAt.toISOString() }
+      : { providerQuotaRetryNotBefore: retryAt.toISOString() };
     return db.transaction(async (tx) => {
       const wakeup = await tx
         .insert(agentWakeupRequests)
@@ -2583,20 +2610,20 @@ export function recoveryService(
           agentId: input.agentId,
           source: "automation",
           triggerDetail: "system",
-          reason: "provider_quota_recovery",
+          reason: retryReason,
           payload: withRecoveryContext(
             {
               issueId: input.issue.id,
               retryOfRunId: input.latestRun?.id ?? null,
-              retryReason: "provider_quota_recovery",
-              providerQuotaRetryNotBefore: retryAt.toISOString(),
+              retryReason,
+              ...retryNotBeforeContext,
             },
             "normal_model",
           ),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
-          idempotencyKey: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}`,
+          idempotencyKey: `${retryReason}:${input.issue.id}:${retryAt.toISOString()}`,
           updatedAt: now,
         })
         .returning()
@@ -2613,14 +2640,14 @@ export function recoveryService(
           retryOfRunId: input.latestRun?.id ?? null,
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
-          scheduledRetryReason: "provider_quota_recovery",
+          scheduledRetryReason: retryReason,
           contextSnapshot: withRecoveryContext(
             {
               issueId: input.issue.id,
               taskId: input.issue.id,
-              wakeReason: "provider_quota_recovery",
-              retryReason: "provider_quota_recovery",
-              providerQuotaRetryNotBefore: retryAt.toISOString(),
+              wakeReason: retryReason,
+              retryReason,
+              ...retryNotBeforeContext,
             },
             "normal_model",
           ),
@@ -3745,16 +3772,17 @@ export function recoveryService(
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
-    const isProviderQuotaWait =
-      recoveryCause === "provider_quota" &&
+    const isEnvironmentalWait =
+      isEnvironmentalWaitRecoveryCause(recoveryCause) &&
       !recoveryAction.ownerAgentId &&
       Boolean(recoveryAction.returnOwnerAgentId);
-    if (isProviderQuotaWait && recoveryAction.returnOwnerAgentId) {
-      await ensureProviderQuotaWaitRecoveryMonitor({
+    if (isEnvironmentalWait && recoveryAction.returnOwnerAgentId) {
+      await ensureWaitRecoveryMonitor({
         issue: input.issue,
         latestRun: input.latestRun,
         actionId: recoveryAction.id,
         agentId: recoveryAction.returnOwnerAgentId,
+        recoveryCause,
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(
@@ -3766,7 +3794,7 @@ export function recoveryService(
       blockedByIssueIds: blockerIds,
     });
     if (!updated) return null;
-    if (isProviderQuotaWait) return updated;
+    if (isEnvironmentalWait) return updated;
     const sourceAssigneePreserved =
       updated.assigneeAgentId === input.issue.assigneeAgentId &&
       updated.assigneeUserId === input.issue.assigneeUserId;
