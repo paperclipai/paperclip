@@ -974,7 +974,10 @@ export function buildHostServices(
       async fetch(params) {
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const allowPrivateNetwork = options.manifest?.capabilities.includes("http.private-network") ?? false;
+        // Private-network access requires both http.outbound and http.private-network.
+        const capabilities = options.manifest?.capabilities ?? [];
+        const allowPrivateNetwork =
+          capabilities.includes("http.outbound") && capabilities.includes("http.private-network");
         const target = await validateAndResolveFetchUrl(params.url, allowPrivateNetwork);
 
         const controller = new AbortController();
