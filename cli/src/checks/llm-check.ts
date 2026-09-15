@@ -1,6 +1,10 @@
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 
+export function resolveAnthropicBaseUrl(): string {
+  return process.env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ?? "https://api.anthropic.com";
+}
+
 export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
   if (!config.llm) {
     return {
@@ -20,8 +24,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
 
   try {
     if (config.llm.provider === "claude") {
-      const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ?? "https://api.anthropic.com";
-      const res = await fetch(`${anthropicBaseUrl}/v1/messages`, {
+      const res = await fetch(`${resolveAnthropicBaseUrl()}/v1/messages`, {
         method: "POST",
         headers: {
           "x-api-key": config.llm.apiKey,
