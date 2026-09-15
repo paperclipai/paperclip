@@ -140,7 +140,13 @@ records the full source SHA, exact preview version, and the size, URL, and SHA-5
 hash of each archive and the lockfile. Blob URLs include the content hash.
 The publisher validates the complete bundle before any write, writes all blobs
 before the manifest, and verifies downloads through the public endpoint.
-A retry reuses a complete existing manifest after verification.
+A retry reuses a complete existing manifest after verification. The publisher
+also creates a GitHub/Sigstore build-provenance attestation for the manifest
+before upload. This independently binds all package and lockfile content hashes
+to the canonical workflow, master ref, repository identity, and source commit.
+Cloud must verify this signature and its certificate claims before accepting
+the executable archives; hashes served by the artifact store alone are not
+sufficient provenance.
 
 The build job has no AWS credential. The publish job downloads only the four
 fixed files, validates them, and uploads them without executing their code.

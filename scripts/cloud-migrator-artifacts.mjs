@@ -199,9 +199,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [command, directory, sha] = process.argv.slice(2);
   try {
     if (command === "build") buildBundle(directory, sha);
+    else if (command === "validate") validateBundle(directory, sha);
     else if (command === "verify-install") verifyInstall(directory, sha);
     else if (command === "publish") await publishBundle(directory, sha);
     else if (command === "verify") await verifyPublished(directory);
-    else throw new Error("Expected build, verify-install, publish, or verify.");
+    else throw new Error("Expected build, validate, verify-install, publish, or verify.");
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
