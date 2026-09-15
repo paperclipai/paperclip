@@ -189,6 +189,20 @@ describe("server adapter registry", () => {
     expect(requireServerAdapter("hermes_gateway")).toBe(builtInGateway);
   });
 
+  it("ships Google Vertex AI as a Hermes-backed built-in adapter", () => {
+    const adapter = findServerAdapter("google_vertex");
+
+    expect(adapter).not.toBeNull();
+    expect(adapter?.supportsLocalAgentJwt).toBe(true);
+    expect(adapter?.supportsInstructionsBundle).toBe(true);
+    expect(adapter?.requiresMaterializedRuntimeSkills).toBe(false);
+    expect(adapter?.getConfigSchema).toBeTypeOf("function");
+    expect(adapter?.models?.[0]).toEqual({
+      id: "google/gemini-3.8-flash",
+      label: "Gemini 3.8 Flash",
+    });
+  });
+
   it("exposes capability flags from registered adapters", () => {
     const adapterWithCaps: ServerAdapterModule = {
       type: "external_test",

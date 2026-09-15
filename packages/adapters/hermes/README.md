@@ -4,10 +4,11 @@ A [Paperclip](https://paperclip.ing) adapter package that lets you run [Hermes A
 
 Hermes Agent is a full-featured AI agent by [Nous Research](https://nousresearch.com) with 30+ native tools, persistent memory, session persistence, 80+ skills, MCP support, and multi-provider model access.
 
-This package owns both built-in Hermes adapter types:
+This package owns three built-in Hermes adapter types:
 
 - `hermes_local` runs the local Hermes CLI as a child process. The package root exports remain compatible with the original local adapter.
 - `hermes_gateway` calls an already-running Hermes API server over HTTP/SSE. Gateway entrypoints live under the `./gateway` export namespace.
+- `google_vertex` runs the local Hermes CLI with the provider fixed to Google Vertex AI. Vertex entrypoints live under the `./vertex` export namespace.
 
 Choose `hermes_local` when Paperclip and Hermes run on the same trusted host
 and Paperclip should start `hermes chat` for each heartbeat. Choose

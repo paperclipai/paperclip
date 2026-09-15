@@ -28,6 +28,7 @@ const ENABLED_INVITE_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
   "gemini_local",
+  "google_vertex",
   "kimi_local",
   "opencode_local",
   "pi_local",
