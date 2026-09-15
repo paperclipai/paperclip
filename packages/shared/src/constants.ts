@@ -331,6 +331,7 @@ export const LIVE_EVENT_TYPES = [
   "plugin.worker.crashed",
   "plugin.worker.restarted",
   "solaris.alert.updated",
+  "solaris.alert.chat",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 

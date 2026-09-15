@@ -1,7 +1,15 @@
 import { Router } from "express";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { alertNotes, solarisAlerts, solarisOrgs, companyMemberships, authUsers } from "@paperclipai/db";
+import {
+  alertNotes,
+  incidentActivityLog,
+  incidentChatMessages,
+  solarisAlerts,
+  solarisOrgs,
+  companyMemberships,
+  authUsers,
+} from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
 import { translateAlertForAllLocales, SUPPORTED_LOCALES } from "../services/alert-translation.js";
@@ -9,6 +17,27 @@ import { publishLiveEvent } from "../services/live-events.js";
 
 const ALERT_SEVERITIES = ["critical", "warning", "info"] as const;
 const SUPPORTED_LANGUAGES = ["en", ...SUPPORTED_LOCALES] as const;
+
+function logActivity(
+  db: Db,
+  opts: {
+    alertId: string;
+    companyId: string;
+    eventType: string;
+    actorId?: string | null;
+    actorName?: string | null;
+    metadata?: Record<string, unknown> | null;
+  },
+) {
+  return db.insert(incidentActivityLog).values({
+    alertId: opts.alertId,
+    companyId: opts.companyId,
+    eventType: opts.eventType,
+    actorId: opts.actorId ?? null,
+    actorName: opts.actorName ?? null,
+    metadata: opts.metadata ?? null,
+  });
+}
 
 export function solarisAlertRoutes(db: Db) {
   const router = Router();
@@ -179,6 +208,14 @@ export function solarisAlertRoutes(db: Db) {
       })
       .returning();
 
+    await logActivity(db, {
+      alertId: alert.id,
+      companyId,
+      eventType: "alert.created",
+      actorId: userId,
+      metadata: { title, severity },
+    });
+
     // Fire-and-forget translation for non-English orgs
     if (targetLocale !== "en") {
       translateAlertForAllLocales(alert.id, alertBody, [targetLocale as typeof SUPPORTED_LOCALES[number]])
@@ -220,7 +257,8 @@ export function solarisAlertRoutes(db: Db) {
 
     if (typeof body["title"] === "string" && body["title"].trim()) updates.title = body["title"].trim();
     if (typeof body["body"] === "string" && body["body"].trim()) updates.body = body["body"].trim();
-    if (ALERT_SEVERITIES.includes(body["severity"] as typeof ALERT_SEVERITIES[number])) {
+    const severityChanged = ALERT_SEVERITIES.includes(body["severity"] as typeof ALERT_SEVERITIES[number]);
+    if (severityChanged) {
       updates.severity = body["severity"] as typeof ALERT_SEVERITIES[number];
     }
 
@@ -229,6 +267,16 @@ export function solarisAlertRoutes(db: Db) {
       .set(updates)
       .where(eq(solarisAlerts.id, alertId))
       .returning();
+
+    if (severityChanged && updates.severity !== existing.severity) {
+      await logActivity(db, {
+        alertId,
+        companyId: existing.companyId,
+        eventType: "alert.severity_changed",
+        actorId: req.actor?.userId ?? null,
+        metadata: { from: existing.severity, to: updates.severity },
+      });
+    }
 
     res.json(updated);
   });
@@ -252,6 +300,14 @@ export function solarisAlertRoutes(db: Db) {
       .where(eq(solarisAlerts.id, alertId))
       .returning();
 
+    await logActivity(db, {
+      alertId,
+      companyId: existing.companyId,
+      eventType: "alert.assigned",
+      actorId: req.actor?.userId ?? null,
+      metadata: { assigneeId, assigneeName },
+    });
+
     publishLiveEvent({
       companyId: existing.companyId,
       type: "solaris.alert.updated",
@@ -259,6 +315,65 @@ export function solarisAlertRoutes(db: Db) {
     });
 
     res.json(updated);
+  });
+
+  /** POST /solaris/alerts/:alertId/handoff — reassign to another dispatcher with a mandatory note */
+  router.post("/solaris/alerts/:alertId/handoff", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const assigneeId = typeof body["assigneeId"] === "string" ? body["assigneeId"].trim() : null;
+    const assigneeName = typeof body["assigneeName"] === "string" ? body["assigneeName"].trim() : null;
+    const note = typeof body["note"] === "string" ? body["note"].trim() : null;
+    if (!note) throw badRequest("note is required for handoff");
+
+    const actorId = req.actor?.userId ?? null;
+    const actorName = typeof body["actorName"] === "string" ? body["actorName"].trim() : null;
+
+    const [updated] = await db
+      .update(solarisAlerts)
+      .set({ assigneeId, assigneeName, updatedAt: new Date() })
+      .where(eq(solarisAlerts.id, alertId))
+      .returning();
+
+    const [handoffNote] = await db
+      .insert(alertNotes)
+      .values({
+        alertId,
+        companyId: existing.companyId,
+        body: `[HANDOFF] ${note}`,
+        authorId: actorId,
+        authorName: actorName,
+      })
+      .returning();
+
+    await logActivity(db, {
+      alertId,
+      companyId: existing.companyId,
+      eventType: "alert.reassigned",
+      actorId,
+      actorName,
+      metadata: {
+        fromAssigneeId: existing.assigneeId,
+        fromAssigneeName: existing.assigneeName,
+        toAssigneeId: assigneeId,
+        toAssigneeName: assigneeName,
+        noteId: handoffNote.id,
+      },
+    });
+
+    publishLiveEvent({
+      companyId: existing.companyId,
+      type: "solaris.alert.updated",
+      payload: { alertId, assigneeId, assigneeName, handoff: true },
+    });
+
+    res.json({ alert: updated, note: handoffNote });
   });
 
   /** POST /solaris/alerts/:alertId/notes — add a note to an alert */
@@ -288,6 +403,15 @@ export function solarisAlertRoutes(db: Db) {
       })
       .returning();
 
+    await logActivity(db, {
+      alertId,
+      companyId: existing.companyId,
+      eventType: "alert.note_added",
+      actorId,
+      actorName: authorName,
+      metadata: { noteId: note.id },
+    });
+
     res.status(201).json(note);
   });
 
@@ -308,6 +432,98 @@ export function solarisAlertRoutes(db: Db) {
 
     res.json({ notes });
   });
+
+  // ── Chat ─────────────────────────────────────────────────────────────────────
+
+  /** POST /solaris/alerts/:alertId/chat — send a chat message */
+  router.post("/solaris/alerts/:alertId/chat", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const msgBody = typeof body["body"] === "string" ? body["body"].trim() : null;
+    if (!msgBody) throw badRequest("body is required");
+
+    const actorId = req.actor?.userId ?? null;
+    const authorName = typeof body["authorName"] === "string" ? body["authorName"].trim() : null;
+
+    const [message] = await db
+      .insert(incidentChatMessages)
+      .values({
+        alertId,
+        companyId: existing.companyId,
+        body: msgBody,
+        authorId: actorId,
+        authorName,
+      })
+      .returning();
+
+    publishLiveEvent({
+      companyId: existing.companyId,
+      type: "solaris.alert.chat",
+      payload: { alertId, message },
+    });
+
+    res.status(201).json(message);
+  });
+
+  /** GET /solaris/alerts/:alertId/chat?limit=&before= — list chat messages */
+  router.get("/solaris/alerts/:alertId/chat", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const limit = Math.min(parseInt(String(req.query["limit"] ?? "100"), 10) || 100, 500);
+    const before = typeof req.query["before"] === "string" ? new Date(req.query["before"]) : null;
+
+    const conditions = [eq(incidentChatMessages.alertId, alertId)];
+    if (before && !isNaN(before.getTime())) {
+      conditions.push(lt(incidentChatMessages.createdAt, before));
+    }
+
+    const messages = await db
+      .select()
+      .from(incidentChatMessages)
+      .where(and(...conditions))
+      .orderBy(asc(incidentChatMessages.createdAt))
+      .limit(limit);
+
+    const nextBefore = messages.length === limit ? messages[0]?.createdAt?.toISOString() ?? null : null;
+
+    res.json({ messages, nextBefore });
+  });
+
+  // ── Activity Log ─────────────────────────────────────────────────────────────
+
+  /** GET /solaris/alerts/:alertId/activity?limit= — immutable event log */
+  router.get("/solaris/alerts/:alertId/activity", async (req, res) => {
+    assertBoard(req);
+    const { alertId } = req.params;
+
+    const [existing] = await db.select().from(solarisAlerts).where(eq(solarisAlerts.id, alertId));
+    if (!existing) throw notFound("Alert not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const limit = Math.min(parseInt(String(req.query["limit"] ?? "100"), 10) || 100, 500);
+
+    const events = await db
+      .select()
+      .from(incidentActivityLog)
+      .where(eq(incidentActivityLog.alertId, alertId))
+      .orderBy(asc(incidentActivityLog.createdAt))
+      .limit(limit);
+
+    res.json({ events });
+  });
+
+  // ── Team ─────────────────────────────────────────────────────────────────────
 
   /** GET /solaris/team/members?companyId= — return active users for Assign dropdown */
   router.get("/solaris/team/members", async (req, res) => {

@@ -77,3 +77,44 @@ export const alertNotes = pgTable(
     alertCreatedIdx: index("alert_notes_alert_idx").on(t.alertId, t.createdAt),
   }),
 );
+
+export const incidentChatMessages = pgTable(
+  "incident_chat_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    alertId: uuid("alert_id")
+      .notNull()
+      .references(() => solarisAlerts.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    authorId: text("author_id"),
+    authorName: text("author_name"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    alertCreatedIdx: index("incident_chat_messages_alert_idx").on(t.alertId, t.createdAt),
+  }),
+);
+
+export const incidentActivityLog = pgTable(
+  "incident_activity_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    alertId: uuid("alert_id")
+      .notNull()
+      .references(() => solarisAlerts.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    actorId: text("actor_id"),
+    actorName: text("actor_name"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    alertCreatedIdx: index("incident_activity_log_alert_idx").on(t.alertId, t.createdAt),
+  }),
+);
