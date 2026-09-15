@@ -120,14 +120,14 @@ export function ChatMode({
 
     // Append transcript entries as assistant messages if available
     if (transcriptEntries && transcriptEntries.length > 0) {
-      const baseIdx = msgs.length;
-      for (const entry of transcriptEntries.slice(-3)) {
+      const startIdx = Math.max(0, transcriptEntries.length - 3);
+      for (let sourceIdx = startIdx; sourceIdx < transcriptEntries.length; sourceIdx++) {
+        const entry = transcriptEntries[sourceIdx];
         // Only add non-empty entries that aren't already represented
         if (entry.content && !msgs.find((m) => m.content === entry.content && m.role === entry.role)) {
-          // Stable key derived from content hash rather than timestamps
-          const contentHash = entry.content.slice(0, 20).replace(/\s+/g, "-");
+          // Stable, unique key derived from the entry's position in the transcript
           msgs.push({
-            id: `transcript-${contentHash}-${entry.role}-${baseIdx}`,
+            id: `transcript-${sourceIdx}`,
             role: entry.role === "tool" ? "system" : "assistant",
             content: entry.content,
             createdAt: entry.timestamp ?? new Date(),
