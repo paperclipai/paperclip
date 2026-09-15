@@ -28,6 +28,7 @@ import {
   requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
+  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -2696,8 +2697,15 @@ export function recoveryService(
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
+    // Same invisible-card hazard as the primary escalation path below: a
+    // `blocked` card with no blocker and no unblockDescriptor is unfindable.
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action:
+          "Board operator: this stranded-recovery issue's own recovery attempt failed. Inspect the run evidence, then explicitly retry, reassign, or intentionally resolve the task.",
+      } satisfies IssueUnblockDescriptor,
     });
     if (!updated) return null;
 
@@ -3528,6 +3536,11 @@ export function recoveryService(
 
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action:
+          "Inspect the evidence and choose whether to repair, retry the original owner, explicitly reassign, or resolve the source issue.",
+      } satisfies IssueUnblockDescriptor,
     });
     if (!updated) return null;
     const sourceAssigneePreserved =
@@ -3768,9 +3781,19 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    // A `blocked` card with no first-class blocker and no unblockDescriptor
+    // is invisible: it appears in no owner's queue and nothing wakes it.
+    // Recovery must never create that state, so a board-owned descriptor
+    // (carrying the same operator action already computed for the recovery
+    // action) rides along on the same write that flips the status.
+    const unblockDescriptor: IssueUnblockDescriptor | null =
+      !isProviderQuotaWait && blockerIds.length === 0
+        ? { owner: "board", action: recoveryAction.nextAction }
+        : null;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;

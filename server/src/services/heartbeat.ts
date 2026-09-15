@@ -95,6 +95,7 @@ import {
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
+  type IssueUnblockDescriptor,
   type RequestConfirmationResult,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
@@ -27129,6 +27130,14 @@ export function heartbeatService(
                 .update(issues)
                 .set({
                   status: "blocked",
+                  // This flip carries no blocker relation and its wakeup
+                  // receipt below is recorded `skipped`, not queued — without
+                  // a descriptor the card would be blocked with no way for
+                  // anything to ever find or wake it.
+                  unblockDescriptor: {
+                    owner: "board",
+                    action: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+                  } satisfies IssueUnblockDescriptor,
                   checkoutRunId: null,
                   executionRunId: null,
                   executionAgentNameKey: null,
