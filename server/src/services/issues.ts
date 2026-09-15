@@ -10785,6 +10785,23 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (receiptExisting.status !== "done" && patch.status === "done") {
+          // Enforce delivery readiness at the shared mutation boundary. Several
+          // internal completion paths call issueService directly and do not pass
+          // through the HTTP route checks.
+          const { executionWorkspaceService } = await import("./execution-workspaces.js");
+          const readiness = await executionWorkspaceService(tx as unknown as Db)
+            .getIssueDoneDeliveryReadiness(receiptExisting.id);
+          if (readiness?.required && !readiness.ready) {
+            throw conflict(
+              "Code work cannot transition to Done until review, merge delivery, health, regression, and reconciliation evidence are complete.",
+              {
+                code: "issue_delivery_not_ready",
+                reasonCodes: readiness.reasonCodes,
+              },
+            );
+          }
+        }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });

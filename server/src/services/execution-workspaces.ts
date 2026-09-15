@@ -2700,8 +2700,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         clearedStaleReopenPending: 0,
       };
 
-      const historicalPrimaryProductDrift = await db
-        .select({ issueId: issues.id })
+      const historicalPrimaryCodeProducts = await db
+        .selectDistinct({ issueId: issues.id })
         .from(issues)
         .innerJoin(issueWorkProducts, and(
           eq(issueWorkProducts.companyId, issues.companyId),
@@ -2709,13 +2709,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           eq(issueWorkProducts.isPrimary, true),
           inArray(issueWorkProducts.type, [...CODE_WORK_PRODUCT_TYPES]),
         ))
-        .where(and(
-          eq(issues.status, "done"),
-          ne(issueWorkProducts.status, "merged"),
-        ));
-      const deliveryDriftIssueIds = new Set(
-        historicalPrimaryProductDrift.map((row) => row.issueId),
-      );
+        .where(eq(issues.status, "done"));
+      const deliveryDriftIssueIds = new Set<string>();
+      for (const row of historicalPrimaryCodeProducts) {
+        const readiness = await assessIssueDoneDeliveryReadiness(row.issueId);
+        if (readiness?.required && !readiness.ready) {
+          deliveryDriftIssueIds.add(row.issueId);
+        }
+      }
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);

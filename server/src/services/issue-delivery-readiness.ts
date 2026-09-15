@@ -82,6 +82,14 @@ export function evaluateIssueDoneDeliveryReadiness(input: {
   const primaryIsCode = Boolean(
     input.primaryWorkProduct && CODE_WORK_PRODUCT_TYPES.has(input.primaryWorkProduct.type),
   );
+  if (!primaryIsCode && hasExplicitNoMergeDisposition(input.primaryWorkProduct)) {
+    return {
+      required: false,
+      ready: true,
+      disposition: "no_merge",
+      reasonCodes: [],
+    };
+  }
   const required = primaryIsCode || input.hasIsolatedGitWorkspace;
 
   if (!required) {

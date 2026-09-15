@@ -141,7 +141,7 @@ describe("issue Done delivery readiness", () => {
     expect(result).toMatchObject({ required: true, ready: true, disposition: "code", reasonCodes: [] });
   });
 
-  it("recognizes an explicit analysis-only no-merge disposition", () => {
+  it("recognizes an explicit analysis-only no-merge disposition even with an isolated workspace", () => {
     const product = primary({
       type: "document",
       metadata: { deliveryDisposition: { kind: "no_merge", reason: "Analysis only; no repository changes." } },
@@ -149,7 +149,7 @@ describe("issue Done delivery readiness", () => {
     expect(hasExplicitNoMergeDisposition(product)).toBe(true);
     expect(evaluateIssueDoneDeliveryReadiness({
       primaryWorkProduct: product,
-      hasIsolatedGitWorkspace: false,
+      hasIsolatedGitWorkspace: true,
     })).toMatchObject({ required: false, ready: true, disposition: "no_merge" });
   });
 
