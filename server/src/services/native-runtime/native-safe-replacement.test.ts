@@ -17,8 +17,8 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { and, eq, inArray } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -56,6 +56,11 @@ const support = externalDatabaseUrl
       );
       db = createDb(database.connectionString);
     }, 30_000);
+    afterEach(async () => {
+      // Each sweep scans all companies. Keep earlier tests' unresolved runs out
+      // of later tests so every case exercises only its own recovery fixtures.
+      await db.execute(sql`TRUNCATE companies CASCADE`);
+    });
     afterAll(async () => {
       if (externalDatabaseUrl) await db?.$client.end();
       else await database?.cleanup();
