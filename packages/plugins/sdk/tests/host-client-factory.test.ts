@@ -9,6 +9,40 @@ import {
 import { PLUGIN_RPC_ERROR_CODES } from "../src/protocol.js";
 
 describe("createHostClientHandlers invocation company scope", () => {
+  it("reuses database.namespace.write for declarative atomic batches", async () => {
+    const executeTransaction = vi.fn(async () => ({
+      results: [{ rowCount: 1 }, { rowCount: 1 }],
+    }));
+    const services = {
+      db: { executeTransaction },
+    } as unknown as HostServices;
+    const input = {
+      steps: [
+        { sql: "INSERT INTO plugin_test.rows (id) VALUES ($1)", params: ["one"], expectRowCount: 1 },
+        { sql: "DELETE FROM plugin_test.locks WHERE id = $1", params: ["one"], expectRowCount: 1 },
+      ],
+    };
+
+    const allowed = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["database.namespace.write"],
+      services,
+    });
+    await expect(allowed["db.executeTransaction"](input)).resolves.toEqual({
+      results: [{ rowCount: 1 }, { rowCount: 1 }],
+    });
+    expect(executeTransaction).toHaveBeenCalledWith(input);
+
+    const denied = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+    await expect(denied["db.executeTransaction"](input)).rejects.toBeInstanceOf(
+      CapabilityDeniedError,
+    );
+  });
+
   it("rejects worker-selected config and secret company ids without a host invocation scope", async () => {
     const configGet = vi.fn(async () => ({ apiKeyRef: "unreachable" }));
     const secretsResolve = vi.fn(async () => "unreachable");

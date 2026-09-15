@@ -134,6 +134,18 @@ triggers, untrusted languages, or runtime multi-statement SQL. Runtime
 `ctx.db.query()` is restricted to `SELECT`; runtime `ctx.db.execute()` is
 restricted to namespace-local `INSERT`, `UPDATE`, and `DELETE`.
 
+Use `ctx.db.executeTransaction({ steps })` when one logical transition requires
+multiple writes. Each step contains `sql`, optional positional `params`, and an
+optional exact `expectRowCount`. The host validates the complete bounded batch
+before opening one transaction and rolls it all back on a SQL error or row-count
+mismatch. Transaction steps use a conservative single-table mutation grammar;
+compose cross-table workflows as multiple ordered steps rather than subqueries
+or joins. Targets must be plugin-owned base tables, `RETURNING` is not allowed,
+and only a small side-effect-free SQL function allowlist is available. Bind
+dynamic values as parameters. The fixed limits are exported as
+`PLUGIN_DATABASE_TRANSACTION_LIMITS`, and a failed row-count condition uses
+`PLUGIN_RPC_ERROR_CODES.CONDITION_FAILED`.
+
 ### Scoped plugin API routes
 
 Plugins can expose JSON-only routes under their own namespace:
