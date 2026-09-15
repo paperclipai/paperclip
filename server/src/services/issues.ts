@@ -2784,13 +2784,14 @@ export function issueService(db: Db) {
       .where(eq(issues.id, id))
       .then((rows) => rows[0] ?? null);
     if (retryRow) {
+      logger.warn({ issueId: id }, "issue found by id only after retry; possible transient Postgres visibility issue");
       const [enriched] = await withIssueLabels(db, [retryRow]);
       return enriched;
     }
 
-    // Last-resort fallback: use a text-cast condition that may bypass
-    // B-tree index visibility issues by forcing a sequential scan or
-    // a different index strategy.
+    // Last-resort fallback: a text-cast condition avoids the PK index and
+    // forces a different scan. This only helps when the index entry itself is
+    // stale; heap-level MVCC visibility rules still apply to any scan.
     const fallbackRow = await db
       .select()
       .from(issues)
@@ -2798,6 +2799,7 @@ export function issueService(db: Db) {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!fallbackRow) return null;
+    logger.warn({ issueId: id }, "issue found by id only via text-cast fallback; possible stale PK index entry");
     const [enriched] = await withIssueLabels(db, [fallbackRow]);
     return enriched;
   }
