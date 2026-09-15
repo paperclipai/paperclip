@@ -2420,7 +2420,9 @@ for (const execution of executions) {
                 : (priorFailureClass ?? cleanupFailureClass);
           primaryError = new AggregateError(
             [primaryError, error].filter(Boolean),
-            `Cleanup failed after ${primaryError ? "test failure" : "test execution"}: ${error instanceof Error ? error.message : String(error)}`,
+            primaryError
+              ? `${primaryError instanceof Error ? primaryError.message : String(primaryError)}; Cleanup also failed: ${error instanceof Error ? error.message : String(error)}`
+              : `Cleanup failed after test execution: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
         if (runtimeLeases.length > 0) {
