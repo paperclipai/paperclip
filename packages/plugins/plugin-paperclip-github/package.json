@@ -1,0 +1,40 @@
+{
+  "name": "@paperclipai/plugin-paperclip-github",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Typed GitHub operations for agents (PRs, reviews, checks, merge queue) backed by a per-company GitHub App.",
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "node ./esbuild.config.mjs",
+    "dev": "node ./esbuild.config.mjs --watch",
+    "test": "vitest run --config ./vitest.config.ts",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "keywords": [
+    "paperclip",
+    "plugin",
+    "github",
+    "automation"
+  ],
+  "author": "Paperclip",
+  "license": "MIT",
+  "dependencies": {
+    "@octokit/auth-app": "^7.1.4",
+    "@octokit/rest": "^21.1.1",
+    "@octokit/graphql": "^8.2.1",
+    "@octokit/webhooks-methods": "^5.1.0"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.27.3",
+    "tslib": "^2.8.1",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
