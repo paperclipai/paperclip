@@ -58,8 +58,10 @@ without waiting for another merge. The generated lockfile stays in the job's
 workspace; these checks do not commit it back to the repository.
 
 The artifact wait runs for up to 30 minutes and reports what is missing. A
-missing image or missing/in-progress exact-source publisher means publication
-is pending. A failed publisher, invalid signature, inaccessible or corrupt
+missing image or an exact-source publisher with no successful run yet means publication
+is pending. An earlier successful push or manual run remains valid after a failed
+retry because publication is immutable. If all matching runs failed, readiness
+fails. An invalid signature, inaccessible or corrupt
 bundle, authorization error, or identity mismatch fails the job. A failed, cancelled, or skipped prerequisite
 cannot produce a successful readiness job. Retry the failed publication or build,
 then rerun the failed readiness workflow jobs to check the same commit again.

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
-import { waitForCloudArtifacts, verifyManifestProvenance } from "../../../scripts/cloud-readiness.mjs";
+import { waitForCloudArtifacts, verifyManifestProvenance, migratorPublished } from "../../../scripts/cloud-readiness.mjs";
 import { artifactBase, descriptor } from "../../../scripts/cloud-migrator-artifacts.mjs";
 import { previewManifest } from "../../../scripts/preview-artifacts.mjs";
 
@@ -36,7 +36,7 @@ function registry({ missing = new Set(), failure, wrongImage = false, run = prod
     assert.ok(!url.startsWith("https://registry.npmjs.org/"), "readiness must never wait for npm");
     if (failure) return json({}, failure);
     if (url.startsWith("https://api.github.com/")) {
-      assert.match(url, new RegExp(`head_sha=${sha}&per_page=1$`));
+      assert.match(url, new RegExp(`head_sha=${sha}&per_page=100&page=1$`));
       return json({ total_count: missing.has("migrator") ? 0 : 1, workflow_runs: missing.has("migrator") ? [] : [run] });
     }
     if (url.startsWith(artifactBase)) {
@@ -104,7 +104,6 @@ test("CLI verifies the exact bytes, source, master workflow and hosted runner an
     assert.equal(cmd, "gh"); assert.deepEqual(args.slice(0, 2), ["attestation", "verify"]); temporary = args[2];
     assert.equal(readFileSync(temporary, "utf8"), "exact manifest\n");
     for (const [flag, value] of [["--repo", "paperclipai/paperclip"], ["--source-digest", sha], ["--source-ref", "refs/heads/master"],
-      ["--signer-workflow", "paperclipai/paperclip/.github/workflows/cloud-migrator-artifacts.yml"],
       ["--cert-identity", "https://github.com/paperclipai/paperclip/.github/workflows/cloud-migrator-artifacts.yml@refs/heads/master"]]) assert.equal(args[args.indexOf(flag) + 1], value);
     assert.ok(args.includes("--deny-self-hosted-runners")); throw new Error("verification rejected");
   } }), /verification rejected/);
@@ -129,4 +128,17 @@ test("versioned readiness retains every source gate and removes duplicate automa
   assert.doesNotMatch(ready, /^\s*(?:if:.*always\(|continue-on-error:)/m);
   assert.doesNotMatch(workflow, /secrets: inherit|id-token: write|actions: write|checks: write|uses: .*@v\d\b/);
   assert.equal(existsSync(new URL("../../workflows/cloud-artifacts.yml", import.meta.url)), false);
+});
+
+
+test("later manual failures or pending retries cannot hide an earlier successful immutable publication", async () => {
+  for (const latest of [{ status: "completed", conclusion: "failure" }, { status: "in_progress", conclusion: null }]) {
+    let calls = 0;
+    assert.equal(await migratorPublished(sha, async (url) => {
+      calls++;
+      if (url.endsWith("page=1")) return json({ total_count: 101, workflow_runs: Array.from({ length: 100 }, (_, i) => ({ ...producer, ...latest, id: 200 + i, event: "workflow_dispatch" })) });
+      assert.ok(url.endsWith("page=2")); return json({ total_count: 101, workflow_runs: [producer] });
+    }), true);
+    assert.equal(calls, 2);
+  }
 });
