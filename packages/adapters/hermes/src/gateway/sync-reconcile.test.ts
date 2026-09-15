@@ -211,6 +211,29 @@ test("reconcile_INT_003_desired_activated_observed_clean", async () => {
   }
 });
 
+test("reconcile_max_length_skill_id_idempotency_key_within_limit", async () => {
+  const adapter = createServerAdapter();
+  const { startHermesStub, STUB_API_KEY } = await stubModulePromise;
+  const { server, baseUrl, requests } = await startHermesStub("v1_activation");
+  try {
+    const longName = `a${"b".repeat(63)}`;
+    const content = "# long-name\nmax-length skill id";
+    const snapshot = await sync(adapter, baseUrl, STUB_API_KEY, [longName], {
+      [longName]: bundle(content),
+    });
+
+    const entry = snapshot.entries.find((e) => e.key === longName);
+    expect(entry?.state).toBe("installed");
+    expect(entry?.detail).toBe("activated");
+
+    const posts = postRequests(requests).filter((p) => postedSkillId(p) === longName);
+    expect(posts.length).toBe(1);
+    expect(postedIdempotencyKey(posts[0]!)).toMatch(/^[A-Za-z0-9._-]{1,118}$/);
+  } finally {
+    server.close();
+  }
+});
+
 test("reconcile_stale_by_hash_refreshed", async () => {
   const adapter = createServerAdapter();
   const { startHermesStub, STUB_API_KEY } = await stubModulePromise;
