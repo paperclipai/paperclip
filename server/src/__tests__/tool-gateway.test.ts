@@ -928,6 +928,85 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("never surfaces a raw HTTP 404/400 for an application-level tools/call error on the named MCP gateway", async () => {
+    // The MCP Streamable HTTP spec reserves HTTP 404 ("session not found") and
+    // 400 ("server not initialized") for transport-level session state. This
+    // gateway route has no mcp-session-id concept at all (bearer-token-per-
+    // request), so any ToolGatewayHttpError surfacing one of those statuses
+    // here is always an application-level failure (bad tool name, missing
+    // args) — never a dead session. A spec-compliant client (Claude Code)
+    // that sees a raw 404 reconnects/reports "session expired" regardless of
+    // the JSON-RPC body, misreporting an ordinary tool error as a broken
+    // session and abandoning an otherwise-healthy one. Regression for a real
+    // production incident: an agent's `run_tool` calls with an unresolvable
+    // (or malformed) target tool name all failed as `MCP server "ai-1mcp"
+    // session expired` even though the gateway connection itself was fine.
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `named-gateway-404-${randomUUID()}`,
+      name: `Named gateway 404 regression`,
+      defaultAction: "allow",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "External reader", profileId: profile.id },
+    });
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: created.id,
+      body: { name: "Cursor", clientLabel: "Cursor desktop", ownerNote: "QA fixture token" },
+    });
+
+    const app = createGatewayRouteApp(db, gateway);
+
+    // Direct tools/call with an unresolvable tool name (findToolForSession's
+    // 404 "tool_not_found").
+    const unresolvable = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "does-not-exist-in-any-catalog", arguments: {} },
+      });
+    expect(unresolvable.status).toBe(200);
+    expect(unresolvable.body.error.data.reasonCode).toBe("tool_not_found");
+
+    // The virtual run_tool wrapper with an unresolvable target (virtualRunToolInput
+    // -> findToolForSession's 404), the exact shape an agent hits when it guesses
+    // a short tool name instead of the fully-qualified catalog name.
+    const runToolUnresolvable = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "run_tool", arguments: { tool: "crw-1mcp-crw-search", arguments: { query: "test" } } },
+      });
+    expect(runToolUnresolvable.status).toBe(200);
+    expect(runToolUnresolvable.body.error.data.reasonCode).toBe("tool_not_found");
+
+    // A bare "run_tool" call in a company with no on-demand remote tools
+    // connected doesn't even expose the virtual run_tool wrapper — same
+    // findToolForSession 404 as any other unresolvable name, still never a
+    // raw HTTP 404.
+    const runToolMissingTarget = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "run_tool", arguments: {} },
+      });
+    expect(runToolMissingTarget.status).toBe(200);
+    expect(runToolMissingTarget.body.error.data.reasonCode).toBe("tool_not_found");
+  });
+
   it("omits archived gateways from listNamedGateways", async () => {
     const company = await createCompany(db);
     const [profile] = await db.insert(toolProfiles).values({
