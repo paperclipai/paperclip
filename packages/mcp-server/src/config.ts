@@ -50,8 +50,9 @@ export function resolveApiKey(
   if (config.apiKey) return config.apiKey;
   const fresh = nonEmpty(env.PAPERCLIP_API_KEY);
   if (fresh) return fresh;
+  const envSource = env === process.env ? "process.env" : "the provided env";
   throw new Error(
-    "Missing PAPERCLIP_API_KEY: not set at server startup and not present in process.env at request time. " +
+    `Missing PAPERCLIP_API_KEY: not set at server startup and not present in ${envSource} at request time. ` +
       "Provide it via the MCP server's startup env, or inject it before the first tool call.",
   );
 }
