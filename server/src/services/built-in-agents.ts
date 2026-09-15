@@ -6,7 +6,7 @@ import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } f
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
+import { ADAPTER_AGNOSTIC_KEYS, syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -482,6 +482,18 @@ const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
   "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
 };
 
+// adapterConfig keys that survive a borrowed adapterType change: Paperclip-owned
+// adapter-agnostic keys plus managed instructions bundle tracking (mirrors the
+// agent PATCH route's adapter-type-change handling).
+const ADAPTER_TYPE_CHANGE_PRESERVED_KEYS: readonly string[] = [
+  ...ADAPTER_AGNOSTIC_KEYS,
+  "instructionsBundleMode",
+  "instructionsRootPath",
+  "instructionsEntryFile",
+  "instructionsFilePath",
+  "agentsMdPath",
+];
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -860,7 +872,12 @@ export function builtInAgentService(db: Db) {
     return ensured;
   }
 
-  async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
+  async function defaultProvisionInput(
+    companyId: string,
+    definition: BuiltInAgentDefinition,
+    input: BuiltInAgentProvisionInput,
+    existing?: { adapterType: string; adapterConfig: unknown } | null,
+  ) {
     if (input.adapterType || input.adapterConfig) return input;
     if (definition.defaultAdapterType || definition.defaultAdapterConfig) {
       return {
@@ -882,10 +899,43 @@ export function builtInAgentService(db: Db) {
       && hasCompleteAdapterConfig(row.adapterType, row.adapterConfig)
     );
     if (!candidate) return input;
+    // Only the adapterType is borrowed from the candidate -- copying its
+    // adapterConfig would leak secrets (e.g. apiKey) between agents and would
+    // silently mark this built-in as fully configured before an operator has
+    // chosen its own model. adapterConfig therefore falls back to whatever
+    // this built-in agent already has, NOT a hardcoded {}: a bare {} here is
+    // not a "no config yet" default, it is a caller-supplied adapterConfig as
+    // far as ensure() is concerned (ensure() only falls back to the existing
+    // agent's config when resolvedInput.adapterConfig is undefined), so
+    // returning {} clobbered whatever adapterConfig (instructions bundle
+    // tracking, skill sync prefs, etc.) the existing agent already had every
+    // time this branch re-ran on an agent whose adapterConfig still lacked a
+    // model. See AGE-607 / AGE-583.
+    //
+    // That fallback is only safe when the borrowed adapterType matches what
+    // this agent already had: the existing adapterConfig's fields are shaped
+    // for its *previous* adapter. If the candidate's adapterType differs
+    // (e.g. the previous candidate was terminated/reassigned and a
+    // differently-typed agent now qualifies), carrying old fields forward
+    // under a new adapter discriminator would pair stale, adapter-specific
+    // config with the wrong schema. In that case drop the adapter-specific
+    // fields but keep adapter-agnostic keys and managed instructions bundle
+    // tracking: bundle reconciliation does not rewrite those when the
+    // instruction files on disk are already current.
+    const existingAdapterConfig = existing && isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+    let adapterConfig: Record<string, unknown>;
+    if (existing?.adapterType === candidate.adapterType) {
+      adapterConfig = { ...existingAdapterConfig };
+    } else {
+      adapterConfig = {};
+      for (const key of ADAPTER_TYPE_CHANGE_PRESERVED_KEYS) {
+        if (existingAdapterConfig[key] !== undefined) adapterConfig[key] = existingAdapterConfig[key];
+      }
+    }
     return {
       ...input,
       adapterType: candidate.adapterType,
-      adapterConfig: {},
+      adapterConfig,
     };
   }
 
@@ -1611,7 +1661,7 @@ export function builtInAgentService(db: Db) {
     );
     const resolvedInput = existingPendingApproval || preserveExistingAdapter
       ? input
-      : await defaultProvisionInput(companyId, definition, input);
+      : await defaultProvisionInput(companyId, definition, input, existing);
     if (!existingPendingApproval && !preserveExistingAdapter) {
       await assertKnownBuiltInAgentModel(definition, resolvedInput);
     }
