@@ -71,6 +71,10 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     }
 
     patch.runtimeConfig = nextRuntimeConfig;
+    // This is a complete snapshot, so a missing key represents an intentional
+    // removal (for example, turning provider tracing off). Ask the server to
+    // replace the column instead of merging it back with the stored value.
+    patch.replaceRuntimeConfig = true;
   }
 
   if (Object.keys(overlay.runtime).length > 0) {
