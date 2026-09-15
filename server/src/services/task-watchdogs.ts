@@ -74,6 +74,10 @@ export type TaskWatchdogClassifierIssue = Pick<
   latestCommentAt?: Date | string | null;
   latestDocumentAt?: Date | string | null;
   latestWorkProductAt?: Date | string | null;
+  // An armed monitor means a future scheduled wake exists — the issue has a
+  // live path even without an active run or queued wake request. Optional so
+  // existing callers/tests that omit it keep the pre-existing semantics.
+  monitorNextCheckAt?: Date | string | null;
 };
 
 export type TaskWatchdogClassifierPath = {
@@ -408,15 +412,28 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
 
   const includedIds = included.map((issue) => issue.id);
   const includedIdSet = new Set(includedIds);
+  // Compute now for both the monitor-armed check and the first-run grace guard.
+  const evaluatedAtMs = toEpochMs(input.evaluatedAt);
+  // An issue with a future monitorNextCheckAt has a scheduled wake — it is a
+  // live path even if no run is currently queued or active (HAU-423).
+  const monitoredIssueIds = evaluatedAtMs != null
+    ? included
+      .filter((issue) => {
+        const nextCheck = toEpochMs(issue.monitorNextCheckAt);
+        return nextCheck != null && nextCheck > evaluatedAtMs;
+      })
+      .map((issue) => issue.id)
+    : [];
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
     ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
+    ...monitoredIssueIds,
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
     return {
       state: "live",
-      reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
+      reason: "At least one issue in the watched subtree has a live run, queued wake, scheduled retry, or armed monitor.",
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
     };
@@ -427,7 +444,6 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   // assignment run/wake is committed/visible, making an actively-starting
   // subtree look idle. Suppress the stopped verdict for non-terminal issues
   // created within the first-run grace window that have never completed a run.
-  const evaluatedAtMs = toEpochMs(input.evaluatedAt);
   const graceMs = input.firstRunGraceMs ?? 0;
   if (evaluatedAtMs != null && graceMs > 0) {
     const completedRunIssueIds = new Set(input.completedRunIssueIds ?? []);
@@ -875,6 +891,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           origin_kind,
           updated_at,
           created_at,
+          monitor_next_check_at,
           0 AS depth
         FROM issues
         WHERE company_id = ${companyId}
@@ -894,6 +911,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.origin_kind,
           child.updated_at,
           child.created_at,
+          child.monitor_next_check_at,
           watched_issues.depth + 1
         FROM issues child
         JOIN watched_issues ON child.parent_id = watched_issues.id
@@ -914,7 +932,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assignee_user_id AS "assigneeUserId",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
-        created_at AS "createdAt"
+        created_at AS "createdAt",
+        monitor_next_check_at AS "monitorNextCheckAt"
       FROM watched_issues
     `);
 
@@ -1403,6 +1422,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         originKind: TASK_WATCHDOG_ORIGIN_KIND,
         originId: input.sourceIssue.id,
         originFingerprint: input.classification.stopFingerprint,
+        // Stamp the run that created this child so the staleness-guard exemption
+        // in revalidateMutationScope can tell liveness THIS run caused from
+        // external liveness. Without it that exemption is an ALL-quantifier over
+        // a column nothing writes, so it can never fire. (HAU-725)
+        originRunId: input.runId ?? null,
         billingCode: input.sourceIssue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,
       })
@@ -1617,6 +1641,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     companyId: string;
     watchedIssueId: string;
     stopFingerprint: string | null;
+    // The current run ID, used to exempt live paths this run itself created.
+    // When present and the subtree is "live" only because of issues whose
+    // originRunId matches this run, further mutations are still allowed — the
+    // guard is meant to block writes after an *external* actor has restored
+    // the path, not to block the watchdog's own follow-up configuration writes
+    // (e.g. arming a monitor on a child it just created). (HAU-417)
+    runId?: string | null;
   }) {
     if (!scope.stopFingerprint) {
       return {
@@ -1646,6 +1677,31 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
       return { allowed: true as const, classification };
+    }
+
+    // Allow mutations when the subtree became live exclusively because this run
+    // created the live issues. The guard fires too early otherwise: creating an
+    // in_progress child (the most common recovery action) immediately flips the
+    // subtree to "live", locking out the next arm/comment writes that are part
+    // of the same recovery. The guard must block external liveness, not the
+    // watchdog's own multi-write recovery sequence. (HAU-417)
+    if (
+      classification.state === "live" &&
+      scope.runId &&
+      classification.liveIssueIds.length > 0
+    ) {
+      const selfCreatedCount = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, scope.companyId),
+          inArray(issues.id, classification.liveIssueIds),
+          eq(issues.originRunId, scope.runId),
+        ))
+        .then((rows) => rows.length);
+      if (selfCreatedCount === classification.liveIssueIds.length) {
+        return { allowed: true as const, classification };
+      }
     }
 
     return {
