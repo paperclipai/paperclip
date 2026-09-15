@@ -64,54 +64,107 @@ function parseAuth(filePath) {
 // A leading positional flag (not an environment variable) keeps the mode
 // explicit per call, so a host-default two-path call can never enter seed mode.
 //
-// Exit 10 = use source; exit 20 = keep destination. The predicate only ever
-// reads the two files and exits with a code — it never prints token bytes.
+// Exit contract. Exit 10 = use source; exit 20 = keep destination; exit 22 =
+// keep destination, the source `last_refresh` sat further ahead of the host
+// clock than the plausible skew allowance. The predicate only ever reads the
+// two files and exits with a code — it never prints token bytes.
 const USE_SOURCE = 10;
 const KEEP_DESTINATION = 20;
+const IMPLAUSIBLE_LAST_REFRESH = 22;
 const SEED_IF_DEST_ABSENT_FLAG = "--seed-if-dest-absent";
 
-const rawArgs = process.argv.slice(2);
-const seedIfDestAbsent = rawArgs[0] === SEED_IF_DEST_ABSENT_FLAG;
-const [sourceAuthPath, destinationAuthPath] = seedIfDestAbsent ? rawArgs.slice(1) : rawArgs;
-const sourceAuth = parseAuth(sourceAuthPath);
-const destinationAuth = parseAuth(destinationAuthPath);
+// A `last_refresh` records an event that already happened, so an honest value
+// always sits at or before the host clock. Only clock skew between a sandbox
+// and the host explains a small future value. Five minutes is larger than
+// real skew on a time-synchronised host, and it is short enough that a source
+// which claims a `last_refresh` further ahead than this cannot be trusted.
+const MAX_FUTURE_LAST_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
-// Seed mode only: fill an ABSENT (unusable) destination slot from a usable
-// subscription source. A subscription-kind source is guaranteed usable and to
-// carry a real account_id (parseAuth returns "subscription" only then), so this
-// is never a random pick. This branch changes ONLY the destination-unusable
-// case; the api-key and unusable-source guards below still keep the destination.
-if (
-  seedIfDestAbsent &&
-  destinationAuth.kind === "unusable" &&
-  sourceAuth.kind === "subscription"
-) {
-  process.exit(USE_SOURCE);
+// `decide` takes already-parsed `{ kind, accountId, lastRefresh }` shapes plus
+// a caller-supplied `nowMs` and the `seedIfDestAbsent` flag, so a test can
+// drive the exact skew bound without spawning a process and racing wall-clock
+// drift. Guard order, first match wins:
+//   1. Seed mode, the destination is unusable, and the source is a usable
+//      subscription credential -> USE_SOURCE, unless the source fails the
+//      skew bound in step 3 below, in which case the absent slot stays
+//      absent (IMPLAUSIBLE_LAST_REFRESH). A poisoned seed would out-live
+//      every honest refresh, since nothing could ever compare as "strictly
+//      newer" than an unbounded future value, so the bound applies here too.
+//   2. Either side unusable, a kind mismatch, the destination is an api-key
+//      credential, or the two sides carry a different account_id ->
+//      KEEP_DESTINATION.
+//   3. The source `last_refresh` sits further ahead of `nowMs` than
+//      MAX_FUTURE_LAST_REFRESH_SKEW_MS -> IMPLAUSIBLE_LAST_REFRESH. Only the
+//      source is bounded, and only against the caller's clock: the source is
+//      the sandbox-supplied side, so it must never supply the reference time.
+//   4. The source `last_refresh` is strictly greater than the destination's
+//      -> USE_SOURCE.
+//   5. Otherwise (a tie, a null value on either side, or an older source) ->
+//      KEEP_DESTINATION.
+function decide(source, destination, nowMs, seedIfDestAbsent) {
+  const sourceIsImplausible =
+    source.lastRefresh !== null &&
+    source.lastRefresh - nowMs > MAX_FUTURE_LAST_REFRESH_SKEW_MS;
+
+  // Seed mode only: fill an ABSENT (unusable) destination slot from a usable
+  // subscription source. A subscription-kind source is guaranteed usable and to
+  // carry a real account_id (parseAuth returns "subscription" only then), so this
+  // is never a random pick. This branch changes ONLY the destination-unusable
+  // case; the api-key and unusable-source guards below still keep the destination.
+  if (
+    seedIfDestAbsent &&
+    destination.kind === "unusable" &&
+    source.kind === "subscription"
+  ) {
+    return sourceIsImplausible ? IMPLAUSIBLE_LAST_REFRESH : USE_SOURCE;
+  }
+
+  // Fail closed to the destination unless both sides are the same usable,
+  // subscription-kind identity — an unusable side, an api-key credential, a kind
+  // mismatch, or a different account_id all keep the destination copy.
+  if (
+    destination.kind === "unusable" ||
+    source.kind === "unusable" ||
+    source.kind !== destination.kind ||
+    destination.kind === "apikey" ||
+    source.accountId !== destination.accountId
+  ) {
+    return KEEP_DESTINATION;
+  }
+
+  if (sourceIsImplausible) {
+    return IMPLAUSIBLE_LAST_REFRESH;
+  }
+
+  // Use the source credential only when it is strictly fresher: both sides must
+  // carry a parseable last_refresh and the source one must be strictly greater.
+  // Ties and null/unparseable freshness keep the destination copy so a spent
+  // single-use refresh token is never written over a good one.
+  if (
+    source.lastRefresh !== null &&
+    destination.lastRefresh !== null &&
+    source.lastRefresh > destination.lastRefresh
+  ) {
+    return USE_SOURCE;
+  }
+
+  return KEEP_DESTINATION;
 }
 
-// Fail closed to the destination unless both sides are the same usable,
-// subscription-kind identity — an unusable side, an api-key credential, a kind
-// mismatch, or a different account_id all keep the destination copy.
-if (
-  destinationAuth.kind === "unusable" ||
-  sourceAuth.kind === "unusable" ||
-  sourceAuth.kind !== destinationAuth.kind ||
-  destinationAuth.kind === "apikey" ||
-  sourceAuth.accountId !== destinationAuth.accountId
-) {
-  process.exit(KEEP_DESTINATION);
+if (require.main === module) {
+  const rawArgs = process.argv.slice(2);
+  const seedIfDestAbsent = rawArgs[0] === SEED_IF_DEST_ABSENT_FLAG;
+  const [sourceAuthPath, destinationAuthPath] = seedIfDestAbsent ? rawArgs.slice(1) : rawArgs;
+  const sourceAuth = parseAuth(sourceAuthPath);
+  const destinationAuth = parseAuth(destinationAuthPath);
+  process.exit(decide(sourceAuth, destinationAuth, Date.now(), seedIfDestAbsent));
 }
 
-// Use the source credential only when it is strictly fresher: both sides must
-// carry a parseable last_refresh and the source one must be strictly greater.
-// Ties and null/unparseable freshness keep the destination copy so a spent
-// single-use refresh token is never written over a good one.
-if (
-  sourceAuth.lastRefresh !== null &&
-  destinationAuth.lastRefresh !== null &&
-  sourceAuth.lastRefresh > destinationAuth.lastRefresh
-) {
-  process.exit(USE_SOURCE);
-}
-
-process.exit(KEEP_DESTINATION);
+module.exports = {
+  decide,
+  parseAuth,
+  USE_SOURCE,
+  KEEP_DESTINATION,
+  IMPLAUSIBLE_LAST_REFRESH,
+  MAX_FUTURE_LAST_REFRESH_SKEW_MS,
+};
