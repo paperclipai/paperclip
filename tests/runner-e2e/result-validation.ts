@@ -226,6 +226,7 @@ const fields = {
         label: string,
         file: relativeFile,
         publication: optional(oneOf("public-runner-fixture")),
+        sha256: optional(string),
       }),
     ),
   ),

@@ -1,7 +1,7 @@
 import { runEverydayFlow } from "./everyday-flow.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { runChatFlow } from "./chat-flow.js";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -574,6 +574,9 @@ for (const execution of executions) {
         label,
         file,
         publication: PUBLIC_RUNNER_SCREENSHOT_MARKER,
+        sha256: createHash("sha256")
+          .update(await readFile(path.join(privateDir, file)))
+          .digest("hex"),
       });
     };
 

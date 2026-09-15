@@ -299,6 +299,8 @@ export interface RunnerE2EResult {
     label: string;
     file: string;
     publication?: "public-runner-fixture";
+    /** Absent in historical results; new captures bind the exact PNG bytes. */
+    sha256?: string;
   }>;
   cleanup: "not_started" | "passed" | "failed";
 }
