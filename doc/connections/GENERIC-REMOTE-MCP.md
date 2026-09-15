@@ -151,6 +151,11 @@ definition.
   the widely deployed OIDC suffix form (`<path>/.well-known/...`). A metadata
   document whose `issuer` disagrees with the issuer used to build the discovery
   URL is discarded.
+- Protected-resource scopes remain the permission set requested for the MCP
+  server. When the authorization server advertises both `offline_access` and
+  the `refresh_token` grant, Paperclip also requests `offline_access` so the
+  connection can renew an expired access token. Other authorization-server
+  scopes are not copied into the consent request.
 - RFC 9207 `iss` validated against the persisted expected issuer when the
   authorization server returns it. A mismatch refuses the code rather than
   exchanging it. An absent `iss` is tolerated — it is optional and widely

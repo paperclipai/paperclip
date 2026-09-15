@@ -8939,6 +8939,29 @@ export function toolAccessService(
     return [];
   }
 
+  function authorizationScopesFromMetadata(
+    resourceScopes: string[],
+    authorizationServerScopes: string[],
+    authorizationServerGrantTypes: string[],
+  ): string[] {
+    if (resourceScopes.length === 0) return authorizationServerScopes;
+
+    // Protected-resource metadata owns the scopes required by the MCP server.
+    // Authorization-server metadata can advertise a much broader identity scope
+    // catalog, so do not copy it wholesale. Paperclip does need offline_access
+    // when the provider supports refresh tokens, otherwise an otherwise healthy
+    // connection expires with its first access token.
+    if (
+      authorizationServerGrantTypes.includes("refresh_token") &&
+      authorizationServerScopes.includes("offline_access") &&
+      !resourceScopes.includes("offline_access")
+    ) {
+      return [...resourceScopes, "offline_access"];
+    }
+
+    return resourceScopes;
+  }
+
   function isSmokeLabOAuthUrl(value: string | null | undefined) {
     if (!value) return false;
     try {
@@ -9171,8 +9194,17 @@ export function toolAccessService(
           firstPartyOrigin,
         );
       issuer = issuer ?? advertisedIssuer ?? candidate.issuer;
-      if (scopes.length === 0)
-        scopes = normalizeOauthScopes(authMetadata.scopes_supported);
+      const authorizationServerScopes = normalizeOauthScopes(
+        authMetadata.scopes_supported,
+      );
+      const authorizationServerGrantTypes = normalizeOauthScopes(
+        authMetadata.grant_types_supported,
+      );
+      scopes = authorizationScopesFromMetadata(
+        scopes,
+        authorizationServerScopes,
+        authorizationServerGrantTypes,
+      );
       if (codeChallengeMethodsSupported.length === 0) {
         codeChallengeMethodsSupported = normalizeOauthScopes(
           authMetadata.code_challenge_methods_supported,
@@ -9184,9 +9216,7 @@ export function toolAccessService(
         );
       }
       if (grantTypesSupported.length === 0) {
-        grantTypesSupported = normalizeOauthScopes(
-          authMetadata.grant_types_supported,
-        );
+        grantTypesSupported = authorizationServerGrantTypes;
       }
       if (!clientIdMetadataDocumentSupported) {
         clientIdMetadataDocumentSupported =

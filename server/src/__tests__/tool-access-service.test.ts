@@ -14052,6 +14052,83 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("requests advertised offline access alongside protected-resource scopes", async () => {
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_MCP_EXAMPLE_TEST_CLIENT_ID",
+      "mcp-client-id",
+    );
+    vi.stubEnv(
+      "PAPERCLIP_TOOL_OAUTH_MCP_EXAMPLE_TEST_CLIENT_SECRET",
+      "mcp-client-secret",
+    );
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
+    const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board-user", [
+      "tools:manage_connections",
+    ]);
+    const app = createRouteApp(db);
+    const resource = "https://mcp.example.test/graph/mcp";
+    const issuer = "https://login.example.test/tenant/v2.0";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === resource) {
+        return {
+          ok: false,
+          status: 401,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "www-authenticate"
+                ? 'Bearer resource_metadata="https://mcp.example.test/.well-known/oauth-protected-resource/graph/mcp"'
+                : null,
+          },
+          text: async () => "",
+          json: async () => ({}),
+        } as Response;
+      }
+      if (
+        href ===
+        "https://mcp.example.test/.well-known/oauth-protected-resource/graph/mcp"
+      ) {
+        return mcpHttpResponse({
+          resource,
+          authorization_servers: [issuer],
+          scopes_supported: [`${resource}/access_as_user`],
+        });
+      }
+      if (
+        href ===
+        "https://login.example.test/.well-known/oauth-authorization-server/tenant/v2.0"
+      ) {
+        return mcpHttpResponse({
+          issuer,
+          authorization_endpoint: "https://login.example.test/oauth/authorize",
+          token_endpoint: "https://login.example.test/oauth/token",
+          scopes_supported: ["openid", "profile", "offline_access"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["client_secret_post"],
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: resource, name: "MCP with offline access" });
+
+    expect(connectRes.status).toBe(201);
+    const startUrl = new URL(connectRes.body.auth.startUrl);
+    expect(startUrl.searchParams.get("scope")).toBe(
+      `${resource}/access_as_user offline_access`,
+    );
+    expect(startUrl.searchParams.get("scope")).not.toContain("openid");
+    expect(startUrl.searchParams.get("scope")).not.toContain("profile");
+    expect(connectRes.body.connection.config.oauth.scopes).toEqual([
+      `${resource}/access_as_user`,
+      "offline_access",
+    ]);
+  });
+
   it("blocks Smoke Lab OAuth issuer URLs from the normal tool OAuth secret pipeline", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
