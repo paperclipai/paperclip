@@ -128,6 +128,10 @@ pins their download URLs to immutable, content-addressed objects. The cloud
 migration runner can use `npm ci` with this lockfile before either new package
 version is available on npm. Existing external dependencies still come from npm
 and carry SHA-512 integrity pins. Package lifecycle scripts remain disabled.
+Before upload, the build job smoke-installs the real archives and their complete
+external and bundled dependency graph with an empty npm cache. It imports both
+installed packages. This check uses local archive URLs because public objects
+do not exist yet; all versions and integrity pins remain unchanged.
 
 Artifacts use the existing runner-history S3 bucket and CloudFront distribution,
 under the separate `cloud-migrators/v1/` prefix. The manifest at

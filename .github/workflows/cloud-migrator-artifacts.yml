@@ -37,6 +37,7 @@ jobs:
         run: |
           node scripts/preview-artifacts.mjs pack . migrator-artifacts "$SOURCE_SHA"
           node scripts/cloud-migrator-artifacts.mjs build migrator-artifacts "$SOURCE_SHA"
+          node scripts/cloud-migrator-artifacts.mjs verify-install migrator-artifacts "$SOURCE_SHA"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cloud-migrator-bundle

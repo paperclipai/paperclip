@@ -110,6 +110,28 @@ export function validateBundle(directory, sha) {
   return manifest;
 }
 
+/** Exercise the real dependency graph before publishing, with no new npm versions. */
+export function verifyInstall(directory, sha, { exec = execFileSync } = {}) {
+  const manifest = validateBundle(directory, sha);
+  const scratch = mkdtempSync(path.join(os.tmpdir(), "cloud-migrator-install-"));
+  try {
+    const lock = JSON.parse(readFileSync(path.join(directory, "package-lock.json"), "utf8"));
+    for (const name of names) {
+      copyFileSync(path.join(directory, `${name}.tgz`), path.join(scratch, `${name}.tgz`));
+      // The public objects do not exist yet. Only transport changes for this
+      // smoke install; exact versions, integrity, root and transitive pins stay.
+      lock.packages[`node_modules/@paperclipai/${name}`].resolved = `file:${name}.tgz`;
+    }
+    writeFileSync(path.join(scratch, "package.json"), JSON.stringify({ name: "paperclip-migrator-install-root", version: "0.0.0", private: true,
+      dependencies: { "@paperclipai/db": manifest.packageVersion } }));
+    writeFileSync(path.join(scratch, "package-lock.json"), JSON.stringify(lock));
+    exec("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--update-notifier=false", "--cache", path.join(scratch, "empty-cache"),
+      "--registry=https://registry.npmjs.org"], { cwd: scratch, stdio: "inherit", timeout: 180_000 });
+    for (const name of names) assertMetadata(JSON.parse(readFileSync(path.join(scratch, "node_modules", "@paperclipai", name, "package.json"), "utf8")), `@paperclipai/${name}`, sha);
+    exec(process.execPath, ["--input-type=module", "--eval", "await import('@paperclipai/db'); await import('@paperclipai/shared');"], { cwd: scratch, stdio: "inherit", timeout: 30_000 });
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+
 async function download(url, fetchImpl) {
   const response = await fetchImpl(url, { redirect: "error", signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw new Error(`Artifact download failed: HTTP ${response.status}`, { cause: { status: response.status } });
@@ -177,8 +199,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [command, directory, sha] = process.argv.slice(2);
   try {
     if (command === "build") buildBundle(directory, sha);
+    else if (command === "verify-install") verifyInstall(directory, sha);
     else if (command === "publish") await publishBundle(directory, sha);
     else if (command === "verify") await verifyPublished(directory);
-    else throw new Error("Expected build, publish, or verify.");
+    else throw new Error("Expected build, verify-install, publish, or verify.");
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
