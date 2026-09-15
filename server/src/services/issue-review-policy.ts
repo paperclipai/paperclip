@@ -48,6 +48,10 @@ export async function resolveIssueReviewRequester(
           AND ${activityLog.details} -> 'changes' -> 'status' ->> 'from' IS NOT NULL
           AND ${activityLog.details} -> 'changes' -> 'status' ->> 'from' <> 'in_review'
         )
+        OR
+        (
+          ${activityLog.details} ->> 'reviewInteractionId' IS NOT NULL
+        )
       )`,
     ))
     .orderBy(desc(activityLog.createdAt), desc(activityLog.id))

@@ -38,6 +38,9 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockResolveIssueReviewRequester = vi.hoisted(() =>
+  vi.fn(async () => null),
+);
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() =>
   vi.fn(() => ({ values: mockTxInsertValues })),
@@ -148,6 +151,16 @@ vi.mock("../services/instance-settings.js", () => ({
 vi.mock("../services/issues.js", () => ({
   issueService: () => mockIssueService,
 }));
+
+vi.mock("../services/issue-review-policy.js", async (importOriginal) => {
+  const orig = await importOriginal<
+    typeof import("../services/issue-review-policy.js")
+  >();
+  return {
+    ...orig,
+    resolveIssueReviewRequester: mockResolveIssueReviewRequester,
+  };
+});
 
 vi.mock("../services/routines.js", () => ({
   routineService: () => mockRoutineService,
@@ -338,6 +351,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockLogActivity.mockReset();
+    mockResolveIssueReviewRequester.mockReset();
     mockFeedbackService.listIssueVotesForUser.mockReset();
     mockFeedbackService.saveIssueVote.mockReset();
     mockInstanceSettingsService.get.mockReset();
@@ -359,6 +373,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectOrderBy.mockReset();
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
+    mockResolveIssueReviewRequester.mockResolvedValue(null);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
     mockDbSelectOrderBy.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
@@ -3783,6 +3798,71 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       );
     });
+  });
+
+  it("rejects an auto-approval comment while the designated confirmation is pending", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const returnAssigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    const interactionId = "44444444-4444-4444-8444-444444444444";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: returnAssigneeAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockResolveIssueReviewRequester.mockResolvedValue({
+      type: "agent",
+      id: returnAssigneeAgentId,
+      reviewInteractionId: interactionId,
+    });
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([{
+      id: interactionId,
+      kind: "request_confirmation",
+      status: "pending",
+    }]);
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-review-pending-confirmation",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "## Review: APPROVED" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: {
+        code: "pending_review_confirmation",
+        reviewInteractionId: interactionId,
+      },
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rolls back the comment when the auto-approval status transition fails", async () => {

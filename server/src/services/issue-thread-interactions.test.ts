@@ -396,3 +396,57 @@ describe("issueThreadInteractionService", () => {
     expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "expired", resolvedByUserId: "local-board" });
   });
 });
+
+describe("shouldReturnAcceptedConfirmationToCreatorAgent", () => {
+  it("returns an execution-review issue to the confirmation creator after accept", async () => {
+    const { shouldReturnAcceptedConfirmationToCreatorAgent } = await import("./issue-thread-interactions.js");
+    expect(shouldReturnAcceptedConfirmationToCreatorAgent({
+      issue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_review",
+        workMode: "standard",
+        assigneeAgentId: "reviewer-agent",
+        assigneeUserId: null,
+        reviewPolicy: null,
+        createdByAgentId: "creator-agent",
+        createdByUserId: null,
+        executionState: {
+          status: "pending",
+          returnAssignee: { type: "agent", agentId: "creator-agent" },
+        },
+      },
+      current: {
+        kind: "request_confirmation",
+        createdByAgentId: "creator-agent",
+      } as never,
+      actor: { userId: "local-board" },
+    })).toBe(true);
+  });
+
+  it("does not return to the creator when a human still holds the in_review assignment", async () => {
+    const { shouldReturnAcceptedConfirmationToCreatorAgent } = await import("./issue-thread-interactions.js");
+    expect(shouldReturnAcceptedConfirmationToCreatorAgent({
+      issue: {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_review",
+        workMode: "standard",
+        assigneeAgentId: "reviewer-agent",
+        assigneeUserId: null,
+        reviewPolicy: null,
+        createdByAgentId: "creator-agent",
+        createdByUserId: null,
+        executionState: {
+          status: "pending",
+          returnAssignee: { type: "agent", agentId: "other-agent" },
+        },
+      },
+      current: {
+        kind: "request_confirmation",
+        createdByAgentId: "creator-agent",
+      } as never,
+      actor: { userId: "local-board" },
+    })).toBe(false);
+  });
+});
