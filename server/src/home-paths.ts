@@ -13,6 +13,9 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
   resolvePaperclipInstanceRoot,
+  resolveInstanceHealthToken,
+  resolveDefaultHealthTokenPath,
+  HEALTH_PROBE_TOKEN_HEADER,
 } from "@paperclipai/shared/home-paths";
 
 export {
@@ -21,6 +24,9 @@ export {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
   resolvePaperclipInstanceRoot,
+  resolveInstanceHealthToken,
+  resolveDefaultHealthTokenPath,
+  HEALTH_PROBE_TOKEN_HEADER,
 };
 
 export function resolveDefaultConfigPath(): string {
