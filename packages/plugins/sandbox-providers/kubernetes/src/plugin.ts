@@ -85,6 +85,25 @@ function generateBootstrapToken(): string {
   return randomBytes(32).toString("hex");
 }
 
+// A Kubernetes exec reports only an exit code: the V1Status it ends with carries
+// an "ExitCode" cause and no termination signal, and the pod's container status
+// describes PID 1, not the process we exec'd. The provider therefore never fills
+// in `signal` — a POSIX 128+N exit status cannot be told apart from a command
+// that chose the same status, so reporting one would state an unobserved
+// termination as fact. The two statuses that do carry operational meaning on
+// Kubernetes instead get a hedged hint appended to stderr, the same way a likely
+// network-policy denial does (see appendNetworkEgressDenyHint).
+const EXIT_STATUS_HINTS: Record<number, string> = {
+  137: "Exit code 137 matches the POSIX 128+signal convention for SIGKILL, which on Kubernetes usually means the process hit the container memory limit.",
+  143: "Exit code 143 matches the POSIX 128+signal convention for SIGTERM, which usually means the pod was evicted, preempted, or asked to shut down.",
+};
+
+function appendExitStatusHint(stderr: string, exitCode: number | null): string {
+  const hint = exitCode === null ? undefined : EXIT_STATUS_HINTS[exitCode];
+  if (!hint) return stderr;
+  return `${stderr.trimEnd()}\n${hint} The Kubernetes exec API reports no signal, so a command that deliberately exits with this status is indistinguishable.\n`;
+}
+
 // One FastUploadInterceptor instance per active lease. Scoping per lease
 // prevents `releaseLease` from wiping in-flight upload buffers belonging to
 // other concurrent leases — a single shared singleton would do exactly that
@@ -661,6 +680,7 @@ const plugin = definePlugin({
     if (!lease.providerLeaseId) {
       return {
         exitCode: 1,
+        signal: null,
         timedOut: false,
         stdout: "",
         stderr: "No provider lease ID available for execution.",
@@ -727,6 +747,7 @@ const plugin = definePlugin({
           if (err instanceof SandboxCrTimeoutError) {
             return {
               exitCode: null,
+              signal: null,
               timedOut: true,
               stdout: "",
               stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
@@ -754,6 +775,7 @@ const plugin = definePlugin({
       if (!podName) {
         return {
           exitCode: 1,
+          signal: null,
           timedOut: false,
           stdout: "",
           stderr: "Sandbox pod is Ready but podName could not be resolved.",
@@ -785,6 +807,7 @@ const plugin = definePlugin({
         if (decision.action === "ack") {
           return {
             exitCode: 0,
+            signal: null,
             timedOut: false,
             stdout: "",
             stderr: "",
@@ -834,6 +857,7 @@ const plugin = definePlugin({
           } catch (err) {
             return {
               exitCode: null,
+              signal: null,
               timedOut: true,
               stdout: "",
               stderr: `fast-upload flush failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -849,6 +873,7 @@ const plugin = definePlugin({
           }
           return {
             exitCode: flushResult.exitCode,
+            signal: null,
             timedOut: false,
             stdout: flushResult.stdout,
             stderr: flushResult.stderr,
@@ -873,12 +898,16 @@ const plugin = definePlugin({
             ? ["/bin/sh", "-lc", command]
             : ["/bin/sh", "-l"];
 
-      // Apply the caller-provided run env (params.env) to the in-pod process. Without
-      // this the adapter's runtime env (e.g. XDG_CONFIG_HOME pointing at the shipped
-      // OpenCode config, plus helper settings like small_model/provider routing) never
-      // reaches the harness, which falls back to its in-image HOME config -> wrong or
-      // partial behaviour.
-      const execCommand = wrapCommandWithEnv(baseExecCommand, params.env);
+      // Apply the caller-provided working directory (params.cwd) and run env
+      // (params.env) to the in-pod process. Without the env the adapter's runtime env
+      // (e.g. XDG_CONFIG_HOME pointing at the shipped OpenCode config, plus helper
+      // settings like small_model/provider routing) never reaches the harness, which
+      // falls back to its in-image HOME config -> wrong or partial behaviour. Without
+      // the cwd the command runs in the image's WORKDIR, so any relative path the
+      // caller emits resolves against the wrong directory — the caller's own
+      // `cwd`/`remoteCwd` contract (adapter-utils execution-target) assumes the
+      // provider honors it, as the other sandbox providers do.
+      const execCommand = wrapCommandWithEnv(baseExecCommand, params.env, params.cwd);
 
       // Remaining share of the caller's budget after the readiness wait (floor
       // of 5s so an exec attempt is still made when readiness consumed most of
@@ -904,6 +933,7 @@ const plugin = definePlugin({
         // the caller can retry instead of hanging forever.
         return {
           exitCode: null,
+          signal: null,
           timedOut: true,
           stdout: "",
           stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
@@ -919,9 +949,13 @@ const plugin = definePlugin({
 
       return {
         exitCode: execResult.exitCode,
+        signal: null,
         timedOut: false,
         stdout: execResult.stdout,
-        stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+        stderr: appendExitStatusHint(
+          appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+          execResult.exitCode,
+        ),
         metadata: {
           provider: "kubernetes",
           backend: "sandbox-cr",
@@ -936,7 +970,8 @@ const plugin = definePlugin({
       // We do NOT re-exec command/args — instead we wait for the Job to finish
       // and collect its logs.
       //
-      // params.command / params.args / params.stdin are intentionally ignored.
+      // params.command / params.args / params.cwd / params.stdin are
+      // intentionally ignored.
 
       let status;
       let timedOut = false;
@@ -983,6 +1018,7 @@ const plugin = definePlugin({
 
       return {
         exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
+        signal: null,
         timedOut,
         stdout: stdoutChunks.join(""),
         stderr: appendNetworkEgressDenyHint(stderrChunks.join(""), scopedNetworkEgress),
