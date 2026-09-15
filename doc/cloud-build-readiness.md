@@ -160,9 +160,10 @@ its trusted-publisher identity.
 
 Before enabling the switch, deploy the separate Fleet and restrict its GitHub
 runner group to repository ID `1170821064` and these workflows at
-`refs/heads/master`: `cloud-readiness.yml`, `cloud-migrator-artifacts.yml`,
+`refs/heads/master`: `cloud-readiness.yml`,
 `release-verify.yml`, `runner-chaos-evals.yml`, and `release.yml`. Do not authorize
-PR-controlled workflow versions. PR placement retains its independent pinned
+PR-controlled workflow versions. The direct migrator producer always uses
+GitHub-hosted runners and needs no AWS runner-group authorization. PR placement retains its independent pinned
 workflow and six-account author/actor allowlist.
 
 Disable the switch and rerun the whole workflow to restore GitHub-hosted
