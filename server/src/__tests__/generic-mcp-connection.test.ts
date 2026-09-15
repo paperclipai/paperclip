@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { Writable } from "node:stream";
 import express from "express";
 import pino from "pino";
@@ -909,6 +911,121 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     expect(JSON.stringify(connection!.config)).not.toContain("fixture-access-");
     expect(connection!.credentialSecretRefs.map((ref) => ref.configPath).sort())
       .toEqual(["oauth.access_token", "oauth.refresh_token"]);
+  });
+
+  it("discovers OAuth for a personal URL connection before its user grant exists", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+
+    const response = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: MCP_URL,
+        name: "Fixture personal OAuth",
+        grantKind: "user",
+      });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const connected = response.body;
+
+    expect(connected.auth).toMatchObject({
+      kind: "oauth",
+      issuer: ISSUER,
+      resource: MCP_URL,
+      startUrl: expect.any(String),
+    });
+    expect(fixture.requestsTo("/mcp")[0]!.headers.authorization).toBeUndefined();
+    await expect(
+      db
+        .select()
+        .from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, connected.connectionId)),
+    ).resolves.toHaveLength(0);
+
+    const authorizationUrl = new URL(connected.auth.startUrl);
+    const code = fixture.issueAuthorizationCode(connected.auth.startUrl);
+    await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Accept", "text/html")
+      .query({ state: authorizationUrl.searchParams.get("state")!, code, iss: ISSUER })
+      .expect(303);
+
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(grants).toEqual([
+      expect.objectContaining({
+        kind: "user",
+        subjectUserId: actor.actorId,
+        status: "active",
+      }),
+    ]);
+  });
+
+  it("creates an empty user grant after a personal public URL probe succeeds", async () => {
+    // Use a real loopback MCP server here: neither fetch nor the transport is mocked.
+    const receivedMethods: string[] = [];
+    const mcpServer = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      receivedMethods.push(body.method);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: FIXTURE_TOOLS } }));
+    });
+    mcpServer.listen(0, "127.0.0.1");
+    await once(mcpServer, "listening");
+    const address = mcpServer.address();
+    if (!address || typeof address === "string") throw new Error("Missing MCP fixture port");
+    try {
+      const company = await createCompany(db);
+      const app = createRouteApp(db, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+      });
+      const actor = { actorType: "user" as const, actorId: "board-user" };
+
+      const response = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({
+          link: `http://127.0.0.1:${address.port}/mcp`,
+          name: "Fixture personal public",
+          grantKind: "user",
+        });
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      const connected = response.body;
+      expect(receivedMethods).toContain("tools/list");
+
+      expect(connected.connection).toMatchObject({
+        status: "draft",
+        credentialPolicy: "per_user",
+      });
+      expect(connected.catalog.map((entry: { toolName: string }) => entry.toolName).sort()).toEqual([
+        "create_insight",
+        "list_insights",
+      ]);
+      await expect(
+        db
+          .select()
+          .from(connectionGrants)
+          .where(eq(connectionGrants.connectionId, connected.connectionId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          kind: "user",
+          subjectUserId: actor.actorId,
+          credentialSecretRefs: [],
+          status: "active",
+        }),
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        mcpServer.close((error) => error ? reject(error) : resolve());
+        mcpServer.closeAllConnections();
+      });
+    }
   });
 
   it("completes organization OAuth with a single database connection", async () => {

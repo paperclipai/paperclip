@@ -2775,6 +2775,7 @@ function healthFailureHttpStatus(failure: {
   code: string;
 }): number {
   if (failure.status === "missing_secret") return 422;
+  if (failure.code === "user_authorization_required") return 422;
   if (failure.code === "composio_api_key_rejected") return 422;
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
@@ -2805,6 +2806,9 @@ function sanitizeHttpFailure(error: unknown): {
   }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
+    if (code === "user_authorization_required") {
+      return { status: "error", message: error.message, code };
+    }
     if (code === "tool_connection_transport_unsupported") {
       return { status: "error", message: error.message, code };
     }
@@ -7537,6 +7541,7 @@ export function toolAccessService(
   async function checkConnectionHealth(
     connectionId: string,
     actor?: ActorInfo,
+    options: { allowUnauthenticatedProbe?: boolean } = {},
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
@@ -7584,12 +7589,21 @@ export function toolAccessService(
         await validateAgentMailConnection(connection);
       } else if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
+        const canProbeWithoutAuthorization =
+          options.allowUnauthenticatedProbe === true &&
+          connection.status === "draft" &&
+          connection.authKind === "none" &&
+          connection.credentialPolicy === "per_user" &&
+          actor?.actorType === "user" &&
+          actor.actorId === connection.createdByUserId;
         const credentialHeaders =
           connection.credentialSource === "vercel_connect"
             ? await resolveCredentialHeaders(connection, actor, {
                 forceRefresh: true,
               })
-            : undefined;
+            : canProbeWithoutAuthorization
+              ? {}
+              : undefined;
         await remoteTools(connection, credentialHeaders, actor);
       } else if (isComposioConnection(connection)) {
         await validateComposioConnection(connection);
@@ -13238,9 +13252,23 @@ export function toolAccessService(
         };
       }
 
+      // A pasted MCP URL starts with unknown auth. For a personal connection,
+      // there is deliberately no empty active grant yet, so probe this one
+      // creator-owned draft without credentials. A 401 can then discover OAuth
+      // and leave grant creation to the callback; a public endpoint gets an
+      // empty personal grant below so later catalog refreshes use the same
+      // identity policy.
+      const unauthenticatedPersonalProbe = Boolean(
+        !galleryEntry &&
+          genericAuthKind === "none" &&
+          personalIdentityUserId &&
+          !retainedPersonalIdentity?.grant,
+      );
       let health: ToolConnectionHealthCheckResult;
       try {
-        health = await checkConnectionHealth(connectionRow.id, actor);
+        health = await checkConnectionHealth(connectionRow.id, actor, {
+          allowUnauthenticatedProbe: unauthenticatedPersonalProbe,
+        });
       } catch (error) {
         if (
           !galleryEntry &&
@@ -13287,6 +13315,36 @@ export function toolAccessService(
           };
         }
         throw error;
+      }
+      if (unauthenticatedPersonalProbe) {
+        const [grant] = await db
+          .insert(connectionGrants)
+          .values({
+            companyId,
+            connectionId: connectionRow.id,
+            kind: "user",
+            subjectUserId: personalIdentityUserId!,
+            credentialSecretRefs: [],
+            status: "active",
+            isDefault: false,
+            createdByUserId: personalIdentityUserId!,
+          })
+          .returning();
+        if (!grant)
+          throw new Error("Failed to create personal connection grant");
+        if (revivedConnectionPrevious) {
+          revivedGrantMutation = { previous: null, current: grant };
+        }
+        await db.insert(toolAccessAuditEvents).values({
+          companyId,
+          connectionId: connectionRow.id,
+          actorType: "user",
+          actorId: personalIdentityUserId!,
+          action: "connection_grant.created",
+          outcome: "success",
+          reasonCode: "personal_identity_created",
+          details: { kind: "user", credentialSecretRefCount: 0 },
+        });
       }
       if (galleryEntry?.slug === COMPOSIO_GALLERY_KEY) {
         const [application] = await db
