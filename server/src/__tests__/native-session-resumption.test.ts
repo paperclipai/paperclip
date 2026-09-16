@@ -563,13 +563,12 @@ describe("P6-25 pre-result native session recovery", () => {
     const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
 
     await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
-    // The Sentry report fires without an await inside the reconciler, so a
-    // follow-up round trip to the real database gives that fire-and-forget
-    // call room to complete before this test reads the spy.
-    await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, freshRunId));
-
+    // Reporting is deliberately fire-and-forget. An unrelated database query
+    // cannot synchronize it; wait for the actual event before checking payload.
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
+    }, { timeout: 5_000 });
     const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
-    expect(newCaptures).toHaveLength(1);
     expect(newCaptures[0]?.[0]).toMatchObject({ runId: freshRunId, runStatus: "failed" });
   });
 
