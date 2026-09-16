@@ -812,6 +812,11 @@ export async function runEverydayFlow(input: Input) {
         check("studio-opened", true, "The skill detail opened in Skill Studio.");
         await page.goBack();
         await expect(page).toHaveURL(new RegExp(`/issues/`));
+        const returnedCard = page.getByRole("article", {
+          name: "Skill created: release-readiness-checklist",
+        });
+        await expect(returnedCard).toBeVisible();
+        await returnedCard.getByRole("button").click();
         await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
         await expect(page.getByText("Studio edit marker: verified", { exact: true })).toBeVisible();
         check("return-content-persisted", true, "Returning to the task shows the saved Skill Studio edit.");
