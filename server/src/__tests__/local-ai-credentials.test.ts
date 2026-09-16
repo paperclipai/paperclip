@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
-const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
-vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, fetchClaudeQuota: mocks.claudeQuota }));
+const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
+vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainToken: mocks.claudeIsolatedKeychain, fetchClaudeQuota: mocks.claudeQuota }));
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
@@ -16,12 +16,31 @@ describe("explicit local subscription import", () => {
   });
   it("does not fall back to ambient Claude auth when an isolated login is absent or invalid", async () => {
     mocks.claude.mockResolvedValue("server-operator-token");
+    mocks.claudeIsolatedKeychain.mockResolvedValue(null);
     mocks.credentialFile.mockRejectedValue(new Error("No file"));
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
     mocks.credentialFile.mockResolvedValue("malformed");
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
     expect(mocks.claude).not.toHaveBeenCalled();
     expect(mocks.claudeQuota).not.toHaveBeenCalled();
+    expect(mocks.claudeIsolatedKeychain).toHaveBeenCalledWith("/isolated/claude");
+  });
+  it("verifies a macOS isolated login from the home's suffixed Keychain item when no credentials file exists", async () => {
+    // Claude Code on macOS stores an isolated login in the auth home's own
+    // Keychain item, not a credentials file — the live onboarding failure
+    // this covers. The ambient reader must stay untouched.
+    mocks.credentialFile.mockRejectedValue(new Error("No file"));
+    mocks.claudeIsolatedKeychain.mockResolvedValue("isolated-keychain-claude");
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-keychain-claude");
+    expect(mocks.claudeIsolatedKeychain).toHaveBeenCalledWith("/isolated/claude");
+    expect(mocks.claudeQuota).toHaveBeenCalledWith("isolated-keychain-claude");
+    expect(mocks.claude).not.toHaveBeenCalled();
+  });
+  it("prefers the credentials file over the Keychain for an isolated login", async () => {
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "file-token" } }));
+    mocks.claudeIsolatedKeychain.mockResolvedValue("keychain-token");
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("file-token");
+    expect(mocks.claudeIsolatedKeychain).not.toHaveBeenCalled();
   });
   it("tries the alternate Claude filename after malformed JSON", async () => {
     mocks.credentialFile.mockResolvedValueOnce("malformed").mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "alternate-token" } }));

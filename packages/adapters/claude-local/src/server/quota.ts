@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -159,19 +160,50 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
+// Claude Code on macOS stores the OAuth credential for a custom
+// CLAUDE_CONFIG_DIR in a per-directory Keychain item named
+// "Claude Code-credentials-<first 8 hex chars of sha256(dir)>" instead of a
+// credentials file in the directory. The suffix binds the item to exactly one
+// auth home, so reading it can only ever surface the login performed inside
+// that home — none of the cross-account risk of the unsuffixed operator item.
+function isolatedKeychainService(configDir: string): string {
+  return `Claude Code-credentials-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}`;
+}
+
+async function readClaudeTokenFromKeychain(service: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", "-s", service, "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    return parseClaudeCredentialToken(stdout);
+  } catch { return null; }
+}
+
+/**
+ * Read the credential that a `claude` login performed inside an isolated auth
+ * home left in the macOS Keychain. Only that home's own suffixed item is
+ * consulted — never the unsuffixed item that holds the server operator's
+ * machine-level login. Returns null off macOS.
+ */
+export async function readIsolatedClaudeKeychainToken(loginHome: string): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  return readClaudeTokenFromKeychain(isolatedKeychainService(loginHome));
+}
+
 export async function readClaudeToken(options: { allowKeychain?: boolean } = {}): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
   }
+  if (process.platform !== "darwin") return null;
+  // A custom auth home owns exactly one Keychain item: the suffixed one the
+  // CLI created for that directory. It must never fall through to the
+  // unsuffixed item, which belongs to a different account.
+  if (process.env.CLAUDE_CONFIG_DIR?.trim()) {
+    return readClaudeTokenFromKeychain(isolatedKeychainService(configDir));
+  }
   // Only an explicit local-account import may consult the user's Keychain.
-  // A custom auth home must never fall through to a different account.
-  if (options.allowKeychain && process.platform === "darwin" && !process.env.CLAUDE_CONFIG_DIR?.trim()) {
-    try {
-      const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
-      return parseClaudeCredentialToken(stdout);
-    } catch { return null; }
+  if (options.allowKeychain) {
+    return readClaudeTokenFromKeychain("Claude Code-credentials");
   }
   return null;
 }

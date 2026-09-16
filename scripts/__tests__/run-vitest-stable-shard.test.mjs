@@ -35,8 +35,8 @@ function dryRunJson(args) {
   return JSON.parse(result.stdout);
 }
 
-const SHARD_COUNT = 5;
-const SERIALIZED_SHARD_COUNT = 5;
+const SHARD_COUNT = 12;
+const SERIALIZED_SHARD_COUNT = 9;
 
 
 test("the serialized shards form a complete, non-overlapping partition", () => {
@@ -174,43 +174,16 @@ test("the checked-in manifest loads and covers most of the current suite set", (
   );
 });
 
-test("the measured chat integration cohort does not share a general-server shard", () => {
+test("the chat integration suite keeps a measured duration for duration-aware fallbacks", () => {
+  // The PR and release matrices both run the chat suite in dedicated
+  // line-sharded lanes, but the plain general-server group (local full runs)
+  // still weighs it into the LPT partition; a median-fallback weight there
+  // would silently overload whichever shard receives it.
   const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
   const durations = loadShardDurations(durationsManifest);
   assert.ok(
     Number.isFinite(durations[chatSuite]),
     "the full chat cohort must have a measured duration, not the median fallback",
-  );
-  const unsharded = dryRunJson([
-    "--mode",
-    "general",
-    "--group",
-    "general-server",
-    "--shard-index",
-    "0",
-    "--shard-count",
-    "1",
-  ]);
-  const shards = partitionGeneralServerSuites(
-    unsharded.selectedGeneralServerSuites,
-    SHARD_COUNT,
-    durations,
-  );
-  const chatShards = shards.filter((shard) => shard.files.includes(chatSuite));
-  assert.equal(
-    chatShards.length,
-    1,
-    "the full chat cohort must run exactly once",
-  );
-  assert.deepEqual(
-    chatShards[0].files,
-    [chatSuite],
-    "its measured cost must reserve one existing shard without other suites",
-  );
-  assert.deepEqual(
-    shards.flatMap((shard) => shard.files).sort(),
-    [...unsharded.selectedGeneralServerSuites].sort(),
-    "duration balancing must not omit or duplicate any general-server suite",
   );
 });
 
@@ -248,10 +221,12 @@ test("the real serialized shard partition is duration-balanced", () => {
 });
 
 test("the real shard partition is duration-balanced", () => {
+  // Mirrors the PR matrix: general-server-without-chat across SHARD_COUNT
+  // runners, with the chat suite carried by the dedicated general-chat lanes.
   const durations = loadShardDurations(durationsManifest);
   const fallback = defaultSuiteWeight(durations);
   const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", String(index), "--shard-count", String(SHARD_COUNT)]),
+    dryRunJson(["--mode", "general", "--group", "general-server-without-chat", "--shard-index", String(index), "--shard-count", String(SHARD_COUNT)]),
   );
 
   const totals = shards.map((shard) =>
@@ -259,8 +234,12 @@ test("the real shard partition is duration-balanced", () => {
   );
   const maxTotal = Math.max(...totals);
   const minTotal = Math.min(...totals);
-  // LPT keeps the spread within the heaviest single suite; use that as the bound.
-  const heaviest = Math.max(...Object.values(durations));
+  // LPT keeps the spread within the heaviest single suite; use that as the
+  // bound. The chat suite runs in its own lanes, so exclude it here.
+  const chat = "server/src/__tests__/chat-channels.integration.test.ts";
+  const heaviest = Math.max(
+    ...Object.entries(durations).filter(([file]) => file !== chat).map(([, ms]) => ms),
+  );
   assert.ok(
     maxTotal - minTotal <= heaviest,
     `shard weight spread ${maxTotal - minTotal}ms exceeds heaviest suite ${heaviest}ms: ${totals.join(", ")}`,
@@ -268,20 +247,23 @@ test("the real shard partition is duration-balanced", () => {
 });
 
 
-test("release server shards plus the dedicated chat file cover the original server group exactly", () => {
-  const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"]);
-  const shards = Array.from({ length: 10 }, (_, index) => dryRunJson([
-    "--mode", "general", "--group", "general-server-without-chat",
-    "--shard-index", String(index), "--shard-count", "10",
-  ]));
-  const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
-  const chat = "server/src/__tests__/chat-channels.integration.test.ts";
-  assert.ok(!files.includes(chat));
-  assert.deepEqual([...files, chat].sort(), full.selectedGeneralServerSuites.sort());
-  assert.equal(new Set(files).size, files.length);
-  const defaultRun = dryRunJson([]);
-  assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
-});
+// 12 mirrors pr-trusted.yml, 10 mirrors release-verify.yml.
+for (const withoutChatShardCount of [10, 12]) {
+  test(`${withoutChatShardCount} without-chat shards plus the dedicated chat file cover the original server group exactly`, () => {
+    const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"]);
+    const shards = Array.from({ length: withoutChatShardCount }, (_, index) => dryRunJson([
+      "--mode", "general", "--group", "general-server-without-chat",
+      "--shard-index", String(index), "--shard-count", String(withoutChatShardCount),
+    ]));
+    const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
+    const chat = "server/src/__tests__/chat-channels.integration.test.ts";
+    assert.ok(!files.includes(chat));
+    assert.deepEqual([...files, chat].sort(), full.selectedGeneralServerSuites.sort());
+    assert.equal(new Set(files).size, files.length);
+    const defaultRun = dryRunJson([]);
+    assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
+  });
+}
 
 const lineShardFile = path.join(repoRoot, "server/src/__tests__/chat-channels.integration.test.ts");
 const caseAt = (line, name) => ({ name, file: lineShardFile, projectName: "@paperclipai/server", location: { line, column: 3 } });
