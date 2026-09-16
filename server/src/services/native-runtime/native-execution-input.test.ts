@@ -471,9 +471,9 @@ describe("native execution input external-chat framing", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     });
     expect(input.task.prompt).toContain('interactionKind="questions"');
-      expect(input.task.prompt).toContain("at least two distinct meaningful options");
-      expect(input.task.prompt).toContain("payload.questionSet");
-      expect(input.task.prompt).toContain('answerMode="text"');
+    expect(input.task.prompt).toContain("at least two distinct meaningful options");
+    expect(input.task.prompt).toContain("payload.questionSet");
+    expect(input.task.prompt).toContain('answerMode="text"');
     expect(input.task.prompt).toContain('continuationPolicy="wake_assignee"');
     expect(input.task.prompt).toContain("Create the actual question before yielding");
     expect(input.task.prompt).toContain("Wait for its real answer");
