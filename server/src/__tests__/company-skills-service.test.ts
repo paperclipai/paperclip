@@ -253,7 +253,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# New instructions\n");
   });
 
-  it.each(["save", "delete"] as const)("rejects a stale file %s after the skill is replaced", async (operation) => {
+  it.each(["save", "delete", "rename"] as const)("rejects a stale file %s after the skill is replaced", async (operation) => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Stale editor", issuePrefix: `T${companyId.slice(0, 6)}` });
     const original = await svc.createLocalSkill(companyId, { name: "Editor", slug: "stale-editor", markdown: "# Old\n" });
@@ -293,10 +293,21 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       },
     });
     const editor = companySkillService(staleDb);
-    const pending = operation === "save"
-      ? editor.updateFile(companyId, original.id, "notes.md", "Stale overwrite")
-      : editor.deleteFile(companyId, original.id, { path: "notes.md", target: "file" });
-    await expect(pending).rejects.toMatchObject({ status: 404 });
+    const movedReplacementPaths: unknown[] = [];
+    const rename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      if (replacement && source === replacement.sourceLocator) movedReplacementPaths.push(source);
+      return rename(source, target);
+    });
+    try {
+      const pending = operation === "save"
+        ? editor.updateFile(companyId, original.id, "notes.md", "Stale overwrite")
+        : operation === "rename"
+          ? editor.renameSkill(companyId, original.id, { name: "Renamed", slug: "renamed-editor" })
+          : editor.deleteFile(companyId, original.id, { path: "notes.md", target: "file" });
+      await expect(pending).rejects.toMatchObject({ status: 404 });
+    } finally { renameSpy.mockRestore(); }
+    expect(movedReplacementPaths).toEqual([]);
     expect(intercepted).toBe(true);
     expect(replacement).toBeDefined();
     expect(await fs.readFile(path.join(replacement!.sourceLocator!, "notes.md"), "utf8")).toBe("Replacement notes");

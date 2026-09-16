@@ -4024,153 +4024,161 @@ export function companySkillService(db: Db) {
     input: CompanySkillRenameRequest,
   ): Promise<CompanySkillRenameResult> {
     await ensureSkillInventoryCurrent(companyId);
-    const skill = await getById(companyId, skillId);
-    if (!skill) throw notFound("Skill not found");
-
-    if (!isPaperclipManagedRenameTarget(skill)) {
-      throw unprocessable(
-        "Only Paperclip-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.",
-        { skillId: skill.id, sourceType: skill.sourceType, sourceKind: getSkillMeta(skill).sourceKind ?? null },
-      );
-    }
-
-    const newName = input.name.trim();
-    if (!newName) throw unprocessable("Skill name is required.");
-    const newSlug = normalizeSkillSlug(input.slug ?? null) ?? normalizeSkillSlug(newName);
-    if (!newSlug) {
-      throw unprocessable("Skill name must contain at least one letter or number to derive a slug.");
-    }
-    const newKey = `company/${companyId}/${newSlug}`;
-
-    const previousName = skill.name;
-    const previousSlug = skill.slug;
-    const previousKey = skill.key;
-
-    // Normalized no-op: nothing changes, so skip all filesystem/DB work.
-    if (newName === previousName && newSlug === previousSlug && newKey === previousKey) {
-      return { skill, previousName, previousSlug, previousKey, reassignments: [] };
-    }
-
-    // Authoritative conflict detection against slug and key within the company.
-    if (newSlug !== previousSlug || newKey !== previousKey) {
-      const existing = await listFull(companyId);
-      for (const other of existing) {
-        if (other.id === skill.id) continue;
-        if ((normalizeSkillSlug(other.slug) ?? other.slug) === newSlug) {
-          throw conflict(`A company skill with slug "${newSlug}" already exists.`, {
-            conflict: "slug",
-            slug: newSlug,
-          });
-        }
-        if (other.key === newKey) {
-          throw conflict(`A company skill with key "${newKey}" already exists.`, {
-            conflict: "key",
-            key: newKey,
-          });
-        }
-      }
-    }
-
+    if (!await getById(companyId, skillId)) throw notFound("Skill not found");
     const managedRoot = resolveManagedSkillsRoot(companyId);
-    const oldDir = normalizeSkillDirectory(skill)!;
-    const newDir = path.resolve(managedRoot, newSlug);
-    const directoryMoved = newDir !== oldDir;
+    let result: CompanySkillRenameResult | undefined;
+    let restoreSource: (() => Promise<void>) | undefined;
+    // Cache lifecycle locks always precede name locks, as in deletion.
+    await removeRuntimeSkillCache(managedRoot, skillId, async () => {
+      try {
+        result = await withSkillFileMutation(companyId, skillId, async (skill, tx) => {
+          if (!isPaperclipManagedRenameTarget(skill)) {
+            throw unprocessable(
+              "Only Paperclip-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.",
+              { skillId: skill.id, sourceType: skill.sourceType, sourceKind: getSkillMeta(skill).sourceKind ?? null },
+            );
+          }
 
-    if (directoryMoved && (await statPath(newDir))) {
-      throw conflict(`A managed skill directory already exists at ${newDir}.`, { conflict: "directory" });
-    }
+          const newName = input.name.trim();
+          if (!newName) throw unprocessable("Skill name is required.");
+          const newSlug = normalizeSkillSlug(input.slug ?? null) ?? normalizeSkillSlug(newName);
+          if (!newSlug) {
+            throw unprocessable("Skill name must contain at least one letter or number to derive a slug.");
+          }
+          const newKey = `company/${companyId}/${newSlug}`;
 
-    // Plan agent reassignments from the old key to the new key, preserving each
-    // pinned versionId. Resolve against the pre-rename reference targets so the
-    // old key still maps cleanly.
-    const referenceSkills = await listReferenceTargets(companyId);
-    const agentRows = await agents.list(companyId, { includeTerminated: true });
-    const plannedReassignments: CompanySkillForkReassignment[] = agentRows
-      .filter((agent) =>
-        resolveDesiredSkillEntries(referenceSkills, agent.adapterConfig as Record<string, unknown>)
-          .some((entry) => entry.key === previousKey))
-      .map((agent) => ({ agentId: agent.id, previousSkillKey: previousKey, nextSkillKey: newKey }));
+          const previousName = skill.name;
+          const previousSlug = skill.slug;
+          const previousKey = skill.key;
 
-    // Reversible filesystem stage: capture the original SKILL.md so a failed DB
-    // transaction can be rolled back to the pre-rename on-disk state.
-    const originalMarkdown = await fs.readFile(path.join(oldDir, "SKILL.md"), "utf8").catch(() => null);
-    const rewrittenMarkdown = rewriteFrontmatterName(originalMarkdown ?? skill.markdown, newName);
-    let movedDir = false;
-    try {
-      if (directoryMoved) {
-        await fs.mkdir(path.dirname(newDir), { recursive: true });
-        await fs.rename(oldDir, newDir);
-        movedDir = true;
+          // Normalized no-op: nothing changes, so skip all filesystem/DB work.
+          if (newName === previousName && newSlug === previousSlug && newKey === previousKey) {
+            return { skill, previousName, previousSlug, previousKey, reassignments: [] };
+          }
+
+          // Authoritative conflict detection against slug and key within the company.
+          if (newSlug !== previousSlug || newKey !== previousKey) {
+            const existing = await listFull(companyId);
+            for (const other of existing) {
+              if (other.id === skill.id) continue;
+              if ((normalizeSkillSlug(other.slug) ?? other.slug) === newSlug) {
+                throw conflict(`A company skill with slug "${newSlug}" already exists.`, {
+                  conflict: "slug",
+                  slug: newSlug,
+                });
+              }
+              if (other.key === newKey) {
+                throw conflict(`A company skill with key "${newKey}" already exists.`, {
+                  conflict: "key",
+                  key: newKey,
+                });
+              }
+            }
+          }
+
+          const oldDir = normalizeSkillDirectory(skill)!;
+          const newDir = path.resolve(managedRoot, newSlug);
+          const directoryMoved = newDir !== oldDir;
+
+          if (directoryMoved && (await statPath(newDir))) {
+            throw conflict(`A managed skill directory already exists at ${newDir}.`, { conflict: "directory" });
+          }
+
+          // Plan agent reassignments from the old key to the new key, preserving each
+          // pinned versionId. Resolve against the pre-rename reference targets so the
+          // old key still maps cleanly.
+          const referenceSkills = await listReferenceTargets(companyId);
+          const agentRows = await agents.list(companyId, { includeTerminated: true });
+          const plannedReassignments: CompanySkillForkReassignment[] = agentRows
+            .filter((agent) =>
+              resolveDesiredSkillEntries(referenceSkills, agent.adapterConfig as Record<string, unknown>)
+                .some((entry) => entry.key === previousKey))
+            .map((agent) => ({ agentId: agent.id, previousSkillKey: previousKey, nextSkillKey: newKey }));
+
+          // Reversible filesystem stage: capture the original SKILL.md so a failed DB
+          // transaction can be rolled back to the pre-rename on-disk state.
+          const originalMarkdown = await fs.readFile(path.join(oldDir, "SKILL.md"), "utf8").catch(() => null);
+          const rewrittenMarkdown = rewriteFrontmatterName(originalMarkdown ?? skill.markdown, newName);
+          let movedDir = false;
+          restoreSource = async () => {
+            if (originalMarkdown !== null) {
+              await fs.writeFile(path.join(movedDir ? newDir : oldDir, "SKILL.md"), originalMarkdown, "utf8").catch(() => {});
+            }
+            if (movedDir) await fs.rename(newDir, oldDir).catch(() => {});
+            restoreSource = undefined;
+          };
+          try {
+            if (directoryMoved) {
+              await fs.mkdir(path.dirname(newDir), { recursive: true });
+              await fs.rename(oldDir, newDir);
+              movedDir = true;
+            }
+            if (originalMarkdown !== null) {
+              if (rewrittenMarkdown !== originalMarkdown) {
+                await fs.writeFile(path.join(newDir, "SKILL.md"), rewrittenMarkdown, "utf8");
+              }
+            }
+
+            const updated = await tx
+              .update(companySkills)
+              .set({
+                name: newName,
+                slug: newSlug,
+                key: newKey,
+                sourceLocator: newDir,
+                markdown: rewrittenMarkdown,
+                updatedAt: new Date(),
+              })
+              .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)))
+              .returning({ id: companySkills.id })
+              .then((rows) => rows[0] ?? null);
+            if (!updated) throw notFound("Skill not found");
+
+            for (const item of plannedReassignments) {
+              const row = await tx
+                .select({ id: agentsTable.id, adapterConfig: agentsTable.adapterConfig })
+                .from(agentsTable)
+                .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
+                .for("update")
+                .then((rows) => rows[0] ?? null);
+              if (!row) continue;
+              const adapterConfig = row.adapterConfig as Record<string, unknown>;
+              const nextEntries = resolveDesiredSkillEntries(referenceSkills, adapterConfig).map((entry) =>
+                entry.key === previousKey
+                  ? { key: newKey, versionId: entry.versionId ?? null }
+                  : entry);
+              await tx
+                .update(agentsTable)
+                .set({
+                  adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+                  updatedAt: new Date(),
+                })
+                .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)));
+            }
+          } catch (error) {
+            // Restore while the name locks are still held.
+            await restoreSource?.();
+            throw error;
+          }
+
+          const renamed = await getById(companyId, skill.id, tx);
+          if (!renamed) throw notFound("Renamed skill not found");
+          return { skill: renamed, previousName, previousSlug, previousKey, reassignments: plannedReassignments };
+        }, [normalizeSkillSlug(input.slug ?? null) ?? normalizeSkillSlug(input.name) ?? ""]);
+      } catch (error) {
+        await restoreSource?.();
+        throw error;
       }
-      if (originalMarkdown !== null) {
-        if (rewrittenMarkdown !== originalMarkdown) {
-          await fs.writeFile(path.join(newDir, "SKILL.md"), rewrittenMarkdown, "utf8");
-        }
+      restoreSource = undefined;
+      // Database commit is complete; do not report cache cleanup as a failed rename.
+      if (result) {
+        await fs.rm(path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(result.previousKey, result.previousSlug)),
+          { recursive: true, force: true }).catch((error) => {
+          logger.warn({ err: error, companyId, skillId }, "Skill renamed; obsolete runtime cache cleanup failed");
+        });
       }
-
-      await db.transaction(async (tx) => {
-        const updated = await tx
-          .update(companySkills)
-          .set({
-            name: newName,
-            slug: newSlug,
-            key: newKey,
-            sourceLocator: newDir,
-            markdown: rewrittenMarkdown,
-            updatedAt: new Date(),
-          })
-          .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)))
-          .returning({ id: companySkills.id })
-          .then((rows) => rows[0] ?? null);
-        if (!updated) throw notFound("Skill not found");
-
-        for (const item of plannedReassignments) {
-          const row = await tx
-            .select({ id: agentsTable.id, adapterConfig: agentsTable.adapterConfig })
-            .from(agentsTable)
-            .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
-            .for("update")
-            .then((rows) => rows[0] ?? null);
-          if (!row) continue;
-          const adapterConfig = row.adapterConfig as Record<string, unknown>;
-          const nextEntries = resolveDesiredSkillEntries(referenceSkills, adapterConfig).map((entry) =>
-            entry.key === previousKey
-              ? { key: newKey, versionId: entry.versionId ?? null }
-              : entry);
-          await tx
-            .update(agentsTable)
-            .set({
-              adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
-              updatedAt: new Date(),
-            })
-            .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)));
-        }
-      });
-    } catch (error) {
-      // Roll back the filesystem to its pre-rename state.
-      if (originalMarkdown !== null) {
-        await fs
-          .writeFile(path.join(movedDir ? newDir : oldDir, "SKILL.md"), originalMarkdown, "utf8")
-          .catch(() => {});
-      }
-      if (movedDir) {
-        await fs.rename(newDir, oldDir).catch(() => {});
-      }
-      throw error;
-    }
-
-    // The rename has committed. Cache cleanup must not make a successful rename appear to fail.
-    try {
-      await fs.rm(path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
-        { recursive: true, force: true });
-      await removeRuntimeSkillCache(managedRoot, skill.id);
-    } catch (error) {
-      logger.warn({ err: error, companyId, skillId: skill.id }, "Skill renamed; obsolete runtime cache cleanup failed");
-    }
-
-    const renamed = await getById(companyId, skill.id);
-    if (!renamed) throw notFound("Renamed skill not found");
-    return { skill: renamed, previousName, previousSlug, previousKey, reassignments: plannedReassignments };
+    });
+    return result!;
   }
 
   async function updateStatus(companyId: string, skillId: string): Promise<CompanySkillUpdateStatus | null> {
@@ -4568,6 +4576,7 @@ export function companySkillService(db: Db) {
     companyId: string,
     skillId: string,
     mutate: (skill: CompanySkill, tx: DbOrTransaction) => Promise<T>,
+    additionalSlugs: string[] = [],
   ): Promise<T> {
     await ensureSkillInventoryCurrent(companyId);
     const initial = await getById(companyId, skillId);
@@ -4575,7 +4584,9 @@ export function companySkillService(db: Db) {
     return db.transaction(async (tx) => {
       // Share the creation/deletion name lock. The identity must be checked
       // again after waiting: a new skill can now own the same source folder.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${initial.slug}`}, 0))`);
+      for (const slug of [...new Set([initial.slug, ...additionalSlugs])].filter(Boolean).sort()) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${slug}`}, 0))`);
+      }
       const skill = await getById(companyId, skillId, tx);
       if (!skill) throw notFound("Skill not found");
       if (skill.slug !== initial.slug) throw conflict("Skill was renamed. Retry the operation.");
@@ -4716,7 +4727,6 @@ export function companySkillService(db: Db) {
     };
     });
   }
-
 
   async function installUpdate(companyId: string, skillId: string, options: { force?: boolean } = {}): Promise<CompanySkill | null> {
     await ensureSkillInventoryCurrent(companyId);
