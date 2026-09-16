@@ -2115,6 +2115,48 @@ rl.on("line", (line) => {
     }
   });
 
+  it.each(["managed", "mcp-key"])("sends the GitHub Actions toolset when invoking a %s connection", async (connectionMethodKey) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const parameters = { method: "run_workflow", owner: "example", repo: "release", workflow_id: "nightly.yml", ref: "main" };
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      expect(fakeRequest.headers["x-mcp-toolsets"]).toBe("default,actions");
+      expect(fakeRequest.body).toMatchObject({
+        method: "tools/call",
+        params: { name: "actions_run_trigger", arguments: parameters },
+      });
+      return { body: { jsonrpc: "2.0", id: fakeRequest.body?.id, result: { content: [{ type: "text", text: "Workflow dispatched" }] } } };
+    });
+    try {
+      const { catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "github",
+        url: fake.url,
+        toolName: "actions_run_trigger",
+        riskLevel: "destructive",
+        connectionConfig: { sourceTemplateKey: "github", connectionMethodKey },
+      });
+      await db.update(toolCatalogEntries).set({
+        inputSchema: {
+          type: "object",
+          properties: Object.fromEntries(Object.keys(parameters).map((key) => [key, { type: "string" }])),
+          required: Object.keys(parameters),
+          additionalProperties: false,
+        },
+      }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.catalogEntryId === catalogEntry.id);
+      expect(tool).toBeTruthy();
+      const result = await gateway.executeTool({ sessionToken: session.token, tool: tool!.name, parameters });
+      expect(result.status).toBe("completed");
+      expect(fake.requests).toHaveLength(1);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("executes a connected remote HTTP MCP tool with stored credentials and redacted audit state", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

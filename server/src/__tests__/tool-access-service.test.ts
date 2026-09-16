@@ -66,6 +66,7 @@ import {
 import {
   classifyRisk,
   normalizeConnectionMethodConfig,
+  projectedConnectionHeaders,
   projectConnectionMethodToolInputSchema,
   projectConnectionMethodToolArguments,
   toolAccessService,
@@ -14287,6 +14288,39 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("discovers GitHub Actions tools during PAT setup and catalog refresh", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "actions_list", annotations: { readOnlyHint: true } },
+      {
+        name: "actions_run_trigger",
+        annotations: { readOnlyHint: false, destructiveHint: true },
+      },
+    ]);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      credentialValues: { "credentials.authorization": "github-actions-test-token" },
+    }, actor);
+    expect(connected.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "actions_list", riskLevel: "read" }),
+      expect.objectContaining({ toolName: "actions_run_trigger", riskLevel: "destructive" }),
+    ]));
+
+    const setupRequestCount = fetchMock.mock.calls.length;
+    expect(setupRequestCount).toBeGreaterThan(0);
+    await service.refreshCatalog(connected.connectionId, actor);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(setupRequestCount);
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(url).toBe("https://api.githubcopilot.com/mcp/");
+      expect(new Headers(init?.headers).get("X-MCP-Toolsets")).toBe("default,actions");
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer github-actions-test-token");
+    }
+    expect(JSON.stringify(connected)).not.toContain("github-actions-test-token");
+  });
+
   it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -17833,6 +17867,31 @@ describe("classifyRisk", () => {
       "destructive",
     );
     expect(classifyRisk({ name: "create_cart" }, "shopify")).toBe("write");
+  });
+});
+
+describe("projectedConnectionHeaders", () => {
+  it.each([undefined, "managed", "mcp-key"])(
+    "adds Actions to the default GitHub toolsets for method %s without saved configuration",
+    (connectionMethodKey) => {
+      const connection = {
+        transport: "mcp_remote",
+        config: { sourceTemplateKey: "github", connectionMethodKey },
+      } as typeof toolConnections.$inferSelect;
+      expect(projectedConnectionHeaders(connection)).toEqual({
+        "X-MCP-Toolsets": "default,actions",
+      });
+      expect(connection.config).not.toHaveProperty("headers");
+    },
+  );
+
+  it("keeps unrelated MCP connections unchanged", () => {
+    for (const connection of [
+      { transport: "mcp_remote", config: { url: "https://fixture.example/mcp" } },
+      { transport: "mcp_remote", config: { sourceTemplateKey: "notion" } },
+    ]) {
+      expect(projectedConnectionHeaders(connection as typeof toolConnections.$inferSelect)).toEqual({});
+    }
   });
 });
 
