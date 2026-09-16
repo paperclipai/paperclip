@@ -1559,9 +1559,10 @@ test.describe.serial("native chat adapter UI", () => {
       await fillProviderSetup(page, provider);
 
       if (provider.provider === "github") {
+        // A completed click does not mean the async configure request reached the mock.
+        await expect.poll(() => mock.setupAttempts).toBe(2);
         expect(mock.githubPrivateKeyMatchedFile).toBe(true);
         expect(mock.githubPrivateKeyMatchedPaste).toBe(true);
-        expect(mock.setupAttempts).toBe(2);
       }
 
       if (provider.provider === "telegram") {
