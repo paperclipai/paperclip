@@ -118,7 +118,6 @@ describe("buildAgentUpdatePatch", () => {
           },
         },
       },
-      replaceRuntimeConfig: true,
     });
   });
 
@@ -137,8 +136,8 @@ describe("buildAgentUpdatePatch", () => {
     expect(patch).toEqual({
       runtimeConfig: {
         heartbeat: { enabled: true, intervalSec: 300 },
+        debug: {},
       },
-      replaceRuntimeConfig: true,
     });
   });
 

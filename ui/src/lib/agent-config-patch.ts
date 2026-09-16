@@ -64,17 +64,15 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
       const existingDebug = (existingRc.debug ?? {}) as Record<string, unknown>;
       const nextDebug = omitUndefinedEntries({ ...existingDebug, ...overlay.debug });
       if (Object.keys(nextDebug).length === 0) {
-        delete nextRuntimeConfig.debug;
+        // Replace the nested debug block while the server's top-level merge
+        // preserves unrelated runtime settings.
+        nextRuntimeConfig.debug = {};
       } else {
         nextRuntimeConfig.debug = nextDebug;
       }
     }
 
     patch.runtimeConfig = nextRuntimeConfig;
-    // This is a complete snapshot, so a missing key represents an intentional
-    // removal (for example, turning provider tracing off). Ask the server to
-    // replace the column instead of merging it back with the stored value.
-    patch.replaceRuntimeConfig = true;
   }
 
   if (Object.keys(overlay.runtime).length > 0) {
