@@ -57,6 +57,8 @@ def summarize(history, kind):
     if type(campaign.get("complete")) is not bool:
         raise ValueError("Missing campaign coverage flag")
     revision = campaign.get("reportRevision", {})
+    if revision and not isinstance(revision.get("sourceGeneratedAt"), str):
+        raise ValueError("Report refresh has no reliable measurement date")
     measured = revision.get("sourceGeneratedAt", campaign["generatedAt"])
     return {
         "url": public_report(campaign["publicUrl"], prefix),

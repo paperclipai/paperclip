@@ -44,6 +44,16 @@ class HistorySummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             summarize(history, "runner")
 
+    def test_refresh_without_measurement_date_is_rejected(self):
+        history = self.history()
+        campaign = history["campaigns"][0]
+        campaign["campaignId"] = "run-1-refresh"
+        campaign["reportRevision"] = {
+            "sourceCampaignId": "run-1", "renderedAt": "2026-09-03T12:00:00Z",
+        }
+        with self.assertRaisesRegex(ValueError, "measurement date"):
+            summarize(history, "runner")
+
     def test_unknown_schema_and_missing_coverage_are_rejected(self):
         for field in ("schema", "complete"):
             history = self.history()

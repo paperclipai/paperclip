@@ -182,9 +182,12 @@ create another result archive, or change the existing campaign URLs.
 Build from the public history feeds and check its summary logic:
 
 ```sh
-python3 -m unittest discover -s scripts/evals-hub -p 'test_*.py'
+pnpm test:evals-hub
 python3 scripts/evals-hub/build.py --output .paperclip/evals-hub
 ```
+
+The existing PR CI `test:release-registry` target also runs `test:evals-hub`.
+The hub checks need Python 3 and do not call model providers.
 
 For offline checks, pass `--history-dir <directory>` containing
 `runner-protocol-evals-history.json` and `runner-e2e-history.json`.
