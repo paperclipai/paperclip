@@ -434,6 +434,8 @@ describe("first-task fixtures and state grading", () => {
     "I won't create a child task. Continue?",
     "A new task was mentioned earlier. Continue?",
     "Do you understand what a subtask is?",
+    "Here is the task I already created. Continue?",
+    "Here is the task I will not create. Continue?",
   ])("does not count incidental or declined work as a proposal: %s", (prompt) => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);
@@ -453,6 +455,18 @@ describe("first-task fixtures and state grading", () => {
       id: "proposal-card", kind: "request_confirmation", status: "pending",
       title: "Confirm: Garden club welcome note",
       payload: { prompt: `Here's what I'll do:\n\nWrite a two-sentence welcome note for your neighborhood garden club. It will invite beginners to the free Saturday meetup and include the phrase "${e.nonce}". I'll save the finished note as a document attached to a new task.\n\nShall I go ahead?` },
+    });
+    expect(failed(e)).toEqual([]);
+  });
+
+  it.each(["create and complete", "create and run"])("recognizes the recorded task I will %s confirmation", (action) => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.pop();
+    e.checkpoints[1].interactions.push({
+      id: "proposal-card", kind: "request_confirmation", status: "pending",
+      title: "Confirm: Welcome note task",
+      payload: { prompt: `Here's the task I'll ${action}:\n\n**Write a welcome note for the garden club**\n- A two-sentence welcome note\n- Invites beginners to the free Saturday meetup\n- Includes the exact phrase: ${e.nonce}\n- Saved as a document attached to the task\n\nShall I go ahead?` },
     });
     expect(failed(e)).toEqual([]);
   });

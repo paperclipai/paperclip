@@ -73,7 +73,10 @@ function hasTaskProposal(text: string, confirmationCard = false) {
   ).join("\n");
   return /\b(?:approve|accept|propose|proposed|proposing|proposal|suggest|suggested|suggesting|recommend|recommended|recommending|create|creating|set up)\b[\s\S]{0,160}\b(?:subtask|task)\b/i.test(affirmative) ||
     /\b(?:subtask|task)\b[^.!?\n]{0,30}\bproposal\b/i.test(affirmative) ||
-    (confirmationCard && /\b(?:I|we)(?:['’]ll| will)\s+(?:save|attach|write|make|open|create)\b[^.!?]{0,160}\b(?:(?:new|child)\s+task|subtask)\b/i.test(affirmative));
+    (confirmationCard && (
+      /\b(?:I|we)(?:['’]ll| will)\s+(?:save|attach|write|make|open|create)\b[^.!?]{0,160}\b(?:(?:new|child)\s+task|subtask)\b/i.test(affirmative) ||
+      /\b(?:subtask|task)\s+(?:I|we)(?:['’]ll| will)\s+(?:create|open|set up)\b/i.test(affirmative)
+    ));
 }
 
 export const activeRuns = (runs: Row[]) =>
