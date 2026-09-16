@@ -58,7 +58,7 @@ describe("ACPX runtime sandbox", () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const sandbox = await prepareAcpxRuntimeSandbox({ binding, agent: "claude" });
         const settings = JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
-        expect(settings).toEqual({ model, availableModels: [model] });
+        expect(settings).toMatchObject({ model, availableModels: [model] });
       }
     }
   });

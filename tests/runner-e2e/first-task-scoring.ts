@@ -269,6 +269,12 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
                 .join("\n"),
             ),
         ].join("\n"),
+      ) || first.interactions.some((i) =>
+        ["request_confirmation", "request_checkbox_confirmation"].includes(i.kind) &&
+        /\b(?:(?:new|child)\s+task|subtask)\b/i.test(
+          [i.title, i.summary, i.payload?.prompt, i.payload?.detailsMarkdown]
+            .filter(Boolean).join("\n"),
+        ),
       ),
       "Propose a task for the concrete request",
       [first.id],

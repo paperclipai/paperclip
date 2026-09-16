@@ -403,6 +403,18 @@ describe("first-task fixtures and state grading", () => {
     expect(failed(e)).toEqual([]);
   });
 
+  it("recognizes the recorded Claude confirmation that offers a new task without proposal jargon", () => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.pop();
+    e.checkpoints[1].interactions.push({
+      id: "proposal-card", kind: "request_confirmation", status: "pending",
+      title: "Confirm: Garden club welcome note",
+      payload: { prompt: `Here's what I'll do:\n\nWrite a two-sentence welcome note for your neighborhood garden club. It will invite beginners to the free Saturday meetup and include the phrase "${e.nonce}". I'll save the finished note as a document attached to a new task.\n\nShall I go ahead?` },
+    });
+    expect(failed(e)).toEqual([]);
+  });
+
   it("recognizes a Proposal heading introducing the task, as in the Claude verification recording", () => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);
