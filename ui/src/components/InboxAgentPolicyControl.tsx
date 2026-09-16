@@ -6,8 +6,7 @@ import { agentsApi } from "@/api/agents";
 import { inboxAgentPolicyApi } from "@/api/inbox-agent-policy";
 import { queryKeys } from "@/lib/queryKeys";
 import { isAgentTaskTarget } from "@/lib/company-members";
-import { AgentIcon } from "./AgentIconPicker";
-import { Checkbox } from "@/components/ui/checkbox";
+import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { Button } from "@/components/ui/button";
 import { RadioCardGroup, type RadioCardOption } from "@/components/ui/radio-card";
 
@@ -66,6 +65,19 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
     () => (agentsQuery.data ?? []).filter(isAgentTaskTarget),
     [agentsQuery.data],
   );
+  const agentOptions = useMemo(
+    () => selectableAgents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      title: agent.title ?? agent.role,
+      icon: agent.icon,
+    })),
+    [selectableAgents],
+  );
+  const selectedAgentIds = useMemo(
+    () => new Set(draft?.allowedAgentIds ?? []),
+    [draft?.allowedAgentIds],
+  );
 
   // Adopt server state on first load, or on refetch when the user has not
   // diverged from the previously-synced snapshot (so a background refetch never
@@ -109,16 +121,6 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
     return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
   }
 
-  const toggleAgent = (agentId: string, checked: boolean) => {
-    setDraft((current) => {
-      if (!current) return current;
-      const set = new Set(current.allowedAgentIds);
-      if (checked) set.add(agentId);
-      else set.delete(agentId);
-      return { ...current, allowedAgentIds: [...set] };
-    });
-  };
-
   return (
     <section className="space-y-4" aria-label="Let agents tidy my inbox">
       <div className="space-y-1">
@@ -141,31 +143,25 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
       />
 
       {draft.mode === "allowlist" ? (
-        <div className="max-w-2xl space-y-2 rounded-md border border-border p-3">
+        <div className="max-w-2xl space-y-2">
           <div className="text-sm font-medium">Agents allowed to tidy my inbox</div>
-          {selectableAgents.length === 0 ? (
-            <p className="text-xs text-muted-foreground">You don&apos;t manage any agents yet.</p>
-          ) : (
-            <ul className="space-y-1.5">
-              {selectableAgents.map((agent) => {
-                const checked = draft.allowedAgentIds.includes(agent.id);
-                return (
-                  <li key={agent.id}>
-                    <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent/40">
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(next) => toggleAgent(agent.id, next === true)}
-                        aria-label={`Allow ${agent.name} to tidy my inbox`}
-                      />
-                      <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 truncate text-sm">{agent.name}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">{agent.role}</span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+          <AgentMultiSelect
+            agents={agentOptions}
+            selectedAgentIds={selectedAgentIds}
+            onChange={(next) =>
+              setDraft((current) =>
+                current ? { ...current, allowedAgentIds: [...next] } : current,
+              )
+            }
+            triggerLabel={
+              selectedAgentIds.size === 0
+                ? "Select agents"
+                : `${selectedAgentIds.size} ${selectedAgentIds.size === 1 ? "agent" : "agents"} selected`
+            }
+            triggerFullWidth={false}
+            showSelectionPreview={false}
+            emptyMessage="You don’t manage any agents yet."
+          />
         </div>
       ) : null}
 

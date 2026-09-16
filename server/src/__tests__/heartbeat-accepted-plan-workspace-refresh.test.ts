@@ -62,7 +62,6 @@ vi.mock("../adapters/index.js", () => ({
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
-  listAdapterModelProfiles: async () => [],
   runningProcesses: new Map(),
 }));
 
@@ -1132,6 +1131,8 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     };
     expect(adapterInput.runtime.sessionId).toBe("accepted-plan-retry-session");
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
-    expect(adapterInput.context.paperclipTaskMarkdown).toContain("Create child issues from the approved plan only");
+    expect(adapterInput.context.paperclipTaskMarkdown).toContain(
+      "Implement the accepted plan on this issue when the work is small and cohesive.",
+    );
   }, 20_000);
 });

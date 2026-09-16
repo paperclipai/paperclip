@@ -14,7 +14,9 @@ export {
   trackSkillImported,
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
+  trackAgentTaskRun,
   trackErrorHandlerCrash,
+  trackInteractionCreated,
   trackInteractionResolved,
 } from "./events.js";
 export type {

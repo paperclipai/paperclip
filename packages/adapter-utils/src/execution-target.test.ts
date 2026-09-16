@@ -1,7 +1,11 @@
+import { randomUUID } from "node:crypto";
+import { access, readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
+  cleanupGitHubOperationLaunchers,
+  prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   resolveAdapterExecutionTargetCwd,
@@ -399,5 +403,37 @@ describe("resolveAdapterExecutionTargetCwd", () => {
     expect(resolveAdapterExecutionTargetCwd(null, "", "/Users/host/repo/server")).toBe(
       "/Users/host/repo/server",
     );
+  });
+});
+
+
+describe("GitHub launcher lifecycle", () => {
+  it("removes only the completed run's launchers and leaves concurrent runs usable", async () => {
+    const first = { runId: randomUUID(), target: null };
+    const second = { runId: randomUUID(), target: null };
+    try {
+      const a = await prepareGitHubOperationLaunchers({ ...first, cwd: "/tmp", env: {} });
+      const b = await prepareGitHubOperationLaunchers({ ...second, cwd: "/tmp", env: {} });
+      await cleanupGitHubOperationLaunchers(first);
+      await expect(access(a.PAPERCLIP_GITHUB_LAUNCHER_DIR)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(`${b.PAPERCLIP_GITHUB_LAUNCHER_DIR}/git`, "utf8")).toContain("PAPERCLIP_GITHUB_BROKER_URL");
+      await cleanupGitHubOperationLaunchers(first); // teardown replay is harmless
+    } finally {
+      await cleanupGitHubOperationLaunchers(first);
+      await cleanupGitHubOperationLaunchers(second);
+    }
+  });
+
+  it("bounds remote cleanup to one run and rejects traversal", async () => {
+    const runner = { execute: vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false,
+      stdout: "", stderr: "", pid: null, startedAt: new Date().toISOString() })) };
+    const target = { kind: "remote" as const, transport: "sandbox" as const,
+      providerKey: "e2b", remoteCwd: "/remote/workspace", runner };
+    await cleanupGitHubOperationLaunchers({ runId: "finished-run", target });
+    expect(runner.execute).toHaveBeenCalledWith({ command: "sh",
+      args: ["-c", "rm -rf -- '/remote/workspace/.paperclip-runtime/github/finished-run'"],
+      cwd: "/remote/workspace", timeoutMs: 5_000 });
+    await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
+    expect(runner.execute).toHaveBeenCalledTimes(1);
   });
 });

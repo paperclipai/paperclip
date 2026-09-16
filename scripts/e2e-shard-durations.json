@@ -1,5 +1,5 @@
 {
-  "$comment": "Per-spec wall-clock durations (ms) for the Playwright e2e lane, used by scripts/e2e-shard.mjs to balance specs across the PR shard matrix. Averaged from two real PR runs of .github/workflows/pr.yml (actions runs 29775184389 and 29769465682, 2026-07-20). Specs missing here get the median weight, so the manifest only needs occasional refreshes: pull the 'Run e2e tests' logs from a recent PR run and sum the Playwright list-reporter durations per spec file.",
+  "$comment": "Per-spec wall-clock durations (ms) for the Playwright e2e lane, used by scripts/e2e-shard.mjs to balance specs across the PR shard matrix. Averaged from two real PR runs of .github/workflows/pr.yml (actions runs 29775184389 and 29769465682, 2026-07-20). The split Smoke Lab weights scale its prior 168s CI duration by the measured local before/after ratio and scenario count; refresh them from the next two real PR runs. Specs missing here get the median weight, so the manifest only needs occasional refreshes: pull the 'Run e2e tests' logs from a recent PR run and sum the Playwright list-reporter durations per spec file.",
   "unit": "ms",
   "durations": {
     "tests/e2e/app-not-connected.spec.ts": 26750,
@@ -15,6 +15,7 @@
     "tests/e2e/planning-mode-visual-verification.spec.ts": 23250,
     "tests/e2e/sidebar-takeover.spec.ts": 16650,
     "tests/e2e/signoff-policy.spec.ts": 9696,
-    "tests/e2e/smoke-lab.spec.ts": 168000
+    "tests/e2e/smoke-lab-p1-p4.spec.ts": 71000,
+    "tests/e2e/smoke-lab-p5-p7.spec.ts": 53000
   }
 }

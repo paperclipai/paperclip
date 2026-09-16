@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Capability normative capability inventory or legacy alias index",
+  "type": "object",
+  "required": ["schemaVersion", "inventoryRole", "generatedFrom", "rows"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "inventoryRole": { "enum": ["normative", "legacy_alias_index"] },
+    "generatedFrom": { "type": ["string", "array"] },
+    "normativeSources": { "type": "array", "items": { "enum": ["capabilities", "evaluations"] } },
+    "rows": { "type": "array" }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "inventoryRole": { "const": "normative" },
+        "rows": { "type": "array", "items": { "$ref": "#/$defs/normativeRow" } }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["normativeSources"],
+      "properties": {
+        "inventoryRole": { "const": "legacy_alias_index" },
+        "rows": { "type": "array", "items": { "$ref": "#/$defs/legacyAliasRow" } }
+      }
+    }
+  ],
+  "$defs": {
+    "traceabilityRow": {
+      "type": "object",
+      "required": ["id", "sourceAnchor", "expectedSemantics"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "sourceAnchor": { "type": "string", "minLength": 1 },
+        "expectedSemantics": { "type": ["string", "array"] }
+      }
+    },
+    "normativeRow": {
+      "allOf": [
+        { "$ref": "#/$defs/traceabilityRow" },
+        {
+          "type": "object",
+          "required": ["primaryDisposition", "requiredGrants", "assertionClasses", "evidenceIds"],
+          "properties": {
+            "primaryDisposition": {
+              "enum": ["control_plane_owned", "always_agent_tool", "optional_agent_tool"]
+            },
+            "requiredGrants": { "type": "array", "items": { "type": "string" } },
+            "assertionClasses": { "type": "array", "items": { "type": "string" } },
+            "evidenceIds": { "type": "array", "items": { "type": "string" } },
+            "legacyMcpAliases": { "type": "array", "items": { "type": "string", "pattern": "^mcp:" } }
+          }
+        }
+      ]
+    },
+    "legacyAliasRow": {
+      "allOf": [
+        { "$ref": "#/$defs/traceabilityRow" },
+        {
+          "type": "object",
+          "required": ["name", "foldedInto", "evidenceId"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "foldedInto": { "type": "string", "pattern": "^(skill:|eval:)" },
+            "evidenceId": { "type": "string", "pattern": "^mcp:" },
+            "primaryDisposition": false
+          }
+        }
+      ]
+    }
+  }
+}

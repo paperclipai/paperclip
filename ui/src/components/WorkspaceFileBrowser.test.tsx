@@ -7,6 +7,7 @@ import type { Root } from "react-dom/client";
 import type { Project, ProjectWorkspace, WorkspaceFileListDirectoryItem, WorkspaceFileListFileItem, WorkspaceFileListItem, WorkspaceFileListResponse } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceFileBrowser, describeUnavailable } from "./WorkspaceFileBrowser";
+import { ApiError } from "@/api/client";
 
 function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> | undefined;
@@ -16,21 +17,25 @@ function act(callback: () => void | Promise<void>) {
   return result;
 }
 
+/**
+ * Waits on the condition, not on a fixed number of turns. A hand-rolled retry
+ * loop is ample on an idle machine and not when the suite runs many workers in
+ * parallel: it gives up after N turns and reports a failure on behaviour that
+ * works. `vi.waitFor` retries against a time budget, so a loaded worker gets
+ * more turns instead.
+ *
+ * Same replacement as #11499 and #11521, which fixed the shorter-budget
+ * instances of this in the routing tests.
+ *
+ * This was a reimplementation of `vi.waitFor` down to rethrowing the last
+ * error, differing only in bounding on turns rather than on time.
+ */
 async function waitForExpectation(assertion: () => void) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    }
-  }
-  throw lastError;
+  await vi.waitFor(assertion);
 }
 
 const useQueryMock = vi.fn();
+const cancelQueriesMock = vi.fn(() => Promise.resolve());
 const LIST_LIMIT = 100;
 
 vi.mock("@tanstack/react-query", async () => {
@@ -39,6 +44,7 @@ vi.mock("@tanstack/react-query", async () => {
     ...actual,
     useQuery: (options: unknown) => useQueryMock(options),
     useQueries: ({ queries }: { queries: unknown[] }) => queries.map((options) => useQueryMock(options)),
+    useQueryClient: () => ({ cancelQueries: cancelQueriesMock }),
   };
 });
 
@@ -202,6 +208,11 @@ describe("WorkspaceFileBrowser", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     useQueryMock.mockReset();
+    cancelQueriesMock.mockClear();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
     Object.defineProperty(Element.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),
@@ -226,6 +237,107 @@ describe("WorkspaceFileBrowser", () => {
     });
     return { root, onOpen };
   }
+
+  function changedListQueryOptions() {
+    return useQueryMock.mock.calls
+      .map(([options]) => options as {
+        queryKey?: readonly unknown[];
+        enabled?: boolean;
+        refetchOnWindowFocus?: boolean;
+        refetchOnReconnect?: boolean;
+      })
+      .filter((options) => options.queryKey?.[0] === "issues" && options.queryKey?.[3] === "list")
+      .at(-1);
+  }
+
+  it("does not enable changed-file enumeration before the Files panel opens", () => {
+    useQueryMock.mockReturnValue(ok(availableResponse([])));
+
+    renderBrowser(vi.fn(), { active: false });
+
+    expect(changedListQueryOptions()).toMatchObject({
+      enabled: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    });
+    expect(cancelQueriesMock).toHaveBeenCalledWith({
+      queryKey: ["issues", "file-resources", "issue-1", "list"],
+    });
+  });
+
+  it("disables and cancels changed-file enumeration while the page is hidden", () => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    useQueryMock.mockReturnValue(ok(availableResponse([])));
+
+    renderBrowser();
+
+    expect(changedListQueryOptions()?.enabled).toBe(false);
+    expect(cancelQueriesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an active changed-file query when the page becomes hidden", () => {
+    useQueryMock.mockReturnValue(ok(availableResponse([])));
+    renderBrowser();
+    expect(changedListQueryOptions()?.enabled).toBe(true);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    expect(changedListQueryOptions()?.enabled).toBe(false);
+    expect(cancelQueriesMock).toHaveBeenCalledWith({
+      queryKey: ["issues", "file-resources", "issue-1", "list"],
+    });
+  });
+
+  it("runs one explicit refresh without enabling focus or reconnect bursts", () => {
+    const refetch = vi.fn();
+    useQueryMock.mockReturnValue({
+      ...ok(availableResponse([createItem()])),
+      refetch,
+    });
+
+    renderBrowser();
+    const refresh = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh workspace files"]');
+    expect(refresh).not.toBeNull();
+    act(() => refresh!.click());
+
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(changedListQueryOptions()).toMatchObject({
+      enabled: true,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    });
+  });
+
+  it.each([
+    [503, "workspace_git_scan_saturated"],
+    [504, "workspace_git_scan_timeout"],
+  ] as const)("renders %s changed-file failures as a retryable state", (status, code) => {
+    const refetch = vi.fn();
+    useQueryMock.mockReturnValue({
+      data: undefined,
+      isFetching: false,
+      isError: true,
+      error: new ApiError("temporarily unavailable", status, { code }),
+      refetch,
+    });
+
+    renderBrowser();
+
+    expect(container.textContent).toContain("Changed files temporarily unavailable");
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Retry"));
+    expect(retry).not.toBeUndefined();
+    act(() => retry!.click());
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
 
   it("renders the Recently changed files as a tree and opens a row with its relative path", () => {
     useQueryMock.mockReturnValue(

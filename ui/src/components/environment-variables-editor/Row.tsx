@@ -186,7 +186,7 @@ export function EnvironmentVariableRow({
     row.source === "text"
       ? "Text value"
       : row.source === "secret"
-        ? "Company secret reference"
+        ? "Organization secret reference"
         : "User secret reference";
   const nameErrorId = `${row.id}-name-error`;
   const healthId = `${row.id}-health`;
@@ -284,8 +284,8 @@ export function EnvironmentVariableRow({
                     <span className="text-(length:--text-micro) text-muted-foreground">Store the value inline as plain text.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("secret")}>
-                    <span className="text-sm">Company secret</span>
-                    <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored company secret at run start.</span>
+                    <span className="text-sm">Organization secret</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored organization secret at run start.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("user_secret")}>
                     <span className="text-sm">User secret</span>

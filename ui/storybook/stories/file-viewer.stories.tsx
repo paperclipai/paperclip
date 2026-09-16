@@ -494,11 +494,7 @@ export const TooLargeToPreview: Story = {
 
 export const MobileView: Story = {
   name: "Mobile — 390×844 highlighted line",
-  parameters: {
-    viewport: {
-      defaultViewport: "mobile",
-    },
-  },
+  globals: { viewport: { value: "mobile" } },
   render: () => {
     const resource = buildResource();
     const content = buildContent(resource);

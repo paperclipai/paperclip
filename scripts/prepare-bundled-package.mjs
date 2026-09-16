@@ -35,6 +35,8 @@ export function createBundledInstallManifest(publishManifest, bundledDependencie
   const bundledDependencyNames = new Set(bundledDependencies);
   const installManifest = structuredClone(publishManifest);
 
+  delete installManifest.devDependencies;
+
   for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
     if (!installManifest[section]) continue;
     installManifest[section] = Object.fromEntries(
@@ -48,30 +50,93 @@ export function createBundledInstallManifest(publishManifest, bundledDependencie
 
 function patchedDependencyPackageName(specifier) {
   const versionSeparator = specifier.lastIndexOf("@");
-  return versionSeparator > 0 ? specifier.slice(0, versionSeparator) : specifier;
+  const packageNameEnd = specifier.startsWith("@") ? specifier.indexOf("/") : 0;
+  if (packageNameEnd < 0) return specifier;
+  return versionSeparator > packageNameEnd ? specifier.slice(0, versionSeparator) : specifier;
 }
 
-export function applyBundledDependencyPatches(destinationDir, bundledDependencies) {
-  const rootPackage = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
-  const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
-  const bundledDependencyNames = new Set(bundledDependencies);
-
+export function selectBundledDependencyPatches(
+  destinationDir,
+  bundledDependencies,
+  patchedDependencies,
+) {
+  const patchesByPackageName = new Map();
   for (const [specifier, patchPath] of Object.entries(patchedDependencies)) {
     const packageName = patchedDependencyPackageName(specifier);
-    if (!bundledDependencyNames.has(packageName)) continue;
+    const packagePatches = patchesByPackageName.get(packageName) ?? new Map();
+    packagePatches.set(specifier, patchPath);
+    patchesByPackageName.set(packageName, packagePatches);
+  }
 
+  const selectedPatches = [];
+  for (const packageName of new Set(bundledDependencies)) {
+    const packagePatches = patchesByPackageName.get(packageName);
+    if (!packagePatches) continue;
+
+    const installedManifestPath = resolve(
+      destinationDir,
+      "node_modules",
+      packageName,
+      "package.json",
+    );
+    let installedManifest;
+    try {
+      installedManifest = JSON.parse(readFileSync(installedManifestPath, "utf8"));
+    } catch (cause) {
+      throw new Error(
+        `Cannot select a patch for bundled dependency ${packageName}: failed to read ${installedManifestPath}`,
+        { cause },
+      );
+    }
+
+    if (
+      installedManifest.name !== packageName ||
+      typeof installedManifest.version !== "string" ||
+      installedManifest.version.length === 0
+    ) {
+      throw new Error(
+        `Cannot select a patch for bundled dependency ${packageName}: installed package manifest must declare the expected name and a version`,
+      );
+    }
+
+    const installedSpecifier = `${packageName}@${installedManifest.version}`;
+    const patchPath = packagePatches.get(installedSpecifier);
+    if (patchPath === undefined) {
+      const configuredSpecifiers = [...packagePatches.keys()].sort().join(", ");
+      throw new Error(
+        `Cannot select a patch for bundled dependency ${packageName}: installed ${installedSpecifier}, but configured patches are ${configuredSpecifiers}`,
+      );
+    }
+    if (typeof patchPath !== "string" || patchPath.length === 0) {
+      throw new Error(`Patch path for ${installedSpecifier} must be a non-empty string`);
+    }
+    selectedPatches.push({ packageName, specifier: installedSpecifier, patchPath });
+  }
+
+  return selectedPatches;
+}
+
+export function applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot = repoRoot) {
+  const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
+  const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
+
+  for (const { packageName, patchPath } of selectBundledDependencyPatches(
+    destinationDir,
+    bundledDependencies,
+    patchedDependencies,
+  )) {
     execFileSync(
       "patch",
       ["-p1", "--forward", "-d", resolve(destinationDir, "node_modules", packageName)],
       {
-        input: readFileSync(resolve(repoRoot, patchPath)),
+        input: readFileSync(resolve(sourceRoot, patchPath)),
         stdio: ["pipe", "inherit", "inherit"],
       },
     );
   }
 }
 
-export function prepareBundledPackage(sourceDir, destinationDir) {
+export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = repoRoot } = {}) {
   const sourcePackagePath = resolve(sourceDir, "package.json");
   const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, "utf8"));
   const bundledDependencies = sourcePackage.bundleDependencies ?? sourcePackage.bundledDependencies ?? [];
@@ -101,15 +166,25 @@ export function prepareBundledPackage(sourceDir, destinationDir) {
     { cwd: destinationDir, stdio: "inherit" },
   );
   writeFileSync(deployedPackagePath, `${JSON.stringify(publishManifest, null, 2)}\n`);
-  applyBundledDependencyPatches(destinationDir, bundledDependencies);
+  applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot);
 
-  if (
-    bundledDependencies.includes("acpx") &&
-    !readFileSync(resolve(destinationDir, "node_modules/acpx/dist/runtime.js"), "utf8").includes(
-      "onAgentStderr",
-    )
-  ) {
-    throw new Error("staged acpx runtime is missing the repository patch");
+  if (bundledDependencies.includes("acpx")) {
+    const acpxPackage = JSON.parse(
+      readFileSync(resolve(destinationDir, "node_modules/acpx/package.json"), "utf8"),
+    );
+    const expectedPatchMarker = {
+      "0.12.0": "onAgentStderr",
+      "0.13.1": "spawnEnvironment",
+    }[acpxPackage.version];
+    const acpxRuntime = readFileSync(
+      resolve(destinationDir, "node_modules/acpx/dist/runtime.js"),
+      "utf8",
+    );
+    if (!expectedPatchMarker || !acpxRuntime.includes(expectedPatchMarker)) {
+      throw new Error(
+        `staged acpx@${acpxPackage.version} runtime is missing the repository patch`,
+      );
+    }
   }
 
   if (bundledDependencies.includes("embedded-postgres")) {

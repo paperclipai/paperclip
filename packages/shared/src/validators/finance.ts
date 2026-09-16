@@ -2,12 +2,12 @@ import { z } from "zod";
 import { AGENT_ADAPTER_TYPES, FINANCE_DIRECTIONS, FINANCE_EVENT_KINDS, FINANCE_UNITS } from "../constants.js";
 
 export const createFinanceEventSchema = z.object({
-  agentId: z.string().uuid().optional().nullable(),
-  issueId: z.string().uuid().optional().nullable(),
-  projectId: z.string().uuid().optional().nullable(),
-  goalId: z.string().uuid().optional().nullable(),
-  heartbeatRunId: z.string().uuid().optional().nullable(),
-  costEventId: z.string().uuid().optional().nullable(),
+  agentId: z.string().guid().optional().nullable(),
+  issueId: z.string().guid().optional().nullable(),
+  projectId: z.string().guid().optional().nullable(),
+  goalId: z.string().guid().optional().nullable(),
+  heartbeatRunId: z.string().guid().optional().nullable(),
+  costEventId: z.string().guid().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   description: z.string().max(500).optional().nullable(),
   eventKind: z.enum(FINANCE_EVENT_KINDS),

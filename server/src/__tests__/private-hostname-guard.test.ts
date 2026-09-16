@@ -48,7 +48,7 @@ describe("privateHostnameGuard", () => {
     expect(res.status).toBe(403);
     // The remediation command carries a static `<host>` placeholder. It never
     // interpolates the request Host header into the command.
-    expect(res.body?.error).toContain("run pnpm exec paperclipai allowed-hostname <host>");
+    expect(res.body?.error).toContain("run npx paperclipai allowed-hostname <host>");
     expect(res.body?.error).not.toContain(unknownHostname);
   });
 
@@ -76,7 +76,7 @@ describe("privateHostnameGuard", () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.send).toHaveBeenCalledWith(
-      expect.stringContaining("run pnpm exec paperclipai allowed-hostname <host>"),
+      expect.stringContaining("run npx paperclipai allowed-hostname <host>"),
     );
     expect(res.send).not.toHaveBeenCalledWith(expect.stringContaining(unknownHostname));
   }, 20_000);
@@ -91,7 +91,7 @@ describe("privateHostnameGuard", () => {
     const app = createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
     const res = await request(app).get("/api/health").set("Host", hostileHost);
     expect(res.status).toBe(403);
-    expect(res.body?.error).toContain("run pnpm exec paperclipai allowed-hostname <host>");
+    expect(res.body?.error).toContain("run npx paperclipai allowed-hostname <host>");
     expect(res.body?.error).not.toContain("evil");
     expect(res.body?.error).not.toContain("$(");
     expect(res.body?.error).not.toContain("marker");

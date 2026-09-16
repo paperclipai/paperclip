@@ -36,6 +36,7 @@ function event(overrides: Partial<ToolGatewayActivityEvent> = {}): ToolGatewayAc
     },
     createdAt: new Date(Date.now() - 5 * MIN).toISOString(),
     ...overrides,
+    invocation: overrides.invocation ?? null,
   };
 }
 

@@ -1,4 +1,5 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
+import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 
 const BASE = "/api";
 
@@ -19,6 +20,9 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Extra request headers (e.g. the async-import opt-in). Mutations only. */
   headers?: Record<string, string>;
+  /** The `fetch` cache mode. Use `"no-store"` for a response that must never
+   *  come from the browser's HTTP cache. */
+  cache?: RequestCache;
 }
 
 function abortError(): DOMException {
@@ -53,6 +57,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
+    const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, errorBody);
+    if (recovery) return recovery;
     throw new ApiError(
       (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
       res.status,
@@ -85,7 +91,11 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   let entry = inflightGets.get(path);
   if (!entry) {
     const controller = new AbortController();
-    const promise = request<T>(path, { method: "GET", signal: controller.signal });
+    const promise = request<T>(path, {
+      method: "GET",
+      signal: controller.signal,
+      ...(options?.cache ? { cache: options.cache } : {}),
+    });
     const created: InflightGet = { promise, controller, refs: new Set() };
     // Clear the shared entry once settled so later calls issue a fresh request.
     promise.then(
@@ -134,6 +144,19 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
       },
     );
   });
+}
+
+/**
+ * Stop later callers from joining the in-flight GET for `path`.
+ *
+ * Coalescing keys on the path alone, so a GET issued under one account's session
+ * can be joined by a caller that runs after the account changed — and handed the
+ * previous account's response. Detaching leaves that request to settle for the
+ * callers that asked for it, and makes the next call issue a fresh one. It does
+ * not abort, because those callers still want what they asked for.
+ */
+export function detachInflightGet(path: string): void {
+  inflightGets.delete(path);
 }
 
 /** Test-only: number of in-flight coalesced GET keys. */

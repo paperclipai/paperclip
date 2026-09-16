@@ -131,17 +131,17 @@ fleet with ChatGPT-subscription credentials.
   classification in rather than making `codex-home.ts` inspect execution
   targets on its own.
 
-Because the warning touches authentication behavior, implementation must go
-through the security-review gate. Treat this docs section as the follow-up
-implementation spec, not as authorization to add the warning in a docs-only
-change.
+Because the warning touches authentication behavior, its implementation
+needs a maintainer security review before merge. Treat this docs section as
+the follow-up implementation spec, not as authorization to add the warning in
+a docs-only change.
 
 ## Manual Local CLI
 
 For manual local CLI usage outside heartbeat runs (for example running as `codexcoder` directly), use:
 
 ```sh
-pnpm exec paperclipai agent local-cli codexcoder --company-id <company-id>
+npx paperclipai agent local-cli codexcoder --company-id <company-id>
 ```
 
 This installs any missing skills, creates an agent API key, and prints shell exports to run as that agent.

@@ -42,7 +42,7 @@ pnpm paperclipai onboard
 Allow custom Tailscale hostnames:
 
 ```sh
-pnpm exec paperclipai allowed-hostname my-machine
+npx paperclipai allowed-hostname my-machine
 ```
 
 ### `authenticated` + `public`
