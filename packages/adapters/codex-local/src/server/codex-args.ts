@@ -36,6 +36,7 @@ export function buildCodexExecArgs(
   options: {
     resumeSessionId?: string | null;
     skipGitRepoCheck?: boolean;
+    preserveSandboxEnvironment?: boolean;
     networkAccess?: boolean;
   } = {},
 ): BuildCodexExecArgsResult {
@@ -84,6 +85,9 @@ export function buildCodexExecArgs(
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
   if (extraArgs.length > 0) args.push(...extraArgs);
+  if (options.preserveSandboxEnvironment) {
+    args.push("-c", "allow_login_shell=false", "-c", "features.shell_snapshot=false");
+  }
   if (!bypass && options.networkAccess === false) {
     args.push("-c", "sandbox_workspace_write.network_access=false");
   }

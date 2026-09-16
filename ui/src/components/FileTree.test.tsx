@@ -85,7 +85,21 @@ describe("FileTree", () => {
     const input = row("docs")?.querySelector("input[type='checkbox']") as HTMLInputElement | null;
     expect(input?.checked).toBe(false);
     expect(input?.indeterminate).toBe(true);
+    expect(input?.getAttribute("aria-label")).toBe("Select docs");
+    expect(row("docs/a.md")?.querySelector("input")?.getAttribute("aria-label")).toBe("Select docs/a.md");
     expect(row("docs")?.getAttribute("aria-checked")).toBe("mixed");
+  });
+
+  it.each([false, true])("includes empty directories in selection only when enabled (%s)", (includeDirectoriesInSelection) => {
+    act(() => {
+      root.render(<FileTree
+        nodes={[{ name: "empty", path: "empty", kind: "dir", children: [] }]}
+        selectedFile={null} expandedDirs={new Set()} checkedFiles={new Set(["empty"])}
+        onSelectFile={() => {}} onToggleDir={() => {}}
+        includeDirectoriesInSelection={includeDirectoriesInSelection}
+      />);
+    });
+    expect((row("empty")?.querySelector("input") as HTMLInputElement).checked).toBe(includeDirectoriesInSelection);
   });
 
   it("renders file badges and host-only file extras", () => {

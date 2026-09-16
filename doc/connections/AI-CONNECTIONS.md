@@ -135,7 +135,15 @@ Already-started native sessions retain their existing same-run recovery path;
 they must not be replaced by a fresh execution with a pre-provider receipt.
 
 Session reuse includes grant identity, responsible user, and credential
-generation. A changed identity starts a fresh provider session. Managed native
+generation. For recognized Codex subscription credentials, generation describes
+the account and principal rather than rotating tokens or token timestamps.
+Same-account token refresh and generated authentication-home paths therefore
+preserve the session; changes to the principal, account, permissions, model, or
+user configuration still invalidate it. Opaque credentials and API keys retain
+credential-byte change detection. The prior raw-hash identity is accepted only
+when it matches the exact currently authorized credential, allowing that identity
+format to upgrade without treating an older or different credential as equivalent.
+A changed identity starts a fresh provider session. Managed native
 executions use per-turn lifecycle cleanup; a suspended native execution whose
 credential identity changed must restart as a new execution.
 

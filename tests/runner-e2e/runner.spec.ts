@@ -15,6 +15,7 @@ import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, type MatcherResult } from "./matchers.js";
 import {
   acceptedPlanSessionResetFailures,
+  hasConsistentPrpEventVersion,
   hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
@@ -23,6 +24,10 @@ import {
   providerSessionContinuityFailures,
 } from "./run-observations.js";
 import { resolveRunnerE2ESource } from "./source.js";
+import {
+  nativeWarmProcessFailures,
+  readWarmWorkspaceFile,
+} from "./warm-workspace.js";
 import {
   isPublicRunnerScreenshotRoute,
   PUBLIC_RUNNER_SCREENSHOT_MARKER,
@@ -146,6 +151,7 @@ interface IssueDocumentRecord {
 }
 interface RunEventRecord {
   seq?: number;
+  stream?: string | null;
   eventType?: string;
   payload?: Record<string, unknown> | null;
   sourceInstanceId?: string | null;
@@ -389,12 +395,8 @@ function nativeRunEventIntegrityFailures(
     }
     const envelope = record(event.payload?.prpEvent);
     if (Object.keys(envelope).length === 0) continue;
-    if (
-      envelope.schema !== "paperclip.prp.event.v1" ||
-      envelope.schemaVersion !== 1 ||
-      event.protocolSchemaVersion !== 1
-    ) {
-      failures.push(`run ${run.id} exposed a malformed PRP v1 envelope`);
+    if (!hasConsistentPrpEventVersion(envelope, event.protocolSchemaVersion)) {
+      failures.push(`run ${run.id} exposed a malformed PRP envelope`);
     }
     if (envelope.runId !== run.id) {
       failures.push(
@@ -737,10 +739,13 @@ for (const execution of executions) {
     });
 
     try {
+      // Each isolated campaign selects its generation explicitly; the app's
+      // default can change without changing which runtime this cell exercises.
+      const enableNativeRunner = execution.profile.generation === "native";
       const experimental = await api.patch<{
         enableNativeRunner: boolean;
       }>("/api/instance/settings/experimental", {
-        enableNativeRunner: true,
+        enableNativeRunner,
         ...(["warm_three_turn", "everyday_workflow"].includes(execution.task.flow)
           ? { enableIsolatedWorkspaces: true }
           : {}),
@@ -749,7 +754,12 @@ for (const execution of executions) {
           ? { enableRunnerPreviewIngress: true }
           : {}),
       });
-      expect(experimental.enableNativeRunner).toBe(true);
+      expect(experimental.enableNativeRunner).toBe(enableNativeRunner);
+
+      const configuredExperimental = await api.get<{
+        enableNativeRunner: boolean;
+      }>("/api/instance/settings/experimental");
+      expect(configuredExperimental.enableNativeRunner).toBe(enableNativeRunner);
 
       fixtures = await setupLiveFixtures({
         api,
@@ -1322,10 +1332,6 @@ for (const execution of executions) {
             `Warm fixture ${execution.task.id} is missing its project or follow-up messages`,
           );
         }
-        const workspaceFile = path.join(
-          workspacePath,
-          `daytona-warm-${nonce}.txt`,
-        );
         const turnEvidence: Array<Record<string, unknown>> = [];
         for (const completedTurn of [1, 2] as const) {
           const turnDeadlineAt = Math.min(
@@ -1360,10 +1366,16 @@ for (const execution of executions) {
             { length: completedTurn },
             (_, index) => `T${index + 1}-${nonce}`,
           ).join("\n")}\n`;
-          const hostContent = await readFile(workspaceFile, "utf8");
-          if (hostContent !== expectedPrefix) {
+          const fileObservation = await readWarmWorkspaceFile({
+            api,
+            run: sortRunsChronologically(waitingState.taskRuns).at(-1)!,
+            issueId: issue.id,
+            workspacePath,
+            filename: `daytona-warm-${nonce}.txt`,
+          });
+          if (fileObservation.content !== expectedPrefix) {
             throw new Error(
-              `Host workspace was not finalized after warm turn ${completedTurn}: expected ${JSON.stringify(expectedPrefix)}, observed ${JSON.stringify(hostContent)}`,
+              `Warm workspace was not finalized after turn ${completedTurn} (${fileObservation.source}): expected ${JSON.stringify(expectedPrefix)}, observed ${JSON.stringify(fileObservation.content)}`,
             );
           }
           if (
@@ -1459,7 +1471,7 @@ for (const execution of executions) {
             turn: completedTurn,
             issue: waitingState.currentIssue,
             run: chronologicalRuns.at(-1),
-            hostContent,
+            fileObservation,
             leases: completedLeases,
           });
           await page.goto(
@@ -1826,12 +1838,22 @@ for (const execution of executions) {
             )
             .map(async (matcher) => [
               matcher.path,
-              await readFile(
-                path.isAbsolute(matcher.path)
-                  ? matcher.path
-                  : path.join(workspacePath, matcher.path),
-                "utf8",
-              ).catch(() => undefined),
+              execution.task.flow === "warm_three_turn"
+                ? (
+                    await readWarmWorkspaceFile({
+                      api,
+                      run: finalRun,
+                      issueId: issue!.id,
+                      workspacePath,
+                      filename: matcher.path,
+                    })
+                  ).content
+                : await readFile(
+                    path.isAbsolute(matcher.path)
+                      ? matcher.path
+                      : path.join(workspacePath, matcher.path),
+                    "utf8",
+                  ).catch(() => undefined),
             ]),
         ),
       );
@@ -1957,6 +1979,9 @@ for (const execution of executions) {
           );
         }
         if (execution.profile.generation === "native") {
+          invariantFailures.push(
+            ...nativeWarmProcessFailures(selectedRuns, runEventsByRun),
+          );
           const stableIdentityFields: Array<{
             label: string;
             values: unknown[];
@@ -1976,16 +2001,6 @@ for (const execution of executions) {
             {
               label: "provider session",
               values: selectedRuns.map((candidate) => candidate.sessionIdAfter),
-            },
-            {
-              label: "runner pid",
-              values: selectedRuns.map((candidate) => candidate.processPid),
-            },
-            {
-              label: "runner process fingerprint",
-              values: selectedRuns.map(
-                (candidate) => candidate.processStartedAt,
-              ),
             },
           ];
           for (const { label, values } of stableIdentityFields) {

@@ -405,7 +405,6 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     }
     if (profile.provider === "acpx") {
       try {
-        if (profile.acpxAgent !== "claude") throw new Error("Select Codex to use the native Codex runner.");
         const target = context.executionTarget;
         if (target?.kind === "remote") {
           const probe = await runAdapterExecutionTargetShellCommand(
@@ -414,13 +413,20 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           );
           if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
           const [os, arch] = probe.stdout.trim().split(/\s+/);
-          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
-            throw new Error("ACPX Claude requires Linux x64 or macOS ARM64/x64.");
+          if (!((os === "Linux" && arch === "x86_64") || (profile.acpxAgent === "claude" && os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
+            throw new Error(`ACPX ${profile.acpxAgent} requires Linux x64${profile.acpxAgent === "claude" ? " or macOS ARM64/x64" : ""}.`);
           }
           return {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
             checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
+          };
+        }
+        if (profile.acpxAgent !== "claude") {
+          return {
+            adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "acpx_runtime_unverified", level: "warn" as const,
+              message: `The ACPX ${profile.acpxAgent} profile is qualified. Runtime package integrity, platform support, and readiness must still be verified by the runner before launch.` }],
           };
         }
         const { probeAcpxClaudeInstallation } = await import("@paperclipai/paperclip-runner/live");
@@ -510,7 +516,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.153.4"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or a qualified Claude/Codex/Pi ACP agent through the Rust Paperclip runner and authenticated PRP transport. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {
@@ -523,7 +529,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
           { value: "claude_managed", label: "Claude Managed" },
           { value: "aws_agentcore", label: "AWS AgentCore" },
-          { value: "acpx", label: "ACPX Claude" },
+          { value: "acpx", label: "ACPX" },
         ],
         hint: "Select a local provider, company-qualified managed provider, or ACPX Claude.",
       },
@@ -558,6 +564,19 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           ({ value, label }) => ({ value, label }),
         ),
         hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.description,
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      },
+      {
+        key: "acpxAgent",
+        label: "ACP agent",
+        type: "select" as const,
+        default: "claude",
+        options: [
+          { value: "claude", label: "Claude via ACPX" },
+          { value: "codex", label: "Codex via ACPX" },
+          { value: "pi", label: "Pi via ACPX" },
+        ],
+        hint: "Uses the pinned Claude, Codex, or Pi profile.",
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       },
       {

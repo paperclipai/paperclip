@@ -192,31 +192,58 @@ export async function buildExecutionContinuation(input: {
   const deliveredMessages = Array.isArray(priorEnvelope.messages)
     ? priorEnvelope.messages.map(object)
     : null;
+  const wasDelivered = (message: (typeof messages)[number]) =>
+    deliveredMessages?.some((prior) =>
+      prior.id === message.id && prior.updatedAt === message.updatedAt &&
+      prior.body === message.body && prior.deleted === message.deleted &&
+      prior.authorId === message.authorId &&
+      (prior.createdByRunId ?? null) === message.createdByRunId &&
+      JSON.stringify(prior.sourceTrust) === JSON.stringify(message.sourceTrust),
+    ) ?? false;
   const resumeDelta =
     deliveredMessages && input.previousContextRunId
       ? {
           baseRunId: input.previousContextRunId,
-          messages: messages.filter(
-            (message) =>
-              originCommentIds.includes(message.id) ||
-              !deliveredMessages.some(
-                (prior) =>
-                  prior.id === message.id &&
-                  prior.updatedAt === message.updatedAt &&
-                  prior.body === message.body &&
-                  prior.deleted === message.deleted &&
-                  prior.authorId === message.authorId &&
-                  (prior.createdByRunId ?? null) === message.createdByRunId &&
-                  JSON.stringify(prior.sourceTrust) ===
-                    JSON.stringify(message.sourceTrust),
-              ),
+          messages: messages.filter((message) =>
+            originCommentIds.includes(message.id) || !wasDelivered(message),
           ),
         }
       : undefined;
-  const latestRequest = messages.findLast(
-    (row) =>
-      row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
+  const userRequests = messages.filter((row) =>
+    row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
   );
+  const latestRequest = userRequests.at(-1);
+  // Keep history in creation order, but edits are new direction. Among changed
+  // requests, the latest edit wins even when its comment was created earlier.
+  const changedRequests = userRequests.filter((message) => !wasDelivered(message))
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) ||
+      a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  // Description edits create no comment. Do not promote an already delivered
+  // historical comment over the current brief, including on a second resume.
+  const wakeCommentIds = continuationOriginCommentIds({
+    commentId: input.context.commentId,
+    latestCommentId: input.context.latestCommentId,
+    commentIds: input.context.commentIds,
+    wakeCommentIds: input.context.wakeCommentIds,
+  });
+  const userWakeRequest = changedRequests.findLast((message) =>
+    wakeCommentIds.includes(message.id),
+  );
+  const previousIssue = object(previousRun?.context?.paperclipIssue);
+  const briefUnchanged = Object.hasOwn(previousIssue, "description") &&
+    previousIssue.description === issue.description;
+  const newUserDirection = deliveredMessages ? changedRequests.at(-1) : undefined;
+  const previousObjective = string(priorEnvelope.objective);
+  // Never revive deleted, edited, or newly quarantined text from a prior run.
+  const priorObjectiveStillCurrent = previousObjective === issue.description ||
+    messages.some((message) => message.authorType === "user" && !message.createdByRunId &&
+      !message.deleted && message.body === previousObjective);
+  const objective = (userWakeRequest || triggerInteraction || issue.conversationAgentId ||
+    (briefUnchanged && newUserDirection))
+    ? (userWakeRequest ?? newUserDirection ?? latestRequest)?.body ?? issue.description ?? issue.title
+    : briefUnchanged && previousObjective && priorObjectiveStillCurrent
+      ? previousObjective
+      : issue.description ?? latestRequest?.body ?? issue.title;
   const priorRuns = await db
     .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, runtimeMode: heartbeatRuns.runtimeMode, retryOfRunId: heartbeatRuns.retryOfRunId })
     .from(heartbeatRuns)
@@ -332,7 +359,7 @@ export async function buildExecutionContinuation(input: {
       sourceRunId,
     },
     originCommentIds,
-    objective: latestRequest?.body ?? issue.description ?? issue.title,
+    objective,
     messages,
     interactionOutcomes: interactions
       .filter((row) => row.status !== "pending")

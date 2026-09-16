@@ -5,6 +5,13 @@ import {
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
+  it("defaults cached task file inspection off and accepts opt-in and opt-out patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableCachedTaskFiles).toBe(false);
+    for (const enableCachedTaskFiles of [true, false]) {
+      expect(patchInstanceExperimentalSettingsSchema.parse({ enableCachedTaskFiles })).toEqual({ enableCachedTaskFiles });
+    }
+  });
+
   it("defaults chat connectors off independently of Apps and accepts only explicit boolean patches", () => {
     expect(instanceExperimentalSettingsSchema.parse({}).enableChatConnectors).toBe(false);
     expect(instanceExperimentalSettingsSchema.parse({ enableApps: true }).enableChatConnectors).toBe(false);

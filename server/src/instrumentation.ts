@@ -126,6 +126,7 @@ export function getStartupTracer(name = "paperclip.startup"): StartupTracerHandl
 export interface StartupTraceContextHandle {
   readonly tracer: StartupTracerHandle;
   contextWithSpan(span: unknown): unknown;
+  withContext?<T>(context: unknown, work: () => T): T;
 }
 
 /**
@@ -158,7 +159,7 @@ export function getStartupTraceContext(name = "paperclip.startup"): StartupTrace
         getTracer(n: string): StartupTracerHandle;
         setSpan(context: unknown, span: unknown): unknown;
       };
-      context?: { active(): unknown };
+      context?: { active(): unknown; with?<T>(context: unknown, work: () => T): T };
     };
     const trace = api.trace;
     const context = api.context;
@@ -171,6 +172,7 @@ export function getStartupTraceContext(name = "paperclip.startup"): StartupTrace
       // Keep the method calls on `trace` / `context` so the api singletons stay
       // their own receiver.
       contextWithSpan: (span: unknown) => trace.setSpan(context.active(), span),
+      withContext: <T>(token: unknown, work: () => T): T => context.with ? context.with(token, work) : work(),
     };
   } catch (err) {
     if (!traceContextApiLoadFailed) {

@@ -45,7 +45,7 @@ const runnerdAcpxBackend = await readFile(
   "utf8",
 );
 const providerPackBuilder = await readFile(
-  new URL("../scripts/build-provider-pack.mjs", import.meta.url),
+  new URL("../scripts/assemble-provider-pack.mjs", import.meta.url),
   "utf8",
 );
 const nativeSessionExecutor = await readFile(

@@ -283,11 +283,6 @@ export class AcpxRuntimeHost {
     dependencies: AcpxRuntimeHostDependencies,
   ): Promise<AcpxRuntimeHost> {
     options.signal?.throwIfAborted();
-    if (options.agent === "pi") {
-      throw new Error(
-        "ACPX pi is unavailable until its runtime has descriptor-confined verified launch",
-      );
-    }
     const nativeMcp = nativeMcpLaunchBinding(options.environment);
     if (nativeMcp?.name === "paperclip") {
       throw new Error("assigned native MCP name conflicts with the task bridge");
@@ -427,7 +422,7 @@ export class AcpxRuntimeHost {
       }
       command = await acquireAbortableAdmissionResource({
         signal: options.signal,
-        acquire: () => installation.openCommand(),
+        acquire: () => installation.openCommand({ reusable: true }),
         resource: "command",
         releaseLate: (lateCommand) => lateCommand.close(),
         reportFailure: (failure) =>
@@ -467,7 +462,13 @@ export class AcpxRuntimeHost {
             permissionPolicy: acpxRuntimePermissionPolicy(
               binding.permissionMode,
             ),
-            launchEnvironment: sandbox.launchEnvironment,
+            launchEnvironment: profile.agent === "pi" && toolBridge
+              ? Object.freeze({
+                  ...sandbox.launchEnvironment,
+                  PAPERCLIP_PI_TOOL_BRIDGE_URL: toolBridge.url,
+                  PAPERCLIP_PI_TOOL_BRIDGE_TOKEN: toolBridge.secret,
+                })
+              : sandbox.launchEnvironment,
             credentialFenceFds: admittedLifetime.lifetimeFenceFds,
             activateCredentialFenceOwner:
               admittedLifetime.activateLifetimeOwner.bind(admittedLifetime),

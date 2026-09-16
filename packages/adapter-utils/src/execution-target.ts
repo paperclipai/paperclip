@@ -1,3 +1,5 @@
+import { executeCancellableSandboxCommand } from "./cancellable-sandbox-command.js";
+import { bindAdapterRunStop, throwIfAdapterRunCancelled } from "./adapter-run-cancellation.js";
 import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -178,6 +180,8 @@ export interface SandboxLeaseAcquisition {
 }
 
 export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
+  /** Host-selected work-folder home. Absent for local/old unmanaged execution. */
+  workFolderHome?: string;
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
@@ -204,6 +208,8 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   readonly reusableLeaseConfigured?: boolean;
   /** Host-observed provenance for this exact sandbox acquisition. */
   readonly sandboxLeaseAcquisition?: SandboxLeaseAcquisition | null;
+  /** Host-validated resume of an old task: retain its authoritative working copy. */
+  readonly legacyWorkspaceResume?: boolean;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
@@ -464,6 +470,15 @@ export function adapterExecutionTargetUsesManagedHome(
   return target?.kind === "remote" && target.transport === "sandbox";
 }
 
+/** Resolve the sandbox home without replacing a host-bound work-folder home. */
+export function adapterExecutionTargetManagedHomeDir(
+  target: AdapterExecutionTarget | null | undefined,
+  runtimeRootDir: string | null | undefined,
+): string | null {
+  if (target?.kind !== "remote" || target.transport !== "sandbox") return null;
+  return target.workFolderHome ?? runtimeRootDir ?? null;
+}
+
 /**
  * Read the per-run duplex bridge kill switch off a target. Only a sandbox
  * target with `enableSandboxDuplexBridge` set to `true` returns `true`. Every
@@ -505,6 +520,7 @@ export function overrideAdapterExecutionTargetRemoteCwd(
   target: AdapterExecutionTarget | null | undefined,
   remoteCwd: string | null | undefined,
 ): AdapterExecutionTarget | null | undefined {
+  if (target?.kind === "remote" && target.transport === "sandbox" && target.workFolderHome) return target;
   const nextRemoteCwd = remoteCwd?.trim();
   if (!target || target.kind !== "remote" || !nextRemoteCwd) {
     return target;
@@ -533,6 +549,7 @@ export function resolveAdapterExecutionTargetCwd(
   configuredCwd: string | null | undefined,
   localFallbackCwd: string,
 ): string {
+  if (target?.kind === "remote" && target.transport === "sandbox" && target.workFolderHome) return target.workFolderHome;
   if (typeof configuredCwd === "string" && configuredCwd.trim().length > 0) {
     return configuredCwd;
   }
@@ -859,6 +876,7 @@ export async function runAdapterExecutionTargetProcess(
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
+    throwIfAdapterRunCancelled(runId);
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
     await options.onRuntimeProgress?.({
@@ -873,10 +891,10 @@ export async function runAdapterExecutionTargetProcess(
       runLogTail.start(options.onLog);
     }
     try {
-      const result = await runner.execute({
+      const result = await executeCancellableSandboxCommand(runId, runner, {
         command: execCommand,
         args: execArgs,
-        cwd: target.remoteCwd,
+        cwd: target.workFolderHome ?? target.remoteCwd,
         env,
         stdin: options.stdin,
         timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
@@ -886,7 +904,7 @@ export async function runAdapterExecutionTargetProcess(
         onSpawn: options.onSpawn
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
-      });
+      }, options.graceSec * 1000);
       // Settle the duplex run disposition synchronously at the clean-completion
       // boundary, before the run-log tail finishes. The atomic settle marks the
       // host-observed orderly completion in one broker step, so a gateway exit
@@ -1308,6 +1326,9 @@ export function adapterExecutionTargetSessionIdentity(
     providerKey: target.providerKey ?? null,
     environmentId: target.environmentId ?? null,
     leaseId: target.leaseId ?? null,
+    ...(target.sandboxLeaseAcquisition?.providerLeaseId
+      ? { providerLeaseId: target.sandboxLeaseAcquisition.providerLeaseId }
+      : {}),
     remoteCwd: target.remoteCwd,
   };
 }
@@ -1326,7 +1347,9 @@ export function adapterExecutionTargetSessionMatches(
     readStringMeta(parsedSaved, "transport") === current?.transport &&
     readStringMeta(parsedSaved, "providerKey") === current?.providerKey &&
     readStringMeta(parsedSaved, "environmentId") === current?.environmentId &&
-    readStringMeta(parsedSaved, "leaseId") === current?.leaseId &&
+    (readStringMeta(parsedSaved, "providerLeaseId")
+      ? readStringMeta(parsedSaved, "providerLeaseId") === current?.providerLeaseId
+      : readStringMeta(parsedSaved, "leaseId") === current?.leaseId) &&
     readStringMeta(parsedSaved, "remoteCwd") === current?.remoteCwd
   );
 }
@@ -1499,14 +1522,16 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
-    syncWorkspace: input.syncWorkspace,
-    workspaceInboundMode: input.workspaceInboundMode,
+    syncWorkspace: target.workFolderHome ? false : input.syncWorkspace,
+    workspaceInboundMode: input.workspaceInboundMode
+      ?? (target.legacyWorkspaceResume ? "adopt_remote" : undefined),
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
-    assets: input.assets,
+    assets: input.assets?.map((asset) => target.workFolderHome && input.adapterKey.includes("codex") && asset.key === "home"
+      ? { ...asset, remoteDir: path.posix.join(target.workFolderHome, ".codex") } : asset),
     additionalSources: input.additionalSources,
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
@@ -1557,6 +1582,40 @@ export async function cleanupGitHubOperationLaunchers(input: GitHubLauncherLocat
     if (result.exitCode !== 0) throw new Error("Could not clean managed GitHub launchers");
   } else {
     await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+// This retry boundary is deliberately private to host-owned launcher setup.
+// A lost reply can follow a completed write: staging locks, verifies the hash,
+// and atomically replaces the same run-specific file with identical bytes.
+async function prepareGitHubLauncherWithRetry<T>(runId: string, operation: (timeoutMs: number) => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 15_000;
+  for (let attempt = 0; ; attempt++) {
+    throwIfAdapterRunCancelled(runId);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("GitHub launcher preparation deadline exceeded");
+    try { return await operation(remaining); }
+    catch (error) {
+      throwIfAdapterRunCancelled(runId);
+      const detail = error instanceof Error
+        ? error as Error & { code?: unknown; status?: unknown; statusCode?: unknown; response?: { status?: unknown } }
+        : null;
+      const transportCodes = ["ECONNRESET", "EPIPE", "EAI_AGAIN", "ECONNABORTED", "ETIMEDOUT", "ECONNREFUSED",
+        "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"];
+      const cause = detail?.cause instanceof Error ? detail.cause as Error & { code?: unknown } : null;
+      const transient = detail && (
+        transportCodes.includes(String(detail.code ?? ""))
+        || transportCodes.includes(String(cause?.code ?? ""))
+        || detail.name === "TimeoutError"
+        || detail.message === "socket hang up"
+        || [detail.status, detail.statusCode, detail.response?.status].some((status) => [502, 503, 504].includes(status as number))
+        || (detail.name === "JsonRpcCallError" && detail.code === -32002
+          && /^Request failed with status code (502|503|504)(?:: Sandbox command requested here)?$/.test(detail.message))
+      );
+      const waitMs = 250 * (attempt + 1);
+      if (!transient || attempt >= 2 || Date.now() + waitMs >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
   }
 }
 
@@ -1712,21 +1771,27 @@ export async function prepareGitHubOperationLaunchers(input: {
   // the managed launchers after startup without loading a host user's profile.
   const profile = `export PATH=${shellQuote(managedPath)}\n`;
   const files: Record<string, string> = Object.fromEntries([
+    // Warm task paths can live inside an ESM repository. These extensionless
+    // launchers use CommonJS regardless of the surrounding project's type.
+    ["package.json", JSON.stringify({ type: "commonjs" })],
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
   if (remote) {
     const runner = adapterExecutionTargetCommandRunner(remote);
     for (const [program, body] of Object.entries(files)) {
-      await syncRemoteTextFileWithHashSkip({
+      await prepareGitHubLauncherWithRetry(input.runId, (timeoutMs) => syncRemoteTextFileWithHashSkip({
         runner, remoteCwd: remote.remoteCwd, remoteDir: directory,
         remotePath: path.posix.join(directory, program), body,
         label: "GitHub operation launcher", action: "stage GitHub operation launcher",
         lockDir: path.posix.join(directory, `.${program}.lock`),
-        timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
-      });
+        timeoutMs, shellCommand: adapterExecutionTargetShellCommand(remote),
+      }));
     }
-    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
+    const permissions = await prepareGitHubLauncherWithRetry(input.runId, (timeoutMs) => runner.execute({
+      command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`],
+      cwd: remote.remoteCwd, timeoutMs,
+    }));
     if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
   } else {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -1961,6 +2026,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     return null;
   }
 
+  throwIfAdapterRunCancelled(input.runId);
   const target = input.target;
   const onLog = input.onLog ?? (async () => {});
   const runner = requireSandboxRunner(target);
@@ -2020,7 +2086,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const commandPayload = Buffer.from(JSON.stringify({
     command: input.command,
     args: input.args,
-    cwd: input.cwd || target.remoteCwd,
+    cwd: target.transport === "sandbox" ? target.workFolderHome ?? input.cwd ?? target.remoteCwd : input.cwd || target.remoteCwd,
     // The ACP engine has already projected this launch env from explicit
     // adapter/runtime inputs and registered contributions. Compare against an
     // empty inherited baseline so an explicit identity value (notably PATH)
@@ -2325,7 +2391,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     const streamCommandPayload = Buffer.from(JSON.stringify({
       command: input.command,
       args: input.args,
-      cwd: input.cwd || target.remoteCwd,
+      cwd: target.transport === "sandbox" ? target.workFolderHome ?? input.cwd ?? target.remoteCwd : input.cwd || target.remoteCwd,
       // Same provenance-clean contract as the polled payload above. Preserve
       // every explicit identity override even when it equals the host value.
       env: sanitizeRemoteExecutionEnv(launchEnvForStream, {}),
@@ -2436,82 +2502,80 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     })();
   };
 
-  return {
-    agentCommand,
-    stop: async () => {
-      stopping = true;
-      // End the `sandbox.agentProcess` span now, before the caller ends the run
-      // root span, even if the remote command has not resolved yet.
-      signalStopped();
-      if (pollTimer) clearTimeout(pollTimer);
-      for (const liveSocket of liveSockets) liveSocket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
-      // Wait for every accepted stdin write before `stdinEnd`. The socket handler
-      // fires each chunk write un-awaited through `stdinWriteChain`, so an earlier
-      // chunk can still be pending here. Chain the `stdinEnd` write onto the same
-      // per-session chain, so its file rename never finishes before an earlier
-      // chunk. `stdinSeq` is stable now, because the sockets are destroyed and the
-      // server is closed, so no new message can increment it.
-      const stdinEndPath = path.posix.join(
-        stdinDir,
-        `${String(stdinSeq + 1).padStart(12, "0")}.json`,
-      );
-      const stdinEndWrite = stdinWriteChain.then(() =>
-        client.writeTextFile(stdinEndPath, jsonLine({ type: "stdinEnd" })),
-      );
-      stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
-      await stdinEndWrite.catch(() => undefined);
-      // The `shutdown` control message tells the wrapper to terminate itself
-      // and its own child (I3: no operating-system signal and no process
-      // identifier cross this boundary — only a file-queue message does).
-      // Chain it onto the same per-session write order as `stdinEnd`, so its
-      // file never lands before the earlier one.
-      const shutdownPath = path.posix.join(
-        stdinDir,
-        `${String(stdinSeq + 2).padStart(12, "0")}.json`,
-      );
-      const shutdownWrite = stdinWriteChain.then(() =>
-        client.writeTextFile(shutdownPath, jsonLine({ type: "shutdown" })),
-      );
-      stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
-      await shutdownWrite.catch(() => undefined);
-      // Wait a bounded budget for a hint that the wrapper stopped: only the
-      // `shutdownAck` event counts; an `exit` or `error` event is untrusted
-      // telemetry from inside the sandbox and never shortens this wait or
-      // suppresses the warning below. `shutdownAck` itself is ALSO an
-      // untrusted hint, not proof: any process that shares the sandbox can
-      // write the same event under this session's event directory. It can
-      // only shorten this wait and suppress the warning below; it never
-      // gates, shortens, or replaces the unconditional removal further down.
-      // What actually makes the wrapper's own termination deterministic is
-      // the wrapper-side session-identity latch, not this event.
-      let acknowledgedInTime = false;
-      readShutdownAckUntil(Date.now() + DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
-      await Promise.race([
-        shutdownAcknowledged.then(() => {
-          acknowledgedInTime = true;
-        }),
-        new Promise<void>((resolve) => {
-          const budgetTimer = setTimeout(resolve, DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
-          budgetTimer.unref?.();
-        }),
-      ]);
-      stopReadingForShutdownAck = true;
-      if (!acknowledgedInTime) {
-        await onLog(
-          "stderr",
-          `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
-        ).catch(() => undefined);
-      }
-      // Unconditional: this removal runs whether or not the wrapper
-      // acknowledged, and whether or not any event (real or forged) arrived
-      // under `sessionDir`. `stop()` runs during run teardown and must stay
-      // non-fatal, so every step above is best-effort and this step never
-      // throws.
-      await client.remove(sessionDir).catch(() => undefined);
-      await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
-    },
-  };
+  const stop = await bindAdapterRunStop(input.runId, async () => {
+    stopping = true;
+    // End the `sandbox.agentProcess` span now, before the caller ends the run
+    // root span, even if the remote command has not resolved yet.
+    signalStopped();
+    if (pollTimer) clearTimeout(pollTimer);
+    for (const liveSocket of liveSockets) liveSocket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+    // Wait for every accepted stdin write before `stdinEnd`. The socket handler
+    // fires each chunk write un-awaited through `stdinWriteChain`, so an earlier
+    // chunk can still be pending here. Chain the `stdinEnd` write onto the same
+    // per-session chain, so its file rename never finishes before an earlier
+    // chunk. `stdinSeq` is stable now, because the sockets are destroyed and the
+    // server is closed, so no new message can increment it.
+    const stdinEndPath = path.posix.join(
+      stdinDir,
+      `${String(stdinSeq + 1).padStart(12, "0")}.json`,
+    );
+    const stdinEndWrite = stdinWriteChain.then(() =>
+      client.writeTextFile(stdinEndPath, jsonLine({ type: "stdinEnd" })),
+    );
+    stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
+    await stdinEndWrite.catch(() => undefined);
+    // The `shutdown` control message tells the wrapper to terminate itself
+    // and its own child (I3: no operating-system signal and no process
+    // identifier cross this boundary — only a file-queue message does).
+    // Chain it onto the same per-session write order as `stdinEnd`, so its
+    // file never lands before the earlier one.
+    const shutdownPath = path.posix.join(
+      stdinDir,
+      `${String(stdinSeq + 2).padStart(12, "0")}.json`,
+    );
+    const shutdownWrite = stdinWriteChain.then(() =>
+      client.writeTextFile(shutdownPath, jsonLine({ type: "shutdown" })),
+    );
+    stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
+    await shutdownWrite.catch(() => undefined);
+    // Wait a bounded budget for a hint that the wrapper stopped: only the
+    // `shutdownAck` event counts; an `exit` or `error` event is untrusted
+    // telemetry from inside the sandbox and never shortens this wait or
+    // suppresses the warning below. `shutdownAck` itself is ALSO an
+    // untrusted hint, not proof: any process that shares the sandbox can
+    // write the same event under this session's event directory. It can
+    // only shorten this wait and suppress the warning below; it never
+    // gates, shortens, or replaces the unconditional removal further down.
+    // What actually makes the wrapper's own termination deterministic is
+    // the wrapper-side session-identity latch, not this event.
+    let acknowledgedInTime = false;
+    readShutdownAckUntil(Date.now() + DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
+    await Promise.race([
+      shutdownAcknowledged.then(() => {
+        acknowledgedInTime = true;
+      }),
+      new Promise<void>((resolve) => {
+        const budgetTimer = setTimeout(resolve, DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
+        budgetTimer.unref?.();
+      }),
+    ]);
+    stopReadingForShutdownAck = true;
+    if (!acknowledgedInTime) {
+      await onLog(
+        "stderr",
+        `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
+      ).catch(() => undefined);
+    }
+    // Unconditional: this removal runs whether or not the wrapper
+    // acknowledged, and whether or not any event (real or forged) arrived
+    // under `sessionDir`. `stop()` runs during run teardown and must stay
+    // non-fatal, so every step above is best-effort and this step never
+    // throws.
+    await client.remove(sessionDir).catch(() => undefined);
+    await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+  return { agentCommand, stop };
 }
 
 function getProcessSessionProxySource(input: { port: number; token: string }): string {
@@ -4704,6 +4768,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             onLoss: (listener: (reason: DuplexLossReason) => void): (() => void) =>
               dispositionLatch.onLoss(listener),
             stop: async () => {
+              // A controller-requested shutdown is not a provider failure. The
+              // native Git bridge also stops here without the CLI/ACP result
+              // seam. Preserve any earlier loss before closing the channel.
+              dispositionLatch.markOrderlyCompletion();
               // Close the HTTP/2 server's sessions, then the channel, before
               // lease release, so no live provider session remains when the
               // caller releases the lease.

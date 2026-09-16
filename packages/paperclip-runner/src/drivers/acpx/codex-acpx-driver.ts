@@ -256,11 +256,6 @@ export class CodexAcpxDriver implements HarnessDriver {
     options: CodexAcpxDriverOptions,
     dependencies: CodexAcpxDriverDependencies = {},
   ) {
-    if (options.agent === "pi") {
-      throw new Error(
-        "Pi ACPX driver is unavailable until descriptor-confined verified launch is implemented",
-      );
-    }
     this.#options = {
       ...options,
       agent: options.agent ?? "codex",

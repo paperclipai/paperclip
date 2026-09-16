@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { hasRetainedWorkFolderTerminationReceipt } from "./remote-execution-termination.js";
 
 // These adapters accept a conversation turn. Retrying a process or webhook can
 // replay the action itself, so those adapters retain their recovery contract.
@@ -111,6 +112,12 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
   for (const { run, activeLease: leaseHeld } of candidates) {
+    const leases = leaseHeld ? await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
+      or(sql`${environmentLeases.releasedAt} is null`, eq(environmentLeases.status, "pending_cleanup"),
+        eq(environmentLeases.cleanupStatus, "failed")),
+    )) : [];
+    const executionLeaseHeld = leases.some(lease => !hasRetainedWorkFolderTerminationReceipt(lease));
     let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
     if (pidAlive && run.processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity
@@ -119,7 +126,7 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) pidAlive = false;
     }
     const groupAlive = run.processGroupId !== null && processMayBeAlive(-run.processGroupId);
-    if (pidAlive || groupAlive || leaseHeld) {
+    if (pidAlive || groupAlive || executionLeaseHeld) {
       return {
         runId: run.id,
         agentId: run.agentId,

@@ -2047,6 +2047,14 @@ it("publishes spawned runner ownership before waiting for provider startup", asy
   const persisted = new Promise<void>((resolve) => { releaseOwnership = resolve; });
   const onSpawn = vi.fn(async () => persisted);
   const activate = vi.fn();
+  const originalStartedAt = "2026-09-01T10:00:00.000Z";
+  const spawnRunner = durableControlPlane.spawnRunner;
+  const spawnSpy = vi.spyOn(durableControlPlane, "spawnRunner").mockImplementation((options) => ({
+    ...spawnRunner(options),
+    // Remote launchers can supply a process timestamp distinct from the
+    // controller transport construction time. Both ownership APIs must agree.
+    startedAt: originalStartedAt,
+  }));
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
@@ -2061,8 +2069,9 @@ it("publishes spawned runner ownership before waiting for provider startup", asy
   const opening = bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
   try {
     await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
-    expect(onSpawn).toHaveBeenCalledWith({ pid: expect.any(Number), processGroupId: expect.any(Number), startedAt: expect.any(String) });
+    expect(onSpawn).toHaveBeenCalledWith({ pid: expect.any(Number), processGroupId: expect.any(Number), startedAt: originalStartedAt });
     expect(bundle.transport.processInfo?.().pid).toBeGreaterThan(0);
+    expect(bundle.transport.processInfo?.().startedAt).toBe(originalStartedAt);
     expect(activate).not.toHaveBeenCalled();
     releaseOwnership();
     await opening;
@@ -2071,7 +2080,304 @@ it("publishes spawned runner ownership before waiting for provider startup", asy
     releaseOwnership();
     await opening.catch(() => undefined);
     await bundle.transport.close();
+    spawnSpy.mockRestore();
     await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { phase: "initial", rejectSave: true, stop: "none" },
+  { phase: "replacement", rejectSave: true, stop: "none" },
+  { phase: "initial", rejectSave: false, stop: "none" },
+  { phase: "initial", rejectSave: false, stop: "close" },
+  { phase: "replacement", rejectSave: false, stop: "deadline" },
+])("fences asynchronous $phase ownership admission (save rejects: $rejectSave, stop: $stop)", async ({ phase, rejectSave, stop }) => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runner-async-ownership-"));
+  const handles: durableControlPlane.RunnerProcessHandle[] = [];
+  let rejectOwnership!: () => void;
+  const barrier = new Promise<void>((resolve) => { rejectOwnership = resolve; });
+  let readyRejected = false;
+  const launcherOwnershipSave = vi.fn();
+  const transportOwnershipSave = vi.fn();
+  const realSpawn = durableControlPlane.spawnRunner;
+  const wrap = (handle: durableControlPlane.RunnerProcessHandle): durableControlPlane.RunnerProcessHandle => {
+    handles.push(handle);
+    const selected = handles.length === (phase === "initial" ? 1 : 2);
+    if (!selected) return { ...handle, restart: handle.restart ? (ticket) => wrap(handle.restart!(ticket)) : undefined };
+    let publishedPid: number | undefined;
+    let ownershipFailure: durableControlPlane.RunnerProcessHandle["ownershipFailure"];
+    let cancelLaunch!: (error: Error) => void;
+    const cancelled = new Promise<never>((_resolve, reject) => { cancelLaunch = reject; });
+    void cancelled.catch(() => undefined);
+    const ready = (async () => {
+      try { await Promise.race([barrier, cancelled]); }
+      catch (error) {
+        handle.child.kill("SIGKILL");
+        await handle.completion;
+        ownershipFailure = { error, containment: "confirmed" };
+        throw error;
+      }
+      publishedPid = handle.child.pid;
+      launcherOwnershipSave({ pid: publishedPid });
+      if (!rejectSave) return;
+      // Simulate remote ownership persistence rejecting after its own process
+      // cleanup. The transport must independently retire its authority route.
+      handle.child.kill("SIGKILL");
+      await handle.completion;
+      readyRejected = true;
+      const error = new Error("fixture async ownership unavailable");
+      ownershipFailure = { error, containment: "confirmed" };
+      throw error;
+    })();
+    void ready.catch(() => undefined);
+    const completion = ready.then(() => handle.completion);
+    void completion.catch(() => undefined);
+    return {
+      ...handle, ready, completion, processGroupId: null,
+      ...(stop === "deadline" ? { cancelPendingLaunch: () => cancelLaunch(new Error("fixture launch cancelled")) } : {}),
+      get ownershipFailure() { return ownershipFailure; },
+      child: { get pid() { return publishedPid; }, get exitCode() { return handle.child.exitCode; }, kill: (signal) => handle.child.kill(signal) },
+      restart: handle.restart ? (ticket) => wrap(handle.restart!(ticket)) : undefined,
+    };
+  };
+  const spawnSpy = vi.spyOn(durableControlPlane, "spawnRunner").mockImplementation((options) => wrap(realSpawn(options)));
+  const diagnostics: string[] = [];
+  const releaseRoute = vi.fn();
+  const activate = vi.fn();
+  let authority!: DurablePrpControlPlane;
+  let connectionAttempts = 0;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 }, runnerReconnectGraceMs: stop === "deadline" ? 500 : 5_000,
+    closeGraceMs: 1_000,
+    onSpawn: transportOwnershipSave,
+    onDiagnostic: (message) => diagnostics.push(message),
+    controlPlaneRegistration: async (core) => {
+      authority = core;
+      const upgrade = core.handleUpgrade.bind(core);
+      vi.spyOn(core, "handleUpgrade").mockImplementation((...args) => { connectionAttempts += 1; return upgrade(...args); });
+      await core.start(); return { activate, release: releaseRoute };
+    },
+  });
+  let openingSettled = false;
+  const opening = bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
+  void opening.then(() => { openingSettled = true; }, () => { openingSettled = true; });
+  try {
+    if (phase === "replacement") {
+      await opening;
+      handles[0]!.child.kill("SIGKILL");
+      authority.queueCommand("runner.drain", {}, "pending-before-ownership");
+    }
+    const expectedHandles = phase === "initial" ? 1 : 2;
+    await vi.waitFor(() => expect(handles).toHaveLength(expectedHandles));
+    // Real runner handshakes arrive while PID publication/persistence is
+    // pending. They must not consume bootstrap credentials or replay work.
+    await vi.waitFor(() => expect(connectionAttempts).toBeGreaterThanOrEqual(expectedHandles));
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(readyRejected).toBe(false);
+    expect(authority.store.state.connectionCount).toBe(expectedHandles - 1);
+    if (phase === "replacement") expect(authority.store.state.commands.find((command) => command.commandId === "pending-before-ownership")?.status).toBe("pending");
+    else expect(authority.store.state.commands.every((command) => command.status === "pending")).toBe(true);
+    if (phase === "initial") { expect(openingSettled).toBe(false); expect(activate).not.toHaveBeenCalled(); }
+    expect(diagnostics).not.toContain("runner process restored its durable PRP session");
+    if (stop !== "none") {
+      if (stop === "close") {
+        const closing = bundle.transport.close().catch(() => undefined);
+        await vi.waitFor(() => expect(openingSettled).toBe(true), { timeout: 1_000 });
+        await closing;
+      } else {
+        await vi.waitFor(() => expect(diagnostics.some((message) => message.includes("runner_ownership_admission_deadline_exceeded"))).toBe(true), { timeout: 4_000 });
+      }
+      rejectOwnership(); // A late successful readiness must not revive admission.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(activate).toHaveBeenCalledTimes(phase === "initial" ? 0 : 1);
+      expect(authority.activeRunnerConnectionCount()).toBe(0);
+      expect(diagnostics).not.toContain("runner process restored its durable PRP session");
+      expect(handles).toHaveLength(expectedHandles);
+      if (stop === "deadline") expect(diagnostics.some((message) => message.includes("cleanup incomplete"))).toBe(false);
+      expect(() => process.kill(handles[expectedHandles - 1]!.child.pid!, 0)).toThrow();
+      return;
+    }
+    rejectOwnership();
+    if (!rejectSave) {
+      await opening;
+      expect(launcherOwnershipSave).toHaveBeenCalledExactlyOnceWith({ pid: handles[0]!.child.pid });
+      expect(transportOwnershipSave).not.toHaveBeenCalled();
+      expect(activate).toHaveBeenCalledOnce();
+      expect(authority.activeRunnerConnectionCount()).toBe(1);
+      return;
+    }
+    await vi.waitFor(() => expect(diagnostics.some((message) => message.includes("native_runner_process_ownership_failed: fixture async ownership unavailable"))).toBe(true));
+    expect(launcherOwnershipSave).toHaveBeenCalledOnce();
+    expect(transportOwnershipSave).toHaveBeenCalledTimes(phase === "initial" ? 0 : 1);
+    expect(diagnostics).toContain("native_runner_process_ownership_failed: fixture async ownership unavailable");
+    expect(diagnostics.some((message) => message.includes("cleanup incomplete"))).toBe(false);
+    expect(authority.activeRunnerConnectionCount()).toBe(0);
+    expect(() => authority.connectUrl).toThrow("not listening");
+    expect(releaseRoute).toHaveBeenCalledOnce();
+    expect(handles).toHaveLength(expectedHandles);
+    expect((await stat(join(stateDirectory, "control-plane"))).isDirectory()).toBe(true);
+    await expect(bundle.transport.request("thread/start", { cwd: tmpdir() })).rejects.toThrow("native_runner_process_ownership_failed");
+  } finally {
+    rejectOwnership();
+    await opening.catch(() => undefined);
+    await bundle.transport.close().catch(() => undefined);
+    for (const handle of handles) {
+      if (process.platform !== "win32" && handle.processGroupId) { try { process.kill(-handle.processGroupId, "SIGKILL"); } catch {} }
+      else handle.child.kill("SIGKILL");
+      await handle.completion.catch(() => undefined);
+    }
+    spawnSpy.mockRestore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it.each([
+  { failOwnershipSave: false, parentExitsBeforeSave: false },
+  { failOwnershipSave: true, parentExitsBeforeSave: false },
+  { failOwnershipSave: true, parentExitsBeforeSave: true },
+])("persists each recovered runner identity before declaring recovery complete (save fails: $failOwnershipSave, parent exited: $parentExitsBeforeSave)", async ({ failOwnershipSave, parentExitsBeforeSave }) => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runner-replacement-ownership-"));
+  const handles: durableControlPlane.RunnerProcessHandle[] = [];
+  const descendantFile = join(stateDirectory, "runner-descendants.txt");
+  const runnerWrapper = join(stateDirectory, "runner-with-descendant.sh");
+  const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  if (process.platform !== "win32") {
+    await writeFile(runnerWrapper, `#!/bin/sh
+sleep 600 &
+printf '%s:%s\\n' "$$" "$!" >> ${shellQuote(descendantFile)}
+exec ${shellQuote(defaultCapabilityRunnerdBinary())} "$@"
+`, { mode: 0o700 });
+  }
+  const descendantRunning = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      const state = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim();
+      return state.length > 0 && !state.startsWith("Z");
+    } catch { return false; }
+  };
+  const realSpawn = durableControlPlane.spawnRunner;
+  const wrap = (handle: durableControlPlane.RunnerProcessHandle): durableControlPlane.RunnerProcessHandle => {
+    const wrapped = {
+      ...handle,
+      startedAt: `2026-09-01T10:00:0${handles.length}.000Z`,
+      restart: handle.restart ? (ticket: string) => wrap(handle.restart!(ticket)) : undefined,
+    };
+    handles.push(wrapped);
+    return wrapped;
+  };
+  const spawnSpy = vi.spyOn(durableControlPlane, "spawnRunner").mockImplementation((options) => wrap(realSpawn({
+    ...options,
+    ...(process.platform !== "win32" ? { runnerBinaryPath: runnerWrapper } : {}),
+  })));
+  let releaseOwnership!: () => void;
+  const ownershipBarrier = new Promise<void>((resolve) => { releaseOwnership = resolve; });
+  let durableOwner: { pid: number; processGroupId: number | null; startedAt: string } | null = null;
+  const onSpawn = vi.fn(async (owner: NonNullable<typeof durableOwner>) => {
+    if (handles.length === 2) {
+      await ownershipBarrier;
+      if (failOwnershipSave) throw new Error("fixture durable ownership unavailable");
+    }
+    durableOwner = structuredClone(owner);
+  });
+  const diagnostics: string[] = [];
+  let recoveryAuthority!: DurablePrpControlPlane;
+  const releaseRoute = vi.fn();
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 5_000, onSpawn,
+    onDiagnostic: (message) => diagnostics.push(message),
+    controlPlaneRegistration: async (authority) => {
+      recoveryAuthority = authority;
+      await authority.start();
+      return { release: releaseRoute };
+    },
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
+    const originalOwner = structuredClone(durableOwner);
+    handles[0]!.child.kill("SIGKILL");
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledTimes(2));
+    expect(durableOwner).toEqual(originalOwner);
+    expect(diagnostics).not.toContain("runner process restored its durable PRP session");
+    let replacementDescendant: number | null = null;
+    if (process.platform !== "win32") {
+      await vi.waitFor(async () => {
+        const rows = (await readFile(descendantFile, "utf8")).trim().split("\n");
+        const row = rows.find((line) => line.startsWith(`${handles[1]!.child.pid}:`));
+        expect(row).toBeDefined();
+        replacementDescendant = Number(row!.split(":")[1]);
+        expect(descendantRunning(replacementDescendant)).toBe(true);
+      });
+    }
+    if (parentExitsBeforeSave) {
+      handles[1]!.child.kill("SIGKILL");
+      await handles[1]!.completion;
+      // The detached group can outlive its leader. Rejection must still fence
+      // that group's descendant even though completion is already resolved.
+      if (replacementDescendant !== null) expect(descendantRunning(replacementDescendant)).toBe(true);
+    }
+    releaseOwnership();
+    if (failOwnershipSave) {
+      await vi.waitFor(() => expect(diagnostics).toContain("native_runner_process_ownership_failed: fixture durable ownership unavailable"));
+      expect(durableOwner).toEqual(originalOwner);
+      expect(diagnostics).not.toContain("runner process restored its durable PRP session");
+      await expect(bundle.transport.request("thread/start", { cwd: tmpdir() })).rejects.toThrow("native_runner_process_ownership_failed");
+      expect(handles).toHaveLength(2);
+      // Assert fencing before the test's finally calls transport.close(): a
+      // terminal failure alone must not leave an unowned runner authorized.
+      expect(() => process.kill(handles[1]!.child.pid!, 0)).toThrow();
+      if (replacementDescendant !== null) expect(descendantRunning(replacementDescendant)).toBe(false);
+      expect(recoveryAuthority.activeRunnerConnectionCount()).toBe(0);
+      expect(() => recoveryAuthority.connectUrl).toThrow("not listening");
+      expect(releaseRoute).toHaveBeenCalledOnce();
+      expect((await stat(join(stateDirectory, "control-plane"))).isDirectory()).toBe(true);
+      return;
+    }
+    await vi.waitFor(() => expect(diagnostics).toContain("runner process restored its durable PRP session"));
+    expect(durableOwner).toEqual({ pid: handles[1]!.child.pid, processGroupId: handles[1]!.processGroupId ?? null, startedAt: handles[1]!.startedAt });
+    expect(bundle.transport.processInfo?.()).toMatchObject(durableOwner!);
+    expect(durableOwner).not.toEqual(originalOwner);
+    // A second recovery must advance durable ownership again, not resurrect
+    // either the first process or its original start timestamp.
+    handles[1]!.child.kill("SIGKILL");
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(diagnostics.filter((message) => message === "runner process restored its durable PRP session")).toHaveLength(2));
+    expect(durableOwner).toEqual({ pid: handles[2]!.child.pid, processGroupId: handles[2]!.processGroupId ?? null, startedAt: handles[2]!.startedAt });
+    expect(bundle.transport.processInfo?.()).toMatchObject(durableOwner!);
+  } finally {
+    releaseOwnership();
+    await bundle.transport.close().catch(() => undefined);
+    for (const handle of handles) {
+      if (process.platform !== "win32" && handle.processGroupId) {
+        try { process.kill(-handle.processGroupId, "SIGKILL"); } catch { /* Already exited. */ }
+      } else if (handle.child.exitCode === null) handle.child.kill("SIGKILL");
+      await handle.completion.catch(() => undefined);
+    }
+    spawnSpy.mockRestore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 15_000);
+
+it("delegates unpersisted custom runner containment without host-signalling its reported process group", () => {
+  const kill = vi.fn(() => true);
+  const hostSignal = vi.spyOn(process, "kill").mockImplementation(() => {
+    throw new Error("remote PID must not be signalled on this host");
+  });
+  try {
+    const handle = {
+      child: { pid: 12345, kill },
+      processGroupId: 12345,
+      completion: Promise.resolve({ code: 0, signal: null }),
+    } as unknown as durableControlPlane.RunnerProcessHandle;
+    runnerdRecoveryInternals.signalUnpersistedRunner(handle, true);
+    expect(kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    expect(hostSignal).not.toHaveBeenCalled();
+  } finally {
+    hostSignal.mockRestore();
   }
 });
 
@@ -3462,6 +3768,52 @@ it("allows trusted package-manager runtime roots without exposing HOME paths", (
   ).toEqual(["/opt/homebrew", "/usr/local"]);
 });
 
+it.each(["codex", "opencode", "acpx"] as const)("keeps the natural sandbox home through the %s provider environment", (provider) => {
+  const home = "/home/daytona";
+  const environment = { HOME: home, PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_PRIMARY_REPO: `${home}/repos/main`,
+    PAPERCLIP_TASK_DIR: `${home}/task`, PAPERCLIP_AGENT_DIR: `${home}/agent`, PAPERCLIP_USER_DIR: `${home}/user`,
+    PAPERCLIP_PROJECT_DIR: `${home}/project`, PAPERCLIP_REPOS_DIR: `${home}/repos`, OPENAI_API_KEY: "fixture-provider-key" };
+  const result = createCapabilityRunnerdProviderEnvironment({ provider, options: { provider, stateDirectory: "/controller/state", environment },
+    identity: { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" },
+    codexHome: `${home}/.codex`, runtimeContextPath: "/runtime/context.json", hasRuntimeContext: false });
+  expect(result).toMatchObject({ HOME: home, PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_TASK_DIR: `${home}/task`, PAPERCLIP_USER_DIR: `${home}/user` });
+  if (provider === "codex") expect(result.CODEX_HOME).toBe(`${home}/.codex`);
+  expect(() => createRunnerdCodexAppServerArgs({ environment, codexHome: `${home}/.codex` })).not.toThrow();
+});
+
+it("preserves only explicit GitHub bindings through the OpenCode runner boundary", () => {
+  vi.stubEnv("PAPERCLIP_GITHUB_BROKER_TOKEN", "ambient-host-secret");
+  vi.stubEnv("BASH_ENV", "/ambient/shell-hook");
+  const projected = {
+    PAPERCLIP_GITHUB_BROKER_TOKEN: "controller-run-capability",
+    PAPERCLIP_GITHUB_BRIDGE_TOKEN: "controller-bridge-capability",
+    PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3456",
+    BASH_ENV: "/runtime/github-launcher/profile.sh",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+  };
+  const launch = (environment: NodeJS.ProcessEnv | undefined) => createCapabilityRunnerdProviderEnvironment({
+    provider: "opencode",
+    options: { provider: "opencode", environment },
+    identity: { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" },
+    codexHome: "/isolated/home", runtimeContextPath: "/runtime/context.json", hasRuntimeContext: false,
+  });
+  try {
+    const environment = launch({ ...projected, GIT_CONFIG_KEY_1: "unbounded", PAPERCLIP_API_KEY: "control-plane-secret", DATABASE_URL: "host-secret" });
+    expect(environment).toMatchObject(projected);
+    expect(environment).not.toHaveProperty("GIT_CONFIG_KEY_1");
+    expect(environment).not.toHaveProperty("PAPERCLIP_API_KEY");
+    expect(environment).not.toHaveProperty("DATABASE_URL");
+    for (const input of [undefined, {}]) {
+      expect(launch(input)).not.toHaveProperty("PAPERCLIP_GITHUB_BROKER_TOKEN");
+      expect(launch(input)).not.toHaveProperty("BASH_ENV");
+    }
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 it("denies the isolated Codex home without denying a remote execution workspace", () => {
   const args = createRunnerdCodexAppServerArgs({
     environment: {
@@ -4066,7 +4418,7 @@ it("keeps a quiet active Codex turn in the same process across connection lease 
   }
 }, 90_000);
 
-it("runs the lab provider boundary through authenticated durable PRP", async () => {
+it.each(["Read the task.", "task history ".repeat(110_000)])("runs the lab provider boundary through authenticated durable PRP (case %#)", async (prompt) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-lab-provider-"));
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
@@ -4104,7 +4456,7 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     });
     expect(opened.thread).toMatchObject({ modelProvider: "openai" });
     await bundle.transport.request("turn/start", {
-      input: [{ type: "text", text: "Read the task." }],
+      input: [{ type: "text", text: prompt }],
     });
     const methods: string[] = [];
     let terminalParams: Record<string, unknown> | null = null;
@@ -8012,6 +8364,13 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
     turnId: "turn-close-grace-too-small",
     itemId: "item-close-grace-too-small",
   };
+  let retirement: Promise<void> | undefined;
+  const retire = DurablePrpControlPlane.prototype.retireStoppedAuthority;
+  const retirementSpy = vi.spyOn(DurablePrpControlPlane.prototype, "retireStoppedAuthority")
+    .mockImplementation(function (this: DurablePrpControlPlane) {
+      retirement = retire.call(this);
+      return retirement;
+    });
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
@@ -8037,7 +8396,16 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
       "runner did not durably suspend before checkpoint",
     );
   } finally {
-    await rm(stateDirectory, { recursive: true, force: true });
+    try {
+      await bundle.transport.close().catch(() => undefined);
+      // The deliberately exhausted close deadline does not mean its durable
+      // writer has retired. Keep the fixture until that real barrier settles.
+      expect(retirement).toBeDefined();
+      await retirement;
+      await rm(stateDirectory, { recursive: true, force: true });
+    } finally {
+      retirementSpy.mockRestore();
+    }
   }
 }, 30_000);
 
@@ -8540,7 +8908,7 @@ async function verifyLiveRunnerAdoption(
       adoptExistingRunner: {
         pid: runnerPid!,
         processGroupId: runnerPid,
-        startedAt: new Date().toISOString(),
+        startedAt: "2026-09-01T10:00:00.000Z",
         signal,
         isAlive: () => {
           try {
@@ -8602,6 +8970,7 @@ async function verifyLiveRunnerAdoption(
       }),
     );
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
+    expect(adopted.transport.processInfo?.().startedAt).toBe("2026-09-01T10:00:00.000Z");
     if (startWithoutCheckpoint) {
       const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
       for (const type of ["run.prepare", "session.open"]) {
@@ -8850,7 +9219,7 @@ it("persists an active provider as settled before bounded suspension", async () 
 }, 30_000);
 
 
-it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
+it.each(["claude", "codex", "pi"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
   const gateway = {
     PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
     PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateway",

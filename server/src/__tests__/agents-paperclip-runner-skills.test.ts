@@ -5,6 +5,7 @@ import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
+import { resolvePaperclipRunnerProviderProfile } from "../services/native-runtime/provider-profile.js";
 
 const legacyConfig = {
   paperclipSkillSync: {
@@ -13,6 +14,16 @@ const legacyConfig = {
 };
 
 describe("paperclip_runner operational skill normalization", () => {
+  it.each([undefined, "", "  "])("qualifies Pi's default model at persistence and execution (%s)", (model) => {
+    const input = { provider: "acpx", acpxAgent: "pi", model };
+    const normalized = normalizePaperclipRunnerAdapterConfig("paperclip_runner", input);
+    expect(normalized.model).toBe("openrouter/deepseek/deepseek-v4-flash-0731");
+    expect(resolvePaperclipRunnerProviderProfile(normalized)).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: normalized.model });
+    expect(resolvePaperclipRunnerProviderProfile(input)).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: normalized.model });
+    const explicit = normalizePaperclipRunnerAdapterConfig("paperclip_runner", { ...input, model: "unqualified-model" });
+    expect(explicit.model).toBe("unqualified-model");
+    expect(() => resolvePaperclipRunnerProviderProfile(explicit)).toThrow("requires exact model");
+  });
   it("applies full-auto native runner defaults at persistence boundaries", () => {
     expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", {})).toEqual({
       provider: "codex",

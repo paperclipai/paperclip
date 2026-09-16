@@ -45,6 +45,7 @@ import {
   evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
+  writeApiKeyAuthJson,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
@@ -191,6 +192,11 @@ async function prepareCodexRemoteManagedHome(
   const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
   let stagedRuntime;
   try {
+    // Codex ACP reads API credentials from its login file. Materialize the
+    // explicit run key only in the private staging copy, never in a shared or
+    // user-supplied host home (which may contain a subscription symlink).
+    const apiKey = env.OPENAI_API_KEY?.trim();
+    if (apiKey) await writeApiKeyAuthJson(stagedCodexHomeDir, apiKey);
     stagedRuntime = await input.stage([
       {
         key: "home",

@@ -7487,6 +7487,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             />
           )}
 
+
           {taskChatShellEnabled ? null : (
             <IssueOutputSection
               workProducts={workProducts}

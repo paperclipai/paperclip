@@ -1,3 +1,4 @@
+import { externalWorkFolderEnvironment } from "../../work-folder-environment.js";
 import { randomBytes } from "node:crypto";
 import {
   constants,
@@ -27,6 +28,7 @@ import {
   resolve,
 } from "node:path";
 
+import { PI_RUNNER_TOOL_EXTENSION } from "./pi-tool-extension.js";
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 import { claudeReadPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
@@ -385,6 +387,14 @@ export async function prepareAcpxRuntimeSandbox(input: {
     );
   }
   if (input.agent === "pi") {
+    const extensionsDirectory = await ensurePrivateDirectory(
+      join(agentHomeDirectory, "extensions"),
+      agentHomeDirectory,
+    );
+    await writePrivateFile(
+      join(extensionsDirectory, "paperclip-runner-tools.js"),
+      PI_RUNNER_TOOL_EXTENSION,
+    );
     await writePrivateFile(
       join(agentHomeDirectory, "settings.json"),
       `${JSON.stringify({
@@ -398,6 +408,10 @@ export async function prepareAcpxRuntimeSandbox(input: {
     await writePrivateFile(
       join(agentHomeDirectory, "config.toml"),
       [
+        // The host initialized this environment before launching Codex. Tool
+        // login shells would replace its managed Git PATH with image defaults.
+        ...(externalWorkFolderEnvironment(input.environment ?? {}).HOME
+          ? ["allow_login_shell = false", ""] : []),
         // Codex shell snapshots serialize the provider process environment.
         // The ACPX sidecar receives a short-lived managed credential only so
         // it can authenticate the provider; that value must never become
@@ -423,6 +437,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   };
   Object.assign(launchEnvironment, {
     HOME: homeDirectory,
+    ...externalWorkFolderEnvironment(input.environment ?? {}),
     XDG_CONFIG_HOME: configDirectory,
     XDG_DATA_HOME: dataDirectory,
     XDG_CACHE_HOME: cacheDirectory,
@@ -442,6 +457,13 @@ export async function prepareAcpxRuntimeSandbox(input: {
       ? {
           CODEX_HOME: agentHomeDirectory,
           NO_BROWSER: "1",
+          // The admitted external sandbox supplies OS isolation. Codex ACP's
+          // default mode otherwise starts a second network namespace, which
+          // cannot initialize inside Daytona. Only the host's explicit
+          // approve-all binding may select this provider mode.
+          ...(input.binding.permissionMode === "approve-all"
+            && externalWorkFolderEnvironment(input.environment ?? {}).HOME
+            ? { INITIAL_AGENT_MODE: "agent-full-access" } : {}),
           ...(launchEnvironment.CODEX_API_KEY ||
           launchEnvironment.OPENAI_API_KEY
             ? { DEFAULT_AUTH_REQUEST: JSON.stringify({ methodId: "api-key" }) }

@@ -336,7 +336,7 @@ async function dispatch(
       usageBefore = await readSidecarHostStatusWithin(activeHost);
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
-        text: boundedText(request.params.message, "message", 1024 * 1024),
+        text: boundedText(request.params.message, "message", ACPX_SIDECAR_MAX_FRAME_BYTES),
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
       });
@@ -1191,8 +1191,8 @@ function requireHost(
 }
 
 function requireQualifiedAgent(value: unknown): QualifiedAcpxAgent {
-  if (value !== "codex" && value !== "claude") {
-    throw new Error("ACPX agent must be claude or codex");
+  if (value !== "codex" && value !== "claude" && value !== "pi") {
+    throw new Error("ACPX agent must be claude, codex, or pi");
   }
   return value;
 }

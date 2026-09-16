@@ -44,6 +44,21 @@ fn buffers_events_that_arrive_before_a_response() {
 }
 
 #[test]
+fn roundtrips_large_task_history_without_truncation() {
+    let mut transport = transport("happy", Duration::from_secs(5));
+    let message = "task history ".repeat(110_000);
+    assert!(message.len() > 1024 * 1024);
+    let result = transport
+        .request(
+            GeneratedAcpxSidecarCommand::TurnStart,
+            json!({ "message": message, "turnId": "large-turn" }),
+        )
+        .expect("large task history should cross both sidecar directions");
+    assert_eq!(result["params"]["message"], message);
+    transport.shutdown().expect("sidecar should stop");
+}
+
+#[test]
 fn rejects_event_gaps_and_poisoned_transport_reuse() {
     let mut transport = transport("gap", Duration::from_secs(1));
     let error = transport
@@ -102,7 +117,7 @@ fn rejects_an_oversized_stdout_frame() {
     let error = transport
         .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
         .expect_err("oversized frame must fail");
-    assert!(error.to_string().contains("exceeded 1048576 bytes"));
+    assert!(error.to_string().contains("exceeded 4194304 bytes"));
 }
 
 #[test]

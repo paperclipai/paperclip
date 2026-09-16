@@ -109,7 +109,13 @@ frames with Node-free Rust standard-library code. The mock core validates the
 upgrade and parses bounded masked frames.
 
 - Maximum HTTP upgrade headers: 16 KiB.
-- Maximum PRP frame: 1 MiB.
+- Maximum PRP frame: 4 MiB, including authenticated envelope and hex ciphertext.
+- Commands are bounded below 2 MiB before journaling to leave room for encryption
+  and envelope overhead. Oversized commands are rejected before journal changes.
+  The host blocks the task with `native_command_limit_exceeded`; it preserves the
+  working copy and does not automatically replay the same oversized command.
+- New runner processes explicitly receive the matching frame limit. Existing
+  adopted processes finish under their original configured bounds.
 - Unknown frame opcodes and unmasked client frames close the connection.
 - Malformed JSON is recorded as a bounded diagnostic. Durable state remains
   available for reconnect.

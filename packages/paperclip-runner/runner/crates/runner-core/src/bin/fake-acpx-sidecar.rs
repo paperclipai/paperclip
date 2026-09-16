@@ -139,7 +139,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id, command, &request))?;
             }
             "oversized" => {
-                stdout.write_all(&vec![b'x'; 1024 * 1024 + 1])?;
+                stdout.write_all(&vec![b'x'; 4 * 1024 * 1024 + 1])?;
                 stdout.write_all(b"\n")?;
                 stdout.flush()?;
             }

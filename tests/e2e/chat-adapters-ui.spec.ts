@@ -1541,6 +1541,7 @@ test.describe.serial("native chat adapter UI", () => {
       ).toBeVisible();
       await expectSetupRail(page);
       await selectMaya(page);
+      // The selection schedules a request; clicking alone does not await it.
       await expect.poll(() => mock.createdWithAgentId).toBe(seed.agentId);
       expect(mock.createdWithAgentId).not.toBe(seed.otherAgentId);
       await expect(
@@ -2511,6 +2512,10 @@ test.describe("Board send delivery refresh", () => {
     await expect(
       banner.getByRole("textbox", { name: "Board update" }),
     ).toBeDisabled();
+    // The intercepted send bound this file after capturing its immutable request.
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.attachmentIds).toEqual([attachmentId]);
+    expect(privateComment).toBeDefined();
     await banner
       .getByRole("button", { name: "Retry safely", exact: true })
       .click();

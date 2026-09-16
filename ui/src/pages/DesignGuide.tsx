@@ -3,6 +3,7 @@ import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProje
 import { AnnouncementCard } from "@/components/AnnouncementCard";
 import { announcementPreview, announcementAnimationPreview, announcementAnimationPreviewSrc } from "@/lib/announcement-preview";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { FileTree } from "@/components/FileTree";
 import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
@@ -493,6 +494,7 @@ function AgentChatPickerExample() {
 }
 
 export function DesignGuide() {
+  const [checkedFilePaths, setCheckedFilePaths] = useState(new Set<string>());
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -2367,6 +2369,20 @@ export function DesignGuide() {
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
         </div>
+      </Section>
+
+      <Section title="File tree selection">
+        <p className="text-sm text-muted-foreground">Cached file browsers include folders in selection, including empty folders. Other file trees select files by default.</p>
+        <FileTree
+          nodes={[{ name: "empty", path: "empty", kind: "dir", children: [] }, { name: "notes.txt", path: "notes.txt", kind: "file", children: [] }]}
+          selectedFile={null} expandedDirs={new Set()} checkedFiles={checkedFilePaths}
+          onSelectFile={() => {}} onToggleDir={() => {}} includeDirectoriesInSelection
+          onToggleCheck={(path) => setCheckedFilePaths((before) => {
+            const next = new Set(before);
+            if (next.has(path)) next.delete(path); else next.add(path);
+            return next;
+          })}
+        />
       </Section>
 
       <Section title="AI Connections">

@@ -209,6 +209,45 @@ describe("ACPX runtime host", () => {
     } finally { await host.close({ reason: "gateway test complete" }); }
   });
 
+  it("admits Pi with an assigned gateway without leaking its token to the provider child", async () => {
+    const fixture = await hostFixture();
+    let opened: AcpxRuntimePortOpenOptions | undefined;
+    const nativeToken = "fixture-pi-gateway-token-".repeat(3);
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options,
+      agent: "pi",
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      environment: {
+        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateway",
+        PAPERCLIP_NATIVE_MCP_TOKEN: nativeToken,
+      },
+    }, fixture.dependencies({
+      openRuntime: async (options) => {
+        opened = options;
+        return runtimePort({
+          getStatus: async () => ({
+            models: { currentModelId: "openrouter/deepseek/deepseek-v4-flash-0731" },
+          }),
+        });
+      },
+    }));
+    try {
+      expect(opened?.mcpServers).toEqual([{
+        name: "paperclip-assigned",
+        url: "http://127.0.0.1:3211/mcp/gateway",
+        bearerToken: nativeToken,
+        runnerOwned: true,
+      }]);
+      expect(opened?.launchEnvironment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+      expect(opened?.launchEnvironment.PAPERCLIP_NATIVE_MCP_NAME).toBe(
+        "paperclip-assigned",
+      );
+    } finally {
+      await host.close({ reason: "Pi gateway boundary test complete" });
+    }
+  });
+
   it("automatically permits only admitted Paperclip reads in the Claude SDK", async () => {
     const fixture = await hostFixture();
     const dependencies = fixture.dependencies({
@@ -601,7 +640,7 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
-  it("owns an authenticated semantic bridge without persisting its secret", async () => {
+  it.each(["codex", "pi"] as const)("owns a %s semantic bridge without persisting its secret", async (agent) => {
     const fixture = await hostFixture();
     const handler = vi.fn(async ({ tool }) => ({ tool, ok: true }));
     let bridge:
@@ -610,8 +649,8 @@ describe("ACPX runtime host", () => {
     const host = await AcpxRuntimeHost.open(
       {
         ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
+        agent,
+        model: resolveQualifiedAcpxProfile(agent, agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "gpt-5.6-sol").qualificationModel,
         permissionMode: "deny-all",
         environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
         semanticTools: {
@@ -633,7 +672,16 @@ describe("ACPX runtime host", () => {
       fixture.dependencies({
         openRuntime: async (options) => {
           bridge = options.mcpServers[0];
-          return runtimePort();
+          if (agent === "pi") {
+            expect(options.launchEnvironment.PAPERCLIP_PI_TOOL_BRIDGE_URL).toBe(bridge!.url);
+            expect(options.launchEnvironment.PAPERCLIP_PI_TOOL_BRIDGE_TOKEN).toBe(bridge!.bearerToken);
+          } else {
+            expect(options.launchEnvironment.PAPERCLIP_PI_TOOL_BRIDGE_TOKEN).toBeUndefined();
+          }
+          return runtimePort({ getStatus: async () => ({ models: {
+            currentModelId: options.profile.reportedModelId,
+            availableModelIds: [options.profile.reportedModelId],
+          } }) });
         },
       }),
     );
@@ -673,9 +721,9 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow();
   });
 
-  it("rejects Pi before installation or runtime launch", async () => {
+  it("verifies Pi's installation before opening the qualified runtime", async () => {
     const fixture = await hostFixture();
-    const verifyInstallation = vi.fn();
+    const verifyInstallation = vi.fn().mockRejectedValue(new Error("unverified Pi installation"));
     const openRuntime = vi.fn();
     await expect(
       AcpxRuntimeHost.open(
@@ -691,8 +739,8 @@ describe("ACPX runtime host", () => {
           reportRetainedCleanupFailure: vi.fn(),
         },
       ),
-    ).rejects.toThrow("descriptor-confined verified launch");
-    expect(verifyInstallation).not.toHaveBeenCalled();
+    ).rejects.toThrow("unverified Pi installation");
+    expect(verifyInstallation).toHaveBeenCalledWith(expect.objectContaining({ agent: "pi" }));
     expect(openRuntime).not.toHaveBeenCalled();
   });
 
@@ -1359,6 +1407,7 @@ describe("ACPX runtime host", () => {
       ),
     );
     await commandAdmissionStarted.promise;
+    expect(openCommand).toHaveBeenCalledWith({ reusable: true });
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);

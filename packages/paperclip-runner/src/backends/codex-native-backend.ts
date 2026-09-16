@@ -83,14 +83,9 @@ function transportDriverIdentity(input: NativeExecutionInput): {
         version: input.provider.agentCoreProfile.qualificationRevision,
       };
     case "acpx":
-      if (input.provider.agent === "pi") {
-        throw new Error(
-          "Native ACPX backend for pi is unavailable until descriptor-confined verified launch is implemented",
-        );
-      }
       return {
         kind: "acpx_runtime",
-        displayName: `${input.provider.agent === "claude" ? "Claude" : "Codex"} via ACPX`,
+        displayName: `${{ claude: "Claude", codex: "Codex", pi: "Pi" }[input.provider.agent]} via ACPX`,
         version: "0.13.1",
       };
     default:

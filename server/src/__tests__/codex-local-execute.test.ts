@@ -1301,7 +1301,7 @@ process.exit(1);
         },
         context: {
           conversationMode,
-          paperclipTaskMarkdown: `Full description that must not replay\n${policy}`,
+          paperclipTaskMarkdown: `Current task description\n${policy}`,
           paperclipTaskMarkdownCompact: policy,
           issueId: "issue-1",
           taskId: "issue-1",
@@ -1357,9 +1357,8 @@ process.exit(1);
       expect(capture.prompt).toContain("Second comment");
       expect(capture.prompt).toContain(policy);
       expect(invocationPrompt).toContain(policy);
-      if (resumedSession) expect(capture.prompt).not.toContain("Full description that must not replay");
-      else expect(capture.prompt).toContain("Full description that must not replay");
-      expect(promptMetrics.taskContextChars).toBe(resumedSession ? policy.length : `Full description that must not replay\n${policy}`.length);
+      expect(capture.prompt).toContain("Current task description");
+      expect(promptMetrics.taskContextChars).toBe(`Current task description\n${policy}`.length);
       if (conversationMode) {
         expect(invocationPrompt).toContain(AGENT_CHAT_DIRECTIVE);
         expect(invocationPrompt).toContain("baseRevisionId set to that latestRevisionId");

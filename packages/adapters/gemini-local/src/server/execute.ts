@@ -10,7 +10,7 @@ import {
   overrideAdapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
-  adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetManagedHomeDir,
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
@@ -401,11 +401,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionCwd: effectiveExecutionCwd,
       });
       remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
-      const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
-      const managedRemoteHomeDir =
-        managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-          ? preparedExecutionTargetRuntime.runtimeRootDir
-          : null;
+      const managedRemoteHomeDir = adapterExecutionTargetManagedHomeDir(
+        executionTarget, preparedExecutionTargetRuntime.runtimeRootDir,
+      );
       if (managedRemoteHomeDir) {
         env.HOME = managedRemoteHomeDir;
       }
@@ -435,7 +433,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // is provided. Both settings schema generations are written (legacy
       // selectedAuthType + current security.auth.selectedType). An existing
       // settings.json (user-shipped via workspace) is left untouched.
-      // Only the managed HOME (the per-run runtime root) is touched: on
+      // Only the managed sandbox HOME is touched: on
       // non-managed remote targets remoteHomeDir is the user's real home, where
       // creating files is out of scope and existing settings remain visible.
       // Key presence check spans the run env AND the host process env: in the

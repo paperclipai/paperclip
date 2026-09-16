@@ -148,16 +148,17 @@ export async function applyConnectorSkills(
       connector.skillName,
     ]),
   );
-  const desired = readPaperclipSkillSyncPreference(
-    config,
-  ).desiredSkillEntries.filter((entry) => !reserved.has(entry.key));
+  const preference = readPaperclipSkillSyncPreference(config);
+  const desired = preference.desiredSkillEntries.filter((entry) => !reserved.has(entry.key));
   const skills = entries.filter(
     (entry) => !reserved.has(entry.key) && !reserved.has(entry.runtimeName),
   );
   for (const assignment of assignments) {
     const connector = connectors.find((entry) => entry.key === assignment.key)!;
     const root = await resolvePaperclipSkillsDir(
-      path.dirname(fileURLToPath(import.meta.url)),
+      // Resolve from server/src (or server/dist), so the bundled repository
+      // skills win over a containing checkout when this is a nested worktree.
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
       [fileURLToPath(new URL("../../../skills", import.meta.url))],
     );
     if (!root)
@@ -193,7 +194,11 @@ export async function applyConnectorSkills(
         .digest("hex")
     : null;
   return {
-    ...writePaperclipSkillSyncPreference(config, desired),
+    // Empty connector preparation must not rewrite an existing agent's skill
+    // preference: its original representation is part of the saved session.
+    // Assignment changes and stripping unassigned reserved skills still apply.
+    ...(assignments.length === 0 && desired.length === preference.desiredSkillEntries.length
+      ? config : writePaperclipSkillSyncPreference(config, desired)),
     paperclipRuntimeSkills: skills,
     paperclipConnectorSkillDigest: connectorSkillDigest,
   };

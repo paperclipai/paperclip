@@ -32,6 +32,9 @@ export async function renewLegacyControllerLease(
     eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
     eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
     gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
+    // Cancellation and dispatch serialize on this row. Once Stop fences
+    // preparation, no later renewal may cross the provider dispatch boundary.
+    sql`${heartbeatRuns.resultJson}->'startupCancellation' is null`,
   )).returning({ id: heartbeatRuns.id });
   return Boolean(renewed);
 }

@@ -9,7 +9,7 @@ import {
   overrideAdapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetSessionMatches,
-  adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetManagedHomeDir,
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
@@ -259,7 +259,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
 
   if (!executionTargetIsRemote) {
     await ensureSessionsDir();
@@ -460,8 +462,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           executionTargetIsRemote,
           executionCwd: effectiveExecutionCwd,
         });
-        if (adapterExecutionTargetUsesManagedHome(executionTarget) && preparedRemoteRuntime.runtimeRootDir) {
-          env.HOME = preparedRemoteRuntime.runtimeRootDir;
+        const managedRemoteHomeDir = adapterExecutionTargetManagedHomeDir(
+          executionTarget, preparedRemoteRuntime.runtimeRootDir,
+        );
+        if (managedRemoteHomeDir) {
+          env.HOME = managedRemoteHomeDir;
         }
         remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
         remoteSkillsDir = preparedRemoteRuntime.assetDirs.skills ?? null;
@@ -733,6 +738,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: executionTargetIsRemote ? env : runtimeEnv,
+        // Pi reads piped stdin before starting print mode. Remote transports must
+        // deliver EOF; leaving the session input pipe open stalls the first turn.
+        stdin: executionTargetIsRemote ? "" : undefined,
         timeoutSec,
         graceSec,
         onSpawn,

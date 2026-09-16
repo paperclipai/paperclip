@@ -34,6 +34,21 @@ export function hasRemoteTerminationReceipt(lease: LeaseIdentity & {
     remoteTerminationReceipt(lease, receipt));
 }
 
+/** Data retention is not execution ownership. Only an exact, confirmed stop
+ * permits continuation while the unsaved working copy remains protected. */
+export function hasRetainedWorkFolderTerminationReceipt(lease: LeaseIdentity & {
+  status: string; failureReason: string | null; metadata: Record<string, unknown> | null;
+}): boolean {
+  const receipt = lease.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined;
+  return Boolean(lease.status === "retained" && lease.failureReason === "work_folder_save_required" &&
+    lease.metadata?.workFolderRecoveryRequired === true && !lease.metadata?.sandboxReleasePending &&
+    !lease.metadata?.reusableLeaseReplacedByRunId && receipt?.state === "stopped" &&
+    receipt.schema === "paperclip.remote-termination.v1" &&
+    receipt.companyId === lease.companyId && receipt.runId === lease.heartbeatRunId &&
+    receipt.leaseId === lease.id && receipt.provider === lease.provider &&
+    remoteTerminationReceipt(lease, receipt));
+}
+
 export function remoteLeaseCleanupScope(lease: Pick<LeaseIdentity, "provider" | "providerLeaseId">) {
   return lease.provider && lease.provider !== "local" && lease.providerLeaseId
     ? JSON.stringify([lease.provider, lease.providerLeaseId]) : undefined;
@@ -43,7 +58,8 @@ export async function stoppedRemoteCleanupScopes(db: Db, companyId: string, runI
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
   ));
-  if (leases.length === 0 || !leases.every(hasRemoteTerminationReceipt)) return null;
+  if (leases.length === 0 || !leases.every(lease =>
+    hasRemoteTerminationReceipt(lease) || hasRetainedWorkFolderTerminationReceipt(lease))) return null;
   return [...new Set(leases.map(lease => remoteLeaseCleanupScope(lease)!))];
 }
 

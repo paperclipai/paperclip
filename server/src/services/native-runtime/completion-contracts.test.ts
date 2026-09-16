@@ -92,6 +92,46 @@ describe("buildNativeCompletionContract", () => {
     ]);
   });
 
+  it("uses the current recovery objective after a description edit, without reviving an old comment", () => {
+    const currentBrief = "Run the new verification script and preserve existing files.";
+    const requests = nativeCompletionRequestsForComments([], {
+      continuationObjective: currentBrief,
+    });
+    expect(requests).toEqual([currentBrief]);
+    const contract = buildNativeCompletionContract(
+      { title: "Existing task", description: currentBrief },
+      {
+        immediateRequest: currentBrief,
+        immediateRequests: requests,
+      },
+    );
+    expect(contract.criteria).toEqual([{ id: "objective", requirement: currentBrief }]);
+  });
+
+  it("retains all pending requests plus newer recovery direction, without duplicates", () => {
+    const comments = [{ body: "First request." }, { body: "Second request." }];
+    expect(nativeCompletionRequestsForComments(comments, {
+      continuationObjective: " Updated recovery direction. ",
+    })).toEqual(["First request.", "Second request.", "Updated recovery direction."]);
+    expect(nativeCompletionRequestsForComments(comments, {
+      continuationObjective: " Second request. ",
+    })).toEqual(["First request.", "Second request."]);
+  });
+
+  it("does not promote historical direction over a file-only or truncated wake", () => {
+    const files = nativeCompletionRequestsForComments([
+      { body: "", attachments: [{ id: "file" }] },
+    ], { continuationObjective: "STALE objective" });
+    expect(files).toEqual(["Inspect and respond to the attached file(s) on pending comment 1."]);
+    const truncated = nativeCompletionRequestsForComments([{ body: "Prefix only" }], {
+      requiredFullWakeCommentCount: 3,
+      continuationObjective: "STALE objective",
+    });
+    expect(truncated).toHaveLength(1);
+    expect(truncated[0]).toContain("read_current_wake_comments until complete=true");
+    expect(truncated[0]).not.toContain("STALE");
+  });
+
   it.each([9, 3])("requires complete scoped reading for a truncated %i-comment wake", (count) => {
     const requests = nativeCompletionRequestsForComments(
       [{ body: "Only an inline prefix, not the complete request." }],

@@ -14,8 +14,10 @@ import {
   statusDecisionEffects,
   statusDecisions,
   workAssessments,
+  workFolderRuns,
   workspaceOperations,
 } from "@paperclipai/db";
+import { claimNativeRestartRecoveries, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import {
   finalizeNativeRun,
   pendingNativeGovernance,
@@ -159,7 +161,7 @@ export function resolveNativeReconciliationStatus(input: {
   throw new Error("native_reconciliation_facts_invalid");
 }
 
-export type NativeSessionResumeClaim = { runId: string; leaseOwner: string };
+export type NativeSessionResumeClaim = { runId: string; leaseOwner: string; restartRecovery?: NativeRestartRecoveryClaim };
 
 type NativeCleanupOutcome = {
   runId: string;
@@ -328,7 +330,7 @@ export async function claimNativeSessionResumptions(input: {
 }): Promise<NativeSessionResumeClaim[]> {
   const now = input.now ?? new Date();
   const candidates = await input.db
-    .select({ runId: heartbeatRuns.id })
+    .select({ runId: heartbeatRuns.id, errorCode: heartbeatRuns.errorCode })
     .from(heartbeatRuns)
     .innerJoin(
       nativeRunFinalizations,
@@ -338,8 +340,8 @@ export async function claimNativeSessionResumptions(input: {
       and(
         eq(heartbeatRuns.runtimeMode, "native"),
         nativeRunnerOwnershipNotHeldCondition(),
-        isNull(heartbeatRuns.processPid),
-        isNull(heartbeatRuns.processGroupId),
+        or(and(isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId)),
+          eq(heartbeatRuns.errorCode, "runner_remote_recovery_unavailable")),
         isNull(nativeRunFinalizations.resultId),
         eq(nativeRunFinalizations.phase, "retryable_failure"),
         or(
@@ -360,6 +362,20 @@ export async function claimNativeSessionResumptions(input: {
 
   const claims: NativeSessionResumeClaim[] = [];
   for (const candidate of candidates) {
+    if (candidate.errorCode === "runner_remote_recovery_unavailable") {
+      // A failed probe says nothing about the remote process's liveness. Keep
+      // its identifiers and re-enter exact remote-authority reconciliation.
+      const dispositions = await claimNativeRestartRecoveries({
+        db: input.db, runIds: [candidate.runId], now,
+        restartKind: "hard", remoteVerificationRetry: true,
+      });
+      for (const disposition of dispositions) {
+        if (disposition.kind === "reconcile_remote_runner") {
+          claims.push({ runId: disposition.runId, leaseOwner: disposition.leaseOwner, restartRecovery: disposition });
+        }
+      }
+      continue;
+    }
     const leaseOwner = `${input.runnerInstanceId}:resume:${randomUUID()}`;
     let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
     const claimed = await input.db.transaction(async (tx) => {
@@ -376,6 +392,7 @@ export async function claimNativeSessionResumptions(input: {
       if (
         row.run.runtimeMode !== "native" ||
         isNativeRunnerOwnershipHeld(row.run) ||
+        row.run.errorCode === "runner_remote_recovery_unavailable" ||
         row.run.processPid !== null ||
         row.run.processGroupId !== null ||
         row.coordinator.resultId ||
@@ -570,12 +587,18 @@ export async function reconcileNativeFinalizations(
       assessmentId: nativeRunFinalizations.assessmentId,
       decisionId: nativeRunFinalizations.decisionId,
       runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      workFolderState: workFolderRuns.state,
+      workFolderManifest: workFolderRuns.manifest,
     })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .innerJoin(issues, and(
       eq(issues.id, nativeRunFinalizations.issueId),
       eq(issues.companyId, heartbeatRuns.companyId),
+    ))
+    .leftJoin(workFolderRuns, and(
+      eq(workFolderRuns.runId, heartbeatRuns.id),
+      eq(workFolderRuns.companyId, heartbeatRuns.companyId),
     ))
     .where(and(
       eq(heartbeatRuns.runtimeMode, "native"),
@@ -594,6 +617,11 @@ export async function reconcileNativeFinalizations(
     ));
   const results = [];
   for (const row of rows) {
+    // A scoped sandbox's final flush is its durability barrier. A periodic
+    // save or the old host workspace directory cannot substitute for it.
+    // The live executor also publishes its next-turn session before this
+    // barrier, so completion cannot race a warm restart with a fresh identity.
+    if (row.workFolderManifest && (row.workFolderState !== "saved" || !row.workFolderManifest.finalCheckpointAt)) continue;
     const pendingEffects = row.decisionId
       ? await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
           eq(statusDecisionEffects.companyId, row.companyId),

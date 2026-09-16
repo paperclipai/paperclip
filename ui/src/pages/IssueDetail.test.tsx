@@ -615,6 +615,7 @@ vi.mock("@/components/ui/popover", () => ({
 }));
 
 vi.mock("@/components/ui/dialog", () => ({
+  DialogTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
   Dialog: ({ children, open }: { children?: ReactNode; open?: boolean }) =>
     open ? <div>{children}</div> : null,
   DialogContent: ({

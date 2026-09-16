@@ -16,7 +16,17 @@ describe("native restart recovery classification", () => {
   it("keeps controller-only recovery out of the provider retry budget", () => {
     expect(nextNativeProviderAttempt(2, "reattach_existing_runner")).toBe(2);
     expect(nextNativeProviderAttempt(2, "bootstrap_incomplete")).toBe(3);
+    expect(nextNativeProviderAttempt(2, "reconcile_remote_runner")).toBe(2);
     expect(nextNativeProviderAttempt(2, "resume_dead_runner")).toBe(3);
+  });
+
+  it.each([true, false])("does not use host process evidence for remote recovery (%s)", (hostAlive) => {
+    const evidence = { remote: true, runnerPidAlive: hostAlive, runnerGroupAlive: hostAlive,
+      processStartMatches: hostAlive, knownProviderProcessAlive: hostAlive,
+      hasCheckpoint: true, checkpointIdentityMatches: true, hasProviderEvidence: true };
+    expect(classifyNativeRunnerRecoveryEvidence(evidence).claimKind).toBe("reconcile_remote_runner");
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, checkpointIdentityMatches: false }).claimKind).toBeNull();
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, hasProviderEvidence: false }).claimKind).toBeNull();
   });
 
   it.each([
@@ -200,6 +210,7 @@ describe("native controller takeover fencing", () => {
 
   it("does not let lease expiry bypass a live controller fence", async () => {
     const isProcessAlive = vi.fn(() => true);
+    const readProcessStartedAt = vi.fn(async () => recordedStart);
     await expect(
       evaluateNativeControllerTakeover({
         owner: owner({
@@ -207,10 +218,11 @@ describe("native controller takeover fencing", () => {
         }),
         now,
         isProcessAlive,
-        readProcessStartedAt: async () => recordedStart,
+        readProcessStartedAt,
       }),
     ).resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
     expect(isProcessAlive).toHaveBeenCalledWith(123);
+    expect(readProcessStartedAt).toHaveBeenCalledWith(123);
   });
 
   it("takes over an expired lease after proving the controller died", async () => {

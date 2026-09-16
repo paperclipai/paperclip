@@ -12,6 +12,7 @@ import {
   type SandboxSyncOperation,
 } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
+import { CODEX_SYNC_ALLOWLIST } from "./codex-home.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -50,12 +51,14 @@ describe("codex home auth merge on sandbox asset extract", () => {
     sandboxAuth?: string;
     hostAuth?: string;
     imageAuth?: string;
+    sandboxFiles?: Record<string, string>;
   }): Promise<{
     commandText: string;
     writtenPaths: string[];
     finalAuth: string;
     finalMode: number;
     combinedOutput: string;
+    remoteHomeDir: string;
   }> {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-merge-"));
     cleanupDirs.push(rootDir);
@@ -67,6 +70,10 @@ describe("codex home auth merge on sandbox asset extract", () => {
     await mkdir(localWorkspaceDir, { recursive: true });
     await mkdir(localHomeDir, { recursive: true });
     await mkdir(remoteHomeDir, { recursive: true });
+    for (const [name, contents] of Object.entries(input.sandboxFiles ?? {})) {
+      await mkdir(path.dirname(path.join(remoteHomeDir, name)), { recursive: true });
+      await writeFile(path.join(remoteHomeDir, name), contents);
+    }
     await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
     if (input.hostAuth !== undefined) {
       await writeFile(path.join(localHomeDir, "auth.json"), input.hostAuth, { mode: 0o600 });
@@ -162,8 +169,35 @@ describe("codex home auth merge on sandbox asset extract", () => {
       finalAuth: await readFile(finalAuthPath, "utf8"),
       finalMode: (await lstat(finalAuthPath)).mode & 0o777,
       combinedOutput: outputs.join("\n"),
+      remoteHomeDir,
     };
   }
+
+  it("refreshes exactly the managed Codex home allowlist", async () => {
+    const script = await readFile(new URL("./codex-auth-merge-extract.sh", import.meta.url), "utf8");
+    const names = script.match(/for managed_entry in ([^;]+); do/)?.[1].split(" ").sort();
+    expect(names).toEqual([...CODEX_SYNC_ALLOWLIST].sort());
+  });
+
+  it("preserves sandbox rollout files and SQLite state while revoking omitted managed config", async () => {
+    const state = {
+      "sessions/2026/09/11/rollout.jsonl": "existing conversation\n",
+      "state_5.sqlite": "database", "state_5.sqlite-wal": "pending changes",
+      "state_5.sqlite-shm": "shared memory", "session_index.jsonl": "index\n",
+    };
+    const result = await runCodexHomeAssetExtract({
+      hostAuth: apiKeyAuth("host"), sandboxFiles: {
+        ...state, "config.toml": "old config", "skills/old/SKILL.md": "revoked skill",
+        "instructions.md": "revoked instructions",
+      },
+    });
+    for (const [name, contents] of Object.entries(state)) {
+      expect(await readFile(path.join(result.remoteHomeDir, name), "utf8")).toBe(contents);
+    }
+    expect(await readFile(path.join(result.remoteHomeDir, "config.toml"), "utf8")).toBe('model = "gpt"\n');
+    await expect(lstat(path.join(result.remoteHomeDir, "skills"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(path.join(result.remoteHomeDir, "instructions.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 
   it("keeps a newer same-account sandbox auth.json and installs it atomically with mode 0600", async () => {
     const sandboxAuth = subscriptionAuth({

@@ -27,6 +27,24 @@ change. They are not a migration plan for existing adapters.
 10. Recovery may finish an already persisted native run while fresh native
     starts remain blocked.
 
+## Native session compatibility across upgrades
+
+A retained sandbox and a retained provider conversation are separate resources.
+Codex persists the dynamic tool declarations when a conversation starts; the
+qualified Codex 0.153.4 `thread/resume` contract cannot replace those declarations.
+When the native tool contract changes, or an older checkpoint has no verifiable
+tool contract, Paperclip starts a fresh native/provider conversation with the
+full current task context. It keeps the task and its sandbox workspace, files,
+repositories, and retained conversation files. Sandbox runs record
+`native.session.transition` with the reason and full-context mode; this does not
+claim that the agent's configuration or owner changed.
+
+An ordinary next turn with the same compatible contract resumes its provider
+conversation. Upgrade verification must distinguish that continuity check from
+a deliberate tool-contract transition, verify retained work and old conversation
+files, and prove the upgraded task remains usable. A new conversation identifier
+alone is neither lost work nor proof that upgrade acceptance passed.
+
 ## Runtime selection
 
 The server resolves and persists the runtime once, before provider launch.

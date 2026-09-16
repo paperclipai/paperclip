@@ -60,13 +60,13 @@ describe("adapter configuration sections", () => {
       "runPolicy",
       config,
     );
-    expect(adapter).toContain("ACPX Claude");
+    expect(adapter).toContain('<option value="acpx">ACPX</option>');
     expect(adapter).not.toContain("Runner lifecycle");
     expect(configuration).not.toContain("Permission mode");
     expect(configuration).not.toContain("Runner lifecycle");
     expect(policy).toContain("Runner lifecycle");
     expect(policy).toContain('value="45000"');
-    expect(policy).not.toContain("ACPX Claude");
+    expect(policy).not.toContain('<option value="acpx">');
   });
 
   it.each([

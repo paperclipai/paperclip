@@ -15,6 +15,7 @@ import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS,
   resolvePaperclipRunnerModel,
   normalizeLegacyRunnerProvider,
 } from "./paperclip-runner-permissions.js";
@@ -2150,28 +2151,14 @@ export function isAssignmentShapedPaperclipWakeReason(
   );
 }
 
-// Picks the task-context markdown variant for adapters that inject it into the
-// prompt. Fresh sessions, assignment-shaped wakes, and recovery wakes get the
-// full brief; other resume deltas get the compact variant (description
-// stripped) because the session already received the brief when it picked the
-// issue up. Falls back to the full variant when no compact one was provided.
+// A resumed provider session has no certified revision of the task description.
+// Always deliver the current brief: an ordinary status/comment wake can follow
+// an edit, even when its comment delta is empty. This does not reset the session.
 export function selectPaperclipTaskMarkdown(
   context: Record<string, unknown> | null | undefined,
-  options: { resumedSession?: boolean } = {},
+  _options: { resumedSession?: boolean } = {},
 ): string {
-  const full = asString(context?.paperclipTaskMarkdown, "").trim();
-  if (!full) return "";
-  if (options.resumedSession !== true) return full;
-  const wake = normalizePaperclipWakePayload(context?.paperclipWake);
-  if (!wake) return full;
-  if (
-    isAssignmentShapedPaperclipWakeReason(wake.reason) ||
-    isPaperclipRecoveryWakePayload(context?.paperclipWake)
-  ) {
-    return full;
-  }
-  const compact = asString(context?.paperclipTaskMarkdownCompact, "").trim();
-  return compact || full;
+  return asString(context?.paperclipTaskMarkdown, "").trim();
 }
 
 // Runtime-only connector skills are supplied by the server after assignment resolution.
@@ -2446,7 +2433,8 @@ function renderPaperclipWakePromptBody(
       resumedSession && resumeDelta
         ? "This is the missing or edited message delta since the named provider-session run, plus the required originating requests. Earlier delivered history remains in this resumed session."
         : "This snapshot includes the complete authorized task history through its coverage cursor. A summary has no certified message coverage; use the source messages to resolve omissions.",
-      "Completed actions contain durable results from prior runs. Use those results as completed work; do not issue the same mutation again under a new call id.");
+      "Completed actions contain durable results from prior runs. Use those results as completed work; do not issue the same mutation again under a new call id.",
+      "Prior completion statements describe prior requests; they do not establish that a changed objective is complete.");
     const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, ...requestContext } = continuation;
     const encodeData = (data: unknown) => markdownFencedText(JSON.stringify(data, (_key, value) =>
       typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "") : value,
@@ -2465,18 +2453,10 @@ function renderPaperclipWakePromptBody(
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
   const issueDescription = normalized.issue?.description ?? null;
-  // Resume deltas skip the description: the session already received the brief
-  // when it picked up the issue. Assignment-shaped and recovery wakes are the
-  // exceptions — there the resuming session may be seeing this issue fresh.
-  const resumeOmitsIssueDescription =
-    resumedSession &&
-    !recoveryScoped &&
-    !isAssignmentShapedPaperclipWakeReason(normalized.reason);
-  if (
-    issueDescription !== null &&
-    options.suppressIssueDescription !== true &&
-    !resumeOmitsIssueDescription
-  ) {
+  // Comment coverage does not establish which description revision the provider
+  // saw. Keep the current brief on resumes; adapters carrying the full task
+  // markdown can still suppress this duplicate copy explicitly.
+  if (issueDescription !== null && options.suppressIssueDescription !== true) {
     lines.push(
       "",
       "Issue description:",
@@ -2488,10 +2468,6 @@ function renderPaperclipWakePromptBody(
         "[issue description truncated; fetch the issue for the full brief]",
       );
     }
-  } else if (issueDescription !== null && resumeOmitsIssueDescription) {
-    lines.push(
-      "- issue description: omitted from this resume delta; fetch the issue if you need the latest brief",
-    );
   }
   if (normalized.checkboxSelection) {
     if (normalized.checkboxSelection.prompt) {
@@ -2921,7 +2897,9 @@ function renderPaperclipWakePromptBody(
     lines.push("");
   }
 
-  if (normalized.continuationSummary) {
+  // The structured envelope already includes this summary as historical data.
+  // Repeating it here presents stale status and next-action text as instructions.
+  if (normalized.continuationSummary && !normalized.executionContinuation) {
     lines.push(
       "",
       "Issue continuation summary:",
@@ -4150,7 +4128,11 @@ export function normalizePaperclipRunnerAdapterConfig(
   }
   if (next.provider === "acpx") {
     next.acpxAgent ??= "claude";
-    next.model = resolvePaperclipRunnerModel("acpx", config.model);
+    const defaultModel = next.acpxAgent === "pi"
+      ? PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS.pi
+      : PAPERCLIP_RUNNER_ACPX_DEFAULT_MODELS.claude;
+    next.model = typeof config.model === "string" && config.model.trim().length > 0
+      ? config.model.trim() : defaultModel;
   }
   return normalizePaperclipOperationalSkillPreference(adapterType, next);
 }
@@ -4777,11 +4759,26 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
-          });
+          const reportStdinError = (err: unknown) => {
+            onLogError(err, runId, "failed to write child stdin");
+          };
+          // The child can close its input before this asynchronous write drains.
+          // Keep its exit and output authoritative, but handle the pipe's own
+          // error event so an early exit cannot crash the parent process.
+          stdin.on("error", reportStdinError);
+          void spawnPersistPromise
+            .then(() => {
+              if (
+                child.killed ||
+                child.exitCode !== null ||
+                child.signalCode !== null ||
+                stdin.destroyed
+              ) {
+                return;
+              }
+              stdin.end(opts.stdin as string);
+            })
+            .catch(reportStdinError);
         }
 
         child.on("error", (err: Error) => {

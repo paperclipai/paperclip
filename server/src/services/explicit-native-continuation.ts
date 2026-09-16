@@ -76,6 +76,7 @@ export async function admitExplicitNativeContinuation(input: {
   /** Internal delivery of an unconsumed, user-authored legacy queue entry. */
   queuedCommentRequestId?: string;
   dryRun?: boolean;
+  resumingSavedMessage?: boolean;
   onBlocked?: (reason: string, message: string) => void;
 }): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string } | null> {
   const { db, companyId, issueId, agentId, actorId, commentId } = input;
@@ -129,7 +130,9 @@ export async function admitExplicitNativeContinuation(input: {
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
   )).for("update");
-  if (!actions.length) return null;
+  // Cleanup can remove the recovery action before a saved message is retried.
+  // Its pending decisions still gate admission, even without a hold to retire.
+  if (!actions.length && !input.resumingSavedMessage) return null;
   const blocker = await getExecutionBlocker(db, companyId, issueId);
   if (blocker && blocker.recoveryActionId === null) return null;
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -141,6 +144,7 @@ export async function admitExplicitNativeContinuation(input: {
   )).where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.issueId, issueId),
     inArray(approvals.status, ["pending", "revision_requested"]))).limit(1);
   if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
+  if (!actions.length) return null;
 
   const sources: Run[] = [];
   const cancelledStartupIds = new Set<string>();

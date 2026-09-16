@@ -24,6 +24,7 @@ import {
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
 // run-dispatch gates decide on. `application/use-cases.test.ts` and
@@ -608,6 +609,25 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
       });
+      const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(cancelled.resultJson?.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+      expect(legacyExecutionNeedsReconciliation(cancelled)).toBe(false);
+    });
+
+    it("does not infer bootstrap safety for a requeued run that previously started", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const replacementAgentId = randomUUID();
+      await seedAgent({ id: replacementAgentId, companyId, name: "ReplacementCoder" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: replacementAgentId });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
+      await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId, runId, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: "cancelled" });
+      const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(cancelled.resultJson?.executionRecovery).toBeUndefined();
+      expect(legacyExecutionNeedsReconciliation(cancelled)).toBe(true);
     });
 
     it(

@@ -861,9 +861,6 @@ export class CapabilityLiveSessionService {
   }
 
   async create(input: CreateCapabilityLiveSessionInput = {}): Promise<CapabilityLiveSession> {
-    if (input.provider === "acpx" && input.acpxAgent === "pi") {
-      throw new Error("The Pi ACPX profile is not available");
-    }
     if (input.provider === "claude_managed" && !input.managedProfile) {
       throw new Error("Claude Managed live sessions require a qualified managed profile");
     }

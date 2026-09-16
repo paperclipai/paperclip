@@ -107,6 +107,10 @@ describe("resolveNativeRuntimeMode", () => {
       kind: "native",
       profile: { backend: "acpx_runtime" },
     });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+    })).toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
   });
 
   it("rejects malformed OpenCode and unqualified ACPX profiles", () => {
@@ -121,10 +125,10 @@ describe("resolveNativeRuntimeMode", () => {
       adapterConfig: {
         provider: "acpx",
         acpxAgent: "pi",
-        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+        model: "openrouter/unqualified-model",
       },
     })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_acpx_agent_unavailable",
+      code: "paperclip_runner_acpx_model_unqualified",
     }));
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
