@@ -65,6 +65,16 @@ export function snapshotInstruction(
     redacted: safe.content !== content,
   };
 }
+/** Only user-visible affirmative proposals count; incidental task nouns do not. */
+function hasTaskProposal(text: string, confirmationCard = false) {
+  const affirmative = text.split(/(?<=[.!?])\s+/).filter((sentence) =>
+    !/\b(?:no\s+(?:(?:new|child)\s+)?(?:subtask|task)|(?:not|never|won['’]t|don['’]t|without)\b[^.!?]{0,80}\b(?:subtask|task))\b/i.test(sentence),
+  ).join("\n");
+  return /\b(?:approve|accept|propose|proposed|proposing|proposal|suggest|suggested|suggesting|recommend|recommended|recommending|create|creating|set up)\b[\s\S]{0,160}\b(?:subtask|task)\b/i.test(affirmative) ||
+    /\b(?:subtask|task)\b[^.!?\n]{0,30}\bproposal\b/i.test(affirmative) ||
+    (confirmationCard && /\b(?:I|we)(?:['’]ll| will)\s+(?:save|attach|write|make|open|create)\b[^.!?]{0,160}\b(?:(?:new|child)\s+task|subtask)\b/i.test(affirmative));
+}
+
 export const activeRuns = (runs: Row[]) =>
   runs.filter((run) => ["queued", "running"].includes(run.status));
 export function questionCount(interaction: Row) {
@@ -253,28 +263,13 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   if (["task", "message"].includes(scenario.opening))
     add(
       "subtask-proposal",
-      /(?:\bsubtask\b|\b(?:approve|accept|propose|proposed|proposing|proposal|suggest|suggested|suggesting|recommend|recommended|recommending|create|creating|set up)\b[\s\S]{0,160}\btask\b)/i.test(
-        [
-          text,
-          ...first.documents
-            .filter(isPlanningDocument)
-            .map((d) => `${d.title ?? ""}\n${d.body ?? ""}`),
-          ...first.interactions
-            .filter((i) =>
-              ["request_confirmation", "request_checkbox_confirmation"].includes(i.kind),
-            )
-            .map((i) =>
-              [i.title, i.summary, i.payload?.prompt, i.payload?.detailsMarkdown]
-                .filter(Boolean)
-                .join("\n"),
-            ),
-        ].join("\n"),
-      ) || first.interactions.some((i) =>
+      [text, ...first.documents.filter(isPlanningDocument)
+        .map((d) => `${d.title ?? ""}\n${d.body ?? ""}`)]
+        .some((visible) => hasTaskProposal(visible)) ||
+      first.interactions.some((i) =>
         ["request_confirmation", "request_checkbox_confirmation"].includes(i.kind) &&
-        /\b(?:(?:new|child)\s+task|subtask)\b/i.test(
-          [i.title, i.summary, i.payload?.prompt, i.payload?.detailsMarkdown]
-            .filter(Boolean).join("\n"),
-        ),
+        hasTaskProposal([i.title, i.summary, i.payload?.prompt, i.payload?.detailsMarkdown]
+          .filter(Boolean).join("\n"), true),
       ),
       "Propose a task for the concrete request",
       [first.id],

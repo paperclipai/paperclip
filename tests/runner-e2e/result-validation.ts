@@ -115,7 +115,7 @@ const billing = shape({
   runtime,
   reportedCostUsd: number,
   estimatedRuntimeCostUsd: number,
-  observedAndEstimatedCostUsd: number,
+  observedAndEstimatedCostUsd: nullable(number),
   complete: boolean,
 });
 const matcher: Rule = (value, at) => {

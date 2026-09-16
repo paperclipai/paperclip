@@ -78,7 +78,7 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains six suites. `core-compatibility` (**Core Runner
+The catalog contains seven suites, including the explicit-only everyday suite. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -163,8 +163,9 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The complete catalog is 116 cells (93 local and 23 Daytona) and 238 expected
-paid agent turns. Follow-up steps remain ordered within their cell; all other
+The default `--all` selection is 140 cells (117 local and 23 Daytona) and 288
+expected paid agent turns. The explicit-only everyday suite adds 30 catalog cells
+and is excluded from `--all`. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
 developing fixtures.
 
@@ -449,7 +450,7 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100). The 116-cell catalog takes more than
+integer from 1–100 on AWS (default 100). The 140-cell default selection takes more than
 one wave at that limit; use suite selectors for smaller campaigns. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports

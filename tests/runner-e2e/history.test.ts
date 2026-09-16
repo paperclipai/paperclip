@@ -67,6 +67,40 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
 }
 
 describe("runner E2E campaign history", () => {
+  it("retains incomplete journeys in campaign, suite and history without marking them green", () => {
+    const execution = runnerMatrix.find(e => e.suite.id === "first-task")!;
+    const incomplete: RunnerE2EResult = {
+      ...result(execution, "failed"), failureClass: "candidate_failure",
+      firstTask: {
+        caseId: execution.task.id, nonce: "fixture", onboardingIssueId: "issue", agentId: "agent",
+        initialTaskIds: ["issue"], instructions: [], configuredModel: null, observedModels: [], checkpoints: [],
+        checks: [{ id: "acceptance-recorded", passed: false, detail: "Acceptance", evidence: [], notReached: "Recording stopped" }],
+      },
+    };
+    const campaign = buildRunnerCampaign({ campaignId: "incomplete", generatedAt: incomplete.finishedAt, expected: [execution.id], results: [incomplete] });
+    expect(campaign).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    expect(campaign.suites[0]).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    const record = campaignHistoryRecord(campaign, "https://example.test");
+    expect(record.executions[0].status).toBe("incomplete");
+    const history = mergeRunnerHistory(null, { ...record, complete: true, suites: record.suites.map(s => ({ ...s, complete: true })) });
+    expect(history.latestGreenCampaignId).toBeNull();
+    expect(history.latestGreenBySuite["first-task"]).toBeUndefined();
+    expect(renderRunnerHistoryIndex(history)).toContain("1 incomplete");
+    expect(renderRunnerE2EDashboard({ title: "History", generatedAt: incomplete.finishedAt, expected: [], catalog: [], entries: [], history })).toContain('data-history-status="incomplete"');
+  });
+
+  it("shows unknown campaign costs without plotting zero dollars", () => {
+    const execution = runnerMatrix[0];
+    const campaign = buildRunnerCampaign({ campaignId: "unknown-cost", generatedAt: "2026-09-15T00:00:00Z", expected: [execution.id], results: [result(execution, "passed")] });
+    campaign.billing.observedAndEstimatedCostUsd = null;
+    const record = { ...campaignHistoryRecord(campaign, "https://example.test"), complete: true };
+    const history = mergeRunnerHistory(null, record);
+    expect(renderRunnerHistoryIndex(history)).toContain("Unknown");
+    const dashboard = renderRunnerE2EDashboard({ title: "History", generatedAt: campaign.generatedAt, expected: [], catalog: [], entries: [], history });
+    expect(dashboard).toContain("Unknown measurements are not plotted");
+    expect(dashboard).not.toContain("NaN");
+  });
+
   it("records the resolved paid target instead of the trusted workflow checkout", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "target-sha");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/target");

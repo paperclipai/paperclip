@@ -36,7 +36,7 @@ export interface CampaignBillingSummary {
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
   estimatedRuntimeCostUsd: number;
-  observedAndEstimatedCostUsd: number;
+  observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;
 }
 
@@ -320,7 +320,7 @@ export function summarizeExecutionBilling(
     reportedCostUsd,
     estimatedRuntimeCostUsd,
     ...(quality ? { judge: { inputTokens: quality.inputTokens, outputTokens: quality.outputTokens, estimatedCostUsd: quality.estimatedCostUsd, reservedCostUsd: quality.reservedCostUsd } } : {}),
-    observedAndEstimatedCostUsd: reportedCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0),
+    observedAndEstimatedCostUsd: quality?.estimatedCostUsd === null ? null : reportedCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0),
     complete,
   };
 }
@@ -355,7 +355,7 @@ export function aggregateCampaignBilling(
       attempts: judges.length,
       inputTokens: judges.reduce((n, q) => n + (q.inputTokens ?? 0), 0),
       outputTokens: judges.reduce((n, q) => n + (q.outputTokens ?? 0), 0),
-      estimatedCostUsd: judges.reduce((n, q) => n + (q.estimatedCostUsd ?? 0), 0),
+      estimatedCostUsd: judges.some(q => q.estimatedCostUsd === null) ? null : judges.reduce((n, q) => n + (q.estimatedCostUsd ?? 0), 0),
       reservedCostUsd: judges.reduce((n, q) => n + q.reservedCostUsd, 0),
       attemptsWithUnknownUsage: judges.filter(q => q.estimatedCostUsd === null).length,
     } } : {}),
@@ -400,7 +400,7 @@ export function aggregateCampaignBilling(
     },
     reportedLlmCostUsd,
     estimatedRuntimeCostUsd,
-    observedAndEstimatedCostUsd: summaries.reduce((total, summary) => total + summary.observedAndEstimatedCostUsd, 0),
+    observedAndEstimatedCostUsd: summaries.some(s => s.observedAndEstimatedCostUsd === null) ? null : summaries.reduce((total, summary) => total + (summary.observedAndEstimatedCostUsd ?? 0), 0),
     testsWithCompleteBilling: summaries.filter((summary) => summary.complete)
       .length,
   };

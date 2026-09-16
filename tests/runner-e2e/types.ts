@@ -242,7 +242,7 @@ export interface RunnerE2EBillingSummary {
   /** Separately recorded post-processing judge usage; absent when not judged. */
   judge?: { inputTokens: number | null; outputTokens: number | null; estimatedCostUsd: number | null; reservedCostUsd: number };
   /** Reported model subtotal plus runtime and judge list-price estimates. */
-  observedAndEstimatedCostUsd: number;
+  observedAndEstimatedCostUsd: number | null;
   complete: boolean;
 }
 
@@ -319,6 +319,7 @@ export interface RunnerE2ESuiteSummary {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   complete: boolean;
@@ -330,7 +331,7 @@ export interface RunnerE2EJudgeBillingSummary {
   attempts: number;
   inputTokens: number;
   outputTokens: number;
-  estimatedCostUsd: number;
+  estimatedCostUsd: number | null;
   reservedCostUsd: number;
   attemptsWithUnknownUsage: number;
 }
@@ -343,7 +344,7 @@ export interface RunnerE2EAggregateBillingSummary {
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
   estimatedRuntimeCostUsd: number;
-  observedAndEstimatedCostUsd: number;
+  observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;
 }
 
@@ -363,6 +364,7 @@ export interface RunnerE2ECampaign {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   rankingSnapshots: Array<{
@@ -383,7 +385,7 @@ export interface RunnerE2EHistoryExecution {
   caseId: string;
   provider: string;
   model: string;
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "incomplete";
   durationMs: number;
   attempt: number;
   cleanup: RunnerE2EResult["cleanup"];
@@ -399,6 +401,7 @@ export interface RunnerE2EHistoryCampaign {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   publicUrl: string;

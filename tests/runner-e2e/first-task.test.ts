@@ -403,6 +403,23 @@ describe("first-task fixtures and state grading", () => {
     expect(failed(e)).toEqual([]);
   });
 
+  it.each([
+    "No subtask is needed. Continue?",
+    "I will not create a new task. Continue?",
+    "I won't create a child task. Continue?",
+    "A new task was mentioned earlier. Continue?",
+    "Do you understand what a subtask is?",
+  ])("does not count incidental or declined work as a proposal: %s", (prompt) => {
+    const e = recording("clear-task-first-response");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    e.checkpoints[1].comments.pop();
+    e.checkpoints[1].interactions.push({
+      id: "not-a-proposal", kind: "request_confirmation", status: "pending",
+      payload: { prompt },
+    });
+    expect(failed(e)).toContain("subtask-proposal");
+  });
+
   it("recognizes the recorded Claude confirmation that offers a new task without proposal jargon", () => {
     const e = recording("clear-task-first-response");
     e.checkpoints = e.checkpoints.slice(0, 2);
@@ -1019,6 +1036,10 @@ describe("first-task informational judging and reporting", () => {
     );
     expect(q.status).toBe("failed");
     expect(q.estimatedCostUsd).toBeNull();
+    const unknownResult = { ...result(e), firstTaskQuality: q };
+    expect(summarizeExecutionBilling(unknownResult).observedAndEstimatedCostUsd).toBeNull();
+    expect(aggregateCampaignBilling([unknownResult]).observedAndEstimatedCostUsd).toBeNull();
+    expect(aggregateCampaignBilling([unknownResult]).judge?.estimatedCostUsd).toBeNull();
     expect(q.reservedCostUsd).toBeGreaterThan(0);
     expect(JSON.stringify(q)).not.toContain("sensitive");
     expect(fetcher).toHaveBeenCalledTimes(1);

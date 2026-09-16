@@ -61,7 +61,8 @@ function tokenLabel(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
-function usdLabel(value: number) {
+function usdLabel(value: number | null) {
+  if (value === null) return "Unknown";
   return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
 }
 
@@ -328,7 +329,7 @@ function renderCase(
 function renderTrendChart(input: {
   history: RunnerE2EHistoryIndex;
   label: string;
-  value(campaign: RunnerE2EHistoryIndex["campaigns"][number]): number;
+  value(campaign: RunnerE2EHistoryIndex["campaigns"][number]): number | null;
   format(value: number): string;
   include?(campaign: RunnerE2EHistoryIndex["campaigns"][number]): boolean;
   fingerprint?(campaign: RunnerE2EHistoryIndex["campaigns"][number]): string;
@@ -340,7 +341,12 @@ function renderTrendChart(input: {
   if (campaigns.length === 0) {
     return `<article class="trend-card"><span>${html(input.label)}</span><strong>No complete campaigns</strong></article>`;
   }
-  const values = campaigns.map(input.value);
+  const rawValues = campaigns.map(input.value);
+  const values = rawValues.filter((value): value is number => value !== null);
+  if (values.length !== rawValues.length) {
+    const latest = rawValues.at(-1);
+    return `<article class="trend-card"><span>${html(input.label)}</span><strong>${latest == null ? "Unknown" : html(input.format(latest))}</strong><small>Unknown measurements are not plotted. Inspect campaign billing and reserved judge budgets.</small></article>`;
+  }
   const maximum = Math.max(...values, 1);
   const pointRows = values.map((value, index) => {
     const x =
@@ -488,7 +494,7 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
     .join("");
   const rows = history.campaigns
     .map((campaign) => {
-      const status = campaign.failed === 0 ? "passed" : "failed";
+      const status = campaign.failed > 0 ? "failed" : (campaign.incomplete ?? 0) > 0 ? "incomplete" : "passed";
       const sha = campaign.source.sha;
       const searchable = [
         campaign.campaignId,
@@ -509,7 +515,7 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
       return `<tr data-history-campaign data-history-date="${html(campaign.generatedAt.slice(0, 10))}" data-history-status="${status}" data-history-complete="${campaign.complete}" data-history-suites="${html(campaign.suites.map((suite) => suite.suiteId).join(" "))}" data-history-search="${html(searchable)}">
         <td><a href="${html(campaign.publicUrl)}">${html(campaign.campaignId)}</a><small>${html(new Date(campaign.generatedAt).toLocaleString("en-US", { timeZone: "UTC" }))} UTC</small></td>
         <td>${sha ? `<code>${html(sha.slice(0, 10))}</code>` : "Unknown"}<small>${html(campaign.source.ref ?? "unknown ref")}</small></td>
-        <td><span class="status history-${status}">${status}</span><small>${campaign.passed}/${campaign.passed + campaign.failed} passed · ${campaign.complete ? "complete" : "partial"}</small></td>
+        <td><span class="status history-${status}">${status}</span><small>${campaign.passed}/${campaign.selected} passed${campaign.incomplete ? ` · ${campaign.incomplete} incomplete` : ""} · ${campaign.complete ? "complete" : "partial"}</small></td>
         <td>${html(tokenLabel(campaign.billing.llm.inputTokens))} / ${html(tokenLabel(campaign.billing.llm.outputTokens))}<small>input / output · ${html(tokenLabel(campaign.billing.llm.cachedInputTokens))} cached</small></td>
         <td>${html(usdLabel(campaign.billing.reportedLlmCostUsd))}<small>${html(usdLabel(campaign.billing.estimatedRuntimeCostUsd))} runtime estimate</small></td>
         <td>${html(durationLabel(campaign.billing.agentRunDurationMs))}<small>${html(durationLabel(campaign.billing.leaseDurationMs))} lease</small></td>
@@ -533,7 +539,7 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
     <div class="history-filters">
       <label>Search <input type="search" data-history-query placeholder="SHA, model, profile, case"></label>
       <label>Suite <select data-history-suite><option value="">All suites</option>${suiteIds.map((suiteId) => `<option value="${html(suiteId)}">${html(suiteId)}</option>`).join("")}</select></label>
-      <label>Status <select data-history-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option></select></label>
+      <label>Status <select data-history-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="incomplete">Incomplete</option></select></label>
       <label>From <input type="date" data-history-from></label>
       <label>Through <input type="date" data-history-through></label>
       <label class="history-checkbox"><input type="checkbox" data-history-partial> Include partial campaigns</label>
@@ -600,7 +606,7 @@ function renderSuiteMatrix(input: {
   const summary = input.summary;
   const summaryHtml = summary
     ? `<div class="suite-summary" aria-label="${html(suite.label)} current campaign summary">
-        <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed</small></div>
+        <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed${summary.incomplete ? ` · ${summary.incomplete} incomplete` : ""}</small></div>
         <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens))} input · ${html(tokenLabel(summary.billing.llm.outputTokens))} output</small></div>
         <div><span>Cost</span><strong>${html(usdLabel(summary.billing.observedAndEstimatedCostUsd))}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
         <div><span>Agent time</span><strong>${html(durationLabel(summary.billing.agentRunDurationMs))}</strong><small>${html(durationLabel(summary.billing.leaseDurationMs))} lease</small></div>
@@ -921,6 +927,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .history-table td small { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 10px; }
     .history-table .status { margin-bottom: 2px; }
     .history-passed { border-color: var(--pass-border); background: var(--pass-bg); color: var(--pass-text); }
+    .history-incomplete { border-color: var(--missing-border); background: var(--missing-bg); color: var(--missing-text); }
     .history-failed { border-color: var(--fail-border); background: var(--fail-bg); color: var(--fail-text); }
     .history-empty { padding: 24px 0; color: var(--muted-foreground); text-align: center; }
     .case-context > summary, .usage > summary { width: fit-content; cursor: pointer; color: var(--foreground); font-size: 12px; font-weight: 600; }

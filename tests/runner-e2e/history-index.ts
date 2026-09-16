@@ -16,7 +16,8 @@ function number(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
-function usd(value: number) {
+function usd(value: number | null) {
+  if (value === null) return "Unknown";
   return `$${value.toFixed(value < 0.01 ? 6 : 2)}`;
 }
 
@@ -48,6 +49,7 @@ function safeRelativeAssetHref(relative: string | undefined) {
 }
 
 function campaignStatus(campaign: RunnerE2EHistoryCampaign) {
+  if (campaign.failed === 0 && (campaign.incomplete ?? 0) > 0) return "incomplete";
   return campaign.failed === 0 &&
     campaign.passed === campaign.selected &&
     campaign.executed === campaign.selected &&
@@ -90,7 +92,7 @@ function campaignRow(campaign: RunnerE2EHistoryCampaign) {
     <td data-label="Suites"><div class="suite-list">${suites}</div></td>
     <td data-label="Tests">
       <strong>${campaign.passed}/${campaign.selected} passed</strong>
-      <small>${campaign.executed} executed · ${campaign.failed} failed</small>
+      <small>${campaign.executed} executed · ${campaign.failed} failed${campaign.incomplete ? ` · ${campaign.incomplete} incomplete` : ""}</small>
     </td>
     <td data-label="Tokens">
       <strong>${html(number(billing.llm.totalTokens))}</strong>
@@ -124,8 +126,8 @@ export function renderRunnerHistoryIndex(
   const latestGreen = campaigns.find(
     (campaign) => campaign.campaignId === history.latestGreenCampaignId,
   );
-  const totalCost = campaigns.reduce(
-    (sum, campaign) => sum + campaign.billing.observedAndEstimatedCostUsd,
+  const totalCost = campaigns.some(c => c.billing.observedAndEstimatedCostUsd === null) ? null : campaigns.reduce(
+    (sum, campaign) => sum + (campaign.billing.observedAndEstimatedCostUsd ?? 0),
     0,
   );
   const rows =
@@ -184,6 +186,7 @@ export function renderRunnerHistoryIndex(
     .campaign-link { font:600 11px/1.4 var(--mono); overflow-wrap:anywhere; }
     .status { display:inline-block; padding:3px 8px; border-radius:999px; font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
     .status-passed { color:var(--pass); background:var(--pass-bg); }
+    .status-incomplete { color:var(--muted); }
     .status-failed { color:var(--fail); background:var(--fail-bg); }
     .suite-list { display:grid; gap:3px; font-size:11px; white-space:nowrap; }
     .open-cell { text-align:right; white-space:nowrap; font-weight:650; }
