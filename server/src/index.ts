@@ -1503,6 +1503,17 @@ async function startServerWithDatabaseTeardown(
           }
         }
 
+        const silentZombieStartup = await heartbeat.reapSilentZombieRuns().catch((err) => {
+          logger.error({ err }, "startup silent-zombie reap failed");
+          return { reaped: 0, runIds: [] as string[] };
+        });
+        if (silentZombieStartup.reaped > 0) {
+          logger.warn(
+            { reaped: silentZombieStartup.reaped, runIds: silentZombieStartup.runIds },
+            "startup silent-zombie reaper killed stale in-memory runs",
+          );
+        }
+
         const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
         const recoveredGoalActions = await heartbeat.recoverPendingSessionGoalActions();
@@ -1799,6 +1810,12 @@ async function startServerWithDatabaseTeardown(
               const swept = await heartbeat.sweepStaleIssueLocks();
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+              }
+            })
+            .then(async () => {
+              const reaped = await heartbeat.reapSilentZombieRuns();
+              if (reaped.reaped > 0) {
+                logger.warn({ ...reaped }, "periodic silent-zombie reaper killed stale in-memory runs");
               }
             })
             .catch((err) => {
