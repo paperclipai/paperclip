@@ -14288,7 +14288,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("discovers GitHub Actions tools during PAT setup and catalog refresh", async () => {
+  it("discovers GitHub Actions tools during PAT setup and legacy catalog refresh", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const fetchMock = mockToolsList([
@@ -14311,6 +14311,9 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const setupRequestCount = fetchMock.mock.calls.length;
     expect(setupRequestCount).toBeGreaterThan(0);
+    await db.update(toolConnections).set({
+      config: sql`${toolConnections.config} - 'sourceTemplateKey'`,
+    }).where(eq(toolConnections.id, connected.connectionId));
     await service.refreshCatalog(connected.connectionId, actor);
     expect(fetchMock.mock.calls.length).toBeGreaterThan(setupRequestCount);
     for (const [url, init] of fetchMock.mock.calls) {
@@ -17884,6 +17887,17 @@ describe("projectedConnectionHeaders", () => {
       expect(connection.config).not.toHaveProperty("headers");
     },
   );
+
+  it("recognizes GitHub in legacy transport configuration", () => {
+    const connection = {
+      transport: "mcp_remote",
+      config: {},
+      transportConfig: { sourceTemplateKey: "github" },
+    } as typeof toolConnections.$inferSelect;
+    expect(projectedConnectionHeaders(connection)).toEqual({
+      "X-MCP-Toolsets": "default,actions",
+    });
+  });
 
   it("keeps unrelated MCP connections unchanged", () => {
     for (const connection of [

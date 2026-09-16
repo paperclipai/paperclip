@@ -2115,7 +2115,12 @@ rl.on("line", (line) => {
     }
   });
 
-  it.each(["managed", "mcp-key"])("sends the GitHub Actions toolset when invoking a %s connection", async (connectionMethodKey) => {
+  it.each([
+    { connectionMethodKey: "managed", transportConfigOnly: false },
+    { connectionMethodKey: "mcp-key", transportConfigOnly: false },
+    { connectionMethodKey: "managed", transportConfigOnly: true },
+    { connectionMethodKey: "mcp-key", transportConfigOnly: true },
+  ])("sends the GitHub Actions toolset for $connectionMethodKey (legacy config: $transportConfigOnly)", async ({ connectionMethodKey, transportConfigOnly }) => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
@@ -2129,13 +2134,16 @@ rl.on("line", (line) => {
       return { body: { jsonrpc: "2.0", id: fakeRequest.body?.id, result: { content: [{ type: "text", text: "Workflow dispatched" }] } } };
     });
     try {
-      const { catalogEntry } = await createRemoteMcpTool(db, company.id, {
+      const { connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
         applicationKey: "github",
         url: fake.url,
         toolName: "actions_run_trigger",
         riskLevel: "destructive",
         connectionConfig: { sourceTemplateKey: "github", connectionMethodKey },
       });
+      if (transportConfigOnly) {
+        await db.update(toolConnections).set({ config: { url: fake.url } }).where(eq(toolConnections.id, connection.id));
+      }
       await db.update(toolCatalogEntries).set({
         inputSchema: {
           type: "object",
