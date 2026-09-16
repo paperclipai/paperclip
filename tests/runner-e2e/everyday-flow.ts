@@ -770,22 +770,24 @@ export async function runEverydayFlow(input: Input) {
       );
       check(
         "skill-persisted",
-        Boolean(created && String(created.name) === "Release Readiness Checklist"),
+        Boolean(created && String(created.name) === "release-readiness-checklist"),
         "The runner-created skill is present in the company library after the run.",
       );
       if (created) {
-        await page.goto(`/${prefix}/activity`, { waitUntil: "domcontentloaded" });
-        await expect(page.getByText("Release Readiness Checklist", { exact: true })).toBeVisible();
-        const feedLink = page.locator('[data-fc="link"]', {
-          hasText: "Release Readiness Checklist",
-        }).first();
-        await expect(feedLink).toBeVisible();
-        await feedLink.click();
-        await expect(page).toHaveURL(/\/skills\/[^/]+(?:\/studio)?/);
-        const openStudio = page.getByRole("link", { name: /Open in Studio/i }).first();
-        if (await openStudio.isVisible()) await openStudio.click();
+        await openParent();
+        const card = page.getByRole("article", {
+          name: "Skill created: release-readiness-checklist",
+        });
+        await expect(card).toBeVisible();
+        await card.getByRole("button").click();
+        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
+        await expect(page.getByText("Verify checks.", { exact: true })).toBeVisible();
+        check("feed-card-opened", true, "The task thread card opened the created skill sidebar.");
+        const openStudio = page.getByRole("button", { name: "Open in Skill Studio", exact: true });
+        await expect(openStudio).toBeVisible();
+        await openStudio.click();
         await expect(page).toHaveURL(/\/skills\/studio\//);
-        await expect(page.getByRole("heading", { name: "Release Readiness Checklist" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
         const editor = page.locator('[contenteditable="true"]').first();
         await editor.click();
         await page.keyboard.press("End");
@@ -799,8 +801,6 @@ export async function runEverydayFlow(input: Input) {
           ),
           accept: (detail) => JSON.stringify(detail).includes("Studio edit marker: verified"),
         });
-        await page.reload({ waitUntil: "domcontentloaded" });
-        await expect(page.locator('[contenteditable="true"]').first()).toContainText("Studio edit marker: verified");
         const detail = await api.get<Row>(
           `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
         );
@@ -809,8 +809,12 @@ export async function runEverydayFlow(input: Input) {
           JSON.stringify(detail).includes("Studio edit marker: verified"),
           "The Skill Studio edit remains in the persisted skill after returning to the page.",
         );
-        check("feed-card-opened", true, "The company activity feed card opened the created skill.");
         check("studio-opened", true, "The skill detail opened in Skill Studio.");
+        await page.goBack();
+        await expect(page).toHaveURL(new RegExp(`/issues/`));
+        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
+        await expect(page.getByText("Studio edit marker: verified", { exact: true })).toBeVisible();
+        check("return-content-persisted", true, "Returning to the task shows the saved Skill Studio edit.");
       }
     }
     if (declining) {
