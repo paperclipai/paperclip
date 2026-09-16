@@ -1154,7 +1154,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
           <strong id="gallery-title" data-gallery-title>Screenshot evidence</strong>
           <div class="gallery-context">
             <span><strong data-gallery-profile></strong><em data-gallery-profile-detail></em></span>
-            <span><strong data-gallery-environment></strong><em data-gallery-environment-detail></em></span>
+            <span><em>Environment:</em><strong data-gallery-environment></strong><em data-gallery-environment-detail></em></span>
             <span><strong data-gallery-case></strong><em data-gallery-runtime></em></span>
           </div>
           <div class="gallery-facts">
@@ -1225,7 +1225,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         profile.textContent = item.dataset.galleryProfile;
         profileDetail.textContent = item.dataset.galleryGeneration + " · " + item.dataset.galleryProvider + " · " + item.dataset.galleryModel;
         environment.textContent = item.dataset.galleryEnvironment;
-        environmentDetail.textContent = item.dataset.galleryEnvironmentProvider + " · " + item.dataset.galleryExecutionTarget;
+        environmentDetail.textContent = "Provider: " + item.dataset.galleryEnvironmentProvider + " · Target: " + item.dataset.galleryExecutionTarget;
         caseLabel.textContent = item.dataset.galleryCase;
         runtime.textContent = item.dataset.galleryRuntime + " runtime";
         status.textContent = item.dataset.galleryStatus;

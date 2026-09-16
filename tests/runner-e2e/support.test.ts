@@ -162,7 +162,7 @@ describe("runner E2E provider environment", () => {
           { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
           [execution],
         ),
-      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true" });
+      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true", PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false" });
     }
 
     for (const execution of [nativeOpenCode, breadthOpenCode]) {
@@ -171,7 +171,16 @@ describe("runner E2E provider environment", () => {
           { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
           [execution],
         ),
-      ).toEqual({ KEEP_ME: "yes" });
+      ).toEqual({ KEEP_ME: "yes", PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false" });
+    }
+  });
+
+  it("disables announcements through the server boundary for every runner cell", () => {
+    for (const execution of runnerMatrix) {
+      const source = { PAPERCLIP_ANNOUNCEMENTS_ENABLED: "true" };
+      const env = buildRunnerE2EProcessEnvironment(source, [execution]);
+      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("false");
+      expect(source.PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("true");
     }
   });
 });

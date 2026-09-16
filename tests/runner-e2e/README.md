@@ -20,6 +20,10 @@ environments × cases; an **execution/cell** is one parallel job; and an
 The browser creates and assigns the task. The harness does not call a private
 runner hook or write fixtures directly to the database.
 
+The launcher always sets `PAPERCLIP_ANNOUNCEMENTS_ENABLED=false` for its isolated
+instances so announcement panels do not obscure screenshot evidence. No shell
+or workflow configuration is needed, including for Daytona cells.
+
 ## Credentials
 
 Copy `.env.runner-e2e.example` to `.env.runner-e2e.local` and fill only the
