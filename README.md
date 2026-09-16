@@ -443,6 +443,9 @@ pnpm db:migrate       # Apply migrations
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
+See the [evaluation guide](doc/evals.md) for Runner Evals, Product E2E Evals,
+case-authoring skills, and [public run histories](https://pages.paperclip.ing/evals/).
+
 <br/>
 
 ## Roadmap

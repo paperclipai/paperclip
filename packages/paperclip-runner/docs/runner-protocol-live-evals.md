@@ -1,5 +1,10 @@
 # Direct live Runner protocol evals
 
+For choosing between Runner Evals and full-stack Product E2E Evals, and for
+shared guidance on provenance, history, cost, and failure classification, see
+the [Paperclip evaluation guide](../../../doc/evals.md). This document remains
+the authoritative Runner Evals live protocol runbook.
+
 ## One Evalbook presentation
 
 Every new report uses the canonical Evalbook grid and the existing Runner Lab
