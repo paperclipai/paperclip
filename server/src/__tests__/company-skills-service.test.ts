@@ -253,6 +253,56 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# New instructions\n");
   });
 
+  it.each(["save", "delete"] as const)("rejects a stale file %s after the skill is replaced", async (operation) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Stale editor", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Editor", slug: "stale-editor", markdown: "# Old\n" });
+    await svc.updateFile(companyId, original.id, "notes.md", "Original notes");
+    let replacement: typeof original | undefined;
+    let intercepted = false;
+    // Pause the editor after it reads the old identity, then complete a delete
+    // and recreate before allowing that stale request to continue.
+    const staleDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "select") return (columns: any) => {
+          const selection = target.select(columns);
+          if (!columns?.markdown) return selection;
+          const from = selection.from.bind(selection);
+          selection.from = ((...args: any[]) => {
+            const query = (from as any)(...args);
+            const where = query.where.bind(query);
+            query.where = (...conditions: any[]) => {
+              const filtered = where(...conditions);
+              const then = filtered.then.bind(filtered);
+              filtered.then = (resolve: any, reject: any) => then(async (rows: any[]) => {
+                if (!intercepted && rows.some((row) => row.id === original.id)) {
+                  intercepted = true;
+                  await svc.deleteSkill(companyId, original.id);
+                  replacement = await svc.createLocalSkill(companyId, { name: "Replacement", slug: original.slug, markdown: "# Replacement\n" });
+                  await svc.updateFile(companyId, replacement.id, "notes.md", "Replacement notes");
+                }
+                return rows;
+              }).then(resolve, reject);
+              return filtered;
+            };
+            return query;
+          }) as typeof selection.from;
+          return selection;
+        };
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const editor = companySkillService(staleDb);
+    const pending = operation === "save"
+      ? editor.updateFile(companyId, original.id, "notes.md", "Stale overwrite")
+      : editor.deleteFile(companyId, original.id, { path: "notes.md", target: "file" });
+    await expect(pending).rejects.toMatchObject({ status: 404 });
+    expect(intercepted).toBe(true);
+    expect(replacement).toBeDefined();
+    expect(await fs.readFile(path.join(replacement!.sourceLocator!, "notes.md"), "utf8")).toBe("Replacement notes");
+    expect(await svc.getById(companyId, replacement!.id)).not.toBeNull();
+  });
+
   it("restores managed source files when the deletion transaction fails", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Delete rollback", issuePrefix: `T${companyId.slice(0, 6)}` });
