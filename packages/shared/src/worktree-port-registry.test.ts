@@ -46,14 +46,26 @@ describe("worktree port registry lock", () => {
         ...owner,
         processIdentity: "unavailable-process-identity",
       })}\n`);
-      const oldTimestamp = new Date(Date.now() - 10_000);
-      fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
       firstEntered.resolve();
       await releaseFirst.promise;
     });
     await firstEntered.promise;
 
-    expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeGreaterThan(5_000);
+    // The owner heartbeat refreshes this timestamp through the backup owner record,
+    // which still carries the token it matches on, and its worker thread runs
+    // concurrently with this test: its first touch lands whenever the scheduler
+    // runs it, so a single write here is not a durable precondition. Re-assert the
+    // stale timestamp until a read confirms it, then hand off to the contender
+    // immediately, because the probe fallback is only reached while the lock looks
+    // stale. A refresh that wins this race makes the contender take the
+    // not-stale shortcut and the probe assertion below passes without proving it.
+    const staleTimestamp = new Date(Date.now() - 10_000);
+    let observedStale = false;
+    for (let attempt = 0; attempt < 100 && !observedStale; attempt += 1) {
+      fs.utimesSync(lockPath, staleTimestamp, staleTimestamp);
+      observedStale = Date.now() - fs.statSync(lockPath).mtimeMs > 5_000;
+    }
+    expect(observedStale).toBe(true);
 
     const second = withWorktreePortRegistryLock(homeDir, async () => {
       secondEntered = true;
