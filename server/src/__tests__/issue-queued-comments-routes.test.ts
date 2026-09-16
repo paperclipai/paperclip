@@ -15,6 +15,7 @@ import {
   companySkills,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueThreadInteractions,
   issueRecoveryActions,
@@ -262,6 +263,59 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     return { ...seeded, interactionId, context };
   }
 
+  it("keeps messages and approvals in separate durable queues in either arrival order", async () => {
+    const seeded = await seedResponseQueue();
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    testProcesses.set(seeded.runId, child);
+    runningProcesses.set(seeded.runId, { child, graceSec: 1, processGroupId: null });
+    const client = app(seeded.companyId);
+    await request(client).post(`/api/issues/${seeded.issueId}/comments`)
+      .send({ body: "Keep this message too" }).expect(201);
+    await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
+    let wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes.find(w => w.id === seeded.wakeId)?.payload).not.toHaveProperty("commentId");
+    // A second resolved card must not overwrite either existing receipt.
+    const nextId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: nextId, companyId: seeded.companyId, issueId: seeded.issueId,
+      kind: "request_confirmation", status: "pending", createdByAgentId: seeded.agentId,
+      sourceRunId: seeded.runId, continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit", payload: { version: 1, prompt: "Second approval?" },
+    });
+    await request(client).post(`/api/issues/${seeded.issueId}/interactions/${nextId}/accept`).send({}).expect(200);
+    wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(3);
+    expect(wakes.filter(w => w.payload?.mutation === "interaction").map(w => w.payload?.interactionId).sort())
+      .toEqual([seeded.interactionId, nextId].sort());
+    expect(wakes.find(w => w.payload?.commentId)?.payload?._paperclipWakeContext).not.toHaveProperty("interactionId");
+  });
+
+  it("recovers an approval acknowledged before the steering transaction failed without redelivery", async () => {
+    const seeded = await seedResponseQueue(true);
+    await seedDispatchIdentity(seeded);
+    // Reconstruct the durable state after acknowledgement and HTTP rollback.
+    const [pending] = await db.insert(runIdentityContexts).values({
+      companyId: seeded.companyId, runId: seeded.runId, revision: 2,
+      cause: "steering", correlationId: `interaction:${seeded.interactionId}`,
+      messageId: seeded.interactionId, responsibleUserId: "queue-owner", status: "pending",
+    }).returning();
+    await db.insert(heartbeatRunEvents).values({
+      companyId: seeded.companyId, runId: seeded.runId, agentId: seeded.agentId,
+      seq: 1, eventType: "item.completed", sourceEventId: randomUUID(),
+      payload: { prpEvent: { turnId: "approval-ack", itemId: `approval-ack:steer:${seeded.interactionId}`,
+        payload: { kind: "steering_acknowledgement" } } },
+    });
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    const body = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision };
+    const endpoint = `/api/issues/${seeded.issueId}/queued-comments/${seeded.interactionId}/steer`;
+    const count = steerNativeSessionMock.mock.calls.length;
+    await request(client).post(endpoint).send(body).expect(200);
+    expect(steerNativeSessionMock.mock.calls).toHaveLength(count);
+    expect((await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.id, pending.id)))[0].status).toBe("accepted");
+  });
+
   it("interrupts an active legacy run and delivers the exact approval once", async () => {
     const seeded = await seedResponseQueue();
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -288,6 +342,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
 
   it("steers a saved approval only on click and acknowledges retries once", async () => {
     const seeded = await seedResponseQueue(true);
+    await seedDispatchIdentity(seeded);
     steerNativeSessionMock.mockResolvedValueOnce({ turnId: "approval-turn" });
     const client = app(seeded.companyId);
     const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
@@ -297,6 +352,8 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const delivered = steerNativeSessionMock.mock.calls.at(-1)![0];
     expect(delivered.message).toContain(seeded.interactionId);
     expect(delivered.message).toContain('"status": "accepted"');
+    expect((await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.messageId, seeded.interactionId)))[0])
+      .toMatchObject({ status: "accepted", responsibleUserId: "queue-owner", cause: "steering" });
     const callCount = steerNativeSessionMock.mock.calls.length;
     await request(client).post(endpoint).send(body).expect(200);
     expect(steerNativeSessionMock.mock.calls).toHaveLength(callCount);

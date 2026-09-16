@@ -121,6 +121,10 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
 }));
 
+vi.mock("../services/queued-interaction-response.js", () => ({
+  hasQueuedInteractionResponse: vi.fn(async () => false),
+}));
+
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));
