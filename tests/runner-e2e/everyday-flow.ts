@@ -761,6 +761,58 @@ export async function runEverydayFlow(input: Input) {
       });
     }
     await settled();
+    if (caseId === "create-skill-studio") {
+      const createdSkills = await api.get<Row[]>(
+        `/api/companies/${fixtures.company.id}/skills`,
+      );
+      const created = createdSkills.find(
+        (skill) => skill.slug === "release-readiness-checklist",
+      );
+      check(
+        "skill-persisted",
+        Boolean(created && String(created.name) === "Release Readiness Checklist"),
+        "The runner-created skill is present in the company library after the run.",
+      );
+      if (created) {
+        await page.goto(`/${prefix}/activity`, { waitUntil: "domcontentloaded" });
+        await expect(page.getByText("Release Readiness Checklist", { exact: true })).toBeVisible();
+        const feedLink = page.locator('[data-fc="link"]', {
+          hasText: "Release Readiness Checklist",
+        }).first();
+        await expect(feedLink).toBeVisible();
+        await feedLink.click();
+        await expect(page).toHaveURL(/\/skills\/[^/]+(?:\/studio)?/);
+        const openStudio = page.getByRole("link", { name: /Open in Studio/i }).first();
+        if (await openStudio.isVisible()) await openStudio.click();
+        await expect(page).toHaveURL(/\/skills\/studio\//);
+        await expect(page.getByRole("heading", { name: "Release Readiness Checklist" })).toBeVisible();
+        const editor = page.locator('[contenteditable="true"]').first();
+        await editor.click();
+        await page.keyboard.press("End");
+        await page.keyboard.type("\n\nStudio edit marker: verified");
+        await page.getByRole("button", { name: /^Save$/ }).click();
+        await pollUntil({
+          label: "Skill Studio edit persisted",
+          deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000),
+          load: () => api.get<Row>(
+            `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
+          ),
+          accept: (detail) => JSON.stringify(detail).includes("Studio edit marker: verified"),
+        });
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await expect(page.locator('[contenteditable="true"]').first()).toContainText("Studio edit marker: verified");
+        const detail = await api.get<Row>(
+          `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
+        );
+        check(
+          "studio-edit-persisted",
+          JSON.stringify(detail).includes("Studio edit marker: verified"),
+          "The Skill Studio edit remains in the persisted skill after returning to the page.",
+        );
+        check("feed-card-opened", true, "The company activity feed card opened the created skill.");
+        check("studio-opened", true, "The skill detail opened in Skill Studio.");
+      }
+    }
     if (declining) {
       const issue = ev.issues.find((i) => i.id === parent!.id)!;
       const requests = issue.interactions as Row[];
