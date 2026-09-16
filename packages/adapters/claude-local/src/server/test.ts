@@ -31,7 +31,7 @@ import {
   minimumClaudeCliVersionForModel,
   readClaudeCommandVersion,
 } from "./cli-capabilities.js";
-import { isBedrockModelId } from "./models.js";
+import { isBedrockModelId, probeClaudeModelRoute } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -62,6 +62,41 @@ function localExecutablesMatch(
   return trustedCommand === runtimeCommand;
 }
 
+async function addClaudeModelRouteCheck(
+  result: AdapterEnvironmentTestResult,
+  ctx: AdapterEnvironmentTestContext,
+): Promise<AdapterEnvironmentTestResult> {
+  if (ctx.executionTarget?.kind === "remote") return result;
+  const config = parseObject(ctx.config);
+  const env = parseObject(config.env);
+  const model = resolveClaudeModel(config.model, env);
+  const status = await probeClaudeModelRoute(model, env);
+  if (!status) return result;
+
+  const check = status === "available"
+    ? {
+        code: "claude_model_route_available",
+        level: "info" as const,
+        message: `Configured model is advertised by the provider: ${model}.`,
+      }
+    : status === "fallback-only"
+      ? {
+          code: "claude_model_route_fallback_only",
+          level: "warn" as const,
+          message: `Configured model is only covered by Paperclip's static fallback catalog: ${model}.`,
+          hint: "Verify the provider catalog and route before relying on this model.",
+        }
+      : {
+          code: "claude_model_route_unavailable",
+          level: "warn" as const,
+          message: `Configured model is not advertised by the configured provider: ${model}.`,
+          hint: "Choose a model from the provider catalog or verify the configured route.",
+        };
+
+  const checks = [...result.checks, check];
+  return { ...result, status: summarizeStatus(checks), checks };
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -82,7 +117,7 @@ export async function testEnvironment(
     };
   }
   if (engineSelection.engine === "acp") {
-    return testClaudeAcpEnvironment(ctx);
+    return addClaudeModelRouteCheck(await testClaudeAcpEnvironment(ctx), ctx);
   }
 
   const checks: AdapterEnvironmentCheck[] = [];
@@ -506,10 +541,10 @@ export async function testEnvironment(
     }
   }
 
-  return {
+  return addClaudeModelRouteCheck({
     adapterType: ctx.adapterType,
     status: summarizeStatus(checks),
     checks,
     testedAt: new Date().toISOString(),
-  };
+  }, ctx);
 }

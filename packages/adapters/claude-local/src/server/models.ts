@@ -53,13 +53,13 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]);
 }
 
-function resolveAnthropicApiKey(): string | null {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+function resolveAnthropicApiKey(env: Record<string, unknown> = process.env): string | null {
+  const apiKey = typeof env.ANTHROPIC_API_KEY === "string" ? env.ANTHROPIC_API_KEY.trim() : "";
   return apiKey && apiKey.length > 0 ? apiKey : null;
 }
 
-function resolveAnthropicBaseUrl(): string {
-  const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
+function resolveAnthropicBaseUrl(env: Record<string, unknown> = process.env): string {
+  const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL.trim() : "";
   return baseUrl && baseUrl.length > 0 ? baseUrl.replace(/\/+$/, "") : "https://api.anthropic.com";
 }
 
@@ -71,6 +71,7 @@ async function fetchAnthropicModels(apiKey: string, baseUrl: string): Promise<Ad
       headers: {
         "anthropic-version": ANTHROPIC_API_VERSION,
         "x-api-key": apiKey,
+        Authorization: `Bearer ${apiKey}`,
       },
       signal: controller.signal,
     });
@@ -153,6 +154,26 @@ export async function listClaudeModels(): Promise<AdapterModel[]> {
 
 export async function refreshClaudeModels(): Promise<AdapterModel[]> {
   return loadClaudeModels({ forceRefresh: true });
+}
+
+export type ClaudeModelRouteStatus = "available" | "unavailable" | "fallback-only";
+
+/** Read-only provider catalog check for custom Anthropic-compatible gateways. */
+export async function probeClaudeModelRoute(
+  model: string,
+  env: Record<string, unknown>,
+): Promise<ClaudeModelRouteStatus | null> {
+  const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL.trim() : "";
+  if (!baseUrl) return null;
+
+  const apiKey = resolveAnthropicApiKey(env);
+  if (!apiKey) return "unavailable";
+
+  const liveModels = await fetchAnthropicModels(apiKey, resolveAnthropicBaseUrl(env));
+  if (liveModels.length === 0) {
+    return DIRECT_MODELS.some((entry) => entry.id === model) ? "fallback-only" : "unavailable";
+  }
+  return liveModels.some((entry) => entry.id === model) ? "available" : "unavailable";
 }
 
 export function resetClaudeModelsCacheForTests() {
