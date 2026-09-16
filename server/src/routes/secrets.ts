@@ -1,5 +1,6 @@
 import { Router, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { companySecretBindings, secretAccessEvents, type Db } from "@paperclipai/db";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
@@ -17,8 +18,9 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
-import { logActivity, secretService } from "../services/index.js";
+import { logActivity, secretService, agentService } from "../services/index.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
+import { removeSecretRefAtConfigPath } from "../services/agent-secret-bindings.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -1129,6 +1131,92 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       entityType: "secret",
       entityId: removed.id,
       details: { name: removed.name },
+    });
+
+    res.json({ ok: true });
+  });
+
+  router.delete("/secrets/:secretId/bindings/:bindingId", async (req, res) => {
+    assertBoard(req);
+    const secretId = req.params.secretId as string;
+    const bindingId = req.params.bindingId as string;
+
+    const fetchedSecret = await svc.getById(secretId);
+    const secret = await getAccessibleResource(
+      req,
+      res,
+      fetchedSecret && isCompanyScopedSecret(fetchedSecret) ? fetchedSecret : null,
+      "Secret not found",
+    );
+    if (!secret) return;
+
+    const binding = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.id, bindingId),
+          eq(companySecretBindings.companyId, secret.companyId),
+          eq(companySecretBindings.secretId, secretId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!binding) {
+      res.status(404).json({ error: "Secret binding not found" });
+      return;
+    }
+
+    if (binding.targetType !== "agent") {
+      res.status(422).json({
+        error: `Revoking a ${binding.targetType} binding is not supported yet`,
+        code: "binding_target_unsupported",
+      });
+      return;
+    }
+
+    const agentsSvc = agentService(db);
+    const agent = await agentsSvc.getById(binding.targetId);
+    if (!agent || agent.companyId !== secret.companyId) {
+      res.status(404).json({ error: "Secret binding not found" });
+      return;
+    }
+
+    const nextAdapterConfig = removeSecretRefAtConfigPath(agent.adapterConfig, binding.configPath);
+    await agentsSvc.update(
+      agent.id,
+      { adapterConfig: nextAdapterConfig },
+      {
+        recordRevision: {
+          createdByUserId: req.actor.userId ?? "board",
+          createdByAgentId: null,
+          source: "secret-binding-revoke",
+        },
+      },
+    );
+
+    await db.insert(secretAccessEvents).values({
+      companyId: secret.companyId,
+      secretId,
+      secretScope: "company",
+      version: null,
+      provider: secret.provider,
+      responsibleUserId: req.actor.userId ?? null,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      consumerType: binding.targetType,
+      consumerId: binding.targetId,
+      configPath: binding.configPath,
+      outcome: "revoked",
+    });
+
+    await logActivity(db, {
+      companyId: secret.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "secret.binding_revoked",
+      entityType: "secret",
+      entityId: secretId,
+      details: { bindingId, targetType: binding.targetType, targetId: binding.targetId, configPath: binding.configPath },
     });
 
     res.json({ ok: true });

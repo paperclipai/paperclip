@@ -145,6 +145,26 @@ export function collectUserSecretRefs(adapterConfig: unknown): Array<{
   return refs;
 }
 
+export function removeSecretRefAtConfigPath(
+  adapterConfig: unknown,
+  configPath: string,
+): Record<string, unknown> {
+  const config = asRecord(adapterConfig);
+  if (!config) return {};
+  if (configPath.startsWith("env.")) {
+    const envKey = configPath.slice("env.".length);
+    const envValue = asRecord(config.env);
+    if (!envValue || !(envKey in envValue)) return config;
+    const nextEnv = { ...envValue };
+    delete nextEnv[envKey];
+    return { ...config, env: nextEnv };
+  }
+  if (!(configPath in config)) return config;
+  const next = { ...config };
+  delete next[configPath];
+  return next;
+}
+
 export async function syncAgentAdapterEnvBindings(input: {
   secretsSvc: AgentSecretBindingSyncService;
   companyId: string;
