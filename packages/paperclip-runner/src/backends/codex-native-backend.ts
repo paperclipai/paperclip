@@ -11,6 +11,7 @@ import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boun
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import {
   nativeSystemInstructions,
+  nativeTaskSkillInputs,
   nativeTaskConstraints,
 } from "./runtime-context.js";
 
@@ -139,6 +140,12 @@ function createTransportBackedNativeSessionBackend(
           : "never",
       baseInstructions: nativeSystemInstructions(input),
       includeSkillInstructions: isCodex && "runtimeContext" in input,
+      skillInputs: isCodex
+        ? nativeTaskSkillInputs(
+            input.task.description,
+            "runtimeContext" in input ? input.runtimeContext : null,
+          )
+        : [],
       requestedCollaborationMode:
         supportsCollaborativePlanning && "executionMode" in input
           ? input.executionMode

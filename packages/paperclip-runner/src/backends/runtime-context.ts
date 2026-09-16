@@ -2,7 +2,11 @@ import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { CODEX_SKILLLESS_BASE_INSTRUCTIONS } from "../contracts/codex.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
-import { composeNativeSystemInstructions } from "../contracts/runtime-context.js";
+import {
+  type NativeRuntimeContextSnapshot,
+  type NativeSkillInput,
+  composeNativeSystemInstructions,
+} from "../contracts/runtime-context.js";
 
 export function nativeSystemInstructions(input: NativeExecutionInput): string {
   if (!("runtimeContext" in input)) return CODEX_SKILLLESS_BASE_INSTRUCTIONS;
@@ -104,4 +108,28 @@ export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
     ...(answeredQuestionConstraint ? [answeredQuestionConstraint] : []),
     finalResponseConstraint,
   ];
+}
+
+/**
+ * Resolve explicit /skill or $skill references only from the current task's
+ * description, never agent-wide assignments, comments, or previous task history.
+ * Recomputed per run so approval wakes retain the invocation without leaking it
+ * into ordinary tasks assigned to the same agent.
+ */
+export function nativeTaskSkillInputs(
+  description: string | null,
+  context: NativeRuntimeContextSnapshot | null,
+): NativeSkillInput[] {
+  if (!description || !context) return [];
+  const names = new Set(Array.from(
+    description.matchAll(/(?:^|[\s(`])[$/]([a-zA-Z0-9_-]+)(?=$|[\s)`,.;:!?])/g),
+    (match) => match[1],
+  ));
+  return context.skills
+    .filter((skill) => names.has(skill.runtimeName))
+    .map((skill) => ({
+      type: "skill",
+      name: skill.runtimeName,
+      path: resolve(skill.bundle.rootPath, "SKILL.md"),
+    }));
 }

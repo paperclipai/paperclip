@@ -903,7 +903,7 @@ POST /api/companies/{companyId}/approvals
 
 Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
 
-Use `ask_user_questions` for a short question card. Each question requires `id`, `prompt`, `selectionMode`, and at least one option with `id` and `label`. Do not send `question`/`type: "text"` or an empty options array. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+Use `ask_user_questions` for a short question card. Each `payload.questions` entry requires `id`, `prompt`, `selectionMode`, and options with `id` and `label`. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation below for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
 
 ```json
 POST /api/issues/{issueId}/interactions
@@ -930,7 +930,7 @@ POST /api/issues/{issueId}/interactions
 }
 ```
 
-For an open-ended answer, supply a free-text option (one option is sufficient):
+For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. The REST API still requires matching `payload.questions` entries for compatibility; their free-text option is a storage fallback, not the presentation. Keep question IDs and prompts identical in both fields. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
 
 ```json
 POST /api/issues/{issueId}/interactions
@@ -948,7 +948,16 @@ POST /api/issues/{issueId}/interactions
       "selectionMode": "single",
       "required": true,
       "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
-    }]
+    }],
+    "questionSet": {
+      "schema": "paperclip.question_set.v1",
+      "questions": [{
+        "id": "responsibility",
+        "prompt": "What should the new agent be responsible for?",
+        "required": true,
+        "answerMode": "text"
+      }]
+    }
   }
 }
 ```

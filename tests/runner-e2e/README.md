@@ -78,7 +78,7 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains five suites. `core-compatibility` (**Core Runner
+The catalog contains six suites. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -163,7 +163,7 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The complete catalog is 92 cells (69 local and 23 Daytona) and 188 expected
+The complete catalog is 116 cells (93 local and 23 Daytona) and 238 expected
 paid agent turns. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
 developing fixtures.
@@ -331,6 +331,27 @@ and `normalized-results.json` still contain every selected cell. Use those files
 the GitHub job summary, or `html/index.html` in the merged Playwright artifact
 to inspect branch-only results; an absent dashboard card is not passing coverage.
 
+Case details show the overall failure reason separately from behavioral matcher
+results. For first-task cases, **Read full conversation** starts collapsed and displays retained
+comments, question and approval cards, card answers, and document revisions in
+time order, using Paperclip chat styling: user bubbles on the right, agent replies
+on the left, and separate cards for questions and documents. This presentation
+is defined in the shared dashboard renderer for every campaign and regeneration,
+not in a particular published report. GitHub publication uses the trusted
+default-branch renderer, so renderer changes take effect there after merge.
+The shared static card renderer covers `ask_user_questions` (legacy and canonical
+question sets), `request_confirmation`, `request_checkbox_confirmation`,
+`request_item_verdicts`, `suggest_tasks`, and `connection_intent`. Confirmation
+variants include tool actions, credential bindings, and connection authorization.
+Cards display saved prompts, choices, recorded selections, outcomes, and reasons;
+all action controls are disabled. Multi-question forms expand every question for
+review. Unsupported kinds retain their raw payload instead of invented controls.
+
+Repeated checkpoints are deduplicated. Source links open the original
+checkpoint; evidence links expose the complete result and raw run/tool-event JSON.
+The transcript reflects captured checkpoints; messages from other tasks and
+unrecorded intermediate document edits may be absent. It is not a live task.
+
 ### Iterate on a published dashboard without rerunning paid tests
 
 Download and extract the `github-pages` artifact from an existing workflow run,
@@ -428,8 +449,8 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100); use at least 92 to run the current
-complete catalog in one wave. The fallback runner retains its 1–57 limit and
+integer from 1–100 on AWS (default 100). The 116-cell catalog takes more than
+one wave at that limit; use suite selectors for smaller campaigns. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
 are retained for 30 days.
@@ -515,3 +536,147 @@ requires a new attachment after the request. The hired-agent execution/account
 checks and independent downloaded-code checks remain mandatory.
 
 Revision delivery checks exclude preserved originals by their content hash, even when the agent republishes an original after the revised ZIP. The browser downloads the exact selected attachment ID; its bytes still pass through the independent artifact checker.
+
+## First-task onboarding
+
+`first-task` is a suite in the main Runner E2E catalog. A full
+`pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
+includes its 48 executions alongside the other suites in one shared dashboard,
+campaign result bundle, and history entry. Suite/profile selectors narrow that
+same harness; they do not invoke a separate onboarding reporting program.
+
+`first-task` uses the production onboarding wizard, creates the first agent,
+keeps its default persona/model/permissions/skill assignments, and answers the
+seeded opening question in the browser. The suite does not install the generic
+Runner QA persona or replace the hidden `/first-task` invocation. Profile IDs
+select the Codex or Claude adapter family; **the production onboarding model
+default is retained**, even when it differs from that profile's normal harness
+model. Configured and provider-observed model identities are reported separately.
+
+There are twelve cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (48 cells). Native profiles complete the same
+production wizard using their legacy provider, then change only the agent's
+runtime configuration via the public API before its first task. The wizard does
+not currently offer native Runner. Persona, managed instructions, skills, seeded
+question, and task invocation are preserved. Explicit model choices are retained;
+an unset model resolves through the production runtime-switch defaults. The
+production switch removes the legacy Paperclip operational skill because Runner
+supplies its control-plane contract through its protocol; other assigned skills,
+including `/first-task`, are retained. Native runtime permissions come from the
+existing qualified profile. Evidence labels
+this setup `post-onboarding-runtime-switch`; it does not claim a native wizard
+path exists. Legacy setup is labeled `production-wizard`.
+
+| First response / control | Complete journey |
+| --- | --- |
+| `interview-first-response` | `interview-plan-accept` |
+| `clear-task-first-response` | `task-card-accept` |
+| `ambiguous-task-first-response` | `task-reply-accept` |
+| `plain-message-first-response` | `clarify-propose-accept` |
+| `plan-first-response` | `revise-accept` |
+| `ordinary-task-control` | `reject-no-execution` |
+
+The ordinary control creates a separate, normally assigned task for the same
+onboarded agent without invoking `/first-task`. Fixed garden-club facts and a
+per-attempt marker drive all conversations. Clarification supplies facts only;
+acceptance is a separate explicit user reply or browser-approved confirmation.
+The harness waits for a new user comment to persist before recording a reply
+checkpoint; the composer clearing is only optimistic UI state.
+The interview journey requests a saved plan. Execution journeys require exactly
+one correctly parented/assigned subtask and its completed output document.
+Rejection and revision must not execute the rejected/superseded scope. Closing
+an unexecuted task after rejection is allowed. A completed onboarding parent
+without the approved child is graded as a behavior failure, not retried as an
+infrastructure timeout.
+
+`question-choice-options` fails any recorded single-select or multi-select
+question with fewer than two distinct, nonempty options, including one-option
+"I'll describe it" forms. It checks every captured card presentation, including
+later and superseded cards, and reports the question ID, prompt, option count,
+and checkpoint. Canonical `answerMode: "text"` questions are valid without
+options. A text field or implicit Other fallback does not add a choice to a
+canonical select question.
+
+The first-task suite does not scan private instance homes or workspaces for
+credential persistence or use that check to override behavioral results.
+Credential persistence is evaluated elsewhere. Evidence redaction and public
+artifact checks still apply.
+
+Behavioral checks inspect persisted comments, interactions, tasks, documents,
+agent counts, creation timestamps, and terminal runs. Planning and clarification
+are allowed before acceptance. Premature durable work fails immediately. The
+suite checks persisted Paperclip effects; it does not claim to prove the absence
+of arbitrary external side effects from a provider process.
+
+```bash
+pnpm test:e2e:runner:unit
+pnpm test:e2e:runner:typecheck
+# Two paid smoke cases, after keys are available:
+pnpm test:e2e:runner -- --suite first-task --profile legacy-codex --case clear-task-first-response
+pnpm test:e2e:runner -- --suite first-task --profile legacy-claude --case clear-task-first-response
+# Expand after reviewing the smoke evidence:
+pnpm test:e2e:runner -- --suite first-task
+```
+
+Default concurrency is one. Each case has a fifteen-minute attempt budget;
+individual response/outcome waits stop after five minutes. More than twelve
+company runs fails the case. All company runs (including delegated/child-agent
+work and failures) are retained for cleanup and billing. The existing failure
+classification separates transport/credential failures from behavior failures.
+First-response cases stop when the first provider turn settles.
+
+`snapshots/first-task.json` contains full managed instruction/skill snapshots and
+SHA-256 source hashes (plus separate display hashes when redaction applies), the actual hidden invocation and seeded greeting/question,
+source SHA/ref and dirty state, runtime settings, observed models, checkpoints,
+and check results. `first-task-run-evidence.json` retains run logs/events. The
+normal screenshots, sanitized evidence packaging, dashboard and publication
+commands apply. Dashboard task/document links target retained evidence because
+isolated instances are removed after each attempt.
+
+### Optional quality post-processing
+
+Quality is informational. It cannot turn a behavioral failure into a pass.
+The five anchored 1–5 dimensions are question relevance, use of facts, proposal
+usefulness, clarity, and low friction. Every score must cite a recorded
+checkpoint. The judge reads only recorded conversation/state, has no tools,
+and never participates as a simulated user.
+
+Run judging on each **upload-directory `result.json` before normalization and
+publication**, with `OPENAI_API_KEY` in the shell:
+
+```bash
+pnpm test:e2e:runner:judge-first-task -- --result tests/runner-e2e/results/CAMPAIGN/EXECUTION/attempt-1/result.json --max-dollars 0.50
+```
+
+Use the actual upload path printed by the launcher. The judge uses the pinned
+`gpt-4.1-2025-04-14` snapshot, temperature zero, and at most 1,800 output tokens.
+The configuration, rubric, hash, evidence hash, usage, price estimate, and full
+reservation are recorded. Rates are pinned at $2/M input and $8/M output tokens
+([model documentation](https://developers.openai.com/api/docs/models/gpt-4.1)).
+A conservative UTF-8-byte token bound checks the per-call spending cap before
+sending. Oversized evidence is rejected, never truncated. An exclusive adjacent
+`result.json.judge.json` ledger prevents concurrent/repeated spending; failed or
+interrupted requests retain their reservation and are not retried. Unknown
+usage is not reported as free. Judge spend is shown separately and included in
+total estimated spend when known; provider/child usage stays in the run ledger.
+
+Regenerate normalized reports with the existing report command, pointing
+`PAPERCLIP_RUNNER_E2E_REPORT_ROOT` at that campaign,
+`PAPERCLIP_RUNNER_E2E_REPORT_OUT` at a fresh output directory, and
+`PAPERCLIP_RUNNER_E2E_EXPECTED_IDS` at the JSON array of selected execution IDs.
+Then use the existing dashboard/history publication workflow. Merely running
+`test:e2e:runner:dashboard` reads the already normalized bundle; it never calls
+a judge or refreshes results from outside that bundle. Published campaign
+bundles remain immutable; judge them before publishing.
+
+### Comparing skill revisions
+
+Use separate campaigns for each skill revision and three repetitions per
+case/provider (144 executions per revision), keeping source environment,
+provider/default model, credentials mode, case facts, and judge configuration
+matched. Set distinct `PAPERCLIP_E2E_CAMPAIGN_ID` values such as
+`first-task-skill-a-r1` through `r3`, and repeat for skill B. Review actual model
+identities and instruction hashes before comparing; dirty working trees are
+explicitly marked. Do not pool results with mismatched configurations or treat
+infrastructure failures as behavioral successes. Daytona,
+simulated-user models and prompt optimization are intentionally deferred.

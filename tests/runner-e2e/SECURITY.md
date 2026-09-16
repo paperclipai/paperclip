@@ -83,7 +83,10 @@ profile load fails. Target-controlled tests only probe the existing sandbox and 
 See [Ubuntu's namespace restriction documentation](https://documentation.ubuntu.com/security/security-features/privilege-restriction/apparmor/).
 Local developer machines are never modified by this setup. Legacy Codex fixtures
 disable optional shell-environment snapshots to avoid persisting credentials;
-the secret scanner retains its existing rejection rules.
+other suites retain the persisted-state scanner. The `first-task` suite omits
+private home/workspace credential-persistence scanning so its evaluation focuses
+on onboarding behavior. Artifact redaction and publication scanning remain in
+force for every suite.
 The Paperclip server process also receives none; the browser posts each value
 once to the encrypted company secret API and agents/environments retain only
 secret references.

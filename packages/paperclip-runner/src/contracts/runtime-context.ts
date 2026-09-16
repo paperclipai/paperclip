@@ -144,3 +144,10 @@ export function composeNativeSystemInstructions(context: NativeRuntimeContextSna
     `Read-only instruction sibling root: ${context.instructions.bundle.rootPath}`,
   ].filter(Boolean).join("\n\n");
 }
+
+/** Explicit per-turn selection; availability alone never invokes a skill. */
+export interface NativeSkillInput {
+  type: "skill";
+  name: string;
+  path: string;
+}

@@ -192,6 +192,7 @@ export class CodexHarnessSession
     this.emit("turn.submitted", {
       envelopeSchema: this.taskEnvelope.schema,
       text: input.message.text,
+      ...(this.skillInputs.length ? { skillInputs: this.skillInputs } : {}),
       requestedCollaborationMode:
         input.requestedCollaborationMode ?? effectiveCollaborationMode,
       effectiveCollaborationMode,
@@ -215,7 +216,15 @@ export class CodexHarnessSession
         ...(this.opened.collaborationMode === null
           ? {}
           : { collaborationMode: this.opened.collaborationMode }),
-        input: [userInput({ role: "user", text: taskText })],
+        input: [
+          userInput({
+            role: "user",
+            text: this.skillInputs.length
+              ? `${this.skillInputs.map((skill) => `$${skill.name}`).join(" ")}\n\n${taskText}`
+              : taskText,
+          }),
+          ...this.skillInputs,
+        ],
         ...(this.conversationMode === "direct"
           ? {}
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),

@@ -66,6 +66,7 @@
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:runner": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/launch.ts",
     "test:e2e:runner:image-id": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/daytona-image-content.ts",
+    "test:e2e:runner:judge-first-task": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/first-task-judge.ts",
     "test:e2e:runner:dashboard": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/dashboard-regenerate.ts",
     "test:e2e:runner:models:update": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/openrouter-models-update.ts",
     "test:e2e:runner:history:publish": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/history-publish.ts",

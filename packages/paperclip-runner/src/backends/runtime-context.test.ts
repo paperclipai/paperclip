@@ -16,6 +16,7 @@ import {
 } from "../contracts/native-execution.js";
 import {
   nativeSystemInstructions,
+  nativeTaskSkillInputs,
   nativeTaskConstraints,
 } from "./runtime-context.js";
 
@@ -364,5 +365,32 @@ describe("native runtime context files", () => {
     expect(() =>
       nativeSystemInstructions(runtimeInput(bundleRoot, "linked.md")),
     ).toThrow("native_runtime_context_entry_outside_bundle");
+  });
+});
+
+
+describe("explicit task skill selection", () => {
+  const context = {
+    skills: [{ key: "company/onboarding", runtimeName: "first-task", bundle: { rootPath: "/assigned/content-addressed-bundle" } },
+      { key: "company/research", runtimeName: "research", bundle: { rootPath: "/assigned/research" } }],
+  } as unknown as import("../contracts/runtime-context.js").NativeRuntimeContextSnapshot;
+  it("resolves the actual assigned path for initial and subsequent onboarding wakes", () => {
+    const description = "Use the `first-task` skill (/first-task) for this onboarding task, including subsequent wakes.";
+    for (const _wake of ["opening", "approval", "cold resume"]) {
+      expect(nativeTaskSkillInputs(description, context)).toEqual([
+        { type: "skill", name: "first-task", path: "/assigned/content-addressed-bundle/SKILL.md" },
+      ]);
+    }
+  });
+  it("does not invoke skills merely because they are assigned to the agent", () => {
+    for (const description of [null, "Write a welcome note", "my first-task", "Inspect /first-task/SKILL.md", "https://example.com/first-task"]) {
+      expect(nativeTaskSkillInputs(description, context)).toEqual([]);
+    }
+  });
+  it("supports generic explicit references, deduplicates them, and ignores unassigned skills", () => {
+    expect(nativeTaskSkillInputs("$research then /research and /not-assigned", context)).toEqual([
+      { type: "skill", name: "research", path: "/assigned/research/SKILL.md" },
+    ]);
+    expect(nativeTaskSkillInputs("/first-task", null)).toEqual([]);
   });
 });

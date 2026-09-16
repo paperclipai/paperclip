@@ -607,6 +607,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--require-existing-resume-state")
         && !state_path.exists();
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
+    let request_log = argument(&args, "--request-log").map(PathBuf::from);
     if args.iter().any(|value| value == "--record-process-start") {
         log_call(call_log.as_deref(), "process-start")?;
     }
@@ -966,6 +967,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
         log_call(call_log.as_deref(), method)?;
+        log_call(request_log.as_deref(), &serde_json::to_string(&message)?)?;
+        if require_skill_instructions
+            && matches!(method, "thread/start" | "thread/resume")
+            && message.pointer("/params/config/skills.include_instructions") != Some(&json!(true))
+        {
+            return Err("thread request omitted skills.include_instructions=true".into());
+        }
         let id = message.get("id").cloned();
         match method {
             "initialize" => {

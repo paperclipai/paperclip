@@ -29,6 +29,7 @@ export interface AgentRunUsageInput {
 }
 
 export interface CampaignBillingSummary {
+  judge?: import("./types.js").RunnerE2EJudgeBillingSummary;
   testCount: number;
   agentRunDurationMs: number;
   leaseDurationMs: number;
@@ -248,7 +249,7 @@ export function fallbackRuntimeUsage(
 export function summarizeExecutionBilling(
   result: Pick<
     RunnerE2EResult,
-    "runIds" | "usage" | "environmentId" | "durationMs" | "runtimeUsage"
+    "runIds" | "usage" | "environmentId" | "durationMs" | "runtimeUsage" | "firstTaskQuality"
   >,
 ): RunnerE2EBillingSummary {
   const requestedRunCount = Math.max(result.runIds?.length ?? 0, 1);
@@ -297,7 +298,9 @@ export function summarizeExecutionBilling(
           : "unavailable";
   const runtime = fallbackRuntimeUsage(result);
   const estimatedRuntimeCostUsd = runtime.estimatedListCostUsd ?? 0;
+  const quality = result.firstTaskQuality;
   const complete =
+    (!quality || quality.estimatedCostUsd !== null) &&
     runsWithTokenUsage === runCount &&
     runsWithReportedCost === runCount &&
     runtime.costStatus !== "unavailable";
@@ -316,7 +319,8 @@ export function summarizeExecutionBilling(
     runtime,
     reportedCostUsd,
     estimatedRuntimeCostUsd,
-    observedAndEstimatedCostUsd: reportedCostUsd + estimatedRuntimeCostUsd,
+    ...(quality ? { judge: { inputTokens: quality.inputTokens, outputTokens: quality.outputTokens, estimatedCostUsd: quality.estimatedCostUsd, reservedCostUsd: quality.reservedCostUsd } } : {}),
+    observedAndEstimatedCostUsd: reportedCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0),
     complete,
   };
 }
@@ -345,7 +349,16 @@ export function aggregateCampaignBilling(
     (total, summary) => total + summary.estimatedRuntimeCostUsd,
     0,
   );
+  const judges = summaries.flatMap(summary => summary.judge ? [summary.judge] : []);
   return {
+    ...(judges.length ? { judge: {
+      attempts: judges.length,
+      inputTokens: judges.reduce((n, q) => n + (q.inputTokens ?? 0), 0),
+      outputTokens: judges.reduce((n, q) => n + (q.outputTokens ?? 0), 0),
+      estimatedCostUsd: judges.reduce((n, q) => n + (q.estimatedCostUsd ?? 0), 0),
+      reservedCostUsd: judges.reduce((n, q) => n + q.reservedCostUsd, 0),
+      attemptsWithUnknownUsage: judges.filter(q => q.estimatedCostUsd === null).length,
+    } } : {}),
     testCount: results.length,
     agentRunDurationMs: summaries.reduce(
       (total, summary) => total + summary.runtime.agentRunDurationMs,
@@ -387,7 +400,7 @@ export function aggregateCampaignBilling(
     },
     reportedLlmCostUsd,
     estimatedRuntimeCostUsd,
-    observedAndEstimatedCostUsd: reportedLlmCostUsd + estimatedRuntimeCostUsd,
+    observedAndEstimatedCostUsd: summaries.reduce((total, summary) => total + summary.observedAndEstimatedCostUsd, 0),
     testsWithCompleteBilling: summaries.filter((summary) => summary.complete)
       .length,
   };

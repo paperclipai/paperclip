@@ -637,6 +637,8 @@ export const PAPERCLIP_CORE_SKILL_KEYS = [
   "paperclipai/paperclip/para-memory-files",
 ] as const;
 
+export const ONBOARDING_FIRST_TASK_SKILL_KEY = "paperclipai/paperclip/first-task";
+
 function deriveCanonicalSkillKey(
   companyId: string,
   input: Pick<ImportedSkill, "slug" | "sourceType" | "sourceLocator" | "metadata">,
@@ -2943,6 +2945,13 @@ export function companySkillService(db: Db) {
   }
 
   async function ensureBundledSkills(companyId: string) {
+    // Onboarding owns this skill's wording. The server build copies this asset
+    // directory into dist, so it uses the same import path in source and npm.
+    const firstTaskSkill = await readLocalSkillImportFromDirectory(
+      companyId,
+      fileURLToPath(new URL("../onboarding-assets/first-task/skills/first-task/", import.meta.url)),
+      { metadata: { sourceKind: "paperclip_bundled" } },
+    );
     for (const skillsRoot of resolveBundledSkillsRoot()) {
       const stats = await fs.stat(skillsRoot).catch(() => null);
       if (!stats?.isDirectory()) continue;
@@ -2963,9 +2972,9 @@ export function companySkillService(db: Db) {
         })))
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
-      return upsertImportedSkills(companyId, bundledSkills);
+      return upsertImportedSkills(companyId, [...bundledSkills, firstTaskSkill]);
     }
-    return [];
+    return upsertImportedSkills(companyId, [firstTaskSkill]);
   }
 
   async function readBundledSkillReleaseRegistry() {

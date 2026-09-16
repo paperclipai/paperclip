@@ -353,9 +353,51 @@ pub struct CodexProviderConfig {
     pub approval_policy: String,
     #[serde(default)]
     pub externally_sandboxed: bool,
+    // Older persisted configurations deliberately retain the provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_skill_instructions: Option<bool>,
+}
+
+/// Explicit per-turn skill selection. The controller resolves assigned skill
+/// names to paths on the provider filesystem before submitting the command.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CodexSkillInput {
+    #[serde(rename = "type")]
+    pub input_type: String,
+    pub name: String,
+    pub path: String,
+}
+
+impl CodexSkillInput {
+    pub fn validate(&self) -> Result<(), LocalRunnerError> {
+        if self.input_type != "skill"
+            || self.name.is_empty()
+            || self.name.len() > 256
+            || !self
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            || self.path.contains('\0')
+            || self.path.len() > 4096
+            || !std::path::Path::new(&self.path).is_absolute()
+        {
+            return Err(LocalRunnerError::invalid(
+                "invalid explicit Codex skill input",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl CodexProviderConfig {
+    fn skill_instructions_config(&self) -> Option<Value> {
+        (self.provider == "codex")
+            .then_some(self.include_skill_instructions)
+            .flatten()
+            .map(|include| json!({"skills.include_instructions": include}))
+    }
+
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         if !matches!(
             (self.provider.as_str(), self.driver.as_str()),
@@ -1010,6 +1052,9 @@ impl CodexProvider {
                     );
                 }
             }
+            if let Some(skill_config) = config.skill_instructions_config() {
+                params_object.insert("config".to_owned(), skill_config);
+            }
             let method = if let Some(thread_id) = resume_thread_id {
                 params_object.insert("threadId".to_owned(), json!(thread_id));
                 if config.provider == "codex" {
@@ -1583,6 +1628,23 @@ impl CodexProvider {
     }
 
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
+        self.start_turn_with_skills(message, cwd, &[])
+    }
+
+    pub fn start_turn_with_skills(
+        &mut self,
+        message: &str,
+        cwd: &str,
+        skills: &[CodexSkillInput],
+    ) -> Result<Value, LocalRunnerError> {
+        if skills.len() > 64 || (self.config.provider != "codex" && !skills.is_empty()) {
+            return Err(LocalRunnerError::invalid(
+                "explicit skills require Codex and at most 64 selections",
+            ));
+        }
+        for skill in skills {
+            skill.validate()?;
+        }
         if self.quarantined {
             return Err(LocalRunnerError::invalid(
                 "Codex provider is quarantined after unsafe recovered work",
@@ -1612,11 +1674,13 @@ impl CodexProvider {
         let prior_buffered_message_count = self.pending_messages.len();
         self.ambiguous_turn_start_pending = true;
         let runtime_request_scope = new_runtime_request_scope()?;
+        let mut input = vec![json!({"type": "text", "text": message, "text_elements": []})];
+        input.extend(skills.iter().map(|skill| json!(skill)));
         let mut turn_params = json!({
             "threadId": self.thread_id,
             "cwd": cwd,
             "runtimeWorkspaceRoots": [cwd],
-            "input": [{"type": "text", "text": message, "text_elements": []}],
+            "input": input,
         });
         let turn_params_object = turn_params
             .as_object_mut()
@@ -3909,6 +3973,7 @@ done
             instructions: "Test only.".to_owned(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            include_skill_instructions: None,
         };
         let mut provider = CodexProvider::start(&config, None).unwrap();
         provider.start_turn("First turn", &config.cwd).unwrap();
@@ -4269,6 +4334,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            include_skill_instructions: None,
         };
         let mut spawned = None;
         let mut failure = None;
@@ -4369,7 +4435,14 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            include_skill_instructions: None,
         };
+        config.include_skill_instructions = Some(true);
+        assert_eq!(
+            config.skill_instructions_config(),
+            None,
+            "OpenCode must not receive Codex skill settings"
+        );
         config.validate().unwrap();
         config.provider_version = "1.18.18".to_owned();
         let error = config.validate().unwrap_err();

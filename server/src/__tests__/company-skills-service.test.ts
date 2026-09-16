@@ -489,6 +489,34 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
   });
 
+  it("makes the onboarding skill resolvable and available to agent runtimes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Onboarding",
+      issuePrefix: `T${companyId.slice(0, 6)}`,
+    });
+    const key = "paperclipai/paperclip/first-task";
+    // Assignment resolves before the company has ever opened its skill library.
+    expect(await svc.resolveRequestedSkillEntries(companyId, [key])).toEqual({
+      resolved: [{ key, versionId: null }],
+      unresolved: [],
+    });
+    const entries = await svc.listRuntimeSkillEntries(companyId);
+    const entry = entries.find((skill) => skill.key === key);
+    expect(entry).toMatchObject({ runtimeName: "first-task", sourceStatus: "available" });
+    if (!entry) throw new Error("Expected first-task runtime skill");
+    const markdown = await fs.readFile(path.join(entry.source, "SKILL.md"), "utf8");
+    expect(parseFrontmatterMarkdown(markdown).frontmatter.name).toBe("first-task");
+    expect(markdown).toContain("`interview` →");
+    expect(markdown).toContain("`task` →");
+    expect(markdown).toBe(await fs.readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8"));
+    expect(markdown).not.toContain("{{");
+    // Repeated inventory refreshes do not install duplicate skill rows.
+    const refreshed = await svc.list(companyId);
+    expect(refreshed.filter((skill) => skill.key === key)).toHaveLength(1);
+  });
+
   it("seeds bundled skill releases idempotently and materializes the frozen champion snapshot", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
