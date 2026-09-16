@@ -1015,6 +1015,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     expect(blockedIssue?.blockedTransitionAt).toBeInstanceOf(Date);
     expect(
       isProspectiveBlockedTransition({
+        id: issueId,
         status: blockedIssue!.status,
         blockedTransitionAt: blockedIssue!.blockedTransitionAt,
       }),
