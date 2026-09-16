@@ -43,6 +43,27 @@ async function running(
 }
 
 describe("Capability semantic catalog and authorization", () => {
+  it("creates a durable skill once and returns its reference on retry", async () => {
+    const adapter = await running();
+    const dispatcher = new CapabilitySemanticDispatcher(adapter);
+    const input = { name: "release-review", description: "Review release notes.",
+      markdown: "---\nname: release-review\ndescription: Review release notes.\n---\n# Review\nCheck each note.", idempotencyKey: "create-skill-once" };
+    const call = { runId: OPEN.identity.runId, callId: "skill-1", operationId: "create_skill" as const, input };
+    const first = await dispatcher.dispatch(call);
+    expect(first).toMatchObject({ ok: true, result: { name: input.name, slug: input.name, versionId: expect.any(String) } });
+    expect(await dispatcher.dispatch({ ...call, callId: "skill-retry" })).toMatchObject({ ok: true, result: first.ok ? first.result : {} });
+    expect(adapter.snapshot().skills).toEqual([expect.objectContaining({ markdown: input.markdown })]);
+    expect(await dispatcher.dispatch({ ...call, callId: "skill-conflict", input: { ...input, markdown: input.markdown + " changed" } })).toMatchObject({ ok: false });
+    expect(adapter.snapshot().skills).toHaveLength(1);
+  });
+
+  it("denies skill creation when the scenario policy forbids it", async () => {
+    const adapter = await running();
+    const dispatcher = new CapabilitySemanticDispatcher(adapter, { scenario: { id: "restricted-skills", claims: [], denyOperations: ["create_skill"] } });
+    expect(await dispatcher.dispatch({ runId: OPEN.identity.runId, callId: "denied-skill", operationId: "create_skill", input: { name: "no-create", description: "Denied", markdown: "Denied", idempotencyKey: "deny" } })).toMatchObject({ ok: false, denial: { code: "scenario_denied" } });
+    expect(adapter.snapshot().skills ?? []).toHaveLength(0);
+  });
+
   it("accepts the conventional ten-result capability discovery limit", () => {
     expect(
       CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS[0].inputSchema.properties.limit
@@ -53,7 +74,7 @@ describe("Capability semantic catalog and authorization", () => {
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(33);
+    expect(names).toHaveLength(34);
     expect(names).toContain("get_task_context");
     expect(names).toContain("finish_task");
     expect(names).not.toContain("checkout_task");
@@ -107,7 +128,7 @@ describe("Capability semantic catalog and authorization", () => {
   it("does not disclose optional tools that current authority cannot invoke", async () => {
     const adapter = await running();
     const dispatcher = new CapabilitySemanticDispatcher(adapter);
-    const found = dispatcher.discoverTools(OPEN.identity.runId, "create child task approval secret admin");
+    const found = dispatcher.discoverTools(OPEN.identity.runId, "create child task approval secret admin", { namespace: "delegation" });
     expect(found.operations).toEqual([]);
     expect(JSON.stringify(found.operations)).not.toMatch(/create_task|approval|secret|administer_company/);
     const before = adapter.snapshot().revision;

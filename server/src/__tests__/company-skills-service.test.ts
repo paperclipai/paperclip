@@ -207,6 +207,76 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(await fs.readFile(path.join(next.source, "SKILL.md"), "utf8")).toContain("New local instructions");
   });
 
+  it("serializes same-slug creates and preserves the winner's files", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Concurrent creates", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const first = companySkillService(db);
+    const second = companySkillService(db);
+    const results = await Promise.allSettled([
+      first.createLocalSkill(companyId, { name: "First", slug: "same-slug", markdown: "# first\n" }),
+      second.createLocalSkill(companyId, { name: "Second", slug: "same-slug", markdown: "# second\n" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const skill = await svc.getByKey(companyId, `company/${companyId}/same-slug`);
+    expect(skill).toBeTruthy();
+    expect(await fs.readFile(path.join(skill!.sourceLocator!, "SKILL.md"), "utf8"))
+      .toMatch(/^# (first|second)\n$/);
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, skill!.id)))
+      .toHaveLength(1);
+  });
+
+  it("recovers an identical create after the outer transaction rolls back", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rollback retry", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const input = { name: "Retryable", slug: "retryable", markdown: "# durable bytes\n" };
+    await expect(db.transaction(async (tx) => {
+      await companySkillService(tx as any).createLocalSkill(companyId, input);
+      throw new Error("simulate outer rollback");
+    })).rejects.toThrow("simulate outer rollback");
+
+    const retried = await svc.createLocalSkill(companyId, input);
+    expect(await fs.readFile(path.join(retried.sourceLocator!, "SKILL.md"), "utf8")).toBe(input.markdown);
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, retried.id))).toHaveLength(1);
+  });
+
+  it("rejects a differing retry after rollback without changing durable bytes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rollback conflict", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = { name: "Original", slug: "rollback-conflict", markdown: "# original bytes\n" };
+    await expect(db.transaction(async (tx) => {
+      await companySkillService(tx as any).createLocalSkill(companyId, original);
+      throw new Error("simulate outer rollback");
+    })).rejects.toThrow("simulate outer rollback");
+
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Different",
+      slug: original.slug,
+      markdown: "# changed bytes\n",
+    })).rejects.toMatchObject({ status: 409 });
+    const managedRoot = path.join(paperclipHome!, "instances", "default", "skills", companyId);
+    expect(await fs.readFile(path.join(managedRoot, original.slug, "SKILL.md"), "utf8")).toBe(original.markdown);
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).toHaveLength(0);
+  });
+
+  it("does not adopt an unrelated preexisting managed directory", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Existing directory", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const managedRoot = path.join(paperclipHome!, "instances", "default", "skills", companyId);
+    const skillDir = path.join(managedRoot, "occupied");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# unrelated\n", "utf8");
+
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Requested",
+      slug: "occupied",
+      markdown: "# requested\n",
+    })).rejects.toMatchObject({ status: 409 });
+    expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe("# unrelated\n");
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).toHaveLength(0);
+  });
+
   it("observes supporting-only local file saves across runtime preparations and service restarts", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Local supporting files", issuePrefix: `T${companyId.slice(0, 6)}` });

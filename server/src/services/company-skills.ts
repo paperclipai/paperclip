@@ -393,7 +393,11 @@ type CreateVersionOptions = {
   updateCurrentVersion?: boolean;
   skipInventoryRefresh?: boolean;
   skill?: CompanySkill;
+  database?: DbOrTransaction;
 };
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
 
 type PlannedSkillReassignment = {
   agentId: string;
@@ -3330,8 +3334,8 @@ export function companySkillService(db: Db) {
     return rows as CompanySkillReferenceRow[];
   }
 
-  async function getById(companyId: string, id: string) {
-    const row = await db
+  async function getById(companyId: string, id: string, database: DbOrTransaction = db) {
+    const row = await database
       .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, id)))
@@ -3339,8 +3343,8 @@ export function companySkillService(db: Db) {
     return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
-  async function getByKey(companyId: string, key: string) {
-    const row = await db
+  async function getByKey(companyId: string, key: string, database: DbOrTransaction = db) {
+    const row = await database
       .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key)))
@@ -3570,12 +3574,12 @@ export function companySkillService(db: Db) {
     options: CreateVersionOptions = {},
   ): Promise<CompanySkillVersion> {
     if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
-    const skill = options.skill ?? await getById(companyId, skillId);
+    const skill = options.skill ?? await getById(companyId, skillId, options.database);
     if (!skill) throw notFound("Skill not found");
     const fileInventory = serializeVersionFileInventory(
       options.fileInventory ?? await collectVersionFileInventory(companyId, skill),
     );
-    const versionRow = await db.transaction(async (tx) => {
+    const persist = async (tx: DbOrTransaction) => {
       await tx.execute(sql`
         select ${companySkills.id}
         from ${companySkills}
@@ -3613,7 +3617,8 @@ export function companySkillService(db: Db) {
           .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)));
       }
       return row;
-    });
+    };
+    const versionRow = options.database ? await persist(options.database) : await db.transaction(persist);
     if (!versionRow) throw notFound("Failed to persist skill version");
     return toCompanySkillVersion(versionRow);
   }
@@ -4407,10 +4412,6 @@ export function companySkillService(db: Db) {
     if (input.folderId) await folderSvc.validateSkillFolder(companyId, input.folderId);
     const slug = normalizeSkillSlug(input.slug ?? input.name) ?? "skill";
     const key = `company/${companyId}/${slug}`;
-    const existing = await getByKey(companyId, key);
-    if (existing) {
-      throw conflict(`A company skill with slug "${slug}" already exists.`);
-    }
 
     const forkSource = input.forkedFromSkillId
       ? await getById(companyId, input.forkedFromSkillId)
@@ -4421,20 +4422,6 @@ export function companySkillService(db: Db) {
     const sharingScope = normalizeMutableSharingScope(input.sharingScope) ?? "company";
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const skillDir = path.resolve(managedRoot, slug);
-    const skillFilePath = path.resolve(skillDir, "SKILL.md");
-
-    await fs.rm(skillDir, { recursive: true, force: true });
-    await fs.mkdir(skillDir, { recursive: true });
-
-    if (forkSource) {
-      for (const entry of forkSource.fileInventory) {
-        const detail = await readFile(companyId, forkSource.id, entry.path);
-        if (!detail) continue;
-        const targetPath = path.resolve(skillDir, detail.path);
-        await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await fs.writeFile(targetPath, detail.content, "utf8");
-      }
-    }
 
     const fallbackMarkdown = [
         "---",
@@ -4451,67 +4438,130 @@ export function companySkillService(db: Db) {
       ? input.markdown
       : forkSource?.markdown ?? fallbackMarkdown;
 
-    await fs.writeFile(skillFilePath, markdown, "utf8");
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${slug}`}, 0))
+      `);
+      const existing = await getByKey(companyId, key, tx);
+      if (existing) throw conflict(`A company skill with slug "${slug}" already exists.`);
 
-    const inventory = forkSource
-      ? await collectLocalSkillInventory(skillDir)
-      : [{ path: "SKILL.md", kind: "skill" as const }];
-    const parsed = parseFrontmatterMarkdown(markdown);
-    const metadata = {
-      sourceKind: "managed_local",
-      ...(forkSource ? {
-        forkedFromSkillId: forkSource.id,
-        forkedFromCompanyId: forkSource.companyId,
-        forkedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
-        forkedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
-      } : {}),
-    };
-    const imported = await upsertImportedSkills(companyId, [{
-      key,
-      slug,
-      name: asString(parsed.frontmatter.name) ?? input.name,
-      description: asString(parsed.frontmatter.description) ?? input.description?.trim() ?? forkSource?.description ?? null,
-      markdown,
-      sourceType: "local_path",
-      sourceLocator: skillDir,
-      sourceRef: null,
-      trustLevel: deriveTrustLevel(inventory),
-      compatibility: forkSource?.compatibility ?? "compatible",
-      fileInventory: inventory,
-      metadata,
-    }]);
+      // Stage in a unique directory. Publication is a single rename and never
+      // removes an existing directory, so a failed retry cannot clobber bytes.
+      const stagingRoot = path.join(managedRoot, ".staging");
+      await fs.mkdir(stagingRoot, { recursive: true });
+      const stagingDir = await fs.mkdtemp(path.join(stagingRoot, `${slug}-${randomUUID()}-`));
+      let published = false;
+      try {
+        if (forkSource) {
+          for (const entry of forkSource.fileInventory) {
+            const detail = await readFile(companyId, forkSource.id, entry.path);
+            if (!detail) continue;
+            const targetPath = path.resolve(stagingDir, detail.path);
+            await fs.mkdir(path.dirname(targetPath), { recursive: true });
+            await fs.writeFile(targetPath, detail.content, "utf8");
+          }
+        }
+        await fs.writeFile(path.join(stagingDir, "SKILL.md"), markdown, "utf8");
+        await fs.mkdir(managedRoot, { recursive: true });
+        const existingPublishedDir = await resolveExistingSkillDirectory(skillDir);
+        if (existingPublishedDir) {
+          // A publish can survive an outer database rollback. Recover only an
+          // exact file-for-file retry. Never silently adopt different content.
+          const existingStat = await fs.lstat(skillDir);
+          if (existingStat.isSymbolicLink() || !existingStat.isDirectory()) {
+            throw conflict(`The storage location for skill "${slug}" is unavailable.`);
+          }
+          const stagedInventory = await collectLocalSkillInventory(stagingDir);
+          const existingInventory = await collectLocalSkillInventory(skillDir);
+          const stagedPaths = stagedInventory.map(entry => entry.path).sort();
+          const existingPaths = existingInventory.map(entry => entry.path).sort();
+          if (JSON.stringify(stagedPaths) !== JSON.stringify(existingPaths)) {
+            throw conflict(`Different files already exist for skill "${slug}". Choose another name.`);
+          }
+          for (const file of stagedPaths) {
+            const target = path.join(skillDir, file);
+            const stat = await fs.lstat(target);
+            const root = await fs.realpath(skillDir);
+            const real = await fs.realpath(target);
+            if (stat.isSymbolicLink() || !stat.isFile() || !real.startsWith(`${root}${path.sep}`)
+              || !(await fs.readFile(target)).equals(await fs.readFile(path.join(stagingDir, file)))) {
+              throw conflict(`Different files already exist for skill "${slug}". Choose another name.`);
+            }
+          }
+          await fs.rm(stagingDir, { recursive: true, force: true });
+        } else {
+          await fs.rename(stagingDir, skillDir);
+        }
+        published = true;
 
-    const created = imported[0]!;
-    const row = await db
-      .update(companySkills)
-      .set({
-        iconUrl: normalizeStoreText(input.iconUrl, 2000) ?? forkSource?.iconUrl ?? created.iconUrl,
-        color: normalizeStoreText(input.color, 64) ?? forkSource?.color ?? created.color,
-        tagline: normalizeStoreText(input.tagline, 120) ?? forkSource?.tagline ?? created.tagline,
-        authorName: normalizeStoreText(input.authorName, 200) ?? forkSource?.authorName ?? created.authorName,
-        homepageUrl: normalizeStoreText(input.homepageUrl, 2000) ?? forkSource?.homepageUrl ?? created.homepageUrl,
-        categories: input.categories ? normalizeCategoryList(input.categories) : forkSource?.categories ?? created.categories,
-        folderId: input.folderId ?? null,
-        sharingScope,
-        forkedFromSkillId: forkSource?.id ?? null,
-        forkedFromCompanyId: forkSource?.companyId ?? null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(companySkills.id, created.id), eq(companySkills.companyId, companyId)))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (forkSource) {
-      await db
-        .update(companySkills)
-        .set({
-          forkCount: sql`${companySkills.forkCount} + 1`,
-          installCount: sql`${companySkills.installCount} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(companySkills.id, forkSource.id), eq(companySkills.companyId, companyId)));
-    }
-    await createVersion(companyId, created.id, { label: "Initial version" }, actor);
-    return (await getById(companyId, created.id)) ?? (row ? toCompanySkill(row) : created);
+        const inventory = (forkSource || existingPublishedDir)
+          ? await collectLocalSkillInventory(skillDir)
+          : [{ path: "SKILL.md", kind: "skill" as const }];
+        const parsed = parseFrontmatterMarkdown(markdown);
+        const metadata = {
+          sourceKind: "managed_local",
+          ...(forkSource ? {
+            forkedFromSkillId: forkSource.id,
+            forkedFromCompanyId: forkSource.companyId,
+            forkedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
+            forkedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
+          } : {}),
+        };
+        const imported = await upsertImportedSkills(companyId, [{
+          key,
+          slug,
+          name: asString(parsed.frontmatter.name) ?? input.name,
+          description: asString(parsed.frontmatter.description) ?? input.description?.trim() ?? forkSource?.description ?? null,
+          markdown,
+          sourceType: "local_path",
+          sourceLocator: skillDir,
+          sourceRef: null,
+          trustLevel: deriveTrustLevel(inventory),
+          compatibility: forkSource?.compatibility ?? "compatible",
+          fileInventory: inventory,
+          metadata,
+        }], tx);
+        const created = imported[0]!;
+        const row = await tx
+          .update(companySkills)
+          .set({
+            iconUrl: normalizeStoreText(input.iconUrl, 2000) ?? forkSource?.iconUrl ?? created.iconUrl,
+            color: normalizeStoreText(input.color, 64) ?? forkSource?.color ?? created.color,
+            tagline: normalizeStoreText(input.tagline, 120) ?? forkSource?.tagline ?? created.tagline,
+            authorName: normalizeStoreText(input.authorName, 200) ?? forkSource?.authorName ?? created.authorName,
+            homepageUrl: normalizeStoreText(input.homepageUrl, 2000) ?? forkSource?.homepageUrl ?? created.homepageUrl,
+            categories: input.categories ? normalizeCategoryList(input.categories) : forkSource?.categories ?? created.categories,
+            folderId: input.folderId ?? null,
+            sharingScope,
+            forkedFromSkillId: forkSource?.id ?? null,
+            forkedFromCompanyId: forkSource?.companyId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(companySkills.id, created.id), eq(companySkills.companyId, companyId)))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (forkSource) {
+          await tx
+            .update(companySkills)
+            .set({ forkCount: sql`${companySkills.forkCount} + 1`, installCount: sql`${companySkills.installCount} + 1`, updatedAt: new Date() })
+            .where(and(eq(companySkills.id, forkSource.id), eq(companySkills.companyId, companyId)));
+        }
+        const versionInventory = await Promise.all(inventory.map(async (entry) => ({
+          ...entry,
+          content: await fs.readFile(path.join(skillDir, entry.path), "utf8"),
+        })));
+        await createVersion(companyId, created.id, { label: "Initial version" }, actor, {
+          database: tx,
+          skipInventoryRefresh: true,
+          skill: row ? toCompanySkill(row) : created,
+          fileInventory: versionInventory,
+        });
+        return (await getById(companyId, created.id, tx)) ?? (row ? toCompanySkill(row) : created);
+      } catch (error) {
+        if (!published) await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
+    });
   }
 
   async function updateFile(
@@ -6041,12 +6091,16 @@ export function companySkillService(db: Db) {
     return out;
   }
 
-  async function upsertImportedSkills(companyId: string, imported: ImportedSkill[]): Promise<CompanySkill[]> {
+  async function upsertImportedSkills(
+    companyId: string,
+    imported: ImportedSkill[],
+    database: DbOrTransaction = db,
+  ): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
     for (const skill of imported) {
       assertImportedSkillKeyAllowed(skill);
       assertImportedSkillSourceAllowed(skill);
-      const existing = await getByKey(companyId, skill.key);
+      const existing = await getByKey(companyId, skill.key, database);
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
       const incomingOwner = asString(incomingMeta.owner);
@@ -6108,13 +6162,13 @@ export function companySkillService(db: Db) {
         continue;
       }
       const row = existing
-        ? await db
+        ? await database
           .update(companySkills)
           .set(values)
           .where(eq(companySkills.id, existing.id))
           .returning()
           .then((rows) => rows[0] ?? null)
-        : await db
+        : await database
           .insert(companySkills)
           .values(values)
           .returning()

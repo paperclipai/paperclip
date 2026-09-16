@@ -7,10 +7,30 @@
     "src/scenarios/scenario-plan.ts"
   ],
   "counts": {
-    "actions": 45,
+    "actions": 46,
     "legacyRequirements": 106
   },
   "actions": [
+    {
+      "id": "create_skill",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:create_skill",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::create_skill has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:create_skill"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::create_skill has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
     {
       "id": "create_project",
       "ownership": "optional_agent_tool",

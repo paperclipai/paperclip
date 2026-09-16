@@ -65,6 +65,7 @@ import {
   taskPanelDocumentTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
+  taskPanelSkillTab,
   taskPanelSubtasksTab,
   taskPanelWorkspaceFileTab,
   writeTaskSidePanelState,
@@ -73,6 +74,7 @@ import {
 import { cn } from "@/lib/utils";
 import { TaskDocumentPanel } from "./TaskDocumentPanel";
 import { TaskWorkspaceFilePanel } from "./TaskWorkspaceFilePanel";
+import { TaskSkillPanel } from "./TaskSkillPanel";
 
 export interface TaskSidePanelProps {
   issue: Issue;
@@ -99,6 +101,9 @@ export interface TaskSidePanelProps {
   showSubtasksTab?: boolean;
   /** Optional related-work projection; the host still owns tab layout and state. */
   tasksTab?: { count: number; content: ReactNode; hasError?: boolean };
+  openSkillId?: string | null;
+  openSkillName?: string | null;
+  onSkillOpened?: (skillId: string) => void;
 }
 
 const EMPTY_ISSUE_DOCUMENTS: IssueDocument[] = [];
@@ -231,6 +236,9 @@ export function TaskSidePanel({
   streamlinedTabs = false,
   showSubtasksTab = false,
   tasksTab,
+  openSkillId,
+  openSkillName,
+  onSkillOpened,
 }: TaskSidePanelProps) {
   const handleScroll = useScrollbarWhileScrolling();
   const viewer = useTaskSidePanelFileRouting();
@@ -284,6 +292,13 @@ export function TaskSidePanel({
   const activeTab = controller.tabs.find((tab) => tab.id === controller.activeTabId) ?? null;
   const subtasksAvailable = showSubtasksTab && (taskCount > 0 || tasksTab?.hasError === true);
   const hasSubtasksTab = controller.tabs.some((tab) => tab.id === "subtasks");
+
+  useEffect(() => {
+    if (!openSkillId) return;
+    setLauncherOpen(false);
+    controller.openTab(taskPanelSkillTab(openSkillId, openSkillName ?? "Skill"));
+    onSkillOpened?.(openSkillId);
+  }, [controller.openTab, onSkillOpened, openSkillId, openSkillName]);
 
   useEffect(() => {
     if (!subtasksAvailable) {
@@ -649,6 +664,8 @@ export function TaskSidePanel({
         initialDocument={documentByKey.get(activeTab.payload.documentKey)}
       />
     );
+  } else if (activeTab.payload.kind === "skill") {
+    content = <TaskSkillPanel companyId={issue.companyId} skillId={activeTab.payload.skillId} />;
   } else if (activeTab.payload.kind === "files-browser") {
     content = (
       <WorkspaceFileBrowser

@@ -6,6 +6,7 @@ import {
   taskPanelDocumentTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
+  taskPanelSkillTab,
   taskPanelSubtasksTab,
   writeTaskSidePanelState,
 } from "./task-side-panel-state";
@@ -24,6 +25,20 @@ describe("task side-panel persistence", () => {
     expect(readTaskSidePanelState("user-1", "company-1", "task-1", true)).toMatchObject({
       state: { tabs: [], activeTabId: null },
       userInteracted: true,
+    });
+  });
+
+  it("persists and restores a skill tab", () => {
+    writeTaskSidePanelState("user-1", "company-1", "task-skill", {
+      state: { tabs: [taskPanelPropertiesTab(), taskPanelSkillTab("skill-1", "Release helper")], activeTabId: "skill:skill-1" },
+      launcherOpen: false,
+      userInteracted: true,
+      autoPlanHandled: false,
+      updatedAt: 1,
+    });
+    expect(readTaskSidePanelState("user-1", "company-1", "task-skill", true)?.state).toMatchObject({
+      activeTabId: "skill:skill-1",
+      tabs: [{ id: "properties" }, { id: "skill:skill-1", payload: { kind: "skill", skillId: "skill-1" } }],
     });
   });
 

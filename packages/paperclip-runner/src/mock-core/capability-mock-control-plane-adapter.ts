@@ -708,6 +708,20 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
         entityRefs.push(`comment:${comment.id}`);
         break;
       }
+      case "create_skill": {
+        requireText(command.name, "skill name");
+        requireText(command.markdown, "skill markdown");
+        const slug = command.slug ?? command.name;
+        const skills = this.#state.skills ??= [];
+        if (skills.some(skill => skill.companyId === run.companyId && skill.slug === slug)) {
+          throw new CapabilityMockControlPlaneError("fixture_state_invalid", "A skill with that name already exists");
+        }
+        const skill = { id: this.#id("skill"), companyId: run.companyId, name: command.name,
+          slug, description: command.description, markdown: command.markdown, versionId: this.#id("skill-version") };
+        skills.push(skill);
+        entityRefs.push(`skill:${skill.id}`);
+        break;
+      }
       case "write_document": {
         requireText(command.key, "document key");
         requireText(command.title, "document title");

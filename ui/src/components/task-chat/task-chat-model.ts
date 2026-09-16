@@ -542,8 +542,20 @@ export interface TaskChatProjectCreatedItem {
   timestamp: string;
 }
 
+export interface TaskChatSkillCreatedItem {
+  id: string;
+  kind: "skill_created";
+  skillId: string;
+  name: string;
+  description?: string | null;
+  slug?: string | null;
+  versionId?: string | null;
+  timestamp: string;
+}
+
 export type TaskChatItem =
   | TaskChatProjectCreatedItem
+  | TaskChatSkillCreatedItem
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem

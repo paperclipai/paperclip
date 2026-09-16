@@ -1,4 +1,5 @@
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
+import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -72,6 +73,7 @@ interface TaskChatThreadViewProps {
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
   attachments?: IssueAttachment[];
+  onOpenSkill?: (skillId: string, name: string) => void;
 }
 
 function renderItem(
@@ -92,9 +94,11 @@ function renderItem(
   onRetryFailedRun?: (runId: string) => Promise<void> | void,
   retryFailedRunId?: string | null,
   attachments: IssueAttachment[] = [],
+  onOpenSkill?: (skillId: string, name: string) => void,
 ) {
   switch (item.kind) {
     case "project_created": return <TaskChatProjectCreatedCard item={item} />;
+    case "skill_created": return <TaskChatSkillCreatedCard item={item} onOpen={onOpenSkill} />;
     case "message": {
       // Compute the actions once: the bubble renders them for a runless reply
       // (footer = actions + timestamp), while an attached turn hands them to
@@ -132,6 +136,7 @@ function renderItem(
               undefined,
               undefined,
               attachments,
+              onOpenSkill,
             )
           }
         />
@@ -235,6 +240,7 @@ function renderItem(
               undefined,
               undefined,
               attachments,
+              onOpenSkill,
             )
           }
         />
@@ -300,6 +306,7 @@ export function TaskChatThreadView({
   className,
   scroll = true,
   attachments = EMPTY_ATTACHMENTS,
+  onOpenSkill,
 }: TaskChatThreadViewProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
   const retryableMarkerId =
@@ -335,6 +342,7 @@ export function TaskChatThreadView({
               onRetryFailedRun,
               retryFailedRunId,
               attachments,
+              onOpenSkill,
             ),
           }))
           .filter((entry) => entry.content !== null)
@@ -402,7 +410,7 @@ export function TaskChatThreadView({
     items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
-    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments,
+    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill,
   ]);
   const body = (
     <div

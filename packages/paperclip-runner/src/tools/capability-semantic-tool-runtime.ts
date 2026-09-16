@@ -1541,6 +1541,10 @@ function commandForOperation(
       };
     case "request_review":
       return { kind: "request_review", summary: requireString(input.summary) };
+    case "create_skill":
+      return { kind: "create_skill", name: requireString(input.name),
+        slug: typeof input.slug === "string" ? input.slug : undefined,
+        description: requireString(input.description), markdown: requireString(input.markdown) };
     case "write_document":
       return {
         kind: "write_document",
