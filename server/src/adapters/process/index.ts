@@ -22,5 +22,14 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- fixedCommand (boolean, optional, default false): restrict permanent API keys
+  to POST /api/agents/<id>/wakeup or /heartbeat/invoke with an empty body or
+  only idempotencyKey. Query parameters, task payloads, configuration changes,
+  and other API requests are denied, except GET /api/agents/<id> for status
+  reconciliation after an uncertain trigger outcome. This is opt-in for trusted service
+  commands; normal process agents keep their existing API access. The command
+  receives its normal run-scoped JWT; active-run secret checks remain required.
+  Configure the executable and its environment administratively, and do not
+  expose the run JWT through command output or an untrusted input channel.
 `,
 };

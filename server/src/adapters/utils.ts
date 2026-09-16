@@ -85,6 +85,7 @@ export async function runChildProcess(
   opts: {
     cwd: string;
     env: Record<string, string>;
+    inheritEnv?: boolean;
     timeoutSec: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
