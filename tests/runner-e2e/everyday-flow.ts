@@ -778,6 +778,7 @@ export async function runEverydayFlow(input: Input) {
         const card = page.getByRole("article", {
           name: "Skill created: release-readiness-checklist",
         });
+        await expect(card).toHaveCount(1);
         await expect(card).toBeVisible();
         await card.getByRole("button").click();
         await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
@@ -786,12 +787,16 @@ export async function runEverydayFlow(input: Input) {
         const openStudio = page.getByRole("button", { name: "Open in Skill Studio", exact: true });
         await expect(openStudio).toBeVisible();
         await openStudio.click();
-        await expect(page).toHaveURL(/\/skills\/studio\//);
-        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
-        const editor = page.locator('[contenteditable="true"]').first();
+        await expect(page).toHaveURL(new RegExp(`/skills/studio/${created.id}$`));
+        // Studio's skill selector identifies the resource. Headings inside the
+        // authored document can differ from its canonical skill name.
+        await expect(page.getByRole("combobox").filter({ hasText: "release-readiness-checklist" })).toBeVisible();
+        const editor = page.getByRole("textbox", { name: "editable markdown", exact: true });
         await editor.click();
-        await page.keyboard.press("End");
-        await page.keyboard.type("\n\nStudio edit marker: verified");
+        await editor.press("ControlOrMeta+End");
+        await editor.press("Enter");
+        await editor.press("Enter");
+        await editor.pressSequentially("Studio edit marker: verified");
         await page.getByRole("button", { name: /^Save$/ }).click();
         await pollUntil({
           label: "Skill Studio edit persisted",

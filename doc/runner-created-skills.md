@@ -49,9 +49,10 @@ denials and revocation, mode restrictions, initial version/file persistence,
 idempotency, conflicting retries and concurrent creation. UI tests cover the
 creation card, saved tabs, frontmatter-free preview and error states.
 
-The companion Runner Evals cases are `create-skill` and
-`create-skill-invalid-input`. They test provider tool use against the seeded mock
-control plane, not production storage or company policy. Product E2E's
+The companion Runner Eval case `create-skill` tests provider tool use against
+the seeded mock control plane, not production storage or company policy.
+Invalid inputs are covered by deterministic tests: a live model should not be
+penalized for declining to send a schema-invalid request. Product E2E's
 `create-skill-studio` case checks real creation, task completion, the feed card,
 sidebar, Studio editing and the updated skill after returning to the task.
 See [the eval guide](evals.md) for the difference between these suites.
