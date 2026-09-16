@@ -28,6 +28,9 @@ path. Reuse the same idempotency key and inputs after a lost response. A retry
 returns the existing skill without another creation event. A key reused with
 different inputs, or a name that belongs to another skill, returns a conflict.
 Published files are never replaced as part of a competing creation request.
+Deleting a managed skill releases its name for a later creation. Deletion uses
+the same name lock as creation and retains its source files until the database
+deletion commits. Imported local and project source folders are not removed.
 
 ## User interface
 
@@ -51,6 +54,10 @@ creation card, saved tabs, frontmatter-free preview and error states.
 
 The companion Runner Eval case `create-skill` tests provider tool use against
 the seeded mock control plane, not production storage or company policy.
+The standalone mock uses a generated production frontmatter parser and schema
+validator. Regenerate it with
+`node packages/shared/scripts/generate-runner-skill-frontmatter.ts` after changing
+the shared frontmatter contract. A shared-package test checks synchronization.
 Invalid inputs are covered by deterministic tests: a live model should not be
 penalized for declining to send a schema-invalid request. Product E2E's
 `create-skill-studio` case checks real creation, task completion, the feed card,

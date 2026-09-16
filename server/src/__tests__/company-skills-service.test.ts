@@ -241,6 +241,80 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, retried.id))).toHaveLength(1);
   });
 
+  it("reuses a deleted managed skill name with different instructions", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Recreate skills", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Recreate", slug: "recreate", markdown: "# Old instructions\n" });
+    await svc.deleteSkill(companyId, original.id);
+    const replacement = await svc.createLocalSkill(companyId, { name: "Recreate", slug: "recreate", markdown: "# New instructions\n" });
+    expect(replacement.id).not.toBe(original.id);
+    expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# New instructions\n");
+    expect(await svc.deleteSkill(companyId, original.id)).toBeNull();
+    expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# New instructions\n");
+  });
+
+  it("restores managed source files when the deletion transaction fails", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Delete rollback", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Retained", slug: "retained", markdown: "# Keep these instructions\n" });
+    const failingDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "transaction") return (callback: (tx: any) => Promise<unknown>) => target.transaction(async (tx) => callback(new Proxy(tx, {
+          get(transaction, key, transactionReceiver) {
+            if (key === "delete") return () => { throw new Error("Deletion write failed"); };
+            return Reflect.get(transaction, key, transactionReceiver);
+          },
+        })));
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(companySkillService(failingDb).deleteSkill(companyId, original.id)).rejects.toThrow("Deletion write failed");
+    expect(await svc.getById(companyId, original.id)).not.toBeNull();
+    expect(await fs.readFile(path.join(original.sourceLocator!, "SKILL.md"), "utf8")).toBe("# Keep these instructions\n");
+  });
+
+  it("serializes duplicate deletes with recreation without removing new files", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Delete concurrency", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Concurrent", slug: "concurrent-delete", markdown: "# Old\n" });
+    let release!: () => void;
+    let staged!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { staged = resolve; });
+    const rename = fs.rename.bind(fs);
+    const pause = vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      await rename(source, target);
+      if (source === original.sourceLocator) {
+        staged();
+        await gate;
+      }
+    });
+    try {
+      const deletion = svc.deleteSkill(companyId, original.id);
+      await ready;
+      const duplicate = svc.deleteSkill(companyId, original.id);
+      const creation = svc.createLocalSkill(companyId, { name: "Replacement", slug: original.slug, markdown: "# Replacement\n" });
+      release();
+      const [, repeatedDelete, replacement] = await Promise.all([deletion, duplicate, creation]);
+      expect(repeatedDelete).toBeNull();
+      expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# Replacement\n");
+    } finally {
+      release();
+      pause.mockRestore();
+    }
+  });
+
+  it("does not remove imported local source files when deleting a skill", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Imported source", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const source = await createManagedSkillDir(companyId, "paperclip-imported-skill-");
+    const markdown = "---\nname: external\ndescription: User-owned instructions.\n---\n# Keep this file\n";
+    await fs.writeFile(path.join(source, "SKILL.md"), markdown);
+    const imported = await svc.importFromSource(companyId, source);
+    await svc.deleteSkill(companyId, imported.imported[0]!.id);
+    expect(await fs.readFile(path.join(source, "SKILL.md"), "utf8")).toBe(markdown);
+  });
+
   it("rejects a differing retry after rollback without changing durable bytes", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Rollback conflict", issuePrefix: `T${companyId.slice(0, 6)}` });

@@ -288,6 +288,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
+import { openSkillPanelState, shouldSuppressTaskPanelUntilPlan } from "../lib/task-side-panel-state";
 import {
   buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
@@ -2901,11 +2902,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     handled?: boolean;
   } | null>(null);
   const [openSkill, setOpenSkill] = useState<{ id: string; name: string } | null>(null);
-  const handleOpenSkill = useCallback((skillId: string, name: string) => {
-    setOpenSkill({ id: skillId, name });
-    setPanelVisible(true);
-    if (isMobile) setMobilePropsOpen(true);
-  }, [isMobile, setPanelVisible]);
   const handleSkillOpened = useCallback((skillId: string) => {
     setOpenSkill((current) => current?.id === skillId ? null : current);
   }, []);
@@ -3588,14 +3584,26 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     panelBeforePlanOverrideIssueId === issue?.id;
   const suppressPanelUntilPlan =
     shouldDeferPanelUntilPlan &&
-    !deferredPanelPlanDoc &&
-    !panelBeforePlanOverride;
+    shouldSuppressTaskPanelUntilPlan({
+      deferredPlanAvailable: Boolean(deferredPanelPlanDoc),
+      panelBeforePlanOverride,
+    });
   const openTaskSidePanel = useCallback(() => {
     if (suppressPanelUntilPlan && issue?.id) {
       setPanelBeforePlanOverrideIssueId(issue.id);
     }
     setPanelVisible(true);
   }, [issue?.id, setPanelVisible, suppressPanelUntilPlan]);
+  const handleOpenSkill = useCallback((skillId: string, name: string) => {
+    const next = openSkillPanelState(
+      { panelBeforePlanOverrideIssueId },
+      { id: skillId, name }, issue?.id ?? null, suppressPanelUntilPlan,
+    );
+    setOpenSkill(next.skill);
+    setPanelBeforePlanOverrideIssueId(next.panelBeforePlanOverrideIssueId);
+    setPanelVisible(true);
+    if (isMobile) setMobilePropsOpen(true);
+  }, [isMobile, issue?.id, panelBeforePlanOverrideIssueId, setPanelVisible, suppressPanelUntilPlan]);
   const revealNewArtifact = useCallback(() => {
     if (!issue?.id) return;
     setDocumentDeepLink(null);
@@ -5582,7 +5590,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   useLayoutEffect(() => {
-    if (!panelIssue || (suppressPanelUntilPlan && !openSkill) || (conversation && !conversation.issue)) {
+    if (!panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue)) {
       closePanel();
       return;
     }

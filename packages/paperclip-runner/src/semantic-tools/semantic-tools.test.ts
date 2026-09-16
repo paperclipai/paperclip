@@ -57,6 +57,26 @@ describe("Capability semantic catalog and authorization", () => {
     expect(adapter.snapshot().skills).toHaveLength(1);
   });
 
+  it.each([
+    ["missing frontmatter", "# Review\nCheck each note."],
+    ["mismatched frontmatter name", "---\nname: other-skill\ndescription: Review release notes.\n---\n# Review\nCheck each note."],
+    ["mismatched frontmatter description", "---\nname: release-review\ndescription: Other description.\n---\n# Review\nCheck each note."],
+    ["empty body", "---\nname: release-review\ndescription: Review release notes.\n---\n   "],
+    ["invalid YAML", "---\nname: [\ndescription: Review release notes.\n---\n# Review\nCheck each note."],
+    ["slug conflict", "---\nname: release-review\ndescription: Review release notes.\n---\n# Review\nCheck each note."],
+  ])("rejects %s without mutating the skill library", async (label, markdown) => {
+    const adapter = await running();
+    const dispatcher = new CapabilitySemanticDispatcher(adapter);
+    const input = {
+      name: label === "mismatched frontmatter name" ? "release-review" : "release-review",
+      slug: label === "slug conflict" ? "other-slug" : undefined,
+      description: "Review release notes.", markdown, idempotencyKey: `invalid-${label}`,
+    };
+    const result = await dispatcher.dispatch({ runId: OPEN.identity.runId, callId: `invalid-${label}`, operationId: "create_skill", input });
+    expect(result).toMatchObject({ ok: false });
+    expect(adapter.snapshot().skills ?? []).toHaveLength(0);
+  });
+
   it("denies skill creation when the scenario policy forbids it", async () => {
     const adapter = await running();
     const dispatcher = new CapabilitySemanticDispatcher(adapter, { scenario: { id: "restricted-skills", claims: [], denyOperations: ["create_skill"] } });

@@ -4,6 +4,31 @@ import type { SidePanelTabRecord, SidePanelTabsState } from "@/components/side-p
 const STORAGE_VERSION = 1;
 const MAX_TASK_STATES = 50;
 
+export function shouldSuppressTaskPanelUntilPlan(input: {
+  deferredPlanAvailable: boolean;
+  panelBeforePlanOverride: boolean;
+}) {
+  return !input.deferredPlanAvailable && !input.panelBeforePlanOverride;
+}
+
+export interface OpenSkillPanelState {
+  skill: { id: string; name: string };
+  panelBeforePlanOverrideIssueId: string | null;
+}
+
+export function openSkillPanelState(
+  current: Pick<OpenSkillPanelState, "panelBeforePlanOverrideIssueId">,
+  skill: { id: string; name: string },
+  issueId: string | null,
+  panelSuppressedUntilPlan: boolean,
+): OpenSkillPanelState {
+  return {
+    skill,
+    panelBeforePlanOverrideIssueId:
+      panelSuppressedUntilPlan && issueId ? issueId : current.panelBeforePlanOverrideIssueId,
+  };
+}
+
 export type TaskSidePanelTabPayload =
   | { kind: "properties" }
   | { kind: "subtasks" }

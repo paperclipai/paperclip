@@ -6992,41 +6992,82 @@ export function companySkillService(db: Db) {
   }
 
   async function deleteSkill(companyId: string, skillId: string): Promise<CompanySkill | null> {
-    const row = await db
-      .select()
-      .from(companySkills)
-      .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
-      .then((rows) => rows[0] ?? null);
-    if (!row) return null;
-
-    const skill = toCompanySkill(row);
-    const usedByAgents = await usage(companyId, skill.key);
-
-    if (usedByAgents.length > 0) {
+    const initial = await getById(companyId, skillId);
+    if (!initial) return null;
+    async function assertUnused(skill: CompanySkill) {
+      const usedByAgents = await usage(companyId, skill.key);
+      if (usedByAgents.length === 0) return;
       const agentNames = usedByAgents.map((agent) => agent.name).sort((left, right) => left.localeCompare(right));
       throw unprocessable(
         `Cannot delete skill "${skill.name}" while it is still used by ${agentNames.join(", ")}. Detach it from those agents first.`,
         {
-          skillId: skill.id,
-          skillKey: skill.key,
+          skillId: skill.id, skillKey: skill.key,
           usedByAgents: usedByAgents.map((agent) => ({
-            id: agent.id,
-            name: agent.name,
-            urlKey: agent.urlKey,
-            adapterType: agent.adapterType,
+            id: agent.id, name: agent.name, urlKey: agent.urlKey, adapterType: agent.adapterType,
           })),
         },
       );
     }
-
-    // Take the cache lifecycle lock before deleting the row. A busy publisher must not
-    // turn a committed deletion into an apparent API failure, nor recreate its cache.
-    await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
-      await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
-      await db.delete(companySkills).where(eq(companySkills.id, skillId));
+    await assertUnused(initial);
+    const managedRoot = resolveManagedSkillsRoot(companyId);
+    let movedSource: { source: string; quarantine: string } | undefined;
+    let deleted: CompanySkill | null = null;
+    async function restoreSource() {
+      if (!movedSource) return;
+      await fs.rename(movedSource.quarantine, movedSource.source);
+      movedSource = undefined;
+    }
+    // Keep the cache lifecycle lock through database commit. A publisher must
+    // not see the old row after cache removal and republish a deleted skill.
+    await removeRuntimeSkillCache(managedRoot, initial.id, async () => {
+      try {
+        deleted = await db.transaction(async (tx) => {
+          // Share creation's name lock and re-read the ID, so a second delete
+          // cannot remove a newly recreated skill with the same name.
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${initial.slug}`}, 0))`);
+          const skill = await getById(companyId, skillId, tx);
+          if (!skill) return null;
+          if (skill.slug !== initial.slug) throw conflict("Skill changed during deletion. Retry the request.");
+          await assertUnused(skill);
+          try {
+            await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+            if (isPaperclipManagedRenameTarget(skill)) {
+              const source = normalizeSkillDirectory(skill)!;
+              const stat = await fs.lstat(source).catch((error: NodeJS.ErrnoException) => {
+                if (error.code === "ENOENT") return null;
+                throw error;
+              });
+              if (stat) {
+                const quarantineRoot = path.join(managedRoot, ".deleted");
+                await fs.mkdir(quarantineRoot, { recursive: true });
+                const quarantine = path.join(quarantineRoot, `${skill.id}-${randomUUID()}`);
+                // Do not follow symlinks or delete external/project sources.
+                // Retain bytes until the database deletion commits.
+                await fs.rename(source, quarantine);
+                movedSource = { source, quarantine };
+              }
+            }
+            await tx.delete(companySkills).where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)));
+          } catch (error) {
+            // Restore before releasing the name lock on a failed write.
+            await restoreSource();
+            throw error;
+          }
+          return skill;
+        });
+      } catch (error) {
+        await restoreSource();
+        throw error;
+      }
     });
-
-    return skill;
+    // Only remove the unique quarantine path after commit. Cleanup must not
+    // remove a replacement skill or report a committed delete as failed.
+    if (movedSource) {
+      await fs.rm(movedSource.quarantine, { recursive: true, force: true }).catch((error) => {
+        logger.warn({ err: error, companyId, skillId }, "Skill deleted; quarantined source cleanup failed");
+      });
+    }
+    return deleted;
   }
 
   return {
