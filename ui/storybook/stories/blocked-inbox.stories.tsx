@@ -292,7 +292,7 @@ export const DesktopWithSearch: Story = {
 };
 
 export const MobileLayout: Story = {
-  parameters: { viewport: { defaultViewport: "mobile1" } },
+  globals: { viewport: { value: "mobile1" } },
   render: () => <BlockedTabSurfaceMobile />,
 };
 

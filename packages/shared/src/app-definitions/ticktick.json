@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "ticktick",
+  "name": "TickTick",
+  "description": "Connect TickTick's provider-hosted MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/ticktick.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.ticktick.com/*"
+  ],
+  "docsUrl": "https://help.ticktick.com/articles/7438129581631995904",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.ticktick.com"
+      },
+      "guidanceMd": "Connect TickTick in the browser. A TickTick account with MCP access.",
+      "riskTier": "S3",
+      "label": "Sign in with TickTick",
+      "consoleLinks": {
+        "docs": "https://help.ticktick.com/articles/7438129581631995904"
+      },
+      "warnings": [
+        "A TickTick account with MCP access."
+      ]
+    }
+  ]
+}

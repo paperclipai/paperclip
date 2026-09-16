@@ -1,7 +1,19 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
-const PLUGIN_VERSION = "0.1.1";
+// The bundled-plugin boot reconcile refreshes the persisted manifest for an
+// existing install only when PLUGIN_VERSION changes. A manifest change without a
+// version bump never reaches an existing install. The reconcile also reads the
+// persisted manifest raw and does not re-run the validator, so it never
+// canonicalizes a renamed capability.
+//
+// 0.1.3 renamed the login transport flag from `supportsSetupTokenLogin` to the
+// neutral `supportsLoginPty`.
+// 0.1.4 adds the `concurrentSyncOperations` sandbox capability to the driver.
+// 0.1.5 adds the `duplexCommandStream` sandbox capability to the driver.
+// 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
+// 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
+const PLUGIN_VERSION = "0.1.7";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -24,6 +36,32 @@ const manifest: PaperclipPluginManifestV1 = {
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
       supportsReusableLeases: true,
+      // Daytona keeps a persistent session and tails its callback log form, so it
+      // emits incremental session output while the command runs. Declare the
+      // opt-in capability so the host selects the session-output streaming path.
+      // A generic one-shot provider that omits this key keeps the poll path.
+      //
+      // Daytona also runs file transfers into and out of the sandbox in parallel.
+      // Each concurrent sync hook call uses separate temporary state (random
+      // scratch names and per-mapping host temporary directories), and teardown
+      // waits for all active calls. Declare the opt-in capability so the host may
+      // schedule sync operations concurrently. The host resolves it `true` only
+      // when the worker also verifies both sync verbs.
+      //
+      // Daytona carries the sandbox callback bridge on one live duplex channel
+      // over a raw pseudo-terminal. Declare the opt-in capability so the host may
+      // select the duplex transport. The host resolves it `true` only when the
+      // worker also verifies the `duplexChannelOpen` handler.
+      //
+      // Daytona is the first provider that runs the HTTP/2 transport over this
+      // channel. HTTP/2 is the preferred transport. `queue_v1` is the
+      // soft-deprecated fallback.
+      sandboxCapabilities: {
+        incrementalSessionOutput: true,
+        concurrentSyncOperations: true,
+        duplexCommandStream: true,
+        runnerWebSocketIngress: true,
+      },
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
       supportsTemplateCapture: true,
@@ -34,6 +72,14 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       templateIdentityPaths: ["apiUrl"],
       supportsTemplateDelete: true,
+      // Daytona hosts an interactive login on a real pseudo-terminal. It is the
+      // only bundled provider that implements the login pseudo-terminal methods,
+      // so it advertises the capability. The session home helpers and the
+      // credential reader run on node, and the sandbox already runs node for the
+      // Paperclip bridge. So the login has no extra runtime prerequisite, and the
+      // advertised capability matches the runtime contract for every configured
+      // image or snapshot.
+      supportsLoginPty: true,
       configSchema: {
         type: "object",
         properties: {
@@ -126,11 +172,20 @@ const manifest: PaperclipPluginManifestV1 = {
               "Whether to stop and later resume the sandbox across runs instead of deleting it on release.",
             default: false,
           },
-          useLogStream: {
-            type: "boolean",
+          runnerLifecycleMode: {
+            type: "string",
+            enum: ["inherit", "per_turn", "warm"],
             description:
-              "When true, a session command streams stdout and stderr from the Daytona callback log form and reads the exit code one time after the stream ends. When false, the command polls the exit code and reads the logs one time. Defaults to false.",
-            default: false,
+              "paperclip_runner lifecycle for this environment. Inherit uses the agent setting; warm keeps runnerd and the sandbox available between turns.",
+            default: "inherit",
+          },
+          runnerIdleTimeoutMs: {
+            type: "integer",
+            description:
+              "How long an idle warm paperclip_runner stays alive before it checkpoints and suspends.",
+            minimum: 1000,
+            maximum: 86400000,
+            default: 300000,
           },
         },
       },

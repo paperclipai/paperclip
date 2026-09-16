@@ -328,7 +328,7 @@ export function SkillStudio() {
   }, [skill?.id]);
 
   if (!companyId) {
-    return <StudioMessage message="Select a company to open Skill Studio." />;
+    return <StudioMessage message="Select an organization to open Skill Studio." />;
   }
   if (isCreateMode) {
     return (
@@ -518,7 +518,7 @@ function StudioNewSkillPanel({
           {draft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}
         </h1>
         <p className="text-sm text-muted-foreground">
-          Create an editable company skill and open it directly in Studio.
+          Create an editable organization skill and open it directly in Studio.
         </p>
       </div>
 
@@ -657,9 +657,9 @@ function StudioNewSkillPanel({
                 draft.sharingScope === scope ? "border-foreground bg-accent/50" : "border-border",
               )}
             >
-              <span className="block font-medium">{scope === "company" ? "Company" : "Private"}</span>
+              <span className="block font-medium">{scope === "company" ? "Organization" : "Private"}</span>
               <span className="mt-1 block text-xs text-muted-foreground">
-                {scope === "company" ? "Visible inside this company." : "Only visible in your library."}
+                {scope === "company" ? "Visible inside this organization." : "Only visible in your library."}
               </span>
             </button>
           ))}

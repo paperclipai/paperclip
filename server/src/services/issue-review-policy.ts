@@ -8,7 +8,7 @@ export interface IssueReviewVerdictActor {
   id: string;
 }
 
-interface IssueReviewRequester extends IssueReviewVerdictActor {
+export interface IssueReviewRequester extends IssueReviewVerdictActor {
   reviewInteractionId: string | null;
 }
 
@@ -20,7 +20,7 @@ interface ReviewPolicyIssue {
   createdByUserId?: string | null;
 }
 
-async function findReviewRequester(
+export async function resolveIssueReviewRequester(
   db: Db,
   issue: ReviewPolicyIssue,
 ): Promise<IssueReviewRequester | null> {
@@ -80,7 +80,7 @@ export async function isIssueReviewVerdictInteraction(
     };
   },
 ): Promise<boolean> {
-  const requester = await findReviewRequester(db, input.issue);
+  const requester = await resolveIssueReviewRequester(db, input.issue);
   if (!requester) return false;
   if (requester.reviewInteractionId && requester.reviewInteractionId !== input.interaction.id) return false;
   // Older review transitions did not persist the interaction binding. In that
@@ -121,7 +121,7 @@ export async function assertIssueReviewVerdictActorAllowed(
     );
   }
 
-  const requester = await findReviewRequester(db, input.issue);
+  const requester = await resolveIssueReviewRequester(db, input.issue);
   if (!requester) {
     throw forbidden(
       "Review policy `not_creator` requires a different writer, but the review requester could not be determined.",

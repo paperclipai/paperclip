@@ -23,6 +23,45 @@ describe("remote HTTP endpoint guard", () => {
   });
 
   it.each([
+    "169.254.0.1",
+    "169.254.169.254",
+    "::ffff:169.254.169.254",
+    "::ffff:a9fe:a9fe",
+    "fe80::1",
+    "febf::1",
+  ])("always rejects link-local literal %s when private networking is allowed", async (address) => {
+    const url = address.includes(":") ? `http://[${address}]/mcp` : `http://${address}/mcp`;
+    await expect(assertPublicRemoteHttpEndpoint(
+      new URL(url),
+      { allowPrivateNetwork: true },
+      guardError,
+    )).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
+  });
+
+  it.each(["169.254.42.1", "fe80::1234"])(
+    "always rejects link-local DNS answer %s when private networking is allowed",
+    async (address) => {
+      await expect(assertPublicRemoteHttpEndpoint(
+        new URL("https://operator-endpoint.example/mcp"),
+        { allowPrivateNetwork: true, lookup: async () => [{ address, family: address.includes(":") ? 6 : 4 }] },
+        guardError,
+      )).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
+    },
+  );
+
+  it.each(["127.0.0.1", "10.1.2.3", "fd00::1"])(
+    "allows intended private address %s when private networking is allowed",
+    async (address) => {
+      const url = address.includes(":") ? `http://[${address}]/mcp` : `http://${address}/mcp`;
+      await expect(assertPublicRemoteHttpEndpoint(
+        new URL(url),
+        { allowPrivateNetwork: true },
+        guardError,
+      )).resolves.toBeUndefined();
+    },
+  );
+
+  it.each([
     "http://[2001::1]/mcp",
     "http://[2001:20::1]/mcp",
     "http://[2001:2f::1]/mcp",

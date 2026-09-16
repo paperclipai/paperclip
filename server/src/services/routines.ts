@@ -77,12 +77,15 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";
+const EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES = ["blocked", "cancelled"] as const;
 const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -99,6 +102,43 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Fri: 5,
   Sat: 6,
 };
+
+export function routineWebhookUrl(publicId: string): string {
+  const baseUrl = runtimePublicOrigin() ?? process.env.PAPERCLIP_API_URL?.trim();
+  if (!baseUrl) throw new Error("PAPERCLIP_API_URL is required to create a routine webhook");
+  return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
+}
+
+type ExecutionIssueTransientFailureStatus = (typeof EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES)[number];
+
+function executionIssueTransientFailureReason(status: ExecutionIssueTransientFailureStatus) {
+  return `Execution issue moved to ${status}`;
+}
+
+function executionIssueTransientFailureStatusFromPayload(payload: unknown): ExecutionIssueTransientFailureStatus | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const transientFailure = (payload as Record<string, unknown>).transientFailure;
+  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
+  const record = transientFailure as Record<string, unknown>;
+  if (record.code !== EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE) return null;
+  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find((status) => record.status === status) ?? null;
+}
+
+function executionIssueTransientFailureClearedAtFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const transientFailure = (payload as Record<string, unknown>).transientFailure;
+  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
+  const clearedAt = (transientFailure as Record<string, unknown>).clearedAt;
+  return typeof clearedAt === "string" ? clearedAt : null;
+}
+
+function legacyExecutionIssueTransientFailureStatus(
+  failureReason: string | null,
+): ExecutionIssueTransientFailureStatus | null {
+  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find(
+    (status) => failureReason === executionIssueTransientFailureReason(status),
+  ) ?? null;
+}
 
 async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
   const company = await db
@@ -2405,7 +2445,7 @@ export function routineService(
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
         secretMaterial = {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+          webhookUrl: routineWebhookUrl(publicId),
           webhookSecret: created.secretValue,
         };
       }
@@ -2588,7 +2628,7 @@ export function routineService(
       return {
         trigger: trigger as RoutineTrigger,
         secretMaterial: {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
+          webhookUrl: routineWebhookUrl(existing.publicId),
           webhookSecret: secretValue,
         },
         revision,
@@ -2668,7 +2708,7 @@ export function routineService(
             secretId: created.secret.id,
             secretMaterial: {
               triggerId: trigger.id,
-              webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+              webhookUrl: routineWebhookUrl(publicId),
               webhookSecret: created.secretValue,
             },
           });
@@ -3144,17 +3184,73 @@ export function routineService(
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+      const run = await db
+        .select({
+          id: routineRuns.id,
+          status: routineRuns.status,
+          failureReason: routineRuns.failureReason,
+          triggerPayload: routineRuns.triggerPayload,
+        })
+        .from(routineRuns)
+        .where(eq(routineRuns.id, issue.originRunId))
+        .then((rows) => rows[0] ?? null);
+      if (!run) return null;
       if (issue.status === "done") {
+        const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
+          ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
+        const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
         return finalizeRun(issue.originRunId, {
           status: "completed",
+          failureReason: null,
           completedAt: new Date(),
+          ...(transientFailureStatus
+            ? {
+              triggerPayload: {
+                ...(run.triggerPayload ?? {}),
+                transientFailure: {
+                  code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+                  status: transientFailureStatus,
+                  reason: executionIssueTransientFailureReason(transientFailureStatus),
+                  clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
+                },
+              },
+            }
+            : {}),
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
+        const failureReason = executionIssueTransientFailureReason(issue.status);
         return finalizeRun(issue.originRunId, {
           status: "failed",
-          failureReason: `Execution issue moved to ${issue.status}`,
+          failureReason,
           completedAt: new Date(),
+          triggerPayload: {
+            ...(run.triggerPayload ?? {}),
+            transientFailure: {
+              code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+              status: issue.status,
+              reason: failureReason,
+              recordedAt: new Date().toISOString(),
+            },
+          },
+        });
+      }
+      const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
+        ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
+      if (run.status === "failed" && transientFailureStatus) {
+        return finalizeRun(issue.originRunId, {
+          status: "issue_created",
+          failureReason: null,
+          completedAt: null,
+          triggerPayload: {
+            ...(run.triggerPayload ?? {}),
+            transientFailure: {
+              code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+              status: transientFailureStatus,
+              reason: executionIssueTransientFailureReason(transientFailureStatus),
+              clearedAt: new Date().toISOString(),
+            },
+          },
         });
       }
       return null;

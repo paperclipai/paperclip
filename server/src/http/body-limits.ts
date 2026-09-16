@@ -1,4 +1,6 @@
 export const DEFAULT_JSON_BODY_LIMIT = "10mb";
+export const CHAT_WEBHOOK_BODY_LIMIT = "1mb";
+export const CHAT_WEBHOOK_BODY_LIMIT_BYTES = 1024 * 1024;
 export const PORTABLE_JSON_BODY_LIMIT = "64mb";
 export const PORTABLE_JSON_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 
@@ -16,7 +18,9 @@ export const PORTABLE_JSON_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 // one would overflow the derived 4x decompression guard. 64 GiB is far beyond
 // what the in-memory import pipeline can serve anyway.
 const MAX_ZIP_UPLOAD_LIMIT_OVERRIDE_BYTES = 64 * 1024 * 1024 * 1024;
-const zipUploadLimitOverride = Math.floor(Number(process.env.PAPERCLIP_IMPORT_ZIP_MAX_BYTES));
+const zipUploadLimitOverride = Math.floor(
+  Number(process.env.PAPERCLIP_IMPORT_ZIP_MAX_BYTES),
+);
 export const PORTABLE_ZIP_UPLOAD_LIMIT_BYTES =
   Number.isFinite(zipUploadLimitOverride) && zipUploadLimitOverride >= 1
     ? Math.min(zipUploadLimitOverride, MAX_ZIP_UPLOAD_LIMIT_OVERRIDE_BYTES)

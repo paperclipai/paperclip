@@ -318,6 +318,14 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     expect(container.querySelector('[data-testid="summary-slot-card"]')).not.toBeNull();
   });
 
+  it("does not show a workspace access status card", async () => {
+    await render();
+
+    expect(container.querySelector('[data-testid="workspace-access-card"]')).toBeNull();
+    expect(container.textContent).not.toContain("Workspace is not running");
+    expect(container.textContent).not.toContain("Open workspace");
+  });
+
   it("does not mount plugin slots scoped to other entity types", async () => {
     await render();
 

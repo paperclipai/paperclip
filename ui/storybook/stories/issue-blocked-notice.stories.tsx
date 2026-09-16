@@ -1,6 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
 import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
+import {
+  resolveTaskChatLiveWork,
+  TaskChatBlockerLinks,
+  TaskChatLiveWorkLinks,
+} from "@/components/task-chat/TaskChatBlockerLinks";
 
 // Rule C (PAP-13554): when a human comment on a `blocked` issue does not reopen
 // it, the blocked notice must state why and name the unresolved blocker leaf.
@@ -96,6 +101,61 @@ export const RuleCChainNamesLeaf: Story = {
       />
     </Frame>
   ),
+};
+
+export const TaskChatCompactRows: Story = {
+  name: "Task chat · compact direct and ultimate blocker rows",
+  render: () => (
+    <Frame label="Task chat · lightweight blocker links">
+      <TaskChatBlockerLinks
+        placement="top"
+        directBlocker={blocker({
+          id: "b1",
+          identifier: "PAP-600",
+          title: "Waiting in review",
+          status: "in_review",
+        })}
+        ultimateBlocker={blocker({
+          id: "t1",
+          identifier: "PAP-777",
+          title: "Actual work",
+          status: "in_progress",
+          assigneeAgentId: "agent-2",
+        })}
+      />
+    </Frame>
+  ),
+};
+
+export const TaskChatLiveWorkRows: Story = {
+  name: "Task chat · ordered live-work rows",
+  render: () => {
+    const terminal = blocker({
+      id: "t1",
+      identifier: "PAP-603",
+      title: "Restore the live projection",
+      status: "in_progress",
+      assigneeAgentId: "agent-3",
+    });
+    const liveWork = resolveTaskChatLiveWork([
+      blocker({ id: "b1", identifier: "PAP-601", title: "Run the guarded cutover", status: "done" }),
+      blocker({
+        id: "b2",
+        identifier: "PAP-602",
+        title: "Verify the live projection",
+        status: "in_progress",
+        assigneeAgentId: "agent-2",
+        terminalBlockers: [terminal],
+      }),
+      blocker({ id: "b3", identifier: "PAP-604", title: "Complete final QA", status: "todo" }),
+    ], new Set(["b2", "t1"]), terminal);
+
+    return (
+      <Frame label="Task chat · compact ordered live-work links">
+        {liveWork ? <TaskChatLiveWorkLinks placement="top" liveWork={liveWork} /> : null}
+      </Frame>
+    );
+  },
 };
 
 export const RuleCMultipleBlockers: Story = {

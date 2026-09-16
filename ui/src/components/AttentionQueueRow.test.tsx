@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
+import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { ToastViewport } from "./ToastViewport";
 import { ToastProvider } from "../context/ToastContext";
@@ -824,6 +825,165 @@ describe("AttentionQueueRow", () => {
     const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
     expect(gallery?.textContent).toContain("1 more");
     expect(gallery?.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  // PAP-17287: the collapsed row must say who may resolve an interaction before
+  // its compact verbs are used, and a denial must keep the server's reason.
+  function interactionItem(
+    audience: AttentionItem["resolverAudience"],
+    verbs: AttentionItem["decisionVerbs"] = [
+      { id: "accept", label: "Accept", description: null },
+      { id: "reject", label: "Reject", description: null },
+    ],
+  ) {
+    return buildItem({
+      sourceKind: "issue_thread_interaction",
+      subject: {
+        kind: "interaction",
+        id: "interaction-1",
+        companyId: "c1",
+        title: "Close this confirmation?",
+        identifier: null,
+        status: "pending",
+        href: "/PAP/issues/issue-1#interaction-interaction-1",
+        metadata: { kind: "request_confirmation", issueId: "issue-1" },
+      },
+      decisionVerbs: verbs,
+      resolverAudience: audience,
+    });
+  }
+
+  const openAudience: AttentionItem["resolverAudience"] = {
+    requestedResolverPolicy: "anyone",
+    effectiveResolverPolicy: "anyone",
+    effectiveResolverPolicySource: "requested",
+    resolverPolicyProvenance: "inherited",
+    addresseeAgentId: null,
+    addresseeName: null,
+    createdByAgentId: "agent-watchdog",
+    createdByAgentName: "Watchdog",
+  };
+
+  it("states the server-derived audience before the compact decision verbs", () => {
+    render(
+      <AttentionQueueRow
+        item={interactionItem(openAudience)}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const audience = container?.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("anyone");
+    expect(audience?.getAttribute("data-audience-open")).toBe("true");
+    expect(audience?.textContent).toContain("Anyone");
+    expect(audience?.textContent).toContain("Anyone can respond");
+
+    // Reading order is the point: the audience qualifies the buttons, so it has
+    // to precede them in the DOM as well as on screen.
+    const actions = container?.querySelector('[aria-label="Decision actions"]');
+    expect(audience && actions && audience.compareDocumentPosition(actions))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("names the addressed responder on a restricted collapsed row", () => {
+    render(
+      <AttentionQueueRow
+        item={interactionItem({
+          ...openAudience,
+          addresseeAgentId: "agent-codex",
+          addresseeName: "CodexCoder",
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const audience = container?.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Only CodexCoder or the board can respond");
+    // A collapsed row spends its line on the responder, not on a badge that
+    // repeats the clause beside it.
+    expect(audience?.textContent).not.toContain("Addressed —");
+  });
+
+  // PAP-17289: the row's shell is `overflow-hidden`, so a clause that cannot
+  // wrap is cut mid-word with no ellipsis and names a responder that does not
+  // exist. jsdom does no layout, so this asserts the wrapping rule itself.
+  it("lets a long addressee name wrap instead of being cut mid-word", () => {
+    const addresseeName = "ReleaseEngineeringPlatformCoordinationServiceBot";
+    render(
+      <AttentionQueueRow
+        item={interactionItem({
+          ...openAudience,
+          addresseeAgentId: "agent-release",
+          addresseeName,
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const audience = container?.querySelector('[data-testid="interaction-audience"]');
+    const summary = audience?.querySelector('[data-testid="interaction-audience-summary"]');
+    expect(summary?.textContent).toBe(`Only ${addresseeName} or the board can respond`);
+    expect(summary?.parentElement?.className).toContain("break-words");
+  });
+
+  it("renders no audience line when the feed carries no resolver metadata", () => {
+    render(
+      <AttentionQueueRow
+        item={interactionItem(null)}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    // Never guess a policy client-side: silence beats a wrong audience.
+    expect(container?.querySelector('[data-testid="interaction-audience"]')).toBeNull();
+  });
+
+  it("keeps the server denial reason and names the responder when a compact accept is refused", async () => {
+    vi.mocked(issuesApi.acceptInteraction).mockRejectedValue(
+      new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      }),
+    );
+    render(
+      <AttentionQueueRow
+        item={interactionItem({
+          ...openAudience,
+          requestedResolverPolicy: "human_only",
+          effectiveResolverPolicy: "human_only",
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const accept = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Accept",
+    );
+    act(() => accept?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const feedback = document.body.textContent ?? "";
+    expect(feedback).toContain("This issue-thread interaction is human-only.");
+    expect(feedback).toContain("Only the board can respond.");
+    expect(feedback).not.toMatch(/try again/i);
   });
 
   it("does not surface training state or actions for decisions", () => {

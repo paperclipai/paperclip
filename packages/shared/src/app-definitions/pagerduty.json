@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "slug": "pagerduty",
+  "name": "PagerDuty",
+  "description": "Connect PagerDuty's provider-hosted MCP server.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/pagerduty.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.pagerduty.com/*"
+  ],
+  "docsUrl": "https://support.pagerduty.com/main/docs/pagerduty-mcp-server",
+  "methods": [
+    {
+      "key": "mcp-api-key-us",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.pagerduty.com/mcp"
+      },
+      "guidanceMd": "Use a customer-created PagerDuty key. A PagerDuty API token; choose the regional endpoint that hosts the account.",
+      "riskTier": "S4",
+      "label": "US service region",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "PagerDuty API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your PagerDuty user API token",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Token token="
+      },
+      "consoleLinks": {
+        "keys": "https://support.pagerduty.com/main/docs/pagerduty-mcp-server",
+        "docs": "https://support.pagerduty.com/main/docs/pagerduty-mcp-server"
+      },
+      "warnings": [
+        "A PagerDuty API token; choose the regional endpoint that hosts the account."
+      ]
+    },
+    {
+      "key": "mcp-api-key-eu",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.eu.pagerduty.com/mcp"
+      },
+      "guidanceMd": "Use a customer-created PagerDuty key. A PagerDuty API token; choose the regional endpoint that hosts the account.",
+      "riskTier": "S4",
+      "label": "EU service region",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "PagerDuty API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your PagerDuty user API token",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Token token="
+      },
+      "consoleLinks": {
+        "keys": "https://support.pagerduty.com/main/docs/pagerduty-mcp-server",
+        "docs": "https://support.pagerduty.com/main/docs/pagerduty-mcp-server"
+      },
+      "warnings": [
+        "A PagerDuty API token; choose the regional endpoint that hosts the account."
+      ]
+    }
+  ]
+}

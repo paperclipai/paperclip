@@ -1,0 +1,111 @@
+{
+  "schema": "paperclip.runner.live-console.conformance.v1",
+  "codexVersion": "0.132.0",
+  "runtimeRequests": [
+    {
+      "id": "command-accept-session",
+      "method": "item/commandExecution/requestApproval",
+      "requestKind": "command_approval",
+      "resolution": { "action": "accept_for_session" },
+      "expectedResponse": { "decision": "acceptForSession" }
+    },
+    {
+      "id": "file-reject",
+      "method": "item/fileChange/requestApproval",
+      "requestKind": "file_approval",
+      "resolution": { "action": "decline" },
+      "expectedResponse": { "decision": "decline" }
+    },
+    {
+      "id": "permission-accept-turn",
+      "method": "item/permissions/requestApproval",
+      "requestKind": "permission_approval",
+      "resolution": { "action": "accept" },
+      "expectedResponse": { "permissions": {}, "scope": "turn" }
+    },
+    {
+      "id": "user-input-submit",
+      "method": "item/tool/requestUserInput",
+      "requestKind": "user_input",
+      "resolution": {
+        "action": "submit",
+        "answers": { "preferred_name": { "answers": ["Ada"] } }
+      },
+      "expectedResponse": {
+        "answers": { "preferred_name": { "answers": ["Ada"] } }
+      }
+    },
+    {
+      "id": "elicitation-cancel",
+      "method": "mcpServer/elicitation/request",
+      "requestKind": "elicitation",
+      "resolution": { "action": "cancel" },
+      "expectedResponse": { "action": "cancel", "content": null, "_meta": null }
+    }
+  ],
+  "goals": [
+    {
+      "action": "get",
+      "method": "thread/goal/get",
+      "params": {}
+    },
+    {
+      "action": "set",
+      "method": "thread/goal/set",
+      "params": { "objective": "Ship the Live console tracer", "status": "active", "tokenBudget": 4096 }
+    },
+    {
+      "action": "pause",
+      "method": "thread/goal/set",
+      "params": { "status": "paused" }
+    },
+    {
+      "action": "resume",
+      "method": "thread/goal/set",
+      "params": { "status": "active" }
+    },
+    {
+      "action": "clear",
+      "method": "thread/goal/clear",
+      "params": {}
+    }
+  ],
+  "lineage": {
+    "rootThreadId": "thread-root",
+    "childThread": {
+      "id": "thread-child",
+      "sessionId": "provider-session-1",
+      "source": {
+        "subAgent": {
+          "thread_spawn": {
+            "parent_thread_id": "thread-root",
+            "depth": 1,
+            "agent_path": ["researcher"],
+            "agent_nickname": "Scout",
+            "agent_role": "researcher"
+          }
+        }
+      },
+      "agentNickname": "Scout",
+      "agentRole": "researcher"
+    }
+  },
+  "controls": {
+    "sameTurnSteer": { "turnId": "turn-1", "expected": "acknowledged" },
+    "staleTurnSteer": { "turnId": "turn-stale", "expected": "stale_turn" },
+    "interruptBeforeStart": { "expected": "queued" },
+    "interruptAfterTerminal": { "expected": "already_terminal" }
+  },
+  "reconnect": {
+    "runId": "run-liveConsole",
+    "normalizedSessionId": "normalized-liveConsole",
+    "driverSessionId": "thread-root",
+    "providerSessionId": "provider-session-1",
+    "lastSourceSequence": 17
+  },
+  "redactionMarkers": [
+    "Bearer browser-secret",
+    "OPENAI_API_KEY=provider-secret",
+    "https://user:password@example.test/path?token=query-secret"
+  ]
+}
