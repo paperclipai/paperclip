@@ -16,7 +16,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { applyCompanyPrefix } from "@/lib/company-routes";
+import { applyCompanyPrefix, normalizeCompanyPrefix } from "@/lib/company-routes";
 import { PLUGIN_LAUNCHER_BOUNDS } from "@paperclipai/shared";
 import type {
   PluginLauncherBounds,
@@ -173,7 +173,7 @@ function resolveLauncherNavigationTarget(
   let rewritten = target;
   if (launcher && launcher.pluginKey && launcher.pluginId) {
     rewritten = rewritten.replace(
-      new RegExp(`^/plugins/${launcher.pluginKey}(?=/|$)`),
+      new RegExp(`^/plugins/${launcher.pluginKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=/|$)`),
       `/plugins/${launcher.pluginId}`,
     );
   }
@@ -184,8 +184,11 @@ function resolveLauncherNavigationTarget(
     // mis-classifies `/plugins/<id>` as already-prefixed, so we force the
     // company prefix for plugin paths here when the target isn't already
     // company-prefixed.
-    if (companyPrefix && /^\/plugins(\/|$)/.test(rewritten) && !rewritten.startsWith(`/${companyPrefix}/`)) {
-      return `/${companyPrefix}${rewritten}`;
+    if (companyPrefix && /^\/plugins(\/|$)/.test(rewritten)) {
+      const prefix = normalizeCompanyPrefix(companyPrefix);
+      if (!rewritten.startsWith(`/${prefix}/`)) {
+        return `/${prefix}${rewritten}`;
+      }
     }
     return applyCompanyPrefix(rewritten, companyPrefix);
   }
