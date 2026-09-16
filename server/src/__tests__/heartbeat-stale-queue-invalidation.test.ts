@@ -1550,6 +1550,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       },
     });
 
+    // The pre-locked issue fixture above makes claimQueuedRun's failed
+    // compare-and-set re-enter startNextQueuedRunForAgent for this agent, so
+    // this exercises agent-start-lock.ts's 30s stale-lock fallback for real
+    // (an expected "agent start lock timed out" warning, not a failure).
     await heartbeat.resumeQueuedRuns();
 
     await waitForCondition(async () => {
@@ -1559,7 +1563,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
       return run?.status === "cancelled";
-    });
+    }, 35_000);
 
     const [run, wakeup, issue] = await Promise.all([
       db
@@ -1591,6 +1595,105 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(issue?.executionRunId).toBe(lockOwnerRunId);
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
+
+  it("cancels an ordinary queued run that loses the lazy-locking race instead of executing a duplicate (SPC-41548)", async () => {
+    // maxConcurrentRuns > 1 so that admission control lets this run be
+    // dispatched alongside the pre-existing "running" lock owner below —
+    // isolating the lazy-locking compare-and-set as the thing under test,
+    // separate from the per-agent concurrency gate.
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 2 });
+    const issueId = randomUUID();
+    // Represents another run of the same agent that already holds the
+    // issue's execution lock. Modeled as a terminal (succeeded) row —
+    // issues.execution_run_id has a FK to heartbeat_runs, so the lock needs a
+    // legal referent, but resumeQueuedRuns() must not try to actively
+    // reconcile it (a "running" or due "scheduled_retry" row would be picked
+    // up by unrelated dispatch/reconciliation sweeps this test isn't about).
+    const lockOwnerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: lockOwnerRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      startedAt: new Date("2026-09-16T17:12:40.197Z"),
+      finishedAt: new Date("2026-09-16T17:20:00.000Z"),
+      contextSnapshot: { issueId, wakeReason: "issue_commented" },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue already locked by another run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: lockOwnerRunId,
+      executionAgentNameKey: "claudecoder",
+      executionLockedAt: new Date("2026-09-16T17:12:40.197Z"),
+    });
+
+    // This queued run is an ordinary redelivered wake — not a max-turn
+    // continuation and not a scheduled retry — so evaluateQueuedRunStaleness's
+    // issue_execution_lock_changed check (which only special-cases
+    // MAX_TURN_CONTINUATION_RETRY_REASON) does not catch it before claim.
+    // This is what actually happened in SPC-41528: two ordinary runs of the
+    // same agent both passed staleness checks and both reached the
+    // lazy-locking stamp for the same issue.
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_commented",
+    });
+
+    // The pre-locked issue fixture above makes claimQueuedRun's failed
+    // compare-and-set re-enter startNextQueuedRunForAgent for this agent, so
+    // this exercises agent-start-lock.ts's 30s stale-lock fallback for real
+    // (an expected "agent start lock timed out" warning, not a failure).
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    }, 35_000);
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    // Before the fix: claimQueuedRun() unconditionally returned `claimed`
+    // even though the conditional executionRunId update matched zero rows,
+    // so this run went on to execute a full duplicate of the lock owner's
+    // work. After the fix: the failed compare-and-set is checked and the
+    // run is cancelled instead of running.
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_execution_lock_lost");
+    expect(wakeup?.status).toBe("cancelled");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+    // The lock is untouched — still pointing at the original owner, not
+    // overwritten and not cleared by the losing run.
+    expect(issue?.executionRunId).toBe(lockOwnerRunId);
+  }, 45_000);
 
   it.each([
     ["accepted", "connection_intent"],
