@@ -131,8 +131,8 @@ export async function regenerateRunnerDashboard(input: {
       return {
         result,
         valid:
-          publishedResult.evidenceValid ??
-          (result.status === "passed" && result.cleanup === "passed"),
+          result.status === "passed" && result.cleanup === "passed" &&
+          publishedResult.evidenceValid !== false,
         errors: publishedResult.evidenceErrors ?? [],
         evidenceBaseHref,
         evidenceFiles,

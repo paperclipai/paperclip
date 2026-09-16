@@ -101,6 +101,19 @@ describe("runner E2E campaign history", () => {
     expect(dashboard).not.toContain("NaN");
   });
 
+  it("does not turn a clean-evidence behavior failure into a pass when regenerating", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-failed-evidence-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0];
+    const failedResult = { ...result(execution, "failed"), failureClass: "candidate_failure" as const, error: "Behavior check failed", evidenceValid: true, evidenceErrors: [] };
+    const campaign = buildRunnerCampaign({ campaignId: "failed", generatedAt: failedResult.finishedAt, expected: [execution.id], results: [failedResult] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify({ ...campaign, results: [failedResult] }));
+    await regenerateRunnerDashboard({ bundle: root });
+    const page = await readFile(path.join(root, "index.html"), "utf8");
+    expect(page).toContain('class="case case-failed"');
+    expect(page).not.toContain('class="case case-passed"');
+  });
+
   it("records the resolved paid target instead of the trusted workflow checkout", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "target-sha");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/target");
