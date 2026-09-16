@@ -631,11 +631,16 @@ export {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  approvalSideEffectSchema,
+  approvalRefundDetailSchema,
+  approvalReplyDetailSchema,
+  approvalDetailV2Schema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type ApprovalDetailV2Contract,
 } from "./approval.js";
 
 export {

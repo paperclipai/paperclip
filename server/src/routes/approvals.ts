@@ -4,6 +4,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
+  hydrateApprovalDetailV2,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -216,7 +217,16 @@ export function approvalRoutes(
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
-    res.json(redactApprovalPayload(approval));
+    const redacted = redactApprovalPayload(approval);
+    if (req.query.v === "2") {
+      // Hydrate off the redacted approval so no unredacted material can ride
+      // into the curated summary/side-effects or the opt-in raw payload.
+      const includePayload =
+        req.query.includePayload === "1" || req.query.includePayload === "true";
+      res.json(hydrateApprovalDetailV2(redacted, { includePayload }));
+      return;
+    }
+    res.json(redacted);
   });
 
   router.post("/companies/:companyId/approvals", validate(createApprovalSchema), async (req, res) => {
