@@ -277,13 +277,16 @@ describe("ACPX runtime host", () => {
     };
     let skillsHome = "";
     let assigned = true;
+    let expectedReference = "ASSIGNED_SKILL_MARKER";
     const dependencies = fixture.dependencies({
       openRuntime: async (options) => {
         skillsHome = join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "skills");
         expect(await readdir(skillsHome)).toEqual(assigned ? ["assigned"] : []);
         if (assigned) {
           const reference = join(skillsHome, "assigned", "references", "answer.txt");
-          expect(await readFile(reference, "utf8")).toBe("ASSIGNED_SKILL_MARKER");
+          expect(await readFile(reference, "utf8")).toBe(expectedReference);
+          expect(await readFile(join(skillsHome, "assigned", "SKILL.md"), "utf8"))
+            .toBe(await readFile(join(skillRoot, "SKILL.md"), "utf8"));
           expect((await stat(reference)).mode & 0o222).toBe(0);
         }
         return runtimePort({
@@ -305,6 +308,10 @@ describe("ACPX runtime host", () => {
           dependencies,
         );
         await host.close({ reason: "reopen test" });
+        // A changed source must replace the prior materialized revision on resume.
+        expectedReference = "UPDATED_ASSIGNED_SKILL_MARKER";
+        await writeFile(join(skillRoot, "references", "answer.txt"), expectedReference);
+        await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Updated instructions.\n---\nRead references/answer.txt before responding.");
       }
       // No stale assignment survives a later launch without runtime context.
       assigned = false;

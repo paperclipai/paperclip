@@ -115,7 +115,7 @@ export const requestHumanInputAction = {
           },
           "payload": {
             "type": "object",
-            "description": "Kind-specific interaction data. For interactionKind='questions', use exactly {version:1, questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]}; option keys are id/label, not value, and question choice cardinality is selectionMode, not type. For confirmation, payload may be {}. Keep all ids stable across retries.",
+            "description": "Kind-specific interaction data. For interactionKind='questions', use version:1 and questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]. Choice questions need at least two distinct meaningful options. For an open-ended text answer, ALSO include questionSet:{schema:'paperclip.question_set.v1',questions:[{id,prompt,answerMode:'text',required?}]} with no options or customAnswer in its text questions. Keep matching IDs/prompts in both arrays; the required compatibility questions entry uses selectionMode:'single' and options:[{id:'describe',label:'Your answer',freeText:true}]. Without questionSet this incorrectly renders as a one-option choice. Never use a lone Other or describe option as the presentation. Option keys are id/label, not value. For confirmation, payload may be {}. Keep IDs stable across retries.",
             "additionalProperties": true
           },
           "targetRevisionId": {
@@ -238,7 +238,7 @@ export const requestHumanInputAction = {
             "minLength": 1
           },
           "payload": {
-            "description": "Kind-specific interaction data. Questions use {version:1, questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]}; do not use type:'single_choice' or option.value."
+            "description": "Kind-specific interaction data. For interactionKind='questions', use version:1 and questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]. Choice questions need at least two distinct meaningful options. For an open-ended text answer, ALSO include questionSet:{schema:'paperclip.question_set.v1',questions:[{id,prompt,answerMode:'text',required?}]} with no options or customAnswer in its text questions. Keep matching IDs/prompts in both arrays; the required compatibility questions entry uses selectionMode:'single' and options:[{id:'describe',label:'Your answer',freeText:true}]. Without questionSet this incorrectly renders as a one-option choice. Never use a lone Other or describe option as the presentation. Option keys are id/label, not value. For confirmation, payload may be {}. Keep IDs stable across retries."
           },
           "targetRevisionId": {
             "oneOf": [

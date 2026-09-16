@@ -110,6 +110,9 @@ describe("native execution input external-chat framing", () => {
       );
       expect(input.task.prompt).toContain("request_human_input");
       expect(input.task.prompt).toContain('interactionKind="questions"');
+      expect(input.task.prompt).toContain("at least two distinct meaningful options");
+      expect(input.task.prompt).toContain("payload.questionSet");
+      expect(input.task.prompt).toContain('answerMode="text"');
       expect(input.task.prompt).toContain("one question at a time");
       expect(input.task.prompt).toContain("Never fabricate answer URLs");
       expect(input.task.prompt.indexOf("Choose a color: Amber")).toBeLessThan(
@@ -468,6 +471,9 @@ describe("native execution input external-chat framing", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     });
     expect(input.task.prompt).toContain('interactionKind="questions"');
+      expect(input.task.prompt).toContain("at least two distinct meaningful options");
+      expect(input.task.prompt).toContain("payload.questionSet");
+      expect(input.task.prompt).toContain('answerMode="text"');
     expect(input.task.prompt).toContain('continuationPolicy="wake_assignee"');
     expect(input.task.prompt).toContain("Create the actual question before yielding");
     expect(input.task.prompt).toContain("Wait for its real answer");

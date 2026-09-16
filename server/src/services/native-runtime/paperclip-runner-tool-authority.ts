@@ -154,7 +154,7 @@ export class PaperclipRunnerToolAuthority {
           descriptor.operationId === "register_deliverable"
             ? "Prepare one verified workspace file for Paperclip's final task or external-chat response. This records the attachment, work product, and explicit same-run selection; it does not confirm provider delivery."
             : descriptor.operationId === "request_human_input"
-              ? "Create a typed, durable human-input interaction on the current Paperclip task bound to this run. For structured questions and choices, use interactionKind 'questions' with payload.questions as described by the payload schema. Paperclip renders the interaction in its UI and, for connected chats, uses supported provider question controls or a safe fallback. Normal task permissions and review gates still apply."
+              ? "Create a typed, durable human-input interaction on the current Paperclip task bound to this run. For structured questions and choices, use interactionKind 'questions' with payload.questions for choices (at least two distinct meaningful options), or include payload.questionSet for open-ended text fields as described by the payload schema. Paperclip renders the interaction in its UI and, for connected chats, uses supported provider question controls or a safe fallback. Normal task permissions and review gates still apply."
               : descriptor.description,
         inputSchema:
           descriptor.operationId === "register_deliverable"
