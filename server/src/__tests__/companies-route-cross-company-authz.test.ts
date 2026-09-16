@@ -18,6 +18,7 @@ const mockCompanyService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -94,10 +95,8 @@ function createCompany(id: string) {
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
     feedbackDataSharingEnabled: false,
-    brandColor: "#123456",
     logoAssetId: null,
     logoUrl: null,
-    attachmentMaxBytes: 25_000_000,
     createdAt: now,
     updatedAt: now,
   };
@@ -171,6 +170,7 @@ function resetMockDefaults() {
     if (id === ceoAgentId) return { id, companyId: companyAId, role: "ceo" };
     return null;
   });
+  mockAgentService.list.mockResolvedValue([]);
   mockCompanyPortabilityService.exportBundle.mockResolvedValue(exportResult());
   mockCompanyPortabilityService.previewExport.mockResolvedValue(exportPreviewResult());
   mockCompanyPortabilityService.previewImport.mockResolvedValue({ ok: true });
@@ -224,6 +224,72 @@ describe.sequential("company route cross-company authorization", () => {
     resetMockDefaults();
   });
 
+  it.each(["session", "board_key", "cloud_tenant"])(
+    "limits navigable companies to memberships for a %s instance admin",
+    async (source) => {
+      mockCompanyService.list.mockResolvedValue([createCompany(companyBId), createCompany(companyAId)]);
+      const app = await createApp(boardActor({
+        userId: "owner-a",
+        source,
+        isInstanceAdmin: true,
+        companyIds: [companyAId],
+      }));
+
+      const navigation = await request(app).get("/api/companies?scope=accessible").expect(200);
+      expect(navigation.body.map((company: { id: string }) => company.id)).toEqual([companyAId]);
+      await request(app).get(`/api/companies/${companyAId}`).expect(200);
+      await request(app).get(`/api/companies/${companyBId}`).expect(403);
+
+      // The existing directory remains available for instance administration.
+      const directory = await request(app).get("/api/companies").expect(200);
+      expect(directory.body.map((company: { id: string }) => company.id)).toEqual([companyBId, companyAId]);
+    },
+  );
+
+  it.each([false, true])("returns no navigable companies without memberships (admin=%s)", async (isInstanceAdmin) => {
+    mockCompanyService.list.mockResolvedValue([createCompany(companyAId)]);
+    const app = await createApp(boardActor({ userId: "outsider", isInstanceAdmin }));
+    const res = await request(app).get("/api/companies?scope=accessible").expect(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it.each(["scope=accessible&scope=accessible", "scope=accessible&scope=all", "scope=all", "scope="])(
+    "rejects malformed list scope without loading the directory: %s",
+    async (query) => {
+      const app = await createApp(boardActor({ userId: "admin", isInstanceAdmin: true }));
+      await request(app).get(`/api/companies?${query}`).expect(400);
+      expect(mockCompanyService.list).not.toHaveBeenCalled();
+    },
+  );
+
+  it("includes additional companies where a cloud user has membership", async () => {
+    mockCompanyService.list.mockResolvedValue([createCompany(companyAId), createCompany(companyBId)]);
+    const app = await createApp(boardActor({
+      userId: "owner-of-both",
+      source: "cloud_tenant",
+      companyIds: [companyAId, companyBId],
+    }));
+    const res = await request(app).get("/api/companies?scope=accessible").expect(200);
+    expect(res.body.map((company: { id: string }) => company.id)).toEqual([companyAId, companyBId]);
+    await request(app).get(`/api/companies/${companyBId}`).expect(200);
+  });
+
+  it("keeps all companies navigable for the local trusted board", async () => {
+    mockCompanyService.list.mockResolvedValue([createCompany(companyAId), createCompany(companyBId)]);
+    const app = await createApp(boardActor({ userId: "local-board", source: "local_implicit" }));
+    const res = await request(app).get("/api/companies?scope=accessible").expect(200);
+    expect(res.body.map((company: { id: string }) => company.id)).toEqual([companyAId, companyBId]);
+  });
+
+  it.each([{ type: "none", source: "none" }, companyACeoActor()])(
+    "rejects navigation list requests from a $type actor",
+    async (actor) => {
+      const app = await createApp(actor);
+      await request(app).get("/api/companies?scope=accessible").expect(403);
+      expect(mockCompanyService.list).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     {
       label: "GET /api/companies/:companyId",
@@ -235,7 +301,7 @@ describe.sequential("company route cross-company authorization", () => {
     },
     {
       label: "PATCH /api/companies/:companyId/branding",
-      request: (app: express.Express) => request(app).patch(`/api/companies/${companyBId}/branding`).send({ brandColor: "#654321" }),
+      request: (app: express.Express) => request(app).patch(`/api/companies/${companyBId}/branding`).send({ description: "Nope" }),
     },
     {
       label: "POST /api/companies/:companyId/archive",
@@ -279,8 +345,8 @@ describe.sequential("company route cross-company authorization", () => {
     const app = await createApp(companyACeoActor());
 
     await request(app).get(`/api/companies/${companyAId}`).expect(200);
-    await request(app).patch(`/api/companies/${companyAId}`).send({ brandColor: "#abcdef" }).expect(200);
-    await request(app).patch(`/api/companies/${companyAId}/branding`).send({ brandColor: "#abcdef" }).expect(200);
+    await request(app).patch(`/api/companies/${companyAId}`).send({ description: "Branding" }).expect(200);
+    await request(app).patch(`/api/companies/${companyAId}/branding`).send({ description: "Branding" }).expect(200);
     await request(app).post(`/api/companies/${companyAId}/export`).send(exportRequest).expect(200);
     await request(app).post(`/api/companies/${companyAId}/exports/preview`).send(exportRequest).expect(200);
     await request(app).post(`/api/companies/${companyAId}/imports/preview`).send(importRequest(companyAId)).expect(200);
@@ -322,7 +388,7 @@ describe.sequential("company route cross-company authorization", () => {
       memberships: [{ companyId: companyBId, membershipRole: "member", status: "active" }],
     }));
     await request(memberApp).patch(`/api/companies/${companyBId}`).send({ description: "Updated" }).expect(200);
-    await request(memberApp).patch(`/api/companies/${companyBId}/branding`).send({ brandColor: "#abcdef" }).expect(200);
+    await request(memberApp).patch(`/api/companies/${companyBId}/branding`).send({ description: "Branding" }).expect(200);
     await request(memberApp).post(`/api/companies/${companyBId}/archive`).send({}).expect(200);
     await request(memberApp).delete(`/api/companies/${companyBId}`).expect(200);
     await request(memberApp).post(`/api/companies/${companyBId}/export`).send(exportRequest).expect(200);

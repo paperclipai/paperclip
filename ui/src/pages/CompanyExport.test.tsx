@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CompanyExport } from "./CompanyExport";
+import { CompanyExport, resolveExportPreviewImageSrc } from "./CompanyExport";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   exportPreview: vi.fn(),
@@ -238,11 +238,85 @@ describe("CompanyExport", () => {
     await flushReact();
   }
 
-  it("selects every file by default and requests them all on download", async () => {
+  it("loads the no-task export automatically without an interstitial", async () => {
+    await renderPage();
+
+    expect(container.textContent).not.toContain("Prepare export preview");
+    expect(mockAuthApi.getSession).toHaveBeenCalledTimes(1);
+    expect(mockAgentsApi.list).toHaveBeenCalledWith("company-1");
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1");
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(1);
+    expect(mockCompaniesApi.exportPreview.mock.calls[0]?.[1]).toMatchObject({
+      include: { company: true, agents: true, projects: true, issues: false, skills: true },
+    });
+    expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
+  });
+
+  it("shows a retryable error instead of a false loading state", async () => {
+    mockCompaniesApi.exportPreview
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(buildExportPreviewResult());
+
+    await renderPage();
+
+    expect(container.textContent).toContain("Export preview failed");
+    expect(container.textContent).toContain("Failed to fetch");
+    expect(container.textContent).not.toContain("Loading export data");
+
+    const retry = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Retry preview"),
+    );
+    expect(retry).toBeDefined();
+    await clickElement(retry!);
+
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Paperclip export");
+  });
+
+  it("starts the preview without waiting for sidebar-order dependencies", async () => {
+    let resolveSession!: (value: { user: { id: string } }) => void;
+    let resolveAgents!: (value: never[]) => void;
+    let resolveProjects!: (value: never[]) => void;
+    mockAuthApi.getSession.mockReturnValue(new Promise((resolve) => { resolveSession = resolve; }));
+    mockAgentsApi.list.mockReturnValue(new Promise((resolve) => { resolveAgents = resolve; }));
+    mockProjectsApi.list.mockReturnValue(new Promise((resolve) => { resolveProjects = resolve; }));
+
+    await renderPage();
+
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Paperclip export");
+
+    await act(async () => {
+      resolveSession({ user: { id: "user-1" } });
+      resolveAgents([]);
+      resolveProjects([]);
+    });
+  });
+
+  it("renders the generated org chart through the independent SVG endpoint", () => {
+    expect(resolveExportPreviewImageSrc({
+      src: "images/org-chart.png",
+      selectedFile: "README.md",
+      allFiles: {},
+      orgChartPreviewUrl: "/api/companies/company-1/org.svg",
+    })).toBe("/api/companies/company-1/org.svg");
+  });
+
+  it("keeps task history opt-in, then requests all selected files on download", async () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
 
+    expect(mockCompaniesApi.exportPreview.mock.calls[0]?.[1]).toMatchObject({
+      include: { issues: false, skills: true },
+    });
+    expect(container.textContent).toContain("Exporting 3 of 6 files");
+
+    await clickElement(categoryInput("tasks"));
+    await clickElement(categoryInput("routines"));
+    await clickElement(categoryInput("attachments"));
+
+    expect(mockCompaniesApi.exportPreview.mock.calls.some(([, request]) => request.include.issues === true)).toBe(true);
     expect(container.textContent).toContain("Exporting 6 of 6 files");
     // The tree is a pure browser now — no per-file checkboxes.
     expect(container.querySelector('[role="tree"] input[type="checkbox"]')).toBeNull();
@@ -261,10 +335,91 @@ describe("CompanyExport", () => {
     ]);
   });
 
+  it("keeps controls mounted and aborts a slow task refetch when Tasks is unticked", async () => {
+    let requestCount = 0;
+    let slowRequestSignal: AbortSignal | undefined;
+    mockCompaniesApi.exportPreview.mockImplementation((_companyId, _request, options) => {
+      requestCount += 1;
+      if (requestCount !== 2) return Promise.resolve(buildRichExportPreviewResult());
+      slowRequestSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        });
+      });
+    });
+
+    await renderPage();
+    await clickElement(categoryInput("tasks"));
+
+    expect(container.textContent).toContain("Updating export preview");
+    expect(categoryInput("tasks").checked).toBe(true);
+    expect(container.querySelector('[role="tree"]')).not.toBeNull();
+    expect(exportButton()).toBeDefined();
+
+    await clickElement(categoryInput("tasks"));
+
+    expect(slowRequestSignal?.aborted).toBe(true);
+    expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(3);
+    expect(mockCompaniesApi.exportPreview.mock.calls[2]?.[1]).toMatchObject({
+      include: { issues: false },
+    });
+    expect(categoryInput("tasks").checked).toBe(false);
+    expect(container.textContent).not.toContain("Updating export preview");
+  });
+
+  it("lets the user cancel a slow refetch without losing the export surface", async () => {
+    let requestCount = 0;
+    let slowRequestSignal: AbortSignal | undefined;
+    mockCompaniesApi.exportPreview.mockImplementation((_companyId, _request, options) => {
+      requestCount += 1;
+      if (requestCount === 1) return Promise.resolve(buildRichExportPreviewResult());
+      slowRequestSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        });
+      });
+    });
+
+    await renderPage();
+    await clickElement(categoryInput("tasks"));
+
+    const cancel = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Cancel update"),
+    );
+    expect(cancel).toBeDefined();
+    await clickElement(cancel!);
+
+    expect(slowRequestSignal?.aborted).toBe(true);
+    expect(container.textContent).toContain("Preview update cancelled");
+    expect(categoryInput("tasks")).toBeDefined();
+    expect(container.querySelector('[role="tree"]')).not.toBeNull();
+    expect(exportButton()).toBeDefined();
+  });
+
+  it("uses the Skills category for preview and bundle generation", async () => {
+    mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
+
+    await renderPage();
+    await clickElement(categoryInput("skills"));
+
+    expect(mockCompaniesApi.exportPreview.mock.calls.at(-1)?.[1]).toMatchObject({
+      include: { skills: false },
+    });
+    await clickElement(exportButton());
+    expect(mockCompaniesApi.exportBundle.mock.calls[0]?.[1]).toMatchObject({
+      include: { skills: false },
+    });
+  });
+
   it("toggling Tasks off drops one-off task files and their blobs but keeps routines", async () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await clickElement(categoryInput("tasks"));
+    await clickElement(categoryInput("routines"));
+    await clickElement(categoryInput("attachments"));
     await clickElement(categoryInput("tasks"));
 
     expect(container.textContent).toContain("Exporting 4 of 6 files");
@@ -290,8 +445,6 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
-    await clickElement(categoryInput("tasks"));
-    await clickElement(categoryInput("routines"));
 
     const attachments = categoryInput("attachments");
     expect(attachments.disabled).toBe(true);
@@ -304,6 +457,8 @@ describe("CompanyExport", () => {
     mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
 
     await renderPage();
+    await clickElement(categoryInput("tasks"));
+    await clickElement(categoryInput("attachments"));
 
     const sizeText = () =>
       container.textContent?.match(/Exporting [\d,]+ of [\d,]+ files \(~([\d.]+ [KMGT]?B)\)/)?.[1] ?? null;
@@ -313,7 +468,7 @@ describe("CompanyExport", () => {
 
     await clickElement(categoryInput("tasks"));
 
-    expect(container.textContent).toContain("Exporting 4 of 6 files");
+    expect(container.textContent).toContain("Exporting 3 of 6 files");
     const toggledSize = sizeText();
     expect(toggledSize).not.toBeNull();
     // Dropping the one-off task and its blob shrinks the estimated zip.

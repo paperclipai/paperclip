@@ -258,13 +258,14 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
-  it("resolves sandbox targets for every remote-managed adapter, including grok_local", async () => {
+  it("resolves sandbox targets for every remote-managed adapter, including grok_local and kimi_local", async () => {
     for (const adapterType of [
       "claude_local",
       "codex_local",
       "cursor",
       "gemini_local",
       "grok_local",
+      "kimi_local",
       "opencode_local",
       "pi_local",
     ]) {
@@ -340,6 +341,42 @@ describe("resolveEnvironmentExecutionTarget", () => {
       db: {} as never,
       companyId: "company-1",
       adapterType: "grok_local",
+      environment: {
+        id: "env-ssh-1",
+        driver: "ssh",
+        config: {},
+      },
+      leaseId: "lease-ssh-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/srv/paperclip",
+    });
+  });
+
+  it("resolves SSH execution targets for kimi_local", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "paperclip",
+        remoteWorkspacePath: "/srv/paperclip",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "[ssh.example.test]:22 ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "kimi_local",
       environment: {
         id: "env-ssh-1",
         driver: "ssh",

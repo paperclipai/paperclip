@@ -68,6 +68,31 @@ describe("isSuppressedThreadInteraction", () => {
     ).toBe(true);
   });
 
+  it("keeps superseded secret proposals as terminal audit receipts", () => {
+    expect(
+      isSuppressedThreadInteraction(
+        confirmation({
+          status: "expired",
+          payload: {
+            version: 1,
+            prompt: "Approve this secret binding?",
+            secretProposal: {
+              version: 1,
+              proposalId: "proposal-1",
+              sourceSecretLabel: "OpenAI API key",
+              configPath: "access.evals_openai_api_key",
+              targetAgentId: "agent-2",
+              targetAgentName: "EvalsEngineer",
+              justification: "The runner needs this binding.",
+              expiresAt: "2026-05-04T15:02:00.000Z",
+            },
+          },
+          result: result("superseded_by_newer_request"),
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("keeps accepted, rejected, and still-pending confirmations", () => {
     expect(isSuppressedThreadInteraction(confirmation())).toBe(false);
     expect(
@@ -102,7 +127,7 @@ describe("interactionThreadAnchorMs", () => {
     expect(interactionThreadAnchorMs(confirmation(), CREATED_MS)).toBe(CREATED_MS);
   });
 
-  it("re-anchors a resolved card to its resolution time", () => {
+  it("places a resolved confirmation at the decision time", () => {
     const resolved = confirmation({
       status: "accepted",
       result: result("accepted"),
@@ -111,7 +136,29 @@ describe("interactionThreadAnchorMs", () => {
     expect(interactionThreadAnchorMs(resolved, CREATED_MS)).toBe(RESOLVED_MS);
   });
 
-  it("never drags a resolved card above its own request slot", () => {
+  it("keeps an answered question card where the question was originally asked", () => {
+    const answeredQuestion = confirmation({
+      kind: "ask_user_questions",
+      status: "answered",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "environment",
+          prompt: "Which environment?",
+          selectionMode: "single",
+          options: [{ id: "production", label: "Production" }],
+        }],
+      },
+      result: {
+        version: 1,
+        answers: [{ questionId: "environment", optionIds: ["production"] }],
+      },
+      resolvedAt: new Date(RESOLVED_MS),
+    } as never);
+    expect(interactionThreadAnchorMs(answeredQuestion, CREATED_MS)).toBe(CREATED_MS);
+  });
+
+  it("never drags a resolved confirmation above its own request slot", () => {
     // Clock skew: resolvedAt reads earlier than the handoff/created fallback.
     const resolved = confirmation({
       status: "accepted",

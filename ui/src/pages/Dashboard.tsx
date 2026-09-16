@@ -4,10 +4,9 @@ import {
   onboardingStepForCompany,
   shouldRouteAgentlessCompanyToOnboarding,
 } from "../lib/onboarding-route";
-import { useCompanyMission } from "../hooks/useCompanyMission";
 import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
@@ -34,6 +33,8 @@ import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
@@ -43,6 +44,30 @@ const DASHBOARD_ACTIVITY_LIMIT = 10;
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+export type PausedAgentBanner =
+  | { kind: "imported"; pausedImportedAgentIds: string[] }
+  | { kind: "all-paused" }
+  | null;
+
+/**
+ * Which paused-agents banner the dashboard should show. Import-paused agents
+ * get the specific banner with a bulk resume (they were parked by the import
+ * safety default and stay parked until someone acts); otherwise a company
+ * whose agents are ALL paused gets a generic explanation, because from the
+ * outside it is indistinguishable from a broken company.
+ */
+export function derivePausedAgentBanner(agents: Agent[] | undefined): PausedAgentBanner {
+  if (!agents || agents.length === 0) return null;
+  const importedPaused = agents.filter(
+    (agent) => agent.status === "paused" && agent.pauseReason === "import",
+  );
+  if (importedPaused.length > 0) {
+    return { kind: "imported", pausedImportedAgentIds: importedPaused.map((agent) => agent.id) };
+  }
+  if (agents.every((agent) => agent.status === "paused")) return { kind: "all-paused" };
+  return null;
 }
 
 export function Dashboard() {
@@ -55,10 +80,38 @@ export function Dashboard() {
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
 
-  const { data: agents } = useQuery({
+  // `isFetching` is read alongside the data: a cached list is served while its
+  // refetch runs, and an empty one from before the first hire must not pass
+  // for the company's current state — see `shouldRouteAgentlessCompanyToOnboarding`.
+  const { data: agents, isFetching: agentsRefreshing } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  // Bulk resume for agents parked by a company import. Sequential on purpose
+  // (mirrors the import page's activation checklist); a per-agent failure is
+  // tolerated so one bad agent never blocks the rest, and the refetch below
+  // re-renders the banner with whatever remains paused.
+  const queryClient = useQueryClient();
+  const resumeImportedAgents = useMutation({
+    mutationFn: async () => {
+      const targets = derivePausedAgentBanner(agents);
+      if (!targets || targets.kind !== "imported") return;
+      for (const agentId of targets.pausedImportedAgentIds) {
+        try {
+          await agentsApi.resume(agentId, selectedCompanyId ?? undefined);
+        } catch {
+          // Leave the agent paused; the banner re-renders with the remainder.
+        }
+      }
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) }),
+      ]);
+    },
   });
 
   // A company with no agent cannot do anything — no runs, no tasks, nothing
@@ -79,11 +132,10 @@ export function Dashboard() {
   // start the wizard at the front door with no company, and the new-company
   // path there would create a *second* company instead of giving this one an
   // agent.
-  const { hasMission: companyHasMission, settled: missionSettled } =
-    useCompanyMission(selectedCompanyId);
   const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
     pathname: location.pathname,
     agentsLoaded: agents !== undefined,
+    agentsRefreshing,
     agentCount: agents?.length ?? 0,
   });
   // Auto-open once per company. Every input to the effect sits behind a query,
@@ -93,16 +145,14 @@ export function Dashboard() {
   // companies already offered; see it for why that outlives this component.
   useEffect(() => {
     if (!shouldOpenOnboarding || !selectedCompanyId) return;
-    // Wait for the mission lookup to settle before opening: the wizard applies
-    // the step it is given once, so a step chosen before the answer is in is
-    // the step the customer is left on.
-    if (!missionSettled) return;
     if (!claimOnboardingOffer(selectedCompanyId)) return;
     openOnboarding({
       companyId: selectedCompanyId,
-      initialStep: onboardingStepForCompany(companyHasMission),
+      initialStep: onboardingStepForCompany(),
     });
-  }, [shouldOpenOnboarding, selectedCompanyId, missionSettled, companyHasMission, openOnboarding]);
+    // No mission lookup to wait on any more: the step this opens is the same
+    // whatever the goals say, so waiting only delayed the open.
+  }, [shouldOpenOnboarding, selectedCompanyId, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
@@ -247,14 +297,14 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
+          message="Welcome to Paperclip. Set up your first organization and agent to get started."
           action="Get Started"
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message="Create or select an organization to view the dashboard." />
     );
   }
 
@@ -262,11 +312,50 @@ export function Dashboard() {
     return <PageSkeleton variant="dashboard" />;
   }
 
-  const hasNoAgents = agents !== undefined && agents.length === 0;
+  // Same rule as the auto-offer above: a list still being refreshed may be the
+  // empty one cached before the first hire, and the banner's "Create one here"
+  // opens the same agent step the offer does.
+  const hasNoAgents = agents !== undefined && !agentsRefreshing && agents.length === 0;
+  const pausedBanner = derivePausedAgentBanner(agents);
+  const pausedImportedCount =
+    pausedBanner?.kind === "imported" ? pausedBanner.pausedImportedAgentIds.length : 0;
 
   return (
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
+
+      {pausedBanner?.kind === "imported" ? (
+        <InlineBanner
+          tone="warning"
+          icon={PauseCircle}
+          title={`${pausedImportedCount} imported agent${pausedImportedCount === 1 ? " is" : "s are"} paused and will not run.`}
+          actions={
+            <Button
+              size="sm"
+              onClick={() => resumeImportedAgents.mutate()}
+              disabled={resumeImportedAgents.isPending}
+              data-testid="dashboard-resume-imported-agents"
+            >
+              {resumeImportedAgents.isPending ? "Resuming…" : "Resume all"}
+            </Button>
+          }
+        >
+          Agents from an organization import arrive paused as a safety default. Resume them so assigned tasks can start.
+        </InlineBanner>
+      ) : pausedBanner?.kind === "all-paused" ? (
+        <InlineBanner
+          tone="warning"
+          icon={PauseCircle}
+          title="All agents in this organization are paused — nothing will run."
+          actions={
+            <Button variant="ghost" size="sm" asChild>
+              <Link to="/agents">Review agents</Link>
+            </Button>
+          }
+        >
+          Resume at least one agent to let assigned tasks start.
+        </InlineBanner>
+      ) : null}
 
       {hasNoAgents && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
@@ -277,7 +366,7 @@ export function Dashboard() {
             </p>
           </div>
           <button
-            onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
+            onClick={() => openOnboarding({ initialStep: 3, companyId: selectedCompanyId! })}
             className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
           >
             Create one here
@@ -364,7 +453,7 @@ export function Dashboard() {
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className={cn("grid grid-cols-2 gap-4", SHOW_TASK_PRIORITY_UI ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>
@@ -397,7 +486,7 @@ export function Dashboard() {
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                   Recent Activity
                 </h3>
-                <Card className="block py-0 divide-y divide-border overflow-hidden">
+                <Card className="@container block py-0 divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -423,37 +512,36 @@ export function Dashboard() {
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </Card>
               ) : (
-                <Card className="block py-0 divide-y divide-border overflow-hidden">
+                <Card className="@container block py-0 divide-y divide-border overflow-hidden">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-4 py-3 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
+                      className="dashboard-list-row text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
                     >
-                      <div className="flex items-start gap-2 sm:items-center sm:gap-3">
-                        {/* Status icon - left column on mobile */}
-                        <span className="shrink-0 sm:hidden">
+                      <div className="flex items-start gap-2 @xl:grid @xl:grid-cols-(--dashboard-task-list-columns) @xl:items-baseline">
+                        <span className="flex size-6 shrink-0 items-center justify-end @xl:self-center">
                           <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
                         </span>
-
-                        {/* Right column on mobile: title + metadata stacked */}
-                        <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-                          <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
-                            {issue.title}
-                          </span>
-                          <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} /></span>
-                            <span className="text-xs font-mono text-muted-foreground">
+                        <span className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
+                          <span className="flex min-w-0 items-baseline gap-2 @xl:contents">
+                            <span className="min-w-0 flex-1 truncate text-sm leading-6" title={issue.title}>
+                              {issue.title}
+                            </span>
+                            <span className="ml-auto shrink-0 truncate text-right font-mono text-(length:--text-micro) text-muted-foreground @xl:col-start-4 @xl:row-start-1 @xl:w-(--dashboard-list-id-width)">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
-                            {issue.assigneeAgentId && (() => {
-                              const name = agentName(issue.assigneeAgentId);
-                              return name
-                                ? <span className="hidden sm:inline-flex"><Identity name={name} size="sm" /></span>
-                                : null;
-                            })()}
-                            <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
-                            <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
+                          </span>
+                          <span className="flex min-h-6 min-w-0 items-center gap-2 @xl:contents">
+                            <span className="flex min-w-0 flex-1 items-center @xl:col-start-3 @xl:row-start-1 @xl:self-center">
+                              {issue.assigneeAgentId && (() => {
+                                const name = agentName(issue.assigneeAgentId);
+                                return name
+                                  ? <Identity name={name} size="sm" className="max-w-32" />
+                                  : null;
+                              })()}
+                            </span>
+                            <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
                               {timeAgo(issue.updatedAt)}
                             </span>
                           </span>

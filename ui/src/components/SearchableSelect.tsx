@@ -225,6 +225,7 @@ export function SearchableSelect<
         </Button>
       </PopoverTrigger>
       <PopoverContent
+        data-mobile-entity-picker=""
         align={align}
         collisionPadding={16}
         disablePortal={disablePortal}

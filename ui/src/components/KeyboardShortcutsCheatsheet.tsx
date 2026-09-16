@@ -8,17 +8,6 @@ interface ShortcutEntry {
   combo?: boolean;
 }
 
-// Platform-appropriate label for the Cmd/Ctrl modifier so the cheatsheet shows
-// the same key the user actually presses (re-pointed in the collapsible sidebar
-// work — Cmd/Ctrl+B toggles the rail).
-function getPlatformLabel() {
-  if (typeof navigator === "undefined") return "";
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  return nav.userAgentData?.platform || navigator.userAgent || "";
-}
-
-const META_KEY = /Mac|iPhone|iPad|iPod/.test(getPlatformLabel()) ? "⌘" : "Ctrl";
-
 interface ShortcutSection {
   title: string;
   shortcuts: ShortcutEntry[];
@@ -66,7 +55,6 @@ const sections: ShortcutSection[] = [
       { keys: ["/"], label: "Search current page or quick search" },
       { keys: ["c"], label: "New task" },
       { keys: ["["], label: "Toggle sidebar" },
-      { keys: [META_KEY, "B"], label: "Collapse or expand sidebar", combo: true },
       { keys: ["]"], label: "Toggle panel" },
       { keys: ["?"], label: "Show keyboard shortcuts" },
     ],

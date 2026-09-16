@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "slug": "xai",
+  "name": "Grok",
+  "description": "Connect Grok accounts for your agents.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/xai.svg",
+    "darkLogoUrl": "/brands/apps/xai-dark.svg"
+  },
+  "urlPatterns": [
+    "https://api.x.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-subscription",
+      "label": "Grok subscription",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "oauth",
+      "ai": {
+        "provider": "xai",
+        "method": "subscription"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3"
+    },
+    {
+      "key": "ai-api_key",
+      "label": "Grok API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "xai",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "XAI_API_KEY"
+      }
+    }
+  ]
+}

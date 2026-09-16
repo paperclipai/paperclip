@@ -22,6 +22,7 @@ const INTERACTION_KIND_LABELS: Record<IssueThreadInteractionKind, string> = {
   request_confirmation: "Confirmations",
   request_checkbox_confirmation: "Checkbox confirmations",
   request_item_verdicts: "Item verdicts",
+  connection_intent: "Connection requests",
 };
 
 /**
@@ -240,10 +241,10 @@ export function InteractionGovernancePanel({
       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
         Interaction governance
       </div>
-      <div className="space-y-4 rounded-md border border-border px-4 py-4">
+      <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Thread interactions are open by default:{" "}
-          <span className="font-medium text-foreground">Anyone</span> in the company — the
+          <span className="font-medium text-foreground">Anyone</span> in the organization — the
           board or any agent, including the one that asked — can respond. Narrow a kind
           only when you need to.{" "}
           <span className="font-medium text-foreground">Default policy</span> is the

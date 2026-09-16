@@ -338,6 +338,7 @@ describeEmbeddedPostgres("activity service", () => {
         enormousBlob: "x".repeat(256_000),
       },
       resultJson: {
+        conversationReset: true,
         billing_type: "metered",
         total_cost_usd: 0.42,
         stopReason: "timeout",
@@ -360,6 +361,7 @@ describeEmbeddedPostgres("activity service", () => {
       runId,
       agentId,
       invocationSource: "assignment",
+      contextIssueId: issueId,
     });
     expect(runs[0]?.usageJson).toEqual({
       inputTokens: 11,
@@ -376,6 +378,7 @@ describeEmbeddedPostgres("activity service", () => {
       total_cost_usd: 0.42,
     });
     expect(runs[0]?.resultJson).toEqual({
+      conversationReset: true,
       billingType: "metered",
       billing_type: "metered",
       costUsd: 0.42,

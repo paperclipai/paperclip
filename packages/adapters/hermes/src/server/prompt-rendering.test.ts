@@ -246,3 +246,23 @@ test("preserves custom prompt templates while exposing runtime and wake variable
   expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
   expect(prompt).not.toContain("Paperclip runtime identity:");
 });
+
+
+test.each([false, true])("conversation prompts preserve the handoff policy (resumed=%s)", (resumedSession) => {
+  const directive = "Chat directive: clarify goals and hand the plan off to project tasks.";
+  const ctx = baseContext({
+    conversationMode: true,
+    paperclipTaskMarkdown: directive,
+    paperclipTaskMarkdownCompact: directive,
+  });
+  ctx.context.paperclipWake.interactionKind = "request_confirmation";
+  ctx.context.paperclipWake.interactionStatus = "accepted";
+  for (const config of [{}, { promptTemplate: "Custom agent instruction." }]) {
+    const prompt = buildPrompt(ctx, config, { resumedSession });
+    expect(prompt).toContain(directive);
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("clear final disposition");
+    expect(prompt).not.toContain("Create child issues");
+    expect(prompt).not.toContain("--arg status done");
+  }
+});

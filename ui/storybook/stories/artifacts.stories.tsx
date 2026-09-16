@@ -621,7 +621,7 @@ export const SelectedStack: Story = {
  * below) and that stack cards keep their stack effect at single-column width.
  */
 export const MobileGrouping: Story = {
-  parameters: { viewport: { defaultViewport: "mobile" } },
+  globals: { viewport: { value: "mobile" } },
   render: () => {
     const [query, setQuery] = useState("");
     const [kind, setKind] = useState<StoryArtifactKindFilter>("all");

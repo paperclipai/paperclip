@@ -115,13 +115,13 @@ function formatVerb(
     case "goal.deleted":
       return "deleted goal";
     case "company.created":
-      return "created company";
+      return "created organization";
     case "company.updated":
-      return "updated company";
+      return "updated organization";
     case "company.archived":
-      return "archived company";
+      return "archived organization";
     case "company.budget_updated":
-      return "updated company budget";
+      return "updated organization budget";
 
     default:
       return action.replace(/[._]/g, " ");
@@ -437,7 +437,7 @@ export function FeedCard({
     <Card
       data-fc="card"
       className={cn(
-        "flex-row group ml-3 mr-3 md:ml-0 my-2 items-center gap-2 p-(--sz-18px) text-xs",
+        "flex-row group ml-3 mr-3 md:ml-0 my-2 w-(--sz-calc-1) md:w-(--sz-calc-2) items-center gap-2 p-(--sz-18px) text-xs",
         "transition-(--tp-background-color-border-color) duration-150",
         content.link && "cursor-pointer hover:bg-accent hover:border-muted-foreground/30",
         className,
@@ -480,7 +480,8 @@ export function FeedCard({
     return (
       <Link
         to={content.link}
-        className="block no-underline text-inherit"
+        data-fc="link"
+        className="block w-full no-underline text-inherit"
         issueQuicklookSide="left"
       >
         {card}

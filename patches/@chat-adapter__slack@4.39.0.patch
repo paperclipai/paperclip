@@ -1,0 +1,519 @@
+diff --git a/dist/index.js b/dist/index.js
+index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909a36c143d 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -2154,6 +2154,7 @@
+     const command = params.get("command") || "";
+     const text = params.get("text") || "";
+     const userId = params.get("user_id") || "";
++    const userName = params.get("user_name") || userId;
+     const channelId = params.get("channel_id") || "";
+     const triggerId = params.get("trigger_id") || void 0;
+     this.logger.debug("Processing Slack slash command", {
+@@ -2163,14 +2164,13 @@
+       channelId,
+       triggerId
+     });
+-    const userInfo = await this.lookupUser(userId);
+     const event = {
+       command,
+       text,
+       user: {
+         userId,
+-        userName: userInfo?.displayName ?? userId,
+-        fullName: userInfo?.realName ?? userId,
++        userName,
++        fullName: userName,
+         isBot: false,
+         isMe: false
+       },
+@@ -2179,8 +2179,11 @@
+       triggerId,
+       channelId: channelId ? `slack:${channelId}` : ""
+     };
+-    this.chat.processSlashCommand(event, options);
+-    return new Response("", { status: 200 });
++    await this.chat.processSlashCommand(event, options);
++    return Response.json({
++      response_type: "ephemeral",
++      text: "Paperclip received this command."
++    });
+   }
+   /**
+    * Handle block_actions payload (button clicks in Block Kit).
+@@ -2706,7 +2709,8 @@
+           "Content-Type": "application/json",
+           "x-slack-socket-token": this.socketForwardingSecret
+         },
+-        body: JSON.stringify(event)
++        body: JSON.stringify(event),
++        signal: AbortSignal.timeout(45e3)
+       });
+       if (response.ok) {
+         this.logger.debug("Socket event forwarded successfully", {
+@@ -2894,8 +2898,19 @@
+       }
+     }
+     const previousMessage = event.previous_message;
++    // File edits can retain both text and edited.ts. Compare only attachment
++    // identity and consumed metadata, not expiring URLs or unfurl metadata.
++    const fileRevision = (files) => JSON.stringify(
++      (Array.isArray(files) ? files : []).map((value) => {
++        const file = value && typeof value === "object" && !Array.isArray(value) ? value : {};
++        return [
++          ...[file.id, file.name, file.mimetype].map((field) => typeof field === "string" ? field : null),
++          ...[file.size, file.original_w, file.original_h].map((field) => typeof field === "number" && Number.isFinite(field) ? field : null)
++        ];
++      })
++    );
+     const isHiddenMessageEdit = Boolean(
+-      previousMessage && (inner.edited?.ts !== previousMessage.edited?.ts || inner.text !== previousMessage.text)
++      previousMessage && (inner.edited?.ts !== previousMessage.edited?.ts || inner.text !== previousMessage.text || fileRevision(inner.files) !== fileRevision(previousMessage.files))
+     );
+     if (event.hidden === true && !isHiddenMessageEdit) {
+       return;
+@@ -3900,17 +3915,22 @@
+     const { channel, threadTs: rawThreadTs } = this.decodeThreadId(threadId);
+     const threadTs = rawThreadTs || void 0;
+     try {
+-      let uploadedFileIds;
++      let uploadedFiles;
+       const files = extractFiles(message);
+       if (files.length > 0) {
+-        uploadedFileIds = await this.uploadFiles(files, channel, threadTs);
++        uploadedFiles = await this.uploadFiles(
++          files,
++          channel,
++          threadTs,
++          this.paperclipFileUploadReceiptContext?.getStore?.()
++        );
+         const hasText = typeof message === "string" || typeof message === "object" && message !== null && ("raw" in message && message.raw || "markdown" in message && message.markdown || "ast" in message && message.ast);
+         const card2 = extractCard(message);
+         if (!(hasText || card2)) {
+           return {
+-            id: `file-${Date.now()}`,
++            id: uploadedFiles.messageId,
+             threadId,
+-            raw: { files, uploadedFileIds }
++            raw: { files, uploadedFileIds: uploadedFiles.fileIds }
+           };
+         }
+       }
+@@ -3946,7 +3966,7 @@
+         return {
+           id: result2.ts,
+           threadId,
+-          raw: uploadedFileIds === void 0 ? result2 : { ...result2, uploadedFileIds }
++          raw: uploadedFiles === void 0 ? result2 : { ...result2, uploadedFileIds: uploadedFiles.fileIds }
+         };
+       }
+       const payload = this.formatConverter.toSlackPayload(message);
+@@ -3971,7 +3991,7 @@
+       return {
+         id: result.ts,
+         threadId,
+-        raw: uploadedFileIds === void 0 ? result : { ...result, uploadedFileIds }
++        raw: uploadedFiles === void 0 ? result : { ...result, uploadedFileIds: uploadedFiles.fileIds }
+       };
+     } catch (error) {
+       this.handleSlackError(error);
+@@ -4183,7 +4203,7 @@
+    * Upload files to Slack and share them to a channel.
+    * Returns the file IDs of uploaded files.
+    */
+-  async uploadFiles(files, channel, threadTs) {
++  async uploadFiles(files, channel, threadTs, onFileUploadAccepted) {
+     const bufferResults = await Promise.all(
+       files.map(async (file) => {
+         try {
+@@ -4205,7 +4225,9 @@
+       (result2) => result2 !== null
+     );
+     if (fileUploads.length === 0) {
+-      return [];
++      const error = new Error("Slack file upload could not prepare any files");
++      error.name = "ValidationError";
++      throw error;
+     }
+     this.logger.debug("Slack API: files.uploadV2 (batch)", {
+       fileCount: fileUploads.length,
+@@ -4219,15 +4241,158 @@
+     const result = await this._client.files.uploadV2(uploadArgs);
+     this.logger.debug("Slack API: files.uploadV2 response", { ok: result.ok });
+     const fileIds = [];
++    const completedFiles = [];
+     if (result.files?.[0]?.files) {
+-      for (const uploadedFile of result.files[0].files) {
+-        if (uploadedFile.id) {
+-          fileIds.push(uploadedFile.id);
++      for (const completion of result.files) {
++        if (Array.isArray(completion.files)) {
++          for (const uploadedFile of completion.files) {
++            completedFiles.push(uploadedFile);
++            if (uploadedFile.id) {
++              fileIds.push(uploadedFile.id);
++            }
++          }
+         }
+       }
+     }
+-    return fileIds;
++    if (fileIds.length !== fileUploads.length || new Set(fileIds).size !== fileIds.length || fileIds.some((fileId) => typeof fileId !== "string" || !/^F[A-Z0-9]{1,254}$/.test(fileId))) {
++      throw new Error(
++        "Slack file upload completed, but its message identity could not be confirmed"
++      );
++    }
++    if (typeof onFileUploadAccepted === "function") {
++      await onFileUploadAccepted({
++        version: 1,
++        fileIds: [...fileIds],
++        channelId: channel,
++        threadTs: threadTs ?? null
++      });
++    }
++    let messageId = this.slackFileShareMessageId(
++      completedFiles,
++      channel,
++      threadTs
++    );
++    if (!messageId) {
++      try {
++        messageId = await this.paperclipResolveFileUploadMessageId(fileIds, channel, threadTs);
++      } catch {
++        throw new Error(
++          "Slack file upload completed, but its message identity could not be confirmed"
++        );
++      }
++    }
++    if (!messageId) {
++      throw new Error(
++        "Slack file upload completed, but its message identity could not be confirmed"
++      );
++    }
++    return { fileIds, messageId };
+   }
++  async paperclipResolveFileUploadReceipt(fileIds, threadId) {
++    if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > 20 || new Set(fileIds).size !== fileIds.length || fileIds.some((fileId) => typeof fileId !== "string" || !/^F[A-Z0-9]{1,254}$/.test(fileId))) {
++      const error = new Error("Slack file upload receipt is invalid");
++      error.name = "ValidationError";
++      throw error;
++    }
++    const { channel, threadTs: rawThreadTs } = this.decodeThreadId(threadId);
++    try {
++      return await this.paperclipResolveFileUploadMessageId(fileIds, channel, rawThreadTs || void 0);
++    } catch (error) {
++      this.handleSlackError(error);
++    }
++  }
++  async paperclipResolveFileUploadMessageId(fileIds, channel, threadTs) {
++    const deadline = Date.now() + 5e3;
++    const retryDelays = [100, 250, 500, 1e3];
++    let lookupAttempt = 0;
++    while (Date.now() < deadline) {
++      let timeout;
++      let messageId = null;
++      try {
++        const lookup = Promise.all(
++          fileIds.map(async (file) => {
++            const args = await this.withToken({ file });
++            if (Date.now() >= deadline) {
++              throw new Error("Slack file identity lookup timed out");
++            }
++            return this._client.files.info(args);
++          })
++        );
++        const infos = await Promise.race([
++          lookup,
++          new Promise((_, reject) => {
++            timeout = setTimeout(
++              () => reject(new Error("Slack file identity lookup timed out")),
++              Math.max(1, deadline - Date.now())
++            );
++            timeout.unref?.();
++          })
++        ]);
++        const infoFiles = infos.map((info) => info.file);
++        if (infoFiles.some((file, index) => !file || file.id !== fileIds[index])) {
++          const error = new Error("Slack file identity lookup did not match the uploaded files");
++          error.name = "ValidationError";
++          throw error;
++        }
++        messageId = this.slackFileShareMessageId(infoFiles, channel, threadTs);
++      } finally {
++        clearTimeout(timeout);
++      }
++      if (messageId) return messageId;
++      const remaining = deadline - Date.now();
++      if (remaining <= 0) break;
++      const delay = Math.min(
++        retryDelays[Math.min(lookupAttempt, retryDelays.length - 1)],
++        remaining
++      );
++      lookupAttempt += 1;
++      await new Promise((resolve) => {
++        const retryTimer = setTimeout(resolve, delay);
++        retryTimer.unref?.();
++      });
++    }
++    return null;
++  }
++  slackFileShareMessageId(files, channel, threadTs) {
++    if (!Array.isArray(files) || files.length === 0) {
++      return null;
++    }
++    const messageIdsByFile = files.map((file) => {
++      const messageIds = /* @__PURE__ */ new Set();
++      const shares = file?.shares;
++      if (!shares || typeof shares !== "object") {
++        return messageIds;
++      }
++      for (const group of Object.values(shares)) {
++        if (!group || typeof group !== "object") {
++          continue;
++        }
++        const channelShares = group[channel];
++        if (!Array.isArray(channelShares)) {
++          continue;
++        }
++        for (const share of channelShares) {
++          if (!share || typeof share !== "object" || typeof share.ts !== "string" || !/^\d+\.\d+$/.test(share.ts)) {
++            continue;
++          }
++          const shareThreadTs = typeof share.thread_ts === "string" && share.thread_ts ? share.thread_ts : void 0;
++          if (threadTs ? shareThreadTs !== threadTs : shareThreadTs !== void 0) {
++            continue;
++          }
++          messageIds.add(share.ts);
++        }
++      }
++      return messageIds;
++    });
++    if (messageIdsByFile.some((messageIds) => messageIds.size === 0)) {
++      return null;
++    }
++    const [first, ...rest] = messageIdsByFile;
++    const sharedMessageIds = [...first].filter(
++      (messageId) => rest.every((messageIds) => messageIds.has(messageId))
++    );
++    return sharedMessageIds.length === 1 ? sharedMessageIds[0] : null;
++  }
+   async editMessage(threadId, messageId, _message) {
+     const message = await this.resolveMessageMentions(_message, threadId);
+     const ephemeral = this.decodeEphemeralMessageId(messageId);
+@@ -4622,6 +4787,8 @@
+     this.logger.debug("Slack: starting stream", { channel, threadTs });
+     const token = await this.getToken();
+     const streamer = this._client.chatStream({
++      // Keep the Web API's batching, but account for its pending tail below.
++      buffer_size: 256,
+       channel,
+       thread_ts: threadTs,
+       ...options?.recipientUserId && {
+@@ -4667,6 +4834,72 @@
+       }
+     };
+     const fallback = { message: null, mode: "native", nativeRendered: false };
++    let nativePendingLength = 0;
++    let nativeMessageTs = null;
++    const nativeDeliveryUnknown = () => new NetworkError(
++      "slack",
++      "Slack native stream delivery could not be confirmed"
++    );
++    const confirmNativeResponse = (response) => {
++      if (response?.ok !== true || typeof response.ts !== "string" ||
++          response.ts.length > 128 || !/^\d+\.\d+$/.test(response.ts) ||
++          response.channel !== void 0 && response.channel !== channel ||
++          nativeMessageTs !== null && response.ts !== nativeMessageTs ||
++          response.message?.ts !== void 0 && response.message.ts !== response.ts) {
++        throw nativeDeliveryUnknown();
++      }
++      nativeMessageTs = response.ts;
++      fallback.nativeRendered = true;
++      nativePendingLength = 0;
++    };
++    const appendNative = async (args) => {
++      const response = await streamer.append({ ...args, token });
++      if (response === null) {
++        nativePendingLength += args.markdown_text?.length ?? 0;
++      } else {
++        // Record each awaited receipt before another fragment can fail.
++        confirmNativeResponse(response);
++      }
++    };
++    const appendRendered = async (delta) => {
++      let part = "";
++      // Preserve complete Slack links/mentions, escaped entities and Unicode
++      // scalars. Never silently truncate or split an oversized opaque token.
++      for (const [atom] of delta.matchAll(/<[^<>\r\n]*>|&(?:amp|lt|gt);|[\s\S]/gu)) {
++        if (atom.length > 12e3) {
++          throw new ValidationError("slack", "Rendered Slack token exceeds the native stream limit");
++        }
++        if (nativePendingLength + part.length + atom.length > 12e3) {
++          if (part.length > 0) {
++            await appendNative({ markdown_text: part });
++            part = "";
++          }
++          if (nativePendingLength + atom.length > 12e3) {
++            // A whole token fits, but not alongside the Web API's <256 tail.
++            await appendNative({ chunks: [] });
++          }
++        }
++        part += atom;
++      }
++      if (part.length > 0) {
++        await appendNative({ markdown_text: part });
++      }
++    };
++    const definiteNativeUnsupported = (error) => {
++      const code = slackPlatformErrorCode(error);
++      return error?.data?.ok === false && code !== void 0 && NATIVE_STREAMING_UNSUPPORTED_ERRORS.has(code);
++    };
++    const rethrowNativeFailure = (error) => {
++      // A later explicit rejection does not undo an already accepted prefix.
++      // Do not expose its retryable/definite code as the whole send's outcome.
++      const code = slackPlatformErrorCode(error);
++      if (fallback.nativeRendered || fallback.message !== null ||
++          error?.code === "slack_webapi_platform_error" && error.data?.ok !== false ||
++          code === "internal_error" || code === "fatal_error") {
++        throw nativeDeliveryUnknown();
++      }
++      throw error;
++    };
+     const updateIntervalMs = options?.updateIntervalMs ?? 1e3;
+     let fallbackSent = "";
+     let lastFallbackEditAt = 0;
+@@ -4709,17 +4942,11 @@
+         return;
+       }
+       try {
+-        const response = await streamer.append({
+-          markdown_text: delta,
+-          token
+-        });
+-        if (response) {
+-          fallback.nativeRendered = true;
+-        }
++        await appendRendered(delta);
+         lastAppended = resolvedCommitted;
+       } catch (error) {
+-        if (fallback.nativeRendered) {
+-          throw error;
++        if (fallback.nativeRendered || !definiteNativeUnsupported(error)) {
++          rethrowNativeFailure(error);
+         }
+         switchToFallback(error);
+         await flushFallback(force);
+@@ -4736,12 +4963,15 @@
+         return;
+       }
+       try {
+-        await streamer.append({
+-          chunks: [chunk],
+-          token
+-        });
+-        fallback.nativeRendered = true;
++        await appendNative({ chunks: [chunk] });
+       } catch (error) {
++        const code = slackPlatformErrorCode(error);
++        if (fallback.nativeRendered || error?.data?.ok !== false || ![
++          "invalid_chunks", "invalid_blocks", "missing_scope",
++          ...NATIVE_STREAMING_UNSUPPORTED_ERRORS
++        ].includes(code)) {
++          rethrowNativeFailure(error);
++        }
+         structuredChunksSupported = false;
+         this.logger.warn(
+           "Structured streaming chunk failed, falling back to text-only streaming. Ensure your Slack app manifest includes the agent/assistant feature and the assistant:write scope",
+@@ -4749,22 +4979,28 @@
+         );
+       }
+     };
+-    for await (const chunk of textStream) {
+-      if (options?.signal?.aborted) {
+-        break;
++    try {
++      for await (const chunk of textStream) {
++        if (options?.signal?.aborted) {
++          break;
++        }
++        if (typeof chunk === "string") {
++          renderer.push(chunk);
++          await flushCommitted();
++        } else if (chunk.type === "markdown_text") {
++          renderer.push(chunk.text);
++          await flushCommitted();
++        } else {
++          await sendStructuredChunk(chunk);
++        }
+       }
+-      if (typeof chunk === "string") {
+-        renderer.push(chunk);
+-        await flushCommitted();
+-      } else if (chunk.type === "markdown_text") {
+-        renderer.push(chunk.text);
+-        await flushCommitted();
+-      } else {
+-        await sendStructuredChunk(chunk);
+-      }
++      renderer.finish();
++      await flushCommitted(true);
++    } catch (error) {
++      // Iterator/renderer/mention lookup failures also follow an irreversible
++      // accepted native prefix; never classify them as safe whole-send retry.
++      rethrowNativeFailure(error);
+     }
+-    renderer.finish();
+-    await flushCommitted(true);
+     if (fallback.mode === "fallback") {
+       if (options?.stopBlocks || this.feedbackButtons) {
+         this.logger.warn(
+@@ -4775,7 +5011,7 @@
+       this.logger.debug("Slack: fallback stream complete", {
+         messageId: fallback.message?.id
+       });
+-      await this.endTyping(threadId, options?.sessionStatus ?? "active");
++      await this.endTyping(threadId, options?.sessionStatus ?? "active").catch(rethrowNativeFailure);
+       return fallback.message;
+     }
+     const stopBlocks = [
+@@ -4784,21 +5020,27 @@
+     ];
+     let result;
+     try {
++      if (!fallback.nativeRendered) {
++        // Observe the initial receipt even when all text is still buffered;
++        // stop() otherwise hides its internal startStream response.
++        await appendNative({ chunks: [] });
++      }
+       result = await streamer.stop({
+         token,
+         ...this.agentView ? { session_status: options?.sessionStatus ?? "active" } : {},
+         ...stopBlocks.length > 0 ? { blocks: stopBlocks } : {}
+       });
++      confirmNativeResponse(result);
+     } catch (error) {
+-      if (fallback.nativeRendered) {
+-        throw error;
++      if (fallback.nativeRendered || !definiteNativeUnsupported(error)) {
++        rethrowNativeFailure(error);
+       }
+       switchToFallback(error);
+       await flushFallback(true);
+       this.logger.debug("Slack: fallback stream complete", {
+         messageId: fallback.message?.id
+       });
+-      await this.endTyping(threadId, options?.sessionStatus ?? "active");
++      await this.endTyping(threadId, options?.sessionStatus ?? "active").catch(rethrowNativeFailure);
+       return fallback.message;
+     }
+     const messageTs = result.message?.ts ?? result.ts;
+@@ -5636,7 +5878,8 @@
+     const response = await fetch(responseUrl, {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+-      body: JSON.stringify(payload)
++      body: JSON.stringify(payload),
++      signal: AbortSignal.timeout(45e3)
+     });
+     if (!response.ok) {
+       const errorText = await response.text();

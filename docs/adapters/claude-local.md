@@ -17,13 +17,30 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
+| `model` | string | No | Claude model to use (default: `claude-opus-5`) |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+
+## Default model
+
+An omitted, empty, or whitespace-only `model` uses Claude Opus 5
+(`claude-opus-5`) on both the CLI and ACP engines. This also applies to existing
+agents with an unset model, including agents created through the API and agents
+running in sandboxes. No database migration is needed. The editor shows the
+Paperclip default and leaves the setting unset until you select a model.
+
+An explicit `model` takes precedence over `ANTHROPIC_MODEL`. When only
+`ANTHROPIC_MODEL` is configured, the adapter keeps that override. Bedrock and
+Vertex configurations without an explicit model keep their provider-specific
+default because those providers use different model IDs. Host environment
+settings apply only to local targets when resolving the model.
+
+The default does not change explicitly configured agent models or the separate
+Paperclip Runner's qualified provider profiles.
 
 ## Prompt Templates
 

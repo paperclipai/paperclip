@@ -10,6 +10,7 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel("cursor")).toBe("Cursor");
     expect(getAdapterLabel("gemini_local")).toBe("Gemini CLI");
     expect(getAdapterLabel("grok_local")).toBe("Grok Build");
+    expect(getAdapterLabel("kimi_local")).toBe("Kimi Code");
     expect(getAdapterLabel("hermes_local")).toBe("Hermes");
     expect(getAdapterLabel("hermes_gateway")).toBe("Hermes Gateway");
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
@@ -22,6 +23,7 @@ describe("adapter display registry", () => {
       cursor: "Cursor",
       gemini_local: "Gemini CLI",
       grok_local: "Grok Build",
+      kimi_local: "Kimi Code",
       hermes_local: "Hermes",
       hermes_gateway: "Hermes Gateway",
       opencode_local: "OpenCode",

@@ -1,19 +1,17 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
-  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
-import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { Settings, Download, Upload } from "lucide-react";
+import { SlidersHorizontal } from "lucide-react";
 import {
   InteractionGovernancePanel,
   applyGovernanceChange,
@@ -25,10 +23,7 @@ import {
   Field,
   ToggleField,
 } from "../components/agent-config-primitives";
-
-const BYTES_PER_MIB = 1024 * 1024;
-const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
-const MAX_COMPANY_ATTACHMENT_MAX_MIB = MAX_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
+import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 
 export function CompanySettings() {
   const {
@@ -39,11 +34,12 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  // Managed instances derive the task ID prefix from the company name, so a
+  // rename here also renumbers the existing task IDs.
+  const isCloudManaged = Boolean(useCloudInstance());
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
-  const [brandColor, setBrandColor] = useState("");
-  const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
@@ -53,31 +49,19 @@ export function CompanySettings() {
     if (!selectedCompany) return;
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
-    setBrandColor(selectedCompany.brandColor ?? "");
-    setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
     setGovernance(selectedCompany.interactionResolverGovernance ?? {});
   }, [selectedCompany]);
 
-  const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
-  const attachmentMaxValid =
-    Number.isInteger(attachmentMaxBytes)
-    && attachmentMaxBytes >= BYTES_PER_MIB
-    && attachmentMaxBytes <= MAX_COMPANY_ATTACHMENT_MAX_BYTES;
-
   const generalDirty =
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
-      description !== (selectedCompany.description ?? "") ||
-      brandColor !== (selectedCompany.brandColor ?? "") ||
-      attachmentMaxBytes !== (selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES));
+      description !== (selectedCompany.description ?? ""));
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
       description: string | null;
-      brandColor: string | null;
-      attachmentMaxBytes: number;
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -180,7 +164,7 @@ export function CompanySettings() {
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
+        No organization selected. Select an organization from the switcher above.
       </div>
     );
   }
@@ -188,42 +172,46 @@ export function CompanySettings() {
   function handleSaveGeneral() {
     generalMutation.mutate({
       name: companyName.trim(),
-      description: description.trim() || null,
-      brandColor: brandColor || null,
-      attachmentMaxBytes
+      description: description.trim() || null
     });
   }
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-6xl space-y-8">
       <div className="flex items-center gap-2">
-        <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-lg font-semibold">General</h1>
       </div>
 
       {/* General */}
-      <div className="space-y-4">
+      <div className="max-w-2xl space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           General
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+        <div className="space-y-3">
+          <Field label="Organization name" hint="The display name for your organization.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
             />
+            {isCloudManaged && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Renaming can change this company's task ID prefix. Existing task IDs are
+                renumbered and old task links stop resolving.
+              </p>
+            )}
           </Field>
           <Field
             label="Description"
-            hint="Optional description shown in the company profile."
+            hint="Optional description shown in the organization profile."
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder="Optional organization description"
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -231,17 +219,16 @@ export function CompanySettings() {
       </div>
 
       {/* Appearance */}
-      <div className="space-y-4">
+      <div className="max-w-2xl space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Appearance
         </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="space-y-3">
           <div className="flex items-start gap-4">
             <div className="shrink-0">
               <CompanyPatternIcon
                 companyName={companyName || selectedCompany.name}
                 logoUrl={logoUrl || null}
-                brandColor={brandColor || null}
                 className="rounded-(--rad-14)"
               />
             </div>
@@ -287,66 +274,6 @@ export function CompanySettings() {
                   )}
                 </div>
               </Field>
-              <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
-              >
-                <div className="flex items-center gap-2">
-                  {/* token-extraction: allowlisted — <input type="color"> value must be a real hex string, not a var() reference. */}
-                  <input
-                    type="color"
-                    value={brandColor || "#6366f1"}
-                    onChange={(e) => setBrandColor(e.target.value)}
-                    className="h-8 w-8 cursor-pointer rounded border border-border bg-transparent p-0"
-                  />
-                  <input
-                    type="text"
-                    value={brandColor}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v === "" || /^#[0-9a-fA-F]{0,6}$/.test(v)) {
-                        setBrandColor(v);
-                      }
-                    }}
-                    placeholder="Auto"
-                    className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                  />
-                  {brandColor && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setBrandColor("")}
-                      className="text-xs text-muted-foreground"
-                    >
-                      Clear
-                    </Button>
-                  )}
-                </div>
-              </Field>
-              <Field
-                label="Attachment size limit"
-                hint={`Accepted range: 1-${MAX_COMPANY_ATTACHMENT_MAX_MIB} MiB.`}
-              >
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min={1}
-                      max={MAX_COMPANY_ATTACHMENT_MAX_MIB}
-                      step={1}
-                      value={attachmentMaxMiB}
-                      onChange={(e) => setAttachmentMaxMiB(e.target.value)}
-                      className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                    />
-                    <span className="text-xs text-muted-foreground">MiB</span>
-                  </div>
-                  {!attachmentMaxValid && (
-                    <span className="text-xs text-destructive">
-                      Enter a whole number from 1 to {MAX_COMPANY_ATTACHMENT_MAX_MIB}.
-                    </span>
-                  )}
-                </div>
-              </Field>
             </div>
           </div>
         </div>
@@ -358,7 +285,7 @@ export function CompanySettings() {
           <Button
             size="sm"
             onClick={handleSaveGeneral}
-            disabled={generalMutation.isPending || !companyName.trim() || !attachmentMaxValid}
+            disabled={generalMutation.isPending || !companyName.trim()}
           >
             {generalMutation.isPending ? "Saving..." : "Save changes"}
           </Button>
@@ -376,11 +303,11 @@ export function CompanySettings() {
       )}
 
       {/* Hiring */}
-      <div className="space-y-4" data-testid="company-settings-team-section">
+      <div className="max-w-2xl space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Hiring
         </div>
-        <div className="rounded-md border border-border px-4 py-3">
+        <div>
           <ToggleField
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
@@ -405,37 +332,16 @@ export function CompanySettings() {
         }
       />
 
-      {/* Import / Export */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
-        </div>
-        <div className="rounded-md border border-border px-4 py-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="outline" asChild>
-              <Link to="/company/export">
-                <Download className="mr-1.5 h-3.5 w-3.5" />
-                Export
-              </Link>
-            </Button>
-            <Button size="sm" variant="outline" asChild>
-              <Link to="/company/import">
-                <Upload className="mr-1.5 h-3.5 w-3.5" />
-                Import
-              </Link>
-            </Button>
-          </div>
-        </div>
-      </div>
+      <InstanceGeneralSettings embedded />
 
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
           Danger Zone
         </div>
-        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+        <div className="space-y-3 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
+            Archive this organization to hide it from the sidebar. This persists in
             the database.
           </p>
           <div className="flex items-center gap-2">
@@ -449,7 +355,7 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  `Archive organization "${selectedCompany.name}"? It will be hidden from the sidebar.`
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
@@ -468,13 +374,13 @@ export function CompanySettings() {
                 ? "Archiving..."
                 : selectedCompany.status === "archived"
                 ? "Already archived"
-                : "Archive company"}
+                : "Archive organization"}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : "Failed to archive organization"}
               </span>
             )}
           </div>
