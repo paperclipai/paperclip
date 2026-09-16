@@ -663,7 +663,7 @@ describe("AppDefinition catalog", () => {
       );
     }
   });
-  it("withholds hidden providers from the app store without deleting their definitions", () => {
+  it("withholds unverified and reserved providers from the app store without deleting their definitions", () => {
     expect([...APP_STORE_HIDDEN_SLUGS].sort()).toEqual([
       "beehiiv",
       "bitly",
@@ -674,15 +674,6 @@ describe("AppDefinition catalog", () => {
       "context7",
       "egnyte",
       "embat",
-      "gmail",
-      "google-calendar",
-      "google-chat",
-      "google-docs",
-      "google-drive",
-      "google-people",
-      "google-sheets",
-      "google-slides",
-      "google-workspace-search",
       "kernel",
       "local-falcon",
       "make",
@@ -696,7 +687,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(38);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(47);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

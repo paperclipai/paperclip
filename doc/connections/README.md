@@ -15,10 +15,6 @@ Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
 [AgentMail](./AGENTMAIL.md), and [iMessage Photon](./IMESSAGE-PHOTON.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
 
-Gmail and Google Workspace connectors are temporarily hidden from the connector
-catalog. Their definitions and existing connections are retained. Restore their
-catalog visibility through `APP_STORE_HIDDEN_SLUGS` and the app branding manifest.
-
 Post-read action: classify a new integration request, pick the right Paperclip
 layer to change, and avoid creating a parallel connection framework.
 

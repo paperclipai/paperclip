@@ -85,7 +85,7 @@ import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
-import { appWithPaperclipCloudConnectorAvailability, invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -5087,12 +5087,21 @@ describeEmbeddedPostgres("tool access service", () => {
         "sentry",
         "zapier",
         "linear",
+        "gmail",
+        "google-drive",
+        "google-docs",
+        "google-sheets",
+        "google-slides",
+        "google-calendar",
+        "google-chat",
+        "google-people",
+        "google-workspace-search",
         "github",
       ]),
     );
-    expect(res.body.apps).toHaveLength(38);
+    expect(res.body.apps).toHaveLength(47);
     expect(
-      appWithPaperclipCloudConnectorAvailability(getConnectableAppDefinition("gmail")!, [])
+      res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,
     ).toEqual({
       platform_shared: false,
@@ -5128,16 +5137,17 @@ describeEmbeddedPostgres("tool access service", () => {
             }),
           ]),
         }),
-      ]),
-    );
-    expect(getConnectableAppDefinition("google-sheets")!.methods).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: "local", transport: "local_stdio" }),
+        expect.objectContaining({
+          slug: "google-sheets",
+          methods: expect.arrayContaining([
+            expect.objectContaining({ key: "local", transport: "local_stdio" }),
+          ]),
+        }),
       ]),
     );
   });
 
-  it("hides Google from the gallery while retaining managed methods for signed profiles", async () => {
+  it("exposes managed Google methods only for profiles signed for this enrolled instance", async () => {
     const company = await createCompany(db);
     const userId = `gallery-pilot-${randomUUID()}`;
     const pilotConnector = fakeGoogleWorkspaceConnector(
@@ -5159,11 +5169,8 @@ describeEmbeddedPostgres("tool access service", () => {
       ),
     ).get(`/api/companies/${company.id}/tools/gallery`);
     expect(nonPilot.status).toBe(200);
-    expect(nonPilot.body.apps.find(
+    const nonPilotGmail = nonPilot.body.apps.find(
       (app: { slug: string }) => app.slug === "gmail",
-    )).toBeUndefined();
-    const nonPilotGmail = appWithPaperclipCloudConnectorAvailability(
-      getConnectableAppDefinition("gmail")!, await nonPilotConnector.getCapabilities(),
     );
     expect(nonPilotGmail.ownershipAvailability.platform_shared).toBe(false);
     expect(
@@ -5185,11 +5192,8 @@ describeEmbeddedPostgres("tool access service", () => {
       ),
     ).get(`/api/companies/${company.id}/tools/gallery`);
     expect(pilot.status).toBe(200);
-    expect(pilot.body.apps.find(
+    const pilotGmail = pilot.body.apps.find(
       (app: { slug: string }) => app.slug === "gmail",
-    )).toBeUndefined();
-    const pilotGmail = appWithPaperclipCloudConnectorAvailability(
-      getConnectableAppDefinition("gmail")!, await pilotConnector.getCapabilities(),
     );
     expect(pilotGmail.ownershipAvailability.platform_shared).toBe(true);
     expect(
@@ -7040,7 +7044,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ["local_trusted", "private", "http://127.0.0.1:3102"] as const,
     ["authenticated", "public", "https://tenant.paperclip.app"] as const,
   ].map(([deploymentMode, deploymentExposure, origin]) => ({ profile, deploymentMode, deploymentExposure, origin }))))(
-    "connects retained Workspace $profile without mutating definitions in $deploymentMode",
+    "connects advertised Workspace $profile without mutating definitions in $deploymentMode",
     async ({ profile, deploymentMode, deploymentExposure, origin }) => {
       const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
       const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;
@@ -7054,7 +7058,7 @@ describeEmbeddedPostgres("tool access service", () => {
         undefined, { deploymentMode, deploymentExposure, paperclipCloudConnector: connector });
       const gallery = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
       const workspaceApp = gallery.body.apps.find((entry: { slug: string }) => entry.slug === slug);
-      expect(workspaceApp).toBeUndefined();
+      expect(workspaceApp.methods.map((method: { key: string }) => method.key)).toContain(methodKey);
       const connected = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`).send({
         galleryKey: slug, connectionMethodKey: methodKey, grantKind: "user", name: `Personal ${slug}`,
       });
@@ -7077,7 +7081,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(JSON.stringify(getConnectableAppDefinition(slug))).toBe(definitionBefore);
   });
 
-  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS)("connects retained Workspace %s with a Cloud-delivered environment identity", async (profile) => {
+  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS)("connects advertised Workspace %s with a Cloud-delivered environment identity", async (profile) => {
     const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
     const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;
     const company = await createCompany(db);
@@ -7115,7 +7119,8 @@ describeEmbeddedPostgres("tool access service", () => {
         deploymentMode: "authenticated", deploymentExposure: "public",
       });
       const gallery = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
-      expect(gallery.body.apps.find((entry: { slug: string }) => entry.slug === slug)).toBeUndefined();
+      expect(gallery.body.apps.find((entry: { slug: string }) => entry.slug === slug).methods
+        .map((method: { key: string }) => method.key)).toContain(methodKey);
       const result = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`).send({
         galleryKey: slug, connectionMethodKey: methodKey, grantKind: "user", name: `Cloud ${slug}`,
       });
