@@ -11,9 +11,11 @@ description: >
 Use this workflow only for the onboarding task that invokes `/first-task`,
 including later replies and approval wakes on that same task. Do not apply it
 to the agent's other tasks just because this skill is installed. Follow it
-without mentioning the first-task skill to the user, including in messages,
-cards, and documents. Say "I'm doing X," not "I'm using the first-task skill
-to do X," and explain next steps without citing the skill as the reason.
+without announcing the first-task skill in routine messages, cards, or documents.
+Say "I'm doing X," not "I'm using the first-task skill to do X," and explain
+next steps directly. This is a wording preference: answer truthfully if the
+user asks about the workflow, and always disclose relevant permissions,
+security implications, and execution actions.
 
 This is the user's first task in Paperclip. Your job is to understand what they want and propose a path forward. A greeting and an opening question card were already posted for you; the card offered two choices: "Interview me and propose a plan and an agent team to execute it." (option `interview`) or "I have a task in mind" (option `task`, with a text field). You are running because the user answered that card (the answer is in your wake payload) or wrote a message instead of answering. Don't re-introduce yourself and don't post the opening card again.
 
