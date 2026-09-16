@@ -309,11 +309,18 @@ describe("ACPX runtime host", () => {
           { ...options, runtimeContext: context },
           dependencies,
         );
-        const message = JSON.stringify({
+        let message = JSON.stringify({
           schema: "paperclip.native-model-envelope.v2",
           task: { description: "Use /assigned", prompt: "A new direct user request" },
           interactionResponses: index ? [{ response: { status: "accepted" } }] : [],
         });
+        if (index === 1) {
+          // The provider command is internal overhead, not part of the caller's
+          // 1 MiB allowance. Keep the exact envelope even at that boundary.
+          message += " ".repeat(1024 * 1024 - Buffer.byteLength(message));
+          expect(() => host.startTurn({ text: `${message} `, requestId: "oversized" }))
+            .toThrow("turn text exceeds its bounded size");
+        }
         host.startTurn({ text: message, requestId: `skill-turn-${index}` });
         expect(providerStartTurn).toHaveBeenLastCalledWith({
           text: `/assigned ${message}`, requestId: `skill-turn-${index}`,

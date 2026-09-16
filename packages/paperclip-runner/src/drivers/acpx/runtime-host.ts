@@ -649,9 +649,12 @@ export class AcpxRuntimeHost {
       throw new Error("ACPX runtime host already has an active turn");
     }
     const requestId = boundedRequestId(input.requestId);
-    const text = boundedTurnText(claudeNativeSkillPrompt(
+    // Bound caller input before adding the provider's assigned-skill command.
+    // The command is internal framing; it must not consume the envelope's
+    // allowance or cause an otherwise valid envelope to be truncated/rejected.
+    const text = claudeNativeSkillPrompt(
       boundedTurnText(input.text), this.#claudeSkillNames,
-    ));
+    );
     const turn = this.#runtime.startTurn({
       text,
       requestId,
