@@ -418,6 +418,13 @@
       "localAsset": "/brands/apps/xero.svg"
     },
     {
+      "slug": "youcom",
+      "provider": "You.com",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/youcom.svg",
+      "darkAsset": "/brands/apps/youcom-dark.svg"
+    },
+    {
       "slug": "zapier",
       "provider": "Zapier",
       "catalogVisible": true,

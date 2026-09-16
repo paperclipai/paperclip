@@ -955,6 +955,7 @@ const categoryBySlug = {
   webflow: "content",
   wix: "content",
   xero: "commerce",
+  youcom: "ai",
   zapier: "productivity",
 };
 const oauthMethodFor = (
@@ -1041,6 +1042,11 @@ const apiKeySpec = {
     name: "Authorization",
     prefix: "Bearer ",
     placeholder: "sbp_...",
+  },
+  youcom: {
+    name: "Authorization",
+    prefix: "Bearer ",
+    placeholder: "Paste your You.com API key",
   },
 };
 const apiKeyMethodFor = (
@@ -1340,6 +1346,32 @@ const specialMethodsFor = (entry) => {
         warnings: [entry.prerequisite, warning],
         requiredResourceFilters: ["project"],
       }),
+    ];
+  }
+  if (entry.slug === "youcom") {
+    // You.com also serves a documented keyless profile at ?profile=free with a
+    // reduced read-only tool set. That is a real user choice: try web search
+    // with no account, or connect the full authenticated server.
+    return [
+      oauthMethodFor(entry),
+      apiKeyMethodFor(entry),
+      method(
+        "mcp-free",
+        "mcp_remote",
+        "none",
+        { serverUrl: "https://api.you.com/mcp?profile=free" },
+        entry.riskTier,
+        "Use the keyless free profile. You.com limits the free profile to a reduced read-only tool set.",
+        {
+          label: "Use the free profile",
+          whenToUse:
+            "Connect without an account for limited, rate-capped web search.",
+          consoleLinks: { docs: entry.docsUrl },
+          warnings: [
+            "The free profile is keyless and exposes a reduced read-only tool set with You.com rate limits.",
+          ],
+        },
+      ),
     ];
   }
   return null;
