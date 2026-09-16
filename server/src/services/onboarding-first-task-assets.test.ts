@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import {
   ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID,
   ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID,
@@ -81,6 +82,16 @@ describe("buildOnboardingFirstTaskBrief", () => {
     expect(brief).not.toContain("Take the path the user picked.");
     expect(brief).not.toContain("request_confirmation");
     expect(brief).not.toContain("request_checkbox_confirmation");
+  });
+});
+
+describe("first-task proposal mode policy", () => {
+  it("maps both persisted brief modes to their proposal forms", async () => {
+    const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toContain("`confirmation` means one `request_confirmation`");
+    expect(skill).toContain("`plan` means save a short `plan` document");
+    expect(skill).toContain("`request_checkbox_confirmation` targeting its saved revision");
+    expect(skill).toContain("explicit plan requests regardless of the single-task proposal mode");
   });
 });
 

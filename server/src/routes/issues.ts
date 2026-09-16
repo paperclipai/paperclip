@@ -11664,7 +11664,7 @@ export function issueRoutes(
           ? null
           : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
       // When this is genuinely the onboarding first task, the server owns the task
-      // description: assemble it from brief.md plus the proposal file the
+      // description: invoke the first-task skill and save the proposal mode the
       // enableFirstTaskPlanProposal toggle selects, read once here at creation
       // time, and ignore any client-supplied description. Flipping the toggle
       // later does not change an existing first task. Best-effort: a read failure

@@ -27,8 +27,9 @@ Work in this order.
 
 2. Propose, then wait for acceptance.
 
-   - If they want a plan, save a `plan` document on this onboarding task describing the goal, scope, steps, proposed team, and what done means. Ask them to accept it. Proposing a team does not authorize hiring it.
+   - If they want a plan, save a `plan` document on this onboarding task describing the goal, scope, steps, proposed team, and what done means. Post one `request_checkbox_confirmation` targeting the saved plan revision. A card or thread message alone is not a saved plan. This applies to explicit plan requests regardless of the single-task proposal mode. Proposing a team does not authorize hiring it.
    - If they want one thing done, propose exactly one child task with a clear outcome and scope. Ask them to accept it before creating the child. Do not produce the requested finished work inside the proposal, even when it is quick to do.
+   - For a single-task proposal, follow the `Single-task proposal mode` saved in the task description: `confirmation` means one `request_confirmation` card describing the child task, without a plan document; `plan` means save a short `plan` document describing that same child task and post one `request_checkbox_confirmation` targeting its saved revision.
    - Keep this task `in_review` while waiting. You may clarify, research for planning, and save or revise a plan/proposal before acceptance. Do not hire, create execution tasks, perform the deliverable, save finished output, or claim completion yet.
 
 3. Interpret the next reply against the latest proposal.

@@ -276,6 +276,7 @@ describe("ACPX runtime host", () => {
       aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot),
     };
     let skillsHome = "";
+    const providerStartTurn = vi.fn(() => runtimeTurn());
     let assigned = true;
     let expectedReference = "ASSIGNED_SKILL_MARKER";
     const dependencies = fixture.dependencies({
@@ -290,6 +291,7 @@ describe("ACPX runtime host", () => {
           expect((await stat(reference)).mode & 0o222).toBe(0);
         }
         return runtimePort({
+          startTurn: providerStartTurn,
           getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }),
         });
       },
@@ -307,12 +309,34 @@ describe("ACPX runtime host", () => {
           { ...options, runtimeContext: context },
           dependencies,
         );
+        const message = JSON.stringify({
+          schema: "paperclip.native-model-envelope.v2",
+          task: { description: "Use /assigned", prompt: "A new direct user request" },
+          interactionResponses: index ? [{ response: { status: "accepted" } }] : [],
+        });
+        host.startTurn({ text: message, requestId: `skill-turn-${index}` });
+        expect(providerStartTurn).toHaveBeenLastCalledWith({
+          text: `/assigned ${message}`, requestId: `skill-turn-${index}`,
+        });
         await host.close({ reason: "reopen test" });
         // A changed source must replace the prior materialized revision on resume.
         expectedReference = "UPDATED_ASSIGNED_SKILL_MARKER";
         await writeFile(join(skillRoot, "references", "answer.txt"), expectedReference);
         await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Updated instructions.\n---\nRead references/answer.txt before responding.");
       }
+      // The same agent's next ordinary task must not inherit the command.
+      const ordinary = await AcpxRuntimeHost.open(
+        { ...options, runtimeContext: context }, dependencies,
+      );
+      const ordinaryMessage = JSON.stringify({
+        schema: "paperclip.native-model-envelope.v2",
+        task: { description: "An ordinary task", prompt: "Mention /assigned in a note" },
+      });
+      ordinary.startTurn({ text: ordinaryMessage, requestId: "ordinary-task" });
+      expect(providerStartTurn).toHaveBeenLastCalledWith({
+        text: ordinaryMessage, requestId: "ordinary-task",
+      });
+      await ordinary.close({ reason: "ordinary task verified" });
       // No stale assignment survives a later launch without runtime context.
       assigned = false;
       const host = await AcpxRuntimeHost.open(options, dependencies);

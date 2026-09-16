@@ -64,9 +64,13 @@ Claude. Ordinary CEOs and other agents do not receive it automatically.
 
 The hidden description asks the agent to read and follow the skill before
 responding, including subsequent wakes on that task. The user does not need to
-type a slash command. This is a prompt-level invocation of an installed skill,
-not a separate model run. The skill applies only to the onboarding task that
-invokes it, not to every task assigned to that agent. The deterministic greeting,
+type a slash command. Native Codex sends the selected skill as a structured
+skill input. Native ACPX Claude invokes the assigned skill through its native
+`/first-task` command, with the complete task/wake envelope as the argument,
+on initial and resumed turns. Legacy adapters retain the brief's instruction
+to read the installed skill. None of these adds a separate model run. The skill
+applies only to the onboarding task that invokes it, not to every task assigned
+to that agent. The deterministic greeting,
 opening card, and initial no-wake behavior are unchanged.
 
 ## Updates
