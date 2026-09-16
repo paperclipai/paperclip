@@ -672,7 +672,7 @@ const ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE = 20;
 // catch site logs a constant, locally generated `errorKind` instead.
 const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
 const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
-const ORPHANED_ACTIVE_LEASE_SWEEP_ERROR_KIND = "sweep_failed";
+const ORPHANED_ACTIVE_LEASE_SWEEP_ERROR_KIND = "orphaned_active_lease_sweep_failed";
 
 // Read the stored retry attempt count as a safe value, directly in SQL. A
 // provider can write a malformed value under the attempts key. The type guard
@@ -18231,12 +18231,16 @@ export function heartbeatService(
         if (otherOwner) continue;
       }
 
+      // Keep the row's existing updatedAt value. The select above already
+      // proved the row is older than the backoff cutoff, so the
+      // pending_cleanup sweep can accept the same row in this same tick. A
+      // fresh timestamp here would push the row inside that sweep's own
+      // backoff window and delay the teardown by one full tick.
       const flipped = await db
         .update(environmentLeases)
         .set({
           status: "pending_cleanup",
           failureReason: "orphaned_active_lease_recovered",
-          updatedAt: new Date(),
         })
         .where(
           and(

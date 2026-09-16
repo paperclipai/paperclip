@@ -318,6 +318,42 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
       } as unknown as HeartbeatEnvironmentRuntime,
     });
 
+    // The periodic timer call uses a five-minute staleness threshold. The
+    // lease is older than that window, so the recovery flip and the
+    // pending_cleanup teardown both run in this one call.
+    await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+
+    expect(destroyRunLease).toHaveBeenCalledTimes(1);
+    const row = await leaseRow(leaseId);
+    expect(row?.status).toBe("expired");
+  });
+
+  it("test_stops_the_recovered_sandbox_on_the_startup_call", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });
+    const leaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runId,
+      updatedAt: oldEnough(),
+    });
+
+    const destroyRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => {
+      const now = new Date();
+      const row = await db
+        .update(environmentLeases)
+        .set({ status: "expired", cleanupStatus: "success", updatedAt: now })
+        .where(eq(environmentLeases.id, lease.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? { ...row, status: "expired" as const } : null;
+    });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: {
+        destroyRunLease,
+      } as unknown as HeartbeatEnvironmentRuntime,
+    });
+
     // The startup call uses a zero staleness threshold, so the new sweep and
     // the existing pending_cleanup sweep both act without a backoff delay,
     // and the recovered lease reaches the provider teardown in this one call.
@@ -326,5 +362,53 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     expect(destroyRunLease).toHaveBeenCalledTimes(1);
     const row = await leaseRow(leaseId);
     expect(row?.status).toBe("expired");
+  });
+
+  it("test_logs_a_distinct_error_kind_and_no_exception_field_when_the_sweep_fails", async () => {
+    const sentinel = "Bearer sk-SENTINEL-a1b2c3";
+    const realSelect = db.select.bind(db);
+    const selectSpy = vi
+      .spyOn(db, "select")
+      .mockImplementation((...args: Parameters<typeof db.select>) => {
+        const builder = realSelect(...args);
+        const realFrom = builder.from.bind(builder);
+        (builder as { from: unknown }).from = (table: unknown) => {
+          if (table === environmentLeases) {
+            const failure = new Error(`sweep query failed: ${sentinel}`);
+            failure.name = `SweepQueryError ${sentinel}`;
+            (failure as { code?: string }).code = `ESWEEP ${sentinel}`;
+            throw failure;
+          }
+          return realFrom(table as Parameters<typeof realFrom>[0]);
+        };
+        return builder;
+      });
+
+    try {
+      const heartbeat = heartbeatService(db, {
+        environmentRuntime: {
+          destroyRunLease: vi.fn(async () => null),
+        } as unknown as HeartbeatEnvironmentRuntime,
+      });
+
+      // The reaper isolates the sweep, so the reaper itself still resolves.
+      await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.toBeDefined();
+
+      const sweepCall = vi
+        .mocked(logger.error)
+        .mock.calls.find((call) => call[1] === "orphaned active environment lease sweep failed");
+      expect(sweepCall).toBeDefined();
+      const record = sweepCall?.[0] as Record<string, unknown>;
+
+      expect(JSON.stringify(record)).not.toContain(sentinel);
+      expect(record).not.toHaveProperty("err");
+      expect(record).not.toHaveProperty("errorName");
+      expect(record).not.toHaveProperty("errorCode");
+      expect(record).not.toHaveProperty("message");
+      expect(record).not.toHaveProperty("stack");
+      expect(record).toMatchObject({ errorKind: "orphaned_active_lease_sweep_failed" });
+    } finally {
+      selectSpy.mockRestore();
+    }
   });
 });
