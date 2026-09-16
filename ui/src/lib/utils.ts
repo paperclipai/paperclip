@@ -58,13 +58,17 @@ export function formatDate(date: Date | string): string {
   });
 }
 
-export function formatDateTime(date: Date | string): string {
+export function formatDateTime(
+  date: Date | string,
+  options: { includeSeconds?: boolean } = {},
+): string {
   return new Date(date).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    ...(options.includeSeconds ? { second: "2-digit" as const } : {}),
   });
 }
 

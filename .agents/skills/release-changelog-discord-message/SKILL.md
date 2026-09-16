@@ -11,7 +11,11 @@ description: >
 Write the Discord release announcement for the **stable** Paperclip release.
 
 This is the companion to `.agents/skills/release-changelog/SKILL.md`. That skill
-generates the file at `releases/vYYYY.MDD.P.md`. This skill turns that file into
+writes the changelog — during the beta soak it lives at
+`releases/beta/v{beta-version}.md` on the `release-notes/v{beta-version}`
+branch, and after the stable ships a canonicalization PR renames it to
+`releases/vYYYY.MDD.P.md` (see that skill's Channel Process section). This
+skill turns that file into
 a single copy-pasteable Discord block, in dotta's voice, and posts it as the
 `discord_announcement` document on the release issue.
 
@@ -27,8 +31,9 @@ current Paperclip work — not invented.
 
 ## When to use
 
-- After `release-changelog` has produced `releases/vYYYY.MDD.P.md` on the
-  release worktree/PR.
+- After `release-changelog` has produced the changelog (beta-keyed on the
+  `release-notes/v{beta-version}` branch during the soak, or the
+  canonicalized `releases/vYYYY.MDD.P.md` after the stable ships).
 - When the release issue (the one assigned by the release routine) asks for a
   Discord announcement, or has a `discord_announcement` document that needs to
   be refreshed for a new date/version.
@@ -123,6 +128,12 @@ Notes on the template:
 
 - The opening and closing `:paperclip: :paperclip: :paperclip:` bookends are
   part of the brand — keep them.
+- Name the install channels somewhere in the post: `npx paperclipai@latest`
+  for the stable, `@beta` / `@nightly` / `@canary` for earlier access, and
+  Docker `:latest` moving **only** on stable releases.
+- The FULL RELEASE NOTES link points at `releases/v{VERSION}.md` on
+  `master` — that file exists only after the post-stable canonicalization
+  PR merges. Merge it before the announcement is posted.
 - Sections may be UPPERCASE or Title Case — dotta has used both. Pick a style
   and stay consistent within a single post.
 - Use `||@everyone||` (Discord spoiler-wrapped) at the very end so it pings
@@ -152,6 +163,9 @@ Mimic this register; do not invent a "professional" tone.
 - **"WHATS NEXT" is forward-looking themes**, not a literal sprint list. 3–5
   bullets is the right size. Pull these from active goals, in-flight projects,
   and recent issues the team is working on — do not invent themes.
+- **Highlights follow the changelog skill's delta rule**: a feature the
+  previous announcement already introduced appears only for what changed
+  this release, and does not headline twice for follow-through work.
 - **"What's on my mind"** is dotta's personal/strategic thinking — docs gaps,
   philosophical positioning ("we're the human control plane for ai labor"),
   invitations ("if you've ever wanted to write about how you use Paperclip,
@@ -163,7 +177,8 @@ Mimic this register; do not invent a "professional" tone.
   (follow the twitter, intros, beta sign-ups). No real ask → drop it.
 - **Community** is the same contributors list that's in the changelog file,
   fenced in a triple-backtick block, comma-separated `@username, @username`.
-  Exclude bots and Paperclip founders, same rules as the changelog skill.
+  Exclude bots and the specific folks on the changelog skill's canonical
+  exclusion list — same rules.
 - **The "In Summary" mission line** evolves slowly. Use the most recent
   variant unless dotta tells you otherwise. Recent variants:
   - "PAPERCLIP IS THE AI ORCHESTRATOR FOR HUMANS TO ACCOMPLISH 100x MORE WORK"
@@ -174,15 +189,19 @@ Mimic this register; do not invent a "professional" tone.
 
 ## Workflow
 
-1. Read the matching `releases/vYYYY.MDD.P.md` produced by `release-changelog`.
-   Use the version and contributor list from that file — never re-derive them.
+1. Read the matching changelog produced by `release-changelog` — the
+   beta-keyed file during the soak, `releases/vYYYY.MDD.P.md` once
+   canonicalized. Use the version and contributor list from that file —
+   never re-derive them.
 2. Resolve the parent `release` case with key `paperclip-release:vYYYY.MDD.P`.
    If it does not exist and Cases are enabled, create it using the schema in
    `.agents/skills/release-changelog/SKILL.md` before creating child cases.
 3. Read the **release issue thread** (the one assigned to you that ran the
    release routine) — comments + linked issues + recent issues in the company
-   are the source for `WHATS NEXT` and `What's on my mind`. Pull real themes,
-   not invented ones.
+   are the source for `WHATS NEXT` and `What's on my mind`. Commits already
+   on `origin/master` **after** the beta source commit are prime "what's
+   next" material: they are literally the next release's content. Pull real
+   themes, not invented ones.
 4. Re-read the three verbatim examples below — they're the canonical voice.
 5. Draft the announcement using the template above.
 6. PUT it as the `discord_announcement` document on the release issue (see
@@ -444,7 +463,8 @@ https://github.com/paperclipai/paperclip/blob/master/releases/v2026.427.0.md
 Before handing off:
 
 1. Version + date match the matching `releases/vYYYY.MDD.P.md` exactly.
-2. Contributor list matches the changelog (same exclusions: bots, founders).
+2. Contributor list matches the changelog (same exclusions: bots and the
+   changelog skill's canonical excluded-folks list).
 3. Highlights are a subset of the changelog Highlights — same shipped features,
    not invented or pre-alpha work.
 4. `WHATS NEXT` and `What's on my mind` are pulled from real recent issues /

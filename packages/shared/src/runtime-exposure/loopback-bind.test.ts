@@ -13,16 +13,16 @@ describe("forceLoopbackBindInCommand", () => {
     // PAP-17256 reproduction: this is verbatim what `workspace_runtime_services`
     // recorded for every lane the broker denied.
     expect(forceLoopbackBindInCommand("pnpm dev --bind lan")).toBe(
-      "pnpm dev --bind custom --bind-host 127.0.0.1",
+      "pnpm dev --bind loopback",
     );
   });
 
   it("replaces an existing loopback-adjacent bind rather than duplicating it", () => {
     expect(forceLoopbackBindInCommand("pnpm dev --bind tailnet")).toBe(
-      "pnpm dev --bind custom --bind-host 127.0.0.1",
+      "pnpm dev --bind loopback",
     );
     expect(forceLoopbackBindInCommand("pnpm dev --bind custom --bind-host 10.0.0.4")).toBe(
-      "pnpm dev --bind custom --bind-host 127.0.0.1",
+      "pnpm dev --bind loopback",
     );
   });
 
@@ -33,7 +33,7 @@ describe("forceLoopbackBindInCommand", () => {
 
   it("handles the =-separated spelling", () => {
     expect(forceLoopbackBindInCommand("pnpm dev --bind=lan --bind-host=0.0.0.0")).toBe(
-      "pnpm dev --bind custom --bind-host 127.0.0.1",
+      "pnpm dev --bind loopback",
     );
   });
 
@@ -41,7 +41,7 @@ describe("forceLoopbackBindInCommand", () => {
     // A bare `pnpm dev` lets an old guest runner infer its bind from HOST, so the
     // flags must be added rather than assumed.
     expect(forceLoopbackBindInCommand("pnpm dev")).toBe(
-      "pnpm dev --bind custom --bind-host 127.0.0.1",
+      "pnpm dev --bind loopback",
     );
   });
 
@@ -49,19 +49,19 @@ describe("forceLoopbackBindInCommand", () => {
     // `isPaperclipDevRuntimeService` matches `--tailscale-auth` as a substring;
     // an explicit `--bind` already beats the alias in every dev-runner version.
     expect(forceLoopbackBindInCommand("pnpm dev:once --tailscale-auth")).toBe(
-      "pnpm dev:once --tailscale-auth --bind custom --bind-host 127.0.0.1",
+      "pnpm dev:once --tailscale-auth --bind loopback",
     );
   });
 
   it("never strips a value that is actually the next flag", () => {
     expect(forceLoopbackBindInCommand("pnpm dev --bind --verbose")).toBe(
-      "pnpm dev --bind --verbose --bind custom --bind-host 127.0.0.1",
+      "pnpm dev --bind --verbose --bind loopback",
     );
   });
 
   it("does not touch a --bind occurrence that is not a flag boundary", () => {
     expect(forceLoopbackBindInCommand("pnpm dev --no--bind lan")).toBe(
-      "pnpm dev --no--bind lan --bind custom --bind-host 127.0.0.1",
+      "pnpm dev --no--bind lan --bind loopback",
     );
   });
 
@@ -74,8 +74,9 @@ describe("forceLoopbackBindInCommand", () => {
     expect(forceLoopbackBindInCommand(fixture)).toBe(fixture);
   });
 
-  it("uses the loopback host constant", () => {
-    expect(forceLoopbackBindInCommand("pnpm dev")).toContain(RUNTIME_EXPOSURE_BIND_HOST);
+  it("uses the loopback preset without turning it into a custom bind", () => {
+    expect(forceLoopbackBindInCommand("pnpm dev")).toBe("pnpm dev --bind loopback");
+    expect(RUNTIME_EXPOSURE_BIND_HOST).toBe("127.0.0.1");
   });
 });
 

@@ -19,6 +19,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 const mockWorkspaceOperationService = vi.hoisted(() => ({
   listForExecutionWorkspace: vi.fn(),
   createRecorder: vi.fn(),
+  assertRuntimeControlAvailable: vi.fn(async () => undefined),
 }));
 
 const mockWorkspaceRuntimeLeaseService = vi.hoisted(() => ({
@@ -47,7 +48,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
   workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
-  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart"],
+  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
 }));
 
 vi.mock("../services/environment-runtime.js", () => ({

@@ -4,7 +4,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ActiveAgentsPanel } from "./ActiveAgentsPanel";
+import { ActiveAgentsPanel, AgentRunCard } from "./ActiveAgentsPanel";
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
@@ -28,10 +28,6 @@ vi.mock("../api/heartbeats", () => ({
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
-}));
-
-vi.mock("./Identity", () => ({
-  Identity: ({ name }: { name: string }) => <span>{name}</span>,
 }));
 
 vi.mock("./RunChatSurface", () => ({
@@ -156,6 +152,7 @@ describe("ActiveAgentsPanel", () => {
       anchor.textContent?.includes("more active/recent"),
     );
     expect(moreLink?.getAttribute("href")).toBe("/dashboard/live");
+    expect(container.textContent).not.toContain("Run output");
 
     await act(async () => {
       root.unmount();
@@ -189,6 +186,7 @@ describe("ActiveAgentsPanel", () => {
       limit: 50,
     });
     expect(container.textContent).not.toContain("more active/recent");
+    expect(container.textContent).not.toContain("Run output");
 
     await act(async () => {
       root.unmount();
@@ -224,12 +222,74 @@ describe("ActiveAgentsPanel", () => {
       const issueLink = [...container.querySelectorAll("a")].find((anchor) =>
         anchor.textContent?.includes("Phase 4B"),
       );
-      expect(issueLink?.textContent).toBe("PAP-3562 - Phase 4B: Implement LLM Wiki distillation UI");
+      expect(issueLink?.textContent).toContain("Phase 4B: Implement LLM Wiki distillation UI");
+      expect(issueLink?.textContent).toContain("PAP-3562");
       expect(issueLink?.getAttribute("href")).toBe("/issues/PAP-3562");
     });
 
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("keeps run outcomes distinct from the linked task status", async () => {
+    const root = createRoot(container);
+    const statuses = ["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"];
+    await act(async () => {
+      root.render(<>{statuses.map((status, index) => (
+        <AgentRunCard
+          key={status}
+          companyId="company-1"
+          run={{ ...createIssueRun(index, "issue-1"), status }}
+          issue={{ title: "Review release notes", identifier: "PAP-559", status: "in_review" }}
+        />
+      ))}</>);
+    });
+    const headers = [...container.querySelectorAll('a[aria-label$=". View run"]')];
+    expect(headers.map((header) => header.getAttribute("aria-label"))).toEqual([
+      "Agent 0 — Running. View run", "Agent 1 — Queued. View run",
+      "Agent 2 — Succeeded. View run", "Agent 3 — Failed. View run",
+      "Agent 4 — Timed out. View run", "Agent 5 — Cancelled. View run",
+      "Agent 6 — Interrupted. View run",
+    ]);
+    expect(headers.every((header) => header.querySelector("svg") === null)).toBe(true);
+    expect(container.querySelector(".status-chip")).toBeNull();
+    expect(container.querySelectorAll('[aria-label="Task in review"]')).toHaveLength(7);
+    expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(0);
+    expect(container.querySelector('a[aria-label="Agent 0 — Running. View run"]')?.getAttribute("href"))
+      .toBe("/agents/agent-0/runs/run-0");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a failed task lookup navigable and shows a clear error", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentRunCard companyId="company-1" run={createIssueRun(1, "issue-missing")} issueLoadFailed />);
+    });
+    expect(container.textContent).toContain("Task unavailable");
+    expect(container.querySelector('a[href="/issues/issue-missing"]')).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("does not animate running records while execution is reconnecting", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentRunCard
+        companyId="company-1"
+        run={{
+          ...createRun(0),
+          execution: {
+            phase: "reconnecting", label: "Reconnecting", cause: null,
+            lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+            recoveryOwner: "agent", nextAction: null, permittedActions: ["inspect_run"],
+            predecessorRunId: null, successorRunId: null,
+          },
+        }}
+      />);
+    });
+    expect(container.querySelector('a[aria-label="Agent 0 — Running. View run"]')).not.toBeNull();
+    expect(container.querySelector(".status-chip")).toBeNull();
+    expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(0);
+    await act(async () => root.unmount());
   });
 });

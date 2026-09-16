@@ -6,8 +6,13 @@ import type { AnchorHTMLAttributes, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import type { IssueRetryNowOutcome, IssueScheduledRetry } from "@paperclipai/shared";
+import type {
+  IssueRecoveryAction,
+  IssueRetryNowOutcome,
+  IssueScheduledRetry,
+} from "@paperclipai/shared";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { deriveRecoveryCardState } from "./IssueRecoveryActionCard";
 import { ToastProvider } from "../context/ToastContext";
 
 const retryNowMock = vi.hoisted(() => vi.fn());
@@ -777,5 +782,131 @@ describe("IssueBlockedNotice", () => {
     expect(indicator?.getAttribute("data-recovery-state")).toBe("needed");
     expect(indicator?.getAttribute("data-recovery-kind")).toBe("workspace_validation");
     expect(indicator?.textContent).toContain("Workspace recovery needed");
+  });
+
+  describe("owner-sticky retry lineage", () => {
+    function buildDispositionRepairAction(
+      wakePolicy: Record<string, unknown>,
+      overrides: Partial<IssueRecoveryAction> = {},
+    ): IssueRecoveryAction {
+      return {
+        id: "rec-3",
+        companyId: "co-1",
+        sourceIssueId: "blocker-3",
+        recoveryIssueId: null,
+        kind: "deliberate_wait_without_target",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: "agent-owner",
+        ownerUserId: null,
+        previousOwnerAgentId: "agent-owner",
+        returnOwnerAgentId: "agent-owner",
+        cause: "deliberate_wait_without_target",
+        fingerprint: "fp-3",
+        evidence: {},
+        nextAction: "Record a durable disposition.",
+        wakePolicy,
+        monitorPolicy: null,
+        attemptCount: 2,
+        maxAttempts: 5,
+        timeoutAt: null,
+        lastAttemptAt: null,
+        outcome: null,
+        resolutionNote: null,
+        resolvedAt: null,
+        createdAt: "2026-04-18T19:00:00.000Z",
+        updatedAt: "2026-04-18T19:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    function renderBlockerChip(
+      action: IssueRecoveryAction,
+      scheduledRetry?: IssueScheduledRetry | null,
+    ) {
+      return render(
+        <IssueBlockedNotice
+          issueStatus="blocked"
+          blockers={[
+            {
+              id: "blocker-3",
+              identifier: "PAP-777",
+              title: "Waiting on nothing",
+              status: "in_progress",
+              priority: "medium",
+              assigneeAgentId: null,
+              assigneeUserId: null,
+              activeRecoveryAction: action,
+              scheduledRetry,
+            },
+          ]}
+        />,
+      ).querySelector('[data-testid="issue-blocked-notice-recovery-indicator"]');
+    }
+
+    it("reports the same liveness state as the source task's recovery card", () => {
+      const liveAction = buildDispositionRepairAction({
+        type: "bounded_owner_disposition_repair",
+        retryAgentId: "agent-owner",
+        attempt: 2,
+        maxAttempts: 5,
+        // SYSTEM_NOW is 2026-04-18T20:00:00Z; three minutes out.
+        retryAt: "2026-04-18T20:03:00.000Z",
+        scheduledRunId: "run-b1",
+      });
+
+      const chip = renderBlockerChip(liveAction);
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("data-recovery-lane")).toBe("source_owner");
+      expect(chip?.textContent).toContain("Recovery in progress · 2/5");
+      expect(chip?.getAttribute("title")).toContain("Attempt 2 of 5 · next try in 3m");
+
+      // The card the blocker links to must not contradict the chip.
+      const cardState = deriveRecoveryCardState(liveAction);
+      expect(cardState).toBe(chip?.getAttribute("data-recovery-state"));
+    });
+
+    it("keeps the blocker chip in progress while the named retry run is live", () => {
+      const liveAction = buildDispositionRepairAction({
+        type: "bounded_owner_disposition_repair",
+        retryAgentId: "agent-owner",
+        attempt: 3,
+        maxAttempts: 5,
+        retryAt: "2026-04-18T19:58:00.000Z",
+        scheduledRunId: "run-b2",
+      });
+      const scheduledRetry: IssueScheduledRetry = {
+        ...baseRetry,
+        runId: "run-b2",
+        status: "running",
+        scheduledRetryAt: "2026-04-18T19:58:00.000Z",
+        scheduledRetryAttempt: 3,
+        scheduledRetryReason: "issue_disposition_repair",
+      };
+
+      const chip = renderBlockerChip(liveAction, scheduledRetry);
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.textContent).toContain("Recovery in progress · 3/5");
+      expect(chip?.getAttribute("title")).toContain("Attempt 3 of 5 · attempt running now");
+      expect(deriveRecoveryCardState(liveAction, { scheduledRetry })).toBe("in_progress");
+    });
+
+    it("escalates the blocker chip in step with the card when retries are exhausted", () => {
+      const exhaustedAction = buildDispositionRepairAction(
+        {
+          type: "bounded_owner_disposition_repair",
+          retryAgentId: "agent-owner",
+          attempt: 5,
+          maxAttempts: 5,
+          retryAt: "2026-04-18T19:59:00.000Z",
+        },
+        { attemptCount: 5 },
+      );
+
+      const chip = renderBlockerChip(exhaustedAction);
+      expect(chip?.getAttribute("data-recovery-state")).toBe("needed");
+      expect(chip?.textContent).toContain("Recovery needed");
+      expect(deriveRecoveryCardState(exhaustedAction)).toBe("needed");
+    });
   });
 });

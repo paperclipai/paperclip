@@ -9,6 +9,7 @@ import type { ToolCatalogEntry } from "@paperclipai/shared";
 import { TestPanel, errorHints } from "./TestPanel";
 
 const listTestAgentsMock = vi.hoisted(() => vi.fn());
+const getTestAgentAccessMock = vi.hoisted(() => vi.fn());
 const runTestCallMock = vi.hoisted(() => vi.fn());
 const getTestCallStatusMock = vi.hoisted(() => vi.fn());
 const declineActionRequestMock = vi.hoisted(() => vi.fn());
@@ -16,6 +17,8 @@ const declineActionRequestMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listTestAgents: (connectionId: string) => listTestAgentsMock(connectionId),
+    getTestAgentAccess: (connectionId: string, agentId: string) =>
+      getTestAgentAccessMock(connectionId, agentId),
     runTestCall: (connectionId: string, input: unknown) => runTestCallMock(connectionId, input),
     getTestCallStatus: (connectionId: string, actionRequestId: string) =>
       getTestCallStatusMock(connectionId, actionRequestId),
@@ -133,6 +136,7 @@ function agent(overrides: Record<string, unknown> = {}) {
     role: "engineer",
     title: "Engineer",
     status: "active",
+    orgDepth: 1,
     effectiveAccess: {
       connectionId: "conn-1",
       toolCount: 3,
@@ -176,12 +180,12 @@ const offEntry = catalogEntry({
 let container: HTMLDivElement;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let root: any;
+let client: QueryClient;
 
 function renderPanel(
   active: ToolCatalogEntry[] = [readEntry, writeAskEntry, offEntry],
   quarantined: ToolCatalogEntry[] = [],
 ) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root.render(
     <QueryClientProvider client={client}>
       <TestPanel connectionId="conn-1" appName="Google Sheets" active={active} quarantined={quarantined} />
@@ -193,11 +197,14 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   listTestAgentsMock.mockReset();
+  getTestAgentAccessMock.mockReset();
   runTestCallMock.mockReset();
   getTestCallStatusMock.mockReset();
   declineActionRequestMock.mockReset();
   listTestAgentsMock.mockResolvedValue({ agents: [agent()] });
+  getTestAgentAccessMock.mockResolvedValue({ access: agent().effectiveAccess });
   // Default ask-first polls report the request still waiting on approval.
   getTestCallStatusMock.mockResolvedValue({
     actionRequestId: "req-1",
@@ -218,11 +225,38 @@ afterEach(() => {
 });
 
 describe("TestPanel", () => {
-  it("renders the Test-as header and grouped actions with access badges", async () => {
+  it("shows a lightweight agent-loading state before requesting permissions", async () => {
+    listTestAgentsMock.mockImplementation(() => new Promise(() => undefined));
+
+    await act(async () => renderPanel());
+
+    expect(container.textContent).toContain("Loading agents…");
+    expect(container.querySelector(".animate-spin")).toBeTruthy();
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).not.toHaveLength(0);
+    expect(getTestAgentAccessMock).not.toHaveBeenCalled();
+  });
+
+  it("loads permissions only for the selected agent and reuses the cached summary", async () => {
     await act(async () => renderPanel());
     await flushReact();
 
-    expect(container.textContent).toContain("Test as");
+    expect(getTestAgentAccessMock).toHaveBeenCalledTimes(1);
+    expect(getTestAgentAccessMock).toHaveBeenCalledWith("conn-1", "agent-claude");
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(getTestAgentAccessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the test hierarchy and grouped actions with access badges", async () => {
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(container.textContent).toContain("Test an action");
+    expect(container.textContent).toContain("Agent");
     expect(container.textContent).toContain("ClaudeCoder");
     expect(container.textContent).toContain("Allowed for 1 action · Ask first for 1 action · Off for 1 action");
     expect(container.textContent).toContain("Read (1)");
@@ -231,13 +265,30 @@ describe("TestPanel", () => {
     expect(container.textContent).toContain("Allowed");
     expect(container.textContent).toContain("Ask first");
     expect(container.textContent).toContain("Off");
+    expect(container.querySelector(".bg-card")).toBeNull();
+  });
+
+  it("defaults to the highest-ranked accessible agent", async () => {
+    listTestAgentsMock.mockResolvedValue({
+      agents: [
+        agent({ id: "agent-report", name: "A report", orgDepth: 2 }),
+        agent({ id: "agent-root", name: "Root agent", orgDepth: 0 }),
+        agent({ id: "agent-manager", name: "Manager", orgDepth: 1 }),
+      ],
+    });
+
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(container.textContent).toContain("Root agent");
+    expect(container.textContent).not.toContain("A report");
   });
 
   it("shows the empty state when there are no actions", async () => {
     await act(async () => renderPanel([]));
     await flushReact();
     expect(container.textContent).toContain("Nothing to test yet");
-    expect(container.textContent).toContain("Go to Setup");
+    expect(container.textContent).toContain("Go to Permissions");
   });
 
   it("renders an allowed result panel with a row-count headline after a successful run", async () => {
@@ -443,17 +494,13 @@ describe("TestPanel", () => {
   });
 
   it("shows the 'Last changed by' audit hint when the access summary carries one", async () => {
-    listTestAgentsMock.mockResolvedValue({
-      agents: [
-        agent({
-          effectiveAccess: {
-            ...agent().effectiveAccess,
-            lastChangedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
-            lastChangedByAgentId: "agent-admin",
-            lastChangedByName: "Dotta",
-          },
-        }),
-      ],
+    getTestAgentAccessMock.mockResolvedValue({
+      access: {
+        ...agent().effectiveAccess,
+        lastChangedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        lastChangedByAgentId: "agent-admin",
+        lastChangedByName: "Dotta",
+      },
     });
     await act(async () => renderPanel());
     await flushReact();

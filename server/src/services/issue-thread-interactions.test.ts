@@ -14,7 +14,10 @@ type SelectRow = Record<string, unknown>;
 function createSelectChain(rows: SelectRow[]) {
   return {
     from() {
-      return {
+      const query = {
+        innerJoin() {
+          return query;
+        },
         where() {
           return {
             then(callback: (rows: SelectRow[]) => unknown) {
@@ -23,6 +26,7 @@ function createSelectChain(rows: SelectRow[]) {
           };
         },
       };
+      return query;
     },
   };
 }
@@ -35,6 +39,7 @@ function createFakeDb(args: {
   const issueTouches: Array<Record<string, unknown>> = [];
   const interactionUpdates: Array<Record<string, unknown>> = [];
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
+  const inserts: Array<{ table: string; values: Record<string, unknown> }> = [];
   let selectCallCount = 0;
 
   const db: any = {
@@ -66,7 +71,11 @@ function createFakeDb(args: {
         };
       },
     })),
-    insert: vi.fn(),
+    insert: vi.fn((table: unknown) => ({
+      values: async (values: Record<string, unknown>) => {
+        inserts.push({ table: getTableName(table as never), values });
+      },
+    })),
     transaction: async (callback: (tx: typeof db) => Promise<void>) => callback(db),
   };
 
@@ -76,6 +85,7 @@ function createFakeDb(args: {
     issueTouches,
     interactionUpdates,
     toolActionRequestUpdates,
+    inserts,
   };
 }
 
@@ -158,8 +168,12 @@ describe("issueThreadInteractionService", () => {
       updatedAt: new Date("2026-04-20T10:00:00.000Z"),
     };
 
+    let selectCallCount = 0;
     const db: any = {
-      select: vi.fn(() => createSelectChain([existingRow])),
+      select: vi.fn(() => {
+        selectCallCount += 1;
+        return createSelectChain(selectCallCount <= 2 ? [existingRow] : []);
+      }),
       insert: vi.fn(),
       update: vi.fn(),
     };
@@ -262,6 +276,16 @@ describe("issueThreadInteractionService", () => {
     });
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);
+    expect(state.inserts).toEqual([
+      expect.objectContaining({
+        table: "issue_question_response_deliveries",
+        values: expect.objectContaining({
+          interactionId: "interaction-2",
+          correlationId: "question-response:interaction-2",
+          payloadSha256: expect.any(String),
+        }),
+      }),
+    ]);
   });
 
   it("withdraws a pending interaction with attribution and rejects repeats", async () => {

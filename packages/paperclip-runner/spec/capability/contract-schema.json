@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.ai/schemas/capability-row.json",
+  "title": "Capability traceability row",
+  "type": "object",
+  "required": ["id", "sourceAnchor", "primaryDisposition", "semanticOperation", "expectedMockState"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "sourceAnchor": { "type": "string", "minLength": 1 },
+    "primaryDisposition": {
+      "enum": ["control_plane_owned", "always_agent_tool", "optional_agent_tool"]
+    },
+    "semanticOperation": { "type": "string" },
+    "expectedMockState": { "type": "string" }
+  },
+  "additionalProperties": true
+}
