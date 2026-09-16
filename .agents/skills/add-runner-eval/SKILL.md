@@ -36,7 +36,7 @@ python3 evals/paperclip-runner/tools/eval_program.py validate \
   --case evals/paperclip-runner/cases/get-task-context.json \
   --config evals/paperclip-runner/configs/live-codex-pinned.json
 python3 evals/paperclip-runner/tools/run_live_roster.py validate \
-  --roster evals/paperclip-runner/rosters/live-mini.json
+  --roster evals/paperclip-runner/rosters/live-mini.json --run-id validate-new-case
 python3 evals/paperclip-runner/tools/run_live_campaign.py validate \
   --campaign evals/paperclip-runner/campaigns/live-direct-full.json
 python3 evals/paperclip-runner/tools/reliability_campaign.py validate \

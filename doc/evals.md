@@ -192,14 +192,16 @@ For a pre-merge preview, pass `--docs-ref <branch-or-sha>` to link the guide
 at that revision. The default guide link uses `master`.
 
 Publish with the [Paperclip page helper](../.agents/skills/paperclip-page/SKILL.md)
-and the configured page-uploader credentials:
+and the configured page-uploader credentials. Use Bash 4 or newer; macOS's
+system Bash 3 cannot run this helper. On macOS with Homebrew Bash installed,
+put `$(brew --prefix bash)/bin` first in `PATH` before these commands:
 
 ```sh
 export PAPERCLIP_PAGE_BUCKET=pages.paperclip.ing
 export PAPERCLIP_PAGE_BASE_URL=https://pages.paperclip.ing
 export AWS_REGION=us-east-1
-.agents/skills/paperclip-page/scripts/publish.sh .paperclip/evals-hub --slug evals --dry-run
-.agents/skills/paperclip-page/scripts/publish.sh .paperclip/evals-hub --slug evals
+bash .agents/skills/paperclip-page/scripts/publish.sh .paperclip/evals-hub --slug evals --dry-run
+bash .agents/skills/paperclip-page/scripts/publish.sh .paperclip/evals-hub --slug evals
 ```
 
 For later refreshes, rebuild in the same output directory and publish with
