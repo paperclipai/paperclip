@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "candid",
+  "name": "Candid",
+  "description": "Connect Candid's provider-hosted MCP server.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/candid.png"
+  },
+  "urlPatterns": [
+    "https://mcp.candid.org/*"
+  ],
+  "docsUrl": "https://learning.candid.org/getting-started-with-the-candid-mcp-connector/375441",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.candid.org/mcp"
+      },
+      "guidanceMd": "Connect Candid in the browser. A Candid account with access to the MCP connector.",
+      "riskTier": "S2",
+      "label": "Sign in with Candid",
+      "consoleLinks": {
+        "docs": "https://learning.candid.org/getting-started-with-the-candid-mcp-connector/375441"
+      },
+      "warnings": [
+        "A Candid account with access to the MCP connector."
+      ]
+    }
+  ]
+}

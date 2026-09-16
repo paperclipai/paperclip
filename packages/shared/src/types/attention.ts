@@ -11,6 +11,7 @@ export const ATTENTION_SOURCE_KINDS = [
   "issue_thread_interaction",
   "join_request",
   "recovery_action",
+  // Legacy persisted decision sources remain readable; no feed items are generated.
   "productivity_review",
   "blocker_attention",
   "review",
@@ -207,7 +208,9 @@ export interface AttentionResolverAudience {
   resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
   /** Agent the card is addressed to, when it names one. */
   addresseeAgentId: string | null;
-  /** Display name of {@link addresseeAgentId}, resolved server-side. */
+  /** User the card is addressed to, when it names one. */
+  addresseeUserId?: string | null;
+  /** Display name of the agent addressee, resolved server-side. */
   addresseeName: string | null;
   /** Agent that created the card, excluded when the policy is `not_creator`. */
   createdByAgentId: string | null;

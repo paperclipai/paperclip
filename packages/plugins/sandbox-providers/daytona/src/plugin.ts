@@ -23,6 +23,8 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginEnvironmentGetInteractiveSetupParams,
   PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentLease,
@@ -31,6 +33,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentStartInteractiveSetupParams,
   PluginEnvironmentSyncInParams,
@@ -617,6 +620,8 @@ function leaseMetadata(input: {
   shellCommand: "bash" | "sh";
   remoteCwd: string;
   resumedLease: boolean;
+  resumedFromState?: string | null;
+  sandboxState?: string | null;
   workspaceSentinel?: WorkspaceSentinelResult;
 }) {
   return {
@@ -624,7 +629,7 @@ function leaseMetadata(input: {
     shellCommand: input.shellCommand,
     sandboxId: input.sandbox.id,
     sandboxName: input.sandbox.name,
-    sandboxState: input.sandbox.state ?? null,
+    sandboxState: input.sandboxState ?? input.sandbox.state ?? null,
     image: input.config.image,
     snapshot: input.config.snapshot,
     target: input.sandbox.target,
@@ -635,6 +640,9 @@ function leaseMetadata(input: {
     ...(input.config.archiveOnRelease ? { archiveOnRelease: true } : {}),
     remoteCwd: input.remoteCwd,
     resumedLease: input.resumedLease,
+    ...(input.resumedLease
+      ? { resumedFromState: input.resumedFromState ?? null }
+      : {}),
     // Record the resources Paperclip attempted to request so future diagnosis
     // can compare requested allocation against what Daytona provisioned.
     ...(input.config.cpu != null ? { cpu: input.config.cpu } : {}),
@@ -957,7 +965,9 @@ function sandboxAccountDiscriminator(config: DaytonaDriverConfig): string {
   return createHash("sha256")
     .update(stableStringify({
       apiUrl: config.apiUrl,
-      target: config.target,
+      // Target is a creation placement hint, not account identity: the SDK
+      // resolves existing sandboxes by ID. Lease metadata fills an omitted
+      // target with the actual region, which must not split admission state.
       apiKey: resolvedApiKey,
     }))
     .digest("hex");
@@ -1118,7 +1128,11 @@ const sandboxHandleActivityGates = (() => {
     gates.clear();
   }
 
-  return { begin, waitForIdle, end, reset };
+  function isActive(scope: SandboxScope): boolean {
+    return gates.has(sandboxHandleCacheKey(scope));
+  }
+
+  return { begin, waitForIdle, isActive, end, reset };
 })();
 
 type SandboxLeaseAdmissionOptions = {
@@ -1304,6 +1318,34 @@ const sandboxHandleCache = (() => {
   return { get, seed, clear, reset, markFresh, findByProviderLeaseId };
 })();
 
+// Preview credentials can rotate without a sandbox restart, so they must not
+// define endpoint generation. Daytona's lifecycle revision does: refreshData
+// updates `updatedAt` after stop/start. When Daytona does not expose a
+// lifecycle revision, the in-memory generation remains stable for the worker.
+const runnerIngressGenerationStore = (() => {
+  const entries = new Map<
+    string,
+    { revision: string | null; generation: string }
+  >();
+
+  function get(sandbox: Sandbox): string {
+    const revision = sandbox.updatedAt ?? sandbox.createdAt ?? null;
+    const current = entries.get(sandbox.id);
+    if (current && current.revision === revision) return current.generation;
+    const generation = createHash("sha256")
+      .update(`${sandbox.id}\0${revision ?? randomUUID()}`)
+      .digest("hex");
+    entries.set(sandbox.id, { revision, generation });
+    return generation;
+  }
+
+  function reset(): void {
+    entries.clear();
+  }
+
+  return { get, reset };
+})();
+
 // Advisory writable-set store. It holds, per lease scope, the sandbox
 // directories that a sync operation declared read-write (`access: "rw"`). The
 // store is advisory and best-effort in-memory state: it adds no security (the
@@ -1422,6 +1464,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleLeaseAdmissionStates.reset();
   sandboxHandleWritableDirs.reset();
   sandboxHandleSessionStore.reset();
+  runnerIngressGenerationStore.reset();
 }
 
 /**
@@ -2150,69 +2193,88 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
+    // A confirmed stop may precede completion of an old SDK request. Do not
+    // restart its sandbox under that request; it could still write or execute.
+    if (sandboxHandleLeaseAdmissionStates.isClosed(scope) && sandboxHandleActivityGates.isActive(scope)) {
+      throw new Error("The stopped Daytona sandbox is still settling cancelled work. Retry shortly.");
+    }
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
         return { providerLeaseId: null, metadata: { expired: true } };
       }
 
-      // A stopped sandbox loses its session shell, so the stored session id is
-      // stale after a real restart. Clear the id only when the sandbox is not
-      // already running, and clear it before the restart. A stopped sandbox has
-      // no live session, so the clear drops a dead id and a later command opens
-      // a fresh session. A running sandbox keeps its live session, so the resume
-      // leaves the id in place; a concurrent command still finds it and teardown
-      // deletes one session. An unconditional clear would drop the id of a live
-      // session and leak its shell until sandbox reaping.
-      if (sandbox.state !== "started") {
-        sandboxHandleSessionStore.clear(scope);
-        // A stopped sandbox loses its pseudo-terminals, so a stored duplex channel
-        // is dead after a real restart. Close and drop every channel on this lease
-        // before the restart, so no stale channel id survives the resume.
-        await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
-      }
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-      try {
-      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
-      // C3: a resumed lease must clear the workspace sentinel before it is
-      // trusted, even when the handle came from the cache. On any non-match we
-      // evict the cached handle and expire the lease so a stale/foreign sandbox
-      // is never reused on the subsequent (sentinel-skipping) exec path.
-      const workspaceSentinel = await verifyWorkspaceSentinel({
-        sandbox,
-        remoteCwd,
-        leaseMetadata: params.leaseMetadata,
-        timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
-      });
-      if (workspaceSentinel.result !== "matched") {
-        evictSandboxHandle(scope);
-        return { providerLeaseId: null, metadata: { expired: true, workspaceSentinel } };
-      }
-      const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-      sandboxHandleCache.markFresh(scope);
-      sandboxHandleLeaseAdmissionStates.open(scope);
-      return {
-        providerLeaseId: sandbox.id,
-        metadata: leaseMetadata({
-          config,
-          sandbox,
-          shellCommand,
-          remoteCwd,
-          resumedLease: true,
-          workspaceSentinel,
-        }),
-      };
-      } catch (error) {
-        evictSandboxHandle(scope);
-        await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
-        throw error;
-      }
-    }, { allowClosed: true });
+        // A stopped sandbox loses its session shell, so the stored session id is
+        // stale after a real restart. Clear the id only when the sandbox is not
+        // already running, and clear it before the restart. A stopped sandbox has
+        // no live session, so the clear drops a dead id and a later command opens
+        // a fresh session. A running sandbox keeps its live session, so the resume
+        // leaves the id in place; a concurrent command still finds it and teardown
+        // deletes one session. An unconditional clear would drop the id of a live
+        // session and leak its shell until sandbox reaping.
+        if (sandbox.state !== "started") {
+          sandboxHandleSessionStore.clear(scope);
+          // A stopped sandbox loses its pseudo-terminals, so a stored duplex channel
+          // is dead after a real restart. Close and drop every channel on this lease
+          // before the restart, so no stale channel id survives the resume.
+          await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+        }
+        const resumedFromState = sandbox.state ?? null;
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        try {
+          const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+          // C3: a resumed lease must clear the workspace sentinel before it is
+          // trusted, even when the handle came from the cache. On any non-match we
+          // evict the cached handle and expire the lease so a stale/foreign sandbox
+          // is never reused on the subsequent (sentinel-skipping) exec path.
+          const workspaceSentinel = await verifyWorkspaceSentinel({
+            sandbox,
+            remoteCwd,
+            leaseMetadata: params.leaseMetadata,
+            timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
+          });
+          if (workspaceSentinel.result !== "matched") {
+            evictSandboxHandle(scope);
+            return {
+              providerLeaseId: null,
+              metadata: { expired: true, workspaceSentinel },
+            };
+          }
+          const shellCommand = await detectSandboxShellCommand(
+            sandbox,
+            toTimeoutSeconds(config.timeoutMs),
+          );
+          sandboxHandleCache.markFresh(scope);
+          sandboxHandleLeaseAdmissionStates.open(scope);
+          return {
+            providerLeaseId: sandbox.id,
+            metadata: leaseMetadata({
+              config,
+              sandbox,
+              shellCommand,
+              remoteCwd,
+              resumedLease: true,
+              resumedFromState,
+              sandboxState: "started",
+              workspaceSentinel,
+            }),
+          };
+        } catch (error) {
+          evictSandboxHandle(scope);
+          // A timeout, rate limit, or provider 5xx does not prove this sandbox is
+          // lost. Preserve the exact resource and let the host retry its recorded
+          // lease; replacement is permitted only after an explicit not-found or
+          // an immutable workspace identity mismatch.
+          throw error;
+        }
+      },
+      { allowClosed: true },
+    );
   },
 
   async onEnvironmentReleaseLease(
     params: PluginEnvironmentReleaseLeaseParams,
-  ): Promise<void> {
+  ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
     const scope: SandboxScope = {
@@ -2229,15 +2291,28 @@ const plugin = definePlugin({
     sandboxHandleLeaseAdmissionStates.close(scope);
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
-      if (!sandbox) return;
+      if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
 
       evictSandboxHandle(scope);
+      if (params.cancelActiveWork) {
+        // Graceful release waits for activity below. Stop must not wait on the
+        // command it is cancelling. Admission is already closed for this lease.
+        const timeoutSeconds = Math.min(toTimeoutSeconds(config.timeoutMs), 30);
+        await withLivenessTimeout("sandbox.refreshData", Math.min(config.livenessTimeoutMs, 30_000), () => sandbox.refreshData());
+        if (sandbox.state !== "stopped") await sandbox.stop(timeoutSeconds);
+        sandboxHandleSessionStore.clear(scope);
+        await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+        return { providerLeaseId: params.providerLeaseId, state: "stopped" };
+      }
       await sandboxHandleActivityGates.waitForIdle(scope);
       await teardownSession(sandbox, scope);
       // Close every duplex channel on this lease before the stop or the delete,
       // so no channel outlives the sandbox and no stored channel id survives.
       await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
 
+      // A cached stopped state is not a receipt: the resource could have been
+      // resumed since the handle was cached. Read provider state at this boundary.
+      await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
           try {
@@ -2246,14 +2321,11 @@ const plugin = definePlugin({
             console.warn(
               `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
             );
-            await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch((deleteError) => {
-              console.warn(
-                `Failed to delete Daytona sandbox after stop failure: ${formatErrorMessage(deleteError)}`,
-              );
-            });
+            await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+            return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
           }
         }
-        return;
+        return { providerLeaseId: params.providerLeaseId, state: "stopped" };
       }
 
       if (config.archiveOnRelease) {
@@ -2263,7 +2335,7 @@ const plugin = definePlugin({
           }
           await sandbox.setAutoDeleteInterval(ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES);
           await sandbox.archive();
-          return;
+          return { providerLeaseId: params.providerLeaseId, state: "stopped" };
         } catch (error) {
           console.warn(
             `Failed to archive Daytona sandbox during lease release: ${formatErrorMessage(error)}. Falling back to delete.`,
@@ -2271,7 +2343,8 @@ const plugin = definePlugin({
         }
       }
 
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+      return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
@@ -2280,7 +2353,7 @@ const plugin = definePlugin({
 
   async onEnvironmentDestroyLease(
     params: PluginEnvironmentDestroyLeaseParams,
-  ): Promise<void> {
+  ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
     const scope: SandboxScope = {
@@ -2296,7 +2369,7 @@ const plugin = definePlugin({
     sandboxHandleLeaseAdmissionStates.close(scope);
     try {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
-      if (!sandbox) return;
+      if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
 
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
@@ -2304,7 +2377,8 @@ const plugin = definePlugin({
       // Close every duplex channel on this lease before the delete, so no channel
       // outlives the sandbox and no stored channel id survives.
       await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+      return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
@@ -2632,7 +2706,6 @@ const plugin = definePlugin({
         },
       });
       const getDurationMs = timingNow() - getStart;
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
       const scope: SandboxScope = {
         driverKey: params.driverKey,
         companyId: params.companyId,
@@ -2640,6 +2713,13 @@ const plugin = definePlugin({
         providerLeaseId,
         config,
       };
+      if (sandbox.state !== "started") {
+        // A provider restart destroys Daytona process sessions. Drop the stale
+        // session id before starting the sandbox so runnerd recovery opens a
+        // new session instead of retrying a dead one for its whole grace.
+        sandboxHandleSessionStore.clear(scope);
+      }
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
       // Dispatch the command. A normal command runs in the persistent session:
       // the provider opens the one session on a cache miss and runs every command
       // in it. The provider never falls back to a one-shot command to open a
@@ -2666,6 +2746,70 @@ const plugin = definePlugin({
         metadata: { ...(result.metadata ?? {}), getDurationMs, cacheHit },
       };
     });
+  },
+
+  async onEnvironmentRunnerIngressEndpoint(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ): Promise<PluginEnvironmentRunnerIngressEndpoint> {
+    if (params.port !== 43_127) {
+      throw new Error("Daytona runner ingress must use fixed port 43127.");
+    }
+    if (!/^\/api\/runner\/v1\/connect\/[^/?#]+$/.test(params.path)) {
+      throw new Error("Daytona runner ingress path is invalid.");
+    }
+    const providerLeaseId = params.lease.providerLeaseId;
+    if (!providerLeaseId) {
+      throw new Error("Daytona runner ingress requires a provider lease id.");
+    }
+    const config = parseDriverConfig(params.config);
+    return await withSandboxActivityGate(
+      {
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId,
+        config,
+      },
+      async () => {
+        const sandbox = await getSandbox({
+          driverKey: params.driverKey,
+          companyId: params.companyId,
+          environmentId: params.environmentId,
+          providerLeaseId,
+          config,
+        });
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await withLivenessTimeout(
+          "sandbox.refreshData",
+          config.livenessTimeoutMs,
+          () => sandbox.refreshData(),
+        );
+        const preview = await sandbox.getPreviewLink(params.port);
+        if (typeof preview.url !== "string" || typeof preview.token !== "string") {
+          throw new Error("Daytona returned an incomplete private preview endpoint.");
+        }
+        const url = new URL(preview.url);
+        if (
+          url.protocol !== "https:" ||
+          url.username ||
+          url.password ||
+          url.search ||
+          url.hash
+        ) {
+          throw new Error("Daytona returned an invalid private preview URL.");
+        }
+        url.protocol = "wss:";
+        url.pathname = `${url.pathname.replace(/\/$/, "")}${params.path}`;
+        return {
+          kind: "authenticated_websocket",
+          websocketUrl: url.toString(),
+          secretHeaders: [
+            { name: "X-Daytona-Preview-Token", value: preview.token },
+          ],
+          generation: runnerIngressGenerationStore.get(sandbox),
+        };
+      },
+    );
   },
 
   // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
@@ -2724,18 +2868,28 @@ const plugin = definePlugin({
       providerLeaseId: params.lease.providerLeaseId,
       config,
     };
-    return await withSandboxActivityGate(scope, async () => {
-      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
-      await ensureSandboxStarted(sandbox, timeoutSeconds);
-      const result = await performSyncOut({
-        sandbox,
-        operations: params.operations,
-        remoteDir,
-        timeoutSeconds,
+    try {
+      return await withSandboxActivityGate(scope, async () => {
+        const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+        await ensureSandboxStarted(sandbox, timeoutSeconds);
+        const result = await performSyncOut({
+          sandbox,
+          operations: params.operations,
+          remoteDir,
+          timeoutSeconds,
+        });
+        sandboxHandleCache.markFresh(scope);
+        return result;
       });
-      sandboxHandleCache.markFresh(scope);
-      return result;
-    });
+    } catch (error) {
+      // A deleted Daytona sandbox is the one provider failure that proves its
+      // unexported workspace bytes no longer exist. Convert the SDK class to a
+      // stable cross-worker message; every other error remains retryable.
+      if (error instanceof DaytonaNotFoundError) {
+        throw new Error("daytona_sandbox_not_found");
+      }
+      throw error;
+    }
   },
 
   // Open one live login pseudo-terminal. Resolve the cached sandbox by the
@@ -2766,15 +2920,16 @@ const plugin = definePlugin({
     daytonaLoginPtyByRoute.set(params.hostRouteId, entry);
     daytonaLoginPtyBySession.set(workerSessionId, entry);
     // Register the output listener before the first input, so no early output
-    // chunk is lost. The client stamps the worker session id, so the host binds
-    // the output to the open route.
+    // chunk is lost. The client stamps the host route identifier and the worker
+    // session identifier, so the host can hold more than one concurrent login
+    // pseudo-terminal on this worker and binds the output to its own route.
     session.onData((chunk) => {
-      pluginContext?.loginPty.output(workerSessionId, chunk);
+      pluginContext?.loginPty.output(params.hostRouteId, workerSessionId, chunk);
     });
     // Forward the child exit one time. The host resolves the login run on it.
     void session.wait().then(
-      (result) => pluginContext?.loginPty.exit(workerSessionId, result.exitCode),
-      () => pluginContext?.loginPty.exit(workerSessionId, null),
+      (result) => pluginContext?.loginPty.exit(params.hostRouteId, workerSessionId, result.exitCode),
+      () => pluginContext?.loginPty.exit(params.hostRouteId, workerSessionId, null),
     );
     return { workerSessionId };
   },
@@ -2915,6 +3070,7 @@ const plugin = definePlugin({
       await entry.session.close().catch(() => undefined);
     }
     sandboxHandleCache.reset();
+    runnerIngressGenerationStore.reset();
   },
 });
 

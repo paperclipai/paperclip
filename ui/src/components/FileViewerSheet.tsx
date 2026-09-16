@@ -936,7 +936,7 @@ interface FileViewerBodyProps {
   onFallbackToProject: null | (() => void);
 }
 
-function FileViewerBody({
+export function FileViewerBody({
   resolveQuery,
   contentQuery,
   elapsedMs,

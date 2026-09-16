@@ -1,8 +1,12 @@
 import { z } from "zod";
 import {
+  CONNECTION_REQUEST_TOOL_DESCRIPTION,
+  CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
   addIssueCommentSchema,
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
+  connectionRequestInputSchema,
+  connectionsSearchInputSchema,
   createApprovalSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
@@ -49,6 +53,35 @@ function makeTool<TSchema extends z.ZodRawShape>(
 function parseOptionalJson(raw: string | undefined | null): unknown {
   if (!raw || raw.trim().length === 0) return undefined;
   return JSON.parse(raw);
+}
+
+async function callRuntimeConnectionTool(
+  endpointEnv: "PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL" | "PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL",
+  body: unknown,
+) {
+  const endpoint = process.env[endpointEnv]?.trim();
+  const token = process.env.PAPERCLIP_RUNTIME_TOOLS_TOKEN?.trim();
+  if (!endpoint || !token) {
+    throw new Error("Connection intent tools are available only inside an active Paperclip heartbeat run");
+  }
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const parsed = text ? JSON.parse(text) as unknown : null;
+  if (!response.ok) {
+    const message = parsed && typeof parsed === "object" && "error" in parsed
+      ? String((parsed as { error: unknown }).error)
+      : `Runtime connection tool failed with ${response.status}`;
+    throw new Error(message);
+  }
+  return parsed;
 }
 
 const companyIdOptional = z.string().guid().optional().nullable();
@@ -236,6 +269,24 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
 
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
   return [
+    makeTool(
+      "connections_search",
+      CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
+      connectionsSearchInputSchema,
+      async (input) => callRuntimeConnectionTool(
+        "PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL",
+        input,
+      ),
+    ),
+    makeTool(
+      "connection_request",
+      CONNECTION_REQUEST_TOOL_DESCRIPTION,
+      connectionRequestInputSchema,
+      async (input) => callRuntimeConnectionTool(
+        "PAPERCLIP_RUNTIME_TOOLS_CONNECTION_REQUEST_URL",
+        input,
+      ),
+    ),
     makeTool(
       "paperclipMe",
       "Get the current authenticated Paperclip actor details",

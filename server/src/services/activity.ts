@@ -1,3 +1,4 @@
+import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -85,6 +86,7 @@ export function activityService(db: Db) {
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
+        'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
         'billingType', coalesce(${heartbeatRuns.resultJson} -> 'billingType', ${heartbeatRuns.resultJson} -> 'billing_type'),
         'billing_type', coalesce(${heartbeatRuns.resultJson} -> 'billing_type', ${heartbeatRuns.resultJson} -> 'billingType'),
         'costUsd', coalesce(
@@ -369,9 +371,10 @@ export function activityService(db: Db) {
         .select()
         .from(activityLog)
         .where(
-          and(
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, issueId),
+          or(
+            and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)),
+            and(eq(activityLog.action, "project.created"), sql`${activityLog.details}->>'sourceIssueId' = ${issueId}`,
+              sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
           ),
         )
         .orderBy(desc(activityLog.createdAt)),
@@ -381,6 +384,7 @@ export function activityService(db: Db) {
       const runs = await db
         .select({
           runId: heartbeatRuns.id,
+          runtimeMode: heartbeatRuns.runtimeMode,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
           adapterType: agents.adapterType,
@@ -402,6 +406,10 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
+          wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
+          wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
+          contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
+          contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -480,6 +488,7 @@ export function activityService(db: Db) {
         }
       }
 
+      const executionByRunId = await executionProjectionsForRuns(db, companyId, runIds);
       return runs.map((run) => {
         const leaseRow = leaseByRunId.get(run.runId);
         const leaseMetadata = leaseRow?.lease.metadata ?? null;
@@ -491,6 +500,7 @@ export function activityService(db: Db) {
               : null;
         return {
           ...run,
+          execution: executionByRunId.get(run.runId) ?? null,
           environment: leaseRow
             ? {
                 id: leaseRow.environment.id,

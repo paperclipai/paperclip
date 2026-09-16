@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "slug": "asana",
+  "name": "Asana",
+  "description": "Connect Asana's provider-hosted MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/asana.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.asana.com/*"
+  ],
+  "docsUrl": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-own-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Register an OAuth app with Asana, then enter its client ID and secret.",
+      "defaults": {
+        "serverUrl": "https://mcp.asana.com/v2/mcp"
+      },
+      "guidanceMd": "Connect Asana in the browser. Create an Asana MCP OAuth app and register Paperclip's callback URI; DCR is not supported.",
+      "riskTier": "S3",
+      "label": "Use your own OAuth app",
+      "consoleLinks": {
+        "register": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+        "docs": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server"
+      },
+      "warnings": [
+        "Create an Asana MCP OAuth app and register Paperclip's callback URI; DCR is not supported."
+      ]
+    }
+  ]
+}

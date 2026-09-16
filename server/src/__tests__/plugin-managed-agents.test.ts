@@ -62,7 +62,7 @@ function manifest(): PaperclipPluginManifestV1 {
         capabilities: "Maintains a plugin-owned wiki.",
         adapterType: "process",
         adapterConfig: { command: "pnpm wiki:maintain" },
-        runtimeConfig: { modelProfiles: { cheap: { enabled: true, adapterConfig: { model: "small" } } } },
+        runtimeConfig: { heartbeat: { enabled: false } },
         permissions: { canCreateAgents: false },
         budgetMonthlyCents: 1234,
       },

@@ -1,7 +1,9 @@
 // Optional Sentry error monitoring for the server process.
 //
-// Activated only when `SENTRY_DSN` is set. When unset, no Sentry package is
-// loaded at all.
+// Activated only when the backend DSN resolves to a value — see
+// `resolveSentryDsns` in `sentry-dsn.ts` for the precedence between
+// `SENTRY_DSN_BACKEND` and the legacy `SENTRY_DSN` fallback. When it
+// resolves to `null`, no Sentry package is loaded at all.
 //
 // The import is dynamic and the package is an optional runtime dependency —
 // operators who want server-side error monitoring install `@sentry/node`
@@ -13,6 +15,17 @@
 // `skipOpenTelemetrySetup: true` and `tracesSampleRate: 0`, so this module
 // adds error monitoring only and starts no span or trace behavior of its
 // own.
+//
+// `serverName`: the initializer sets this to the host name of the process,
+// with `os.hostname()`. The `@sentry/node` client already falls back to the
+// same host name when the caller omits this option, so this line makes an
+// existing default explicit instead of changing captured event content. An
+// explicit value stays correct if a future SDK version changes its default.
+//
+// An operator can still send a different value in place of the host name.
+// When the environment variable `SENTRY_NAME` holds a non-empty string, the
+// initializer uses that value instead. This keeps the same order the
+// `@sentry/node` client itself uses when the caller omits `serverName`.
 //
 // Default-integration privacy note: `sendDefaultPii: false` filters values
 // by name, inside the `RequestData` integration only. Three other default
@@ -42,13 +55,33 @@
 // never throws. This gate mirrors the OpenTelemetry gate in
 // `instrumentation.ts`.
 
+import os from "node:os";
 import { checkExactPeerVersions } from "./peer-version-check.js";
+import { resolveSentryDsns } from "./sentry-dsn.js";
 
-const dsn = process.env.SENTRY_DSN;
+const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
+
+if (legacyFallbackUsed) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[paperclip] SENTRY_DSN_FRONTEND or SENTRY_DSN_BACKEND is not set. " +
+      "The server uses the legacy SENTRY_DSN value for the affected " +
+      "component. Set SENTRY_DSN_FRONTEND and SENTRY_DSN_BACKEND to send " +
+      "each component to its own Sentry project.",
+  );
+}
+
+/** The subset of the `@sentry/node` scope surface `captureRunFailure` calls. */
+interface SentryScopeLike {
+  setTag(key: string, value: string): void;
+  setContext(name: string, context: Record<string, unknown> | null): void;
+  setFingerprint(fingerprint: string[]): void;
+}
 
 /** The subset of the `@sentry/node` client surface this gate calls. */
 interface SentryHandle {
   captureException(error: unknown): string;
+  withScope(callback: (scope: SentryScopeLike) => void): void;
   close(timeout?: number): Promise<boolean>;
 }
 
@@ -57,16 +90,17 @@ let shutdownPromise: Promise<void> | null = null;
 
 /**
  * Resolves once the Sentry SDK has started, or once bootstrap has failed and
- * logged, or at once when `SENTRY_DSN` is unset. No caller needs to await
- * this before calling `captureException` — it is a no-op until ready — but
- * `index.ts` awaits it at startup so the first real error has a live client.
+ * logged, or at once when the backend DSN resolves to `null`. No caller
+ * needs to await this before calling `captureException` — it is a no-op
+ * until ready — but `index.ts` awaits it at startup so the first real error
+ * has a live client.
  */
 export const sentryReady: Promise<void> = dsn ? bootstrapSentry(dsn) : Promise.resolve();
 
 /**
  * Report an error to Sentry. A no-op before the gate opens, when the gate
- * never opens (`SENTRY_DSN` unset), or when bootstrap failed. Never throws —
- * observability must not change control flow.
+ * never opens (the backend DSN resolves to `null`), or when bootstrap
+ * failed. Never throws — observability must not change control flow.
  */
 export function captureException(error: unknown): void {
   if (!sentryHandle) return;
@@ -75,6 +109,65 @@ export function captureException(error: unknown): void {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureException failed", err);
+  }
+}
+
+/** The run status values that mark a run as a genuine terminal failure. */
+export type RunFailureStatus = "failed" | "timed_out";
+
+/**
+ * The diagnostic values `captureRunFailure` sends with a terminal-failure
+ * event. `errorCode` is `null` when the run holds no error code.
+ */
+export interface RunFailureEvent {
+  /** The task UUID the run belongs to. */
+  taskId: string;
+  /** The `heartbeat_runs` row id. */
+  runId: string;
+  /** The redacted error message. */
+  errorMessage: string;
+  /** The run's error code, or `null` when the run holds none. */
+  errorCode: string | null;
+  /** The agent's adapter type, or `"unknown"` when the agent row is absent. */
+  agentAdapter: string;
+  /** The run status that triggered this report. */
+  runStatus: RunFailureStatus;
+}
+
+/**
+ * Report one terminal run failure to Sentry. A no-op before the gate opens
+ * or when the gate never opens. Never throws — observability must not
+ * change run control flow.
+ *
+ * Sets the fingerprint to `[errorCode, agentAdapter]`, in that order, so
+ * Sentry groups events by error code and adapter. The error message stays
+ * out of the fingerprint — it still travels as the exception message and as
+ * a field of the `run_failure` context.
+ */
+export function captureRunFailure(event: RunFailureEvent): void {
+  if (!sentryHandle) return;
+  const handle = sentryHandle;
+  try {
+    handle.withScope((scope) => {
+      const errorCode = event.errorCode ?? "unknown";
+      scope.setTag("run_id", event.runId);
+      scope.setTag("task_id", event.taskId);
+      scope.setTag("error_code", errorCode);
+      scope.setTag("agent_adapter", event.agentAdapter);
+      scope.setTag("run_status", event.runStatus);
+      scope.setContext("run_failure", {
+        taskId: event.taskId,
+        runId: event.runId,
+        errorMessage: event.errorMessage,
+        errorCode,
+        agentAdapter: event.agentAdapter,
+      });
+      scope.setFingerprint([errorCode, event.agentAdapter]);
+      handle.captureException(new Error(event.errorMessage));
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[paperclip] Sentry captureRunFailure failed", err);
   }
 }
 
@@ -116,6 +209,7 @@ export interface SentryInitOptions {
   skipOpenTelemetrySetup: boolean;
   tracesSampleRate: number;
   sendDefaultPii: boolean;
+  serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
 }
 
@@ -134,6 +228,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
         (integration) =>
@@ -165,10 +260,10 @@ async function bootstrapSentry(dsn: string): Promise<void> {
   if (!versionCheck.ok) {
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] SENTRY_DSN is set but the @sentry/node package is not " +
-        "installed, or is installed at an unsupported version. Install the " +
-        "declared version of @sentry/node to enable server error " +
-        "monitoring. Continuing without it.",
+      "[paperclip] The backend Sentry DSN is set, but the @sentry/node " +
+        "package is not installed, or is installed at an unsupported " +
+        "version. Install the declared version of @sentry/node to enable " +
+        "server error monitoring. Continuing without it.",
       versionCheck.detail,
     );
     return;
@@ -184,6 +279,7 @@ async function bootstrapSentry(dsn: string): Promise<void> {
 
     sentryHandle = {
       captureException: (error) => Sentry.captureException(error),
+      withScope: (callback) => Sentry.withScope(callback),
       close: (timeout) => Sentry.close(timeout),
     };
   } catch (err) {
@@ -192,9 +288,9 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     // after that point reaches this block.
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] SENTRY_DSN is set and @sentry/node passed the version " +
-        "check, but it failed to load or initialize. Continuing without " +
-        "error monitoring.",
+      "[paperclip] The backend Sentry DSN is set, and @sentry/node passed " +
+        "the version check, but it failed to load or initialize. " +
+        "Continuing without error monitoring.",
       err,
     );
   }

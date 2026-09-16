@@ -92,6 +92,22 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   } catch {
     return null;
   }
+  const credential = parseClaudeCredential(raw);
+  if (!credential) return null;
+  // On macOS the CLI refreshes the Keychain item, not this file, so a file
+  // whose token has expired is a stale leftover. Skip it so the caller can
+  // fall through to a live credential instead of failing with a dead token.
+  if (credential.expiresAt != null && credential.expiresAt <= Date.now()) return null;
+  return credential.token;
+}
+
+interface ClaudeCredential {
+  token: string;
+  /** Epoch milliseconds, when the credential file records one. */
+  expiresAt: number | null;
+}
+
+function parseClaudeCredential(raw: string): ClaudeCredential | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -103,7 +119,13 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   const oauth = obj["claudeAiOauth"];
   if (typeof oauth !== "object" || oauth === null) return null;
   const token = (oauth as Record<string, unknown>)["accessToken"];
-  return typeof token === "string" && token.length > 0 ? token : null;
+  if (typeof token !== "string" || token.length === 0) return null;
+  const expiresAt = (oauth as Record<string, unknown>)["expiresAt"];
+  return { token, expiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null };
+}
+
+function parseClaudeCredentialToken(raw: string): string | null {
+  return parseClaudeCredential(raw)?.token ?? null;
 }
 
 interface ClaudeAuthStatus {
@@ -137,11 +159,19 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
-export async function readClaudeToken(): Promise<string | null> {
+export async function readClaudeToken(options: { allowKeychain?: boolean } = {}): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
+  }
+  // Only an explicit local-account import may consult the user's Keychain.
+  // A custom auth home must never fall through to a different account.
+  if (options.allowKeychain && process.platform === "darwin" && !process.env.CLAUDE_CONFIG_DIR?.trim()) {
+    try {
+      const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+      return parseClaudeCredentialToken(stdout);
+    } catch { return null; }
   }
   return null;
 }

@@ -1,0 +1,10 @@
+{
+  "Sid": "AllowCloudFrontReadStorybook",
+  "Effect": "Allow",
+  "Principal": {"Service": "cloudfront.amazonaws.com"},
+  "Action": "s3:GetObject",
+  "Resource": "arn:aws:s3:::paperclipai-runner-e2e-history-078455283791-us-east-1/storybook/branches/*",
+  "Condition": {"StringEquals": {
+    "AWS:SourceArn": "arn:aws:cloudfront::078455283791:distribution/E3GTU28BBO2SFR"
+  }}
+}

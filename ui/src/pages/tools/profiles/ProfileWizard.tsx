@@ -120,6 +120,7 @@ export function ProfileWizard({
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccesses() });
   };
 
   const live = useMemo(

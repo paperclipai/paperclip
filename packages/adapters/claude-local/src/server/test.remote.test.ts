@@ -49,6 +49,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { testEnvironment } from "./test.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
 const sandboxTarget: AdapterExecutionTarget = {
   kind: "remote",
@@ -94,6 +95,7 @@ const loginRequiredStdout = [
 
 afterEach(() => {
   vi.clearAllMocks();
+  resetClaudeCliCapabilitiesCacheForTests();
 });
 
 describe("claude sandbox auth-missing check", () => {
@@ -135,5 +137,42 @@ describe("claude sandbox auth-missing check", () => {
 
     expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(true);
     expect(result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(false);
+  });
+});
+
+describe("claude CLI model compatibility check", () => {
+  it("fails before the hello probe when Fable 5.1 is configured with an older CLI", async () => {
+    probeResult.value = {
+      exitCode: 0,
+      stdout: "2.1.247 (Claude Code)\n",
+      stderr: "",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "claude",
+        model: "claude-fable-5-1",
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "claude_cli_version_incompatible",
+      level: "error",
+      detail: "Detected Claude Code 2.1.247.",
+    }));
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const versionCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [
+      string,
+      AdapterExecutionTarget,
+      string,
+      string[],
+    ];
+    expect(versionCall[3]).toEqual(["--version"]);
   });
 });

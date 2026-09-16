@@ -1,6 +1,6 @@
 {
   "frameVersion": 2,
-  "defaultMaxFrameBytes": 1000000,
+  "defaultMaxFrameBytes": 262144,
   "description": "Shared wire-compatibility vectors for the duplex frame codec. Every codec copy decodes the same bytes. bytes is a UTF-8 byte stream; expected lists the decode result (frame or protocol-error code).",
   "vectors": [
     {

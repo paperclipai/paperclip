@@ -40,6 +40,18 @@ export function companyListQueryOptions(userId: string | null) {
   } as const;
 }
 
+/** The administration directory has its own account-scoped cache and request. */
+export function companyDirectoryQueryOptions(userId: string | null) {
+  return {
+    queryKey: queryKeys.companies.directory(userId),
+    queryFn: async () => {
+      companiesApi.detachInflightDirectory();
+      return companiesApi.directory();
+    },
+    retry: false,
+  } as const;
+}
+
 const sessionQueryOptions = {
   queryKey: queryKeys.auth.session,
   queryFn: () => authApi.getSession(),

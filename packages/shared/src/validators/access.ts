@@ -198,9 +198,10 @@ export const authSessionSchema = z.object({
     userId: z.string().min(1),
   }),
   user: currentUserProfileSchema,
-  // The Sentry DSN for the current instance, or `null` when the operator has
-  // not set `SENTRY_DSN`. Required, not optional: a missing value must fail
-  // the response schema instead of silently disabling browser error
+  // The front-end Sentry DSN for the current instance, or `null` when the
+  // operator has set neither `SENTRY_DSN_FRONTEND` nor the legacy
+  // `SENTRY_DSN`. Required, not optional: a missing value must fail the
+  // response schema instead of silently disabling browser error
   // monitoring. The browser reads this value to open its own Sentry gate —
   // see `ui/src/lib/sentry.ts`.
   sentryDsn: z.string().min(1).nullable(),

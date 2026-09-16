@@ -342,23 +342,29 @@ else
       node "$REPO_ROOT/scripts/prepare-bundled-package.mjs" "$REPO_ROOT/$pkg_dir" "$publish_dir"
       cd "$publish_dir"
     fi
-    if ! publish_package_to_npm_and_wait \
+    if ! publish_package_to_npm \
       "$DIST_TAG" \
       "$pkg_name" \
       "$pkg_version" \
-      "$publish_tool" \
-      "$VERIFY_ATTEMPTS" \
-      "$VERIFY_DELAY_SECONDS"; then
+      "$publish_tool"; then
       if [ "$publish_tool" = "npm" ]; then
         rm -rf "$publish_dir"
       fi
-      release_fail "stopping release: npm did not publish and expose ${pkg_name}@${pkg_version}"
+      release_fail "stopping release: npm did not accept the publish of ${pkg_name}@${pkg_version}"
     fi
     if [ "$publish_tool" = "npm" ]; then
       rm -rf "$publish_dir"
     fi
-    release_info "    ✓ Published version is registry-visible"
+    release_info "    ✓ npm accepted the publish"
   done <<< "$VERSIONED_PACKAGE_INFO"
+  release_info "  ✓ npm accepted every package publish under dist-tag $DIST_TAG"
+  release_info "  Waiting for registry visibility of all packages concurrently..."
+  if ! wait_for_npm_package_versions \
+    "$VERIFY_ATTEMPTS" \
+    "$VERIFY_DELAY_SECONDS" \
+    "$VERSIONED_PACKAGE_INFO"; then
+    release_fail "stopping release: npm did not expose every published version under dist-tag $DIST_TAG"
+  fi
   release_info "  ✓ Published the full package set under dist-tag $DIST_TAG"
 fi
 
@@ -369,7 +375,7 @@ else
   release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
   REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
   REGISTRY_STATE_VERIFY_DELAY_SECONDS="${NPM_REGISTRY_STATE_VERIFY_DELAY_SECONDS:-5}"
-  release_info "  ✓ Every version was registry-visible before the next package publish"
+  release_info "  ✓ Every version was registry-visible before tagging began"
 
   verify_args=(
     --channel "$channel"

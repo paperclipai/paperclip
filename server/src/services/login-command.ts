@@ -14,7 +14,7 @@
  * trusted adapter type. The worker maps the key to a compile-time command. The
  * union is exhaustive: a value outside it fails closed before the worker RPC.
  */
-export type LoginCommandKey = "claude" | "codex";
+export type LoginCommandKey = "claude" | "codex" | "grok";
 
 /**
  * The exhaustive map from the trusted adapter type to the login command key. The
@@ -24,6 +24,7 @@ export type LoginCommandKey = "claude" | "codex";
 const ADAPTER_TYPE_TO_LOGIN_COMMAND_KEY: Readonly<Record<string, LoginCommandKey>> = {
   claude_local: "claude",
   codex_local: "codex",
+  grok_local: "grok",
 };
 
 /** The fixed non-secret error an unsupported adapter type returns. */
@@ -47,7 +48,7 @@ export function resolveLoginCommandKey(adapterType: string): LoginCommandKey {
 
 /** Reports whether a value is a member of the closed login command key set. */
 export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
-  return value === "claude" || value === "codex";
+  return value === "claude" || value === "codex" || value === "grok";
 }
 
 /**

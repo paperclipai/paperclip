@@ -21,6 +21,7 @@ const HOME = "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555"
 
 const CLAUDE: LoginPtyLaunchDescriptor = { loginCommandKey: "claude", sessionHome: HOME };
 const CODEX: LoginPtyLaunchDescriptor = { loginCommandKey: "codex", sessionHome: HOME };
+const GROK: LoginPtyLaunchDescriptor = { loginCommandKey: "grok", sessionHome: HOME };
 
 /**
  * A fake login-home filesystem. It records each path the caller asks to create
@@ -156,6 +157,29 @@ describe("composeLaunchLine", () => {
     // Exactly one CODEX_HOME assignment, and the exact approved Codex command.
     expect(line.match(/CODEX_HOME=/g)).toHaveLength(1);
     expect(line.endsWith("codex login --device-auth")).toBe(true);
+  });
+
+  it("composes the Grok line with exactly one encoded GROK_HOME", () => {
+    const line = composeLaunchLine(GROK);
+    expect(line).toBe(`exec env GROK_HOME='${HOME}' grok login --device-auth`);
+    // Exactly one GROK_HOME assignment, and the exact approved Grok command.
+    expect(line.match(/GROK_HOME=/g)).toHaveLength(1);
+    expect(line.endsWith("grok login --device-auth")).toBe(true);
+    // The Codex encoded variable never leaks into the Grok line.
+    expect(line).not.toContain("CODEX_HOME");
+  });
+
+  it("composes the launch line from the closed command map only, and ignores a command string smuggled onto the descriptor", () => {
+    // Condition 4: a command string in the request confers no command
+    // authority. The module maps the closed key to its own fixed command, so a
+    // caller cannot select or override it.
+    const tampered = {
+      ...GROK,
+      command: "rm -rf /",
+    } as unknown as LoginPtyLaunchDescriptor;
+    const line = composeLaunchLine(tampered);
+    expect(line).toBe(`exec env GROK_HOME='${HOME}' grok login --device-auth`);
+    expect(line).not.toContain("rm -rf");
   });
 });
 

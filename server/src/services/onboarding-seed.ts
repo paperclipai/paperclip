@@ -34,9 +34,14 @@ const SEEDED_AGENT_ROLE = "ceo";
 const FALLBACK_SEEDED_AGENT_ADAPTER_TYPE = "claude_local";
 
 function seededAgentAdapterType() {
-  return process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
+  const configured = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
     || process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE?.trim()
     || FALLBACK_SEEDED_AGENT_ADAPTER_TYPE;
+  // Server-seeded onboarding deliberately stays on a direct adapter. Native
+  // runner rollout is an explicit post-onboarding configuration choice.
+  return configured === "paperclip_runner"
+    ? FALLBACK_SEEDED_AGENT_ADAPTER_TYPE
+    : configured;
 }
 
 /**
@@ -238,12 +243,13 @@ export function onboardingSeedService(db: Db) {
       if (agentId) {
         await agentSvc.update(agentId, { name: agentName, title: agentRole });
       } else {
+        const adapterType = seededAgentAdapterType();
         const created = await agentSvc.create(companyId, {
           name: agentName,
           role: SEEDED_AGENT_ROLE,
           title: agentRole,
-          adapterType: seededAgentAdapterType(),
-          adapterConfig: seededAgentAdapterConfig(seededAgentAdapterType()),
+          adapterType,
+          adapterConfig: seededAgentAdapterConfig(adapterType),
           runtimeConfig: {},
           permissions: {},
           status: "idle",

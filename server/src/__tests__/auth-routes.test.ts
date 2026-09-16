@@ -59,10 +59,16 @@ describe.sequential("auth routes", () => {
     image: "https://example.com/jane.png",
   };
   const originalSentryDsn = process.env.SENTRY_DSN;
+  const originalSentryDsnFrontend = process.env.SENTRY_DSN_FRONTEND;
+  const originalSentryDsnBackend = process.env.SENTRY_DSN_BACKEND;
 
   afterEach(() => {
     if (originalSentryDsn === undefined) delete process.env.SENTRY_DSN;
     else process.env.SENTRY_DSN = originalSentryDsn;
+    if (originalSentryDsnFrontend === undefined) delete process.env.SENTRY_DSN_FRONTEND;
+    else process.env.SENTRY_DSN_FRONTEND = originalSentryDsnFrontend;
+    if (originalSentryDsnBackend === undefined) delete process.env.SENTRY_DSN_BACKEND;
+    else process.env.SENTRY_DSN_BACKEND = originalSentryDsnBackend;
   });
 
   it("returns the persisted user profile in the session payload", async () => {
@@ -121,6 +127,64 @@ describe.sequential("auth routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.sentryDsn).toBe(null);
+  });
+
+  it("sends sentryDsn for a board actor when only SENTRY_DSN_FRONTEND is set", async () => {
+    delete process.env.SENTRY_DSN;
+    delete process.env.SENTRY_DSN_BACKEND;
+    process.env.SENTRY_DSN_FRONTEND = "https://public-frontend@o0.ingest.sentry.io/1";
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sentryDsn).toBe("https://public-frontend@o0.ingest.sentry.io/1");
+  });
+
+  it("sends a null sentryDsn when only SENTRY_DSN_BACKEND is set", async () => {
+    delete process.env.SENTRY_DSN;
+    delete process.env.SENTRY_DSN_FRONTEND;
+    process.env.SENTRY_DSN_BACKEND = "https://public-backend@o0.ingest.sentry.io/2";
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sentryDsn).toBe(null);
+  });
+
+  it("sends only the front-end DSN when SENTRY_DSN_FRONTEND and SENTRY_DSN_BACKEND differ", async () => {
+    delete process.env.SENTRY_DSN;
+    process.env.SENTRY_DSN_FRONTEND = "https://public-frontend@o0.ingest.sentry.io/1";
+    process.env.SENTRY_DSN_BACKEND = "https://public-backend@o0.ingest.sentry.io/2";
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sentryDsn).toBe("https://public-frontend@o0.ingest.sentry.io/1");
+    expect(res.body.sentryDsn).not.toBe("https://public-backend@o0.ingest.sentry.io/2");
   });
 
   it("answers 401 and sends no DSN when the actor type is none", async () => {

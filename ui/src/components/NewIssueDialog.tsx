@@ -1,9 +1,9 @@
+import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
@@ -22,8 +22,10 @@ import {
   issueExecutionWorkspaceModeForExistingWorkspace,
 } from "../lib/project-workspace-defaults";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { recordRecentTask } from "../lib/recent-tasks";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
 import { isIssueWorkMode, nextWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";
@@ -80,6 +82,7 @@ import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
+import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -182,14 +185,6 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
-  ],
-  codex_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
   ],
   opencode_local: [
     { value: "", label: "Default" },
@@ -473,6 +468,7 @@ export function NewIssueDialog() {
   const statuses = useMemo(() => buildStatusOptions(), []);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const titleRef = useRef("");
@@ -592,27 +588,13 @@ export function NewIssueDialog() {
     [agents, selectedAssigneeAgentId],
   );
   const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
+  const assigneePrimaryModel = isRecord(selectedAssigneeAgent?.adapterConfig)
+    && typeof selectedAssigneeAgent.adapterConfig.model === "string"
+    ? selectedAssigneeAgent.adapterConfig.model
+    : "";
+  const effectiveAssigneeModel = assigneeModelOverride || assigneePrimaryModel;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
-  );
-  const getAdapterCapabilities = useAdapterCapabilities();
-  const assigneeAdapterCapabilities = assigneeAdapterType
-    ? getAdapterCapabilities(assigneeAdapterType)
-    : null;
-  const assigneeSupportsCheapLane = Boolean(
-    supportsAssigneeOverrides && assigneeAdapterCapabilities?.supportsModelProfiles,
-  );
-
-  const { data: assigneeCheapProfiles } = useQuery({
-    queryKey: effectiveCompanyId && assigneeAdapterType
-      ? queryKeys.agents.adapterModelProfiles(effectiveCompanyId, assigneeAdapterType)
-      : ["agents", "none", "adapter-model-profiles", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModelProfiles(effectiveCompanyId!, assigneeAdapterType!),
-    enabled: Boolean(effectiveCompanyId) && newIssueOpen && assigneeSupportsCheapLane,
-  });
-  const assigneeCheapProfile = useMemo(
-    () => (assigneeCheapProfiles ?? []).find((profile) => profile.key === "cheap") ?? null,
-    [assigneeCheapProfiles],
   );
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
@@ -622,12 +604,13 @@ export function NewIssueDialog() {
     });
   }, [agents, companyMembers?.users, orderedProjects]);
 
+  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(selectedAssigneeAgent?.adapterConfig ?? {}).provider ?? "codex") : undefined;
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
       effectiveCompanyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType)
+        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!),
+    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!, { provider: catalogProvider }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
   });
 
@@ -661,6 +644,7 @@ export function NewIssueDialog() {
       return { issue, companyId, failures };
     },
     onSuccess: ({ issue, companyId, failures }) => {
+      if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
@@ -952,13 +936,9 @@ export function NewIssueDialog() {
       setAssigneeChrome(false);
       return;
     }
-    if (!assigneeSupportsCheapLane && assigneeModelLane === "cheap") {
-      setAssigneeModelLane("primary");
-    }
-
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
-        ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+        ? codexReasoningEffortOptions(effectiveAssigneeModel)
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
@@ -968,9 +948,8 @@ export function NewIssueDialog() {
   }, [
     supportsAssigneeOverrides,
     assigneeAdapterType,
+    effectiveAssigneeModel,
     assigneeThinkingEffort,
-    assigneeSupportsCheapLane,
-    assigneeModelLane,
   ]);
 
   // Cleanup timer on unmount
@@ -1044,14 +1023,9 @@ export function NewIssueDialog() {
     const currentTitle = titleRef.current.trim();
     const currentDescription = descriptionRef.current.trim();
     if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
-    const effectiveLane = assigneeSupportsCheapLane
-      ? assigneeModelLane
-      : assigneeModelLane === "cheap"
-        ? "primary"
-        : assigneeModelLane;
     const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
-      lane: effectiveLane,
+      lane: assigneeModelLane,
       modelOverride: assigneeModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
       chrome: assigneeChrome,
@@ -1096,7 +1070,7 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
-      ...(taskWatchdogsEnabled && watchdogAgentId
+      ...(watchdogAgentId
         ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
         : {}),
     });
@@ -1200,7 +1174,6 @@ export function NewIssueDialog() {
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
-  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
   const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
@@ -1222,7 +1195,7 @@ export function NewIssueDialog() {
         : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
-      ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+      ? codexReasoningEffortOptions(effectiveAssigneeModel)
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
@@ -1417,7 +1390,8 @@ export function NewIssueDialog() {
             <Popover open={companyOpen} onOpenChange={setCompanyOpen}>
               <PopoverTrigger asChild>
                 <button
-                  className="px-1.5 py-0.5 rounded bg-muted text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity"
+                  data-slot="new-issue-compact-control"
+                  className="rounded bg-muted p-1.5 text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity sm:px-1.5 sm:py-0.5"
                   disabled={isSubIssueMode}
                 >
                   {dialogCompany?.issuePrefix ?? ""}
@@ -1505,6 +1479,8 @@ export function NewIssueDialog() {
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Assignee"
+                className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
+                triggerDataSlot="new-issue-compact-control"
                 disablePortal
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees..."
@@ -1564,6 +1540,8 @@ export function NewIssueDialog() {
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
                 placeholder="Project"
+                className="h-8 px-2.5 py-0 sm:h-auto sm:px-2 sm:py-1"
+                triggerDataSlot="new-issue-compact-control"
                 disablePortal
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
@@ -1606,7 +1584,7 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title={taskWatchdogsEnabled ? "Add reviewer, approver, or watchdog" : "Add reviewer or approver"}
+                    title="Add reviewer, approver, or watchdog"
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1640,29 +1618,27 @@ export function NewIssueDialog() {
                     <ShieldCheck className="h-3 w-3" />
                     Approver
                   </button>
-                  {taskWatchdogsEnabled && (
-                    <button
-                      className={cn(
-                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                        showWatchdogRow && "bg-accent",
-                      )}
-                      onClick={() => {
-                        if (showWatchdogRow) {
-                          setShowWatchdogRow(false);
-                          setWatchdogAgentId("");
-                          setWatchdogInstructions("");
-                          setWatchdogEditorOpen(false);
-                        } else {
-                          setShowWatchdogRow(true);
-                          setWatchdogEditorOpen(true);
-                        }
-                        setParticipantMenuOpen(false);
-                      }}
-                    >
-                      <ScanEye className="h-3 w-3" />
-                      Watchdog
-                    </button>
-                  )}
+                  <button
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                      showWatchdogRow && "bg-accent",
+                    )}
+                    onClick={() => {
+                      if (showWatchdogRow) {
+                        setShowWatchdogRow(false);
+                        setWatchdogAgentId("");
+                        setWatchdogInstructions("");
+                        setWatchdogEditorOpen(false);
+                      } else {
+                        setShowWatchdogRow(true);
+                        setWatchdogEditorOpen(true);
+                      }
+                      setParticipantMenuOpen(false);
+                    }}
+                  >
+                    <ScanEye className="h-3 w-3" />
+                    Watchdog
+                  </button>
                 </PopoverContent>
               </Popover>
               </div>
@@ -1759,7 +1735,7 @@ export function NewIssueDialog() {
             )}
 
             {/* Watchdog row */}
-            {taskWatchdogsEnabled && showWatchdogRow && (
+            {showWatchdogRow && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
                 <span className="w-6 shrink-0 flex items-center justify-center"><ScanEye className="h-3.5 w-3.5" /></span>
                 <Popover open={watchdogEditorOpen} onOpenChange={setWatchdogEditorOpen}>
@@ -1936,7 +1912,7 @@ export function NewIssueDialog() {
                     role="radiogroup"
                     aria-label="Model lane"
                   >
-                    {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
+                    {(["primary", "custom"] as const).map((lane) => (
                       <button
                         key={lane}
                         type="button"
@@ -1948,24 +1924,10 @@ export function NewIssueDialog() {
                         )}
                         onClick={() => setAssigneeModelLane(lane)}
                       >
-                        {lane === "primary"
-                          ? "Primary"
-                          : lane === "cheap"
-                            ? "Cheap"
-                            : "Custom"}
+                        {lane === "primary" ? "Primary" : "Custom"}
                       </button>
                     ))}
                   </div>
-                  {assigneeModelLane === "cheap" && (
-                    <p className="text-(length:--text-micro) text-muted-foreground">
-                      Sends <code>modelProfile: "cheap"</code>{" "}
-                      {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
-                        ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
-                        : assigneeCheapProfile
-                          ? <>· uses the agent's configured cheap profile</>
-                          : <>· falls back to the primary model if no cheap profile is configured</>}
-                    </p>
-                  )}
                   {assigneeModelLane === "primary" && (
                     <p className="text-(length:--text-micro) text-muted-foreground">Runs on the agent's primary model.</p>
                   )}
@@ -2122,7 +2084,10 @@ export function NewIssueDialog() {
           {/* Status chip */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+              <button
+                data-slot="new-issue-compact-control"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 py-0 text-xs hover:bg-accent/50 transition-colors sm:h-auto sm:px-2 sm:py-1"
+              >
                 <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
                 {currentStatus.label}
               </button>
@@ -2204,7 +2169,8 @@ export function NewIssueDialog() {
             multiple
           />
           <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+            data-slot="new-issue-compact-control"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 py-0 text-xs hover:bg-accent/50 transition-colors text-muted-foreground sm:h-auto sm:px-2 sm:py-1"
             onClick={() => stageFileInputRef.current?.click()}
             disabled={createIssue.isPending}
           >
@@ -2218,9 +2184,10 @@ export function NewIssueDialog() {
               <button
                 type="button"
                 data-issue-work-mode-chip={workMode}
+                data-slot="new-issue-compact-control"
                 aria-keyshortcuts="Meta+Period Control+Period"
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                  "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 py-0 text-xs transition-colors sm:h-auto sm:px-2 sm:py-1",
                   currentWorkMode.classes.chip,
                 )}
               >
@@ -2260,7 +2227,8 @@ export function NewIssueDialog() {
               <button
                 type="button"
                 data-testid="new-issue-more-menu-trigger"
-                className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50"
+                data-slot="new-issue-compact-control"
+                className="inline-flex size-8 items-center justify-center rounded-md border border-border p-0 text-xs text-muted-foreground transition-colors hover:bg-accent/50 sm:size-auto sm:p-1"
               >
                 <MoreHorizontal className="h-3 w-3" />
               </button>

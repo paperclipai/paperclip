@@ -9,6 +9,7 @@
         "id": "environment",
         "header": "Environment",
         "question": "Where should we deploy?",
+        "required": true,
         "options": [
           { "label": "Staging", "description": "Deploy to staging first." },
           { "label": "Production", "description": "Deploy directly to production." }

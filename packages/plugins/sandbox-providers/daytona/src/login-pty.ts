@@ -10,9 +10,10 @@
 // no command string. This module maps the key to a compile-time command, so a
 // caller cannot select or override the command. For the Codex key the module
 // composes `exec env CODEX_HOME=<encoded-home> <fixed-codex-command>`. For the
-// Claude key it composes `exec <fixed-claude-command>` with no CODEX_HOME. The
-// module encodes the dynamic home with a POSIX shell-argument encoder, so the
-// home cannot add a second shell token or a second command.
+// Grok key it composes `exec env GROK_HOME=<encoded-home> <fixed-grok-command>`.
+// For the Claude key it composes `exec <fixed-claude-command>` with no home
+// variable. The module encodes the dynamic home with a POSIX shell-argument
+// encoder, so the home cannot add a second shell token or a second command.
 //
 // Session home: the module revalidates the descriptor and the home shape, then
 // creates the session home directory with one `mkdir -p` command. The command
@@ -52,7 +53,7 @@ import { sendPtyInputInChunks } from "./pty-chunked-input.js";
  * compile-time command. A value outside this set fails closed before the module
  * touches the filesystem.
  */
-export type LoginCommandKey = "claude" | "codex";
+export type LoginCommandKey = "claude" | "codex" | "grok";
 
 /**
  * The host-resolved launch descriptor. It carries the closed command key and the
@@ -76,6 +77,7 @@ export interface LoginPtyLaunchDescriptor {
 const LOGIN_COMMAND_BY_KEY: Readonly<Record<LoginCommandKey, string>> = {
   claude: "claude setup-token",
   codex: "codex login --device-auth",
+  grok: "grok login --device-auth",
 };
 
 /** The fixed root for a login session home. */
@@ -107,21 +109,27 @@ export function encodePosixShellArg(value: string): string {
 
 /** Reports whether a value is a member of the closed login command key set. */
 export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
-  return value === "claude" || value === "codex";
+  return value === "claude" || value === "codex" || value === "grok";
 }
 
 /**
- * Composes the launch line for the descriptor. For the Codex key it prefixes one
- * safely encoded `CODEX_HOME` assignment with `env`. For the Claude key it adds no
- * `CODEX_HOME`. It replaces the interactive shell with the command through `exec`,
- * so the pseudo-terminal runs the command directly and its exit code becomes the
- * PTY exit code.
+ * Composes the launch line for the descriptor. The module reads only
+ * {@link LOGIN_COMMAND_BY_KEY} and the closed command key on the descriptor, so
+ * a command string smuggled onto the descriptor object confers no authority.
+ * For the Codex key it prefixes one safely encoded `CODEX_HOME` assignment with
+ * `env`. For the Grok key it prefixes one safely encoded `GROK_HOME` assignment
+ * with `env`. For the Claude key it adds no home variable. It replaces the
+ * interactive shell with the command through `exec`, so the pseudo-terminal
+ * runs the command directly and its exit code becomes the PTY exit code.
  */
 export function composeLaunchLine(descriptor: LoginPtyLaunchDescriptor): string {
   const command = LOGIN_COMMAND_BY_KEY[descriptor.loginCommandKey];
+  const encodedHome = encodePosixShellArg(descriptor.sessionHome);
   if (descriptor.loginCommandKey === "codex") {
-    const encodedHome = encodePosixShellArg(descriptor.sessionHome);
     return `exec env CODEX_HOME=${encodedHome} ${command}`;
+  }
+  if (descriptor.loginCommandKey === "grok") {
+    return `exec env GROK_HOME=${encodedHome} ${command}`;
   }
   return `exec ${command}`;
 }

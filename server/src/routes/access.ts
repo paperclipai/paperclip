@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   assets,
@@ -47,7 +47,7 @@ import {
   PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -57,6 +57,7 @@ import {
   tooManyRequests
 } from "../errors.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 
 /**
  * Floor: when the hosting operator hides the Instance Access surface
@@ -121,11 +122,6 @@ const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
 
-type MemberGrantPayload = {
-  permissionKey: PermissionKey;
-  scope?: Record<string, unknown> | null;
-};
-
 export function createInviteToken() {
   const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
   return `${INVITE_TOKEN_PREFIX}${suffix}`;
@@ -158,6 +154,8 @@ function requestBaseUrl(req: Request) {
 }
 
 function resolveBaseUrl(req: Request, authPublicBaseUrl?: string): string {
+  const runtimeOrigin = runtimeCanonicalOrigin();
+  if (runtimeOrigin) return runtimeOrigin;
   if (authPublicBaseUrl) return authPublicBaseUrl.replace(/\/+$/, "");
   return requestBaseUrl(req);
 }
@@ -671,6 +669,17 @@ export function canReplayOpenClawGatewayInviteAccept(input: {
     input.existingJoinRequest.status === "pending_approval" ||
     input.existingJoinRequest.status === "approved"
   );
+}
+
+export function assertLegacyAgentInviteAdapterType(
+  adapterType: string | null | undefined,
+) {
+  if (adapterType === "paperclip_runner") {
+    throw badRequest(
+      "Paperclip Runner is not available through agent invite onboarding.",
+      { code: "paperclip_runner_invite_onboarding_disabled" },
+    );
+  }
 }
 
 function summarizeSecretForLog(
@@ -3754,6 +3763,11 @@ export function accessRoutes(
           })
         );
       const adapterType = req.body.adapterType ?? null;
+      if (requestType === "agent") {
+        assertLegacyAgentInviteAdapterType(
+          adapterType ?? existingJoinRequestForInvite?.adapterType ?? null,
+        );
+      }
       if (
         inviteAlreadyAccepted &&
         !canReplayHumanInviteAccept &&
@@ -4233,6 +4247,7 @@ export function accessRoutes(
           req.actor.userId ?? null
         );
       } else {
+        assertLegacyAgentInviteAdapterType(existing.adapterType);
         const existingAgents = await agents.list(companyId);
         const managerId = resolveJoinRequestAgentManagerId(existingAgents);
         if (!managerId) {
@@ -4491,69 +4506,7 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
-      const updated = await db.transaction(async (tx) => {
-        await tx.execute(sql`
-          select ${companyMemberships.id}
-          from ${companyMemberships}
-          where ${companyMemberships.companyId} = ${companyId}
-            and ${companyMemberships.principalType} = 'user'
-            and ${companyMemberships.status} = 'active'
-            and ${companyMemberships.membershipRole} = 'owner'
-          for update
-        `);
-
-        const existing = await tx
-          .select()
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.id, memberId),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        if (!existing) return null;
-
-        const nextMembershipRole =
-          req.body.membershipRole !== undefined
-            ? req.body.membershipRole
-            : existing.membershipRole;
-        const nextStatus = req.body.status ?? existing.status;
-
-        if (
-          existing.principalType === "user" &&
-          existing.status === "active" &&
-          existing.membershipRole === "owner" &&
-          (nextStatus !== "active" || nextMembershipRole !== "owner")
-        ) {
-          const activeOwnerCount = await tx
-            .select({ id: companyMemberships.id })
-            .from(companyMemberships)
-            .where(
-              and(
-                eq(companyMemberships.companyId, companyId),
-                eq(companyMemberships.principalType, "user"),
-                eq(companyMemberships.status, "active"),
-                eq(companyMemberships.membershipRole, "owner"),
-              ),
-            )
-            .then((rows) => rows.length);
-          if (activeOwnerCount <= 1) {
-            throw conflict("Cannot remove the last active owner");
-          }
-        }
-
-        return tx
-          .update(companyMemberships)
-          .set({
-            membershipRole: nextMembershipRole,
-            status: nextStatus,
-            updatedAt: new Date(),
-          })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? existing);
-      });
+      const updated = await access.updateMember(companyId, memberId, req.body);
       if (!updated) throw notFound("Member not found");
 
       await logActivity(db, {
@@ -4588,98 +4541,16 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
-      const updated = await db.transaction(async (tx) => {
-        await tx.execute(sql`
-          select ${companyMemberships.id}
-          from ${companyMemberships}
-          where ${companyMemberships.companyId} = ${companyId}
-            and ${companyMemberships.principalType} = 'user'
-            and ${companyMemberships.status} = 'active'
-            and ${companyMemberships.membershipRole} = 'owner'
-          for update
-        `);
-
-        const existing = await tx
-          .select()
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.id, memberId),
-            ),
-          )
-          .then((rows) => rows[0] ?? null);
-        if (!existing) return null;
-
-        const nextMembershipRole =
-          req.body.membershipRole !== undefined
-            ? req.body.membershipRole
-            : existing.membershipRole;
-        const nextStatus = req.body.status ?? existing.status;
-
-        if (
-          existing.principalType === "user" &&
-          existing.status === "active" &&
-          existing.membershipRole === "owner" &&
-          (nextStatus !== "active" || nextMembershipRole !== "owner")
-        ) {
-          const activeOwnerCount = await tx
-            .select({ id: companyMemberships.id })
-            .from(companyMemberships)
-            .where(
-              and(
-                eq(companyMemberships.companyId, companyId),
-                eq(companyMemberships.principalType, "user"),
-                eq(companyMemberships.status, "active"),
-                eq(companyMemberships.membershipRole, "owner"),
-              ),
-            )
-            .then((rows) => rows.length);
-          if (activeOwnerCount <= 1) {
-            throw conflict("Cannot remove the last active owner");
-          }
-        }
-
-        const now = new Date();
-        const updatedMember = await tx
-          .update(companyMemberships)
-          .set({
-            membershipRole: nextMembershipRole,
-            status: nextStatus,
-            updatedAt: now,
-          })
-          .where(eq(companyMemberships.id, existing.id))
-          .returning()
-          .then((rows) => rows[0] ?? existing);
-
-        await tx
-          .delete(principalPermissionGrants)
-          .where(
-            and(
-              eq(principalPermissionGrants.companyId, companyId),
-              eq(principalPermissionGrants.principalType, existing.principalType),
-              eq(principalPermissionGrants.principalId, existing.principalId),
-            ),
-          );
-
-        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
-        if (grants.length > 0) {
-          await tx.insert(principalPermissionGrants).values(
-            grants.map((grant) => ({
-              companyId,
-              principalType: existing.principalType,
-              principalId: existing.principalId,
-              permissionKey: grant.permissionKey,
-              scope: grant.scope ?? null,
-              grantedByUserId: req.actor.userId ?? null,
-              createdAt: now,
-              updatedAt: now,
-            })),
-          );
-        }
-
-        return updatedMember;
-      });
+      const updated = await access.updateMemberAndPermissions(
+        companyId,
+        memberId,
+        {
+          membershipRole: req.body.membershipRole,
+          status: req.body.status,
+          grants: req.body.grants ?? [],
+        },
+        req.actor.userId ?? null,
+      );
       if (!updated) throw notFound("Member not found");
 
       await logActivity(db, {

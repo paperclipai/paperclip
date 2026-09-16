@@ -403,11 +403,17 @@ describe("seedManagedCodexHome", () => {
 
   // A device-login promotion writes the company credential as a regular-file
   // subscription auth.json. Re-seeding must keep it, or the first Test probe or
-  // run after a successful login silently signs the company out. The four cases
-  // below pin the identity-anchored rule: keep a subscription identity the
-  // shared source does not hold; still heal the same-identity stale copy
-  // (#5028) and still remove apikey-mode residue.
-  const subscriptionAuth = (accountId: string, marker: string) =>
+  // run after a successful login silently signs the company out. The cases
+  // below pin the identity- and freshness-anchored rule: keep a subscription
+  // identity the shared source does not hold; keep a same-identity file the
+  // shared source is not strictly fresher than (ties and unparseable freshness
+  // included); still heal the same-identity stale copy once the shared source
+  // has moved past it (#5028) and still remove apikey-mode residue.
+  const subscriptionAuth = (
+    accountId: string,
+    marker: string,
+    lastRefresh: string | null = "2026-07-09T00:00:00Z",
+  ) =>
     JSON.stringify({
       tokens: {
         id_token: `synthetic-id-token-${marker}`,
@@ -415,7 +421,7 @@ describe("seedManagedCodexHome", () => {
         refresh_token: `synthetic-refresh-token-${marker}`,
         account_id: accountId,
       },
-      last_refresh: "2026-07-09T00:00:00Z",
+      ...(lastRefresh ? { last_refresh: lastRefresh } : {}),
     });
 
   it("keeps a promoted subscription auth.json when the shared source has no auth", async () => {
@@ -463,18 +469,20 @@ describe("seedManagedCodexHome", () => {
     }
   });
 
-  it("still replaces a same-identity stale regular copy with the shared symlink (#5028)", async () => {
+  it("still replaces a same-identity stale regular copy with the shared symlink once the source is strictly fresher (#5028)", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-stale-"));
     try {
       const companyHome = path.join(root, "company-home");
       const sharedCodexHome = path.join(root, "shared-codex-home");
-      const fresh = subscriptionAuth("acct-same", "fresh");
+      // The live source has rotated since the stale copy was written, so its
+      // last_refresh is strictly greater — the real #5028 shape.
+      const fresh = subscriptionAuth("acct-same", "fresh", "2026-07-09T02:00:00Z");
       await fs.mkdir(sharedCodexHome, { recursive: true });
       await fs.writeFile(path.join(sharedCodexHome, "auth.json"), fresh, "utf8");
       await fs.mkdir(companyHome, { recursive: true });
       await fs.writeFile(
         path.join(companyHome, "auth.json"),
-        subscriptionAuth("acct-same", "stale"),
+        subscriptionAuth("acct-same", "stale", "2026-07-09T01:00:00Z"),
         "utf8",
       );
 
@@ -485,6 +493,73 @@ describe("seedManagedCodexHome", () => {
       expect(await fs.readFile(healed, "utf8")).toBe(fresh);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a same-identity promoted auth.json that is strictly newer than the shared source", async () => {
+    // The device-login promotion mints a credential whose last_refresh is newer
+    // than the host copy the user was failing with. Swapping it for the shared
+    // symlink here would sign the company back in with that failing credential
+    // right after the login that replaced it.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-newer-"));
+    try {
+      const companyHome = path.join(root, "company-home");
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const promoted = subscriptionAuth("acct-same", "promoted", "2026-07-09T02:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        subscriptionAuth("acct-same", "host", "2026-07-09T01:00:00Z"),
+        "utf8",
+      );
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(path.join(companyHome, "auth.json"), promoted, "utf8");
+
+      await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const kept = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(promoted);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a same-identity auth.json when freshness ties or cannot be compared", async () => {
+    // Ties and unparseable timestamps keep the file: deleting a promoted
+    // credential is irreversible, while a kept file self-corrects on the next
+    // seed once the shared source has provably moved past it.
+    const cases = [
+      // Tie: same last_refresh on both sides.
+      { source: "2026-07-09T01:00:00Z", target: "2026-07-09T01:00:00Z" },
+      // The shared source carries no parseable last_refresh.
+      { source: null, target: "2026-07-09T01:00:00Z" },
+      // The file carries no parseable last_refresh.
+      { source: "2026-07-09T02:00:00Z", target: null },
+    ];
+    for (const { source, target } of cases) {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-tie-"));
+      try {
+        const companyHome = path.join(root, "company-home");
+        const sharedCodexHome = path.join(root, "shared-codex-home");
+        const file = subscriptionAuth("acct-same", "file", target);
+        await fs.mkdir(sharedCodexHome, { recursive: true });
+        await fs.writeFile(
+          path.join(sharedCodexHome, "auth.json"),
+          subscriptionAuth("acct-same", "host", source),
+          "utf8",
+        );
+        await fs.mkdir(companyHome, { recursive: true });
+        await fs.writeFile(path.join(companyHome, "auth.json"), file, "utf8");
+
+        await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+        const kept = path.join(companyHome, "auth.json");
+        expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+        expect(await fs.readFile(kept, "utf8")).toBe(file);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
     }
   });
 
@@ -507,6 +582,77 @@ describe("seedManagedCodexHome", () => {
       const kept = path.join(companyHome, "auth.json");
       expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
       expect(await fs.readFile(kept, "utf8")).toBe(target);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never symlinks or heals a credential-store entry's auth.json, even for a fresher same-identity source", async () => {
+    // An agent can bind CODEX_HOME to a per-identity store entry through the
+    // login's account-home secret, and this seeding pass runs before every
+    // probe and execute. The entry's auth.json is the durable login the
+    // promotion/vend/copy-back own — a strictly-fresher same-identity shared
+    // source must NOT trigger the #5028 heal here, or the bound account is
+    // silently swapped for the host login.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-store-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const entryHome = path.join(
+        root, "paperclip-home", "instances", "default", "companies", "company-1", "codex-auth-cache", "acct-bound",
+      );
+      const env = {
+        CODEX_HOME: sharedCodexHome,
+        PAPERCLIP_HOME: path.join(root, "paperclip-home"),
+        PAPERCLIP_INSTANCE_ID: "default",
+      };
+      const stored = subscriptionAuth("acct-same", "stored", "2026-07-09T01:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        subscriptionAuth("acct-same", "host", "2026-07-09T02:00:00Z"),
+        "utf8",
+      );
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
+      await fs.mkdir(entryHome, { recursive: true });
+      await fs.writeFile(path.join(entryHome, "auth.json"), stored, "utf8");
+
+      await seedManagedCodexHome(entryHome, env, async () => {});
+
+      const kept = path.join(entryHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(stored);
+      // The static shared config still copies in, so a bound run gets the
+      // same config a per-agent home gets.
+      expect(await fs.readFile(path.join(entryHome, "config.toml"), "utf8")).toBe('model = "gpt-5"\n');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an API-key rewrite of a credential-store entry's auth.json", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-store-apikey-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const entryHome = path.join(
+        root, "paperclip-home", "instances", "default", "companies", "company-1", "codex-auth-cache", "acct-bound",
+      );
+      const env = {
+        CODEX_HOME: sharedCodexHome,
+        PAPERCLIP_HOME: path.join(root, "paperclip-home"),
+        PAPERCLIP_INSTANCE_ID: "default",
+      };
+      const stored = subscriptionAuth("acct-bound-id", "stored", "2026-07-09T01:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.mkdir(entryHome, { recursive: true });
+      await fs.writeFile(path.join(entryHome, "auth.json"), stored, "utf8");
+      const logs: string[] = [];
+
+      await seedManagedCodexHome(entryHome, env, async (_stream, line) => {
+        logs.push(line);
+      }, { apiKey: "sk-configured" });
+
+      expect(await fs.readFile(path.join(entryHome, "auth.json"), "utf8")).toBe(stored);
+      expect(logs.join("\n")).toContain("Refusing to write an API-key auth.json into credential-store entry");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
