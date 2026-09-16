@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readClaudeToken } from "./quota.js";
+import { readClaudeToken, readClaudeTokenFromConfigDirKeychain } from "./quota.js";
 const mocks = vi.hoisted(() => ({ read: vi.fn(), exec: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.read } }));
 vi.mock("node:child_process", () => ({ execFile: Object.assign(vi.fn(), { [Symbol.for("nodejs.util.promisify.custom")]: mocks.exec }) }));
@@ -51,5 +51,25 @@ describe("explicit Claude Keychain import", () => {
     mocks.read.mockRejectedValue(new Error("missing"));
     mocks.exec.mockRejectedValue(new Error("fixture-secret"));
     await expect(readClaudeToken({ allowKeychain: true })).resolves.toBeNull();
+  });
+});
+describe("isolated config dir Keychain item", () => {
+  it("reads only the item named for the config dir hash", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    mocks.exec.mockResolvedValue({ stdout: JSON.stringify({ claudeAiOauth: { accessToken: "isolated" } }) });
+    const dir = "/Users/backlit/.paperclip/instances/default/ai-local-logins/9f8815e0-1345-49c9-a638-06ca4e3e38b4";
+    await expect(readClaudeTokenFromConfigDirKeychain(dir)).resolves.toBe("isolated");
+    expect(mocks.exec).toHaveBeenCalledTimes(1);
+    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials-59ba6fc3", "-w"], expect.any(Object));
+  });
+  it("does not consult Keychain off macOS", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    await expect(readClaudeTokenFromConfigDirKeychain("/isolated/auth")).resolves.toBeNull();
+    expect(mocks.exec).not.toHaveBeenCalled();
+  });
+  it("does not surface a credential-bearing subprocess error", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    mocks.exec.mockRejectedValue(new Error("fixture-secret"));
+    await expect(readClaudeTokenFromConfigDirKeychain("/isolated/auth")).resolves.toBeNull();
   });
 });

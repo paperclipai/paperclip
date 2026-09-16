@@ -1,7 +1,7 @@
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { readClaudeToken, fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
+import { readClaudeToken, readClaudeTokenFromConfigDirKeychain, fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
 import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
 import type { AiProvider } from "@paperclipai/shared";
@@ -26,6 +26,7 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
           const value = parsed?.claudeAiOauth?.accessToken;
           if (typeof value === "string" && value.length) { token = value; break; }
         }
+        token ??= await readClaudeTokenFromConfigDirKeychain(loginHome);
       } else {
         token = await readClaudeToken({ allowKeychain: true });
       }

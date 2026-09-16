@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -174,6 +175,26 @@ export async function readClaudeToken(options: { allowKeychain?: boolean } = {})
     } catch { return null; }
   }
   return null;
+}
+
+/**
+ * On macOS, `claude auth login` under CLAUDE_CONFIG_DIR stores the OAuth
+ * credential in a Keychain item named for that directory (first 8 hex chars of
+ * its sha256), not in `.credentials.json`. Read only that item, never the
+ * unsuffixed host-account item, so an isolated login cannot resolve to a
+ * different account.
+ */
+export async function readClaudeTokenFromConfigDirKeychain(configDir: string): Promise<string | null> {
+  if (process.platform !== "darwin" || !configDir) return null;
+  const suffix = createHash("sha256").update(configDir).digest("hex").slice(0, 8);
+  try {
+    const { stdout } = await execFileAsync(
+      "/usr/bin/security",
+      ["find-generic-password", "-s", `Claude Code-credentials-${suffix}`, "-w"],
+      { timeout: 10000, maxBuffer: 1024 * 1024 },
+    );
+    return parseClaudeCredentialToken(stdout);
+  } catch { return null; }
 }
 
 interface AnthropicUsageWindow {
