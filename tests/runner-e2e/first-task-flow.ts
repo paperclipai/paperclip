@@ -430,10 +430,23 @@ export async function runFirstTaskFlow(input: {
         })
         .last()
         .click();
-      await settle(before);
+      if (scenario.id === "accept-while-running") {
+        await pollUntil({
+          label: "approval card published before the source run finishes",
+          deadlineAt: Math.min(deadlineAt, Date.now() + 300_000), intervalMs: 100,
+          load: async () => ({ interactions: await api.get<Row[]>(`/api/issues/${issue.id}/interactions`), runs: await allRuns() }),
+          accept: ({ interactions, runs }) => interactions.some(i => i.status === "pending" &&
+            ["request_confirmation", "request_checkbox_confirmation"].includes(i.kind) &&
+            runs.some(r => r.id === i.sourceRunId && r.status === "running")),
+          reject: ({ runs }) => runs.some(r => !before.has(r.id)) && !activeRuns(runs).length
+            ? "Acceptance overlap was not exercised: source run finished before a live approval card was observed" : undefined,
+        });
+      } else await settle(before);
       await snapshot("response");
     }
-    await input.capture(
+    // Screenshots can take longer than the source turn's final handoff. In the
+    // overlap case, accept first and retain the response checkpoint as evidence.
+    if (scenario.id !== "accept-while-running") await input.capture(
       "first-task-response",
       "First onboarding response",
       "first-task-response.png",
@@ -508,7 +521,7 @@ export async function runFirstTaskFlow(input: {
       assertBeforeAcceptance();
       if (scenario.id === "reject-no-execution")
         await turn(scenario.rejection, "rejected");
-      else if (scenario.id === "task-card-accept") {
+      else if (["task-card-accept", "accept-while-running"].includes(scenario.id)) {
         const pending = (
           await api.get<Row[]>(`/api/issues/${issue.id}/interactions`)
         ).find(

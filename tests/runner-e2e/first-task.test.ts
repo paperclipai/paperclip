@@ -777,10 +777,10 @@ Accept the card above and I write it. This task stays in review until then.`;
     },
   );
 
-  it("selects exactly 48 local cells with one worker by default", () => {
+  it("selects exactly 52 local cells with one worker by default", () => {
     const options = parseRunnerSelectors(["--suite", "first-task"]);
     const cells = selectRunnerExecutions(options);
-    expect(cells).toHaveLength(48);
+    expect(cells).toHaveLength(52);
     expect(options.maxParallel).toBe(1);
     expect(new Set(cells.map((c) => c.profile.id))).toEqual(
       new Set([
@@ -812,7 +812,7 @@ Accept the card above and I write it. This task stays in review until then.`;
     ).toHaveLength(1);
   });
   it("keeps fixed facts and stable case identities for separate campaigns", () => {
-    expect(FIRST_TASK_CASES).toHaveLength(12);
+    expect(FIRST_TASK_CASES).toHaveLength(13);
     expect(
       FIRST_TASK_CASES.map((c) => firstTaskScenario(c[0], "same")),
     ).toEqual(FIRST_TASK_CASES.map((c) => firstTaskScenario(c[0], "same")));
@@ -980,7 +980,7 @@ describe("first-task informational judging and reporting", () => {
     const all = selectRunnerExecutions(parseRunnerSelectors(["--all"]));
     expect(
       all.filter((execution) => execution.suite.id === "first-task"),
-    ).toHaveLength(48);
+    ).toHaveLength(52);
     const core = all.find(
       (execution) => execution.suite.id === "core-compatibility",
     )!;
@@ -1197,5 +1197,22 @@ describe("first-task informational judging and reporting", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe("accept-while-running overlap evidence", () => {
+  it.each([true, false])("requires persisted execution overlap: %s", (overlap) => {
+    const e = recording("accept-while-running");
+    const accepted = e.checkpoints.find(c => c.phase === "accepted")!;
+    accepted.interactions.push({ id: "approval", kind: "request_confirmation", status: "accepted",
+      sourceRunId: "parent-run", resolvedAt: "2026-09-15T00:02:00Z", result: { outcome: "accepted" } });
+    const last = e.checkpoints.at(-1)!;
+    Object.assign(last.runs.find(r => r.id === "parent-run")!, {
+      startedAt: "2026-09-15T00:01:00Z", finishedAt: overlap ? "2026-09-15T00:02:01Z" : "2026-09-15T00:01:59Z",
+    });
+    const check = gradeFirstTask(e).find(c => c.id === "accepted-while-running")!;
+    expect(check.passed).toBe(overlap);
+    expect(Boolean(check.notReached)).toBe(!overlap);
   });
 });

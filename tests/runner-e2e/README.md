@@ -546,7 +546,7 @@ Revision delivery checks exclude preserved originals by their content hash, even
 
 `first-task` is a suite in the main Runner E2E catalog. A full
 `pnpm test:e2e:runner -- --all` run (or an unfiltered full GitHub Actions campaign)
-includes its 48 executions alongside the other suites in one shared dashboard,
+includes its 52 executions alongside the other suites in one shared dashboard,
 campaign result bundle, and history entry. Suite/profile selectors narrow that
 same harness; they do not invoke a separate onboarding reporting program.
 
@@ -558,8 +558,8 @@ select the Codex or Claude adapter family; **the production onboarding model
 default is retained**, even when it differs from that profile's normal harness
 model. Configured and provider-observed model identities are reported separately.
 
-There are twelve cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
-`runner-acpx-claude`, local only (48 cells). Native profiles complete the same
+There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
+`runner-acpx-claude`, local only (52 cells). Native profiles complete the same
 production wizard using their legacy provider, then change only the agent's
 runtime configuration via the public API before its first task. The wizard does
 not currently offer native Runner. Persona, managed instructions, skills, seeded
@@ -576,6 +576,7 @@ path exists. Legacy setup is labeled `production-wizard`.
 | --- | --- |
 | `interview-first-response` | `interview-plan-accept` |
 | `clear-task-first-response` | `task-card-accept` |
+| | `accept-while-running` |
 | `ambiguous-task-first-response` | `task-reply-accept` |
 | `plain-message-first-response` | `clarify-propose-accept` |
 | `plan-first-response` | `revise-accept` |
@@ -685,3 +686,13 @@ identities and instruction hashes before comparing; dirty working trees are
 explicitly marked. Do not pool results with mismatched configurations or treat
 infrastructure failures as behavioral successes. Daytona,
 simulated-user models and prompt optimization are intentionally deferred.
+
+
+`accept-while-running` clicks a confirmation as soon as its source run exposes
+one, without the usual wait for that run to settle. It retains the normal
+acceptance, child-task, duplicate-work, and durable-output checks. The additional
+`accepted-while-running` matcher compares the persisted card resolution time
+with the source run's start and finish times. If the model finishes before the
+click lands, the case is unexercised, never a passing concurrency regression.
+Provider-free route tests also hold a real child process open to exercise this
+interleaving deterministically for confirmations, checkbox approvals, and answers.

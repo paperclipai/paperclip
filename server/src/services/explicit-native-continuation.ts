@@ -1,3 +1,4 @@
+import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
@@ -83,7 +84,7 @@ export async function admitExplicitNativeContinuation(input: {
   if (input.actorType !== "user" || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
-  if (!retry && (!commentId || !z.string().guid().safeParse(commentId).success ||
+  if (!retry && !input.queuedCommentInterruptId && (!commentId || !z.string().guid().safeParse(commentId).success ||
       !["issue_commented", "issue_reopened_via_comment"].includes(input.reason ?? ""))) return null;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -96,8 +97,10 @@ export async function admitExplicitNativeContinuation(input: {
     sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt'->>'actorId' = ${actorId}`,
   )) : [];
-  const queuedInterrupt = Boolean(interruptQueue && commentId &&
-    queuedCommentIdsFromWakePayload(interruptQueue.payload).includes(commentId));
+  const response = interruptQueue
+    ? await readQueuedInteractionResponse(db, companyId, issueId, interruptQueue.payload) : null;
+  const queuedInterrupt = Boolean(interruptQueue && (response || (commentId &&
+    queuedCommentIdsFromWakePayload(interruptQueue.payload).includes(commentId))));
   if (input.queuedCommentInterruptId && !queuedInterrupt) return null;
   const [savedQueue] = input.queuedCommentRequestId ? await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.id, input.queuedCommentRequestId),
@@ -114,17 +117,17 @@ export async function admitExplicitNativeContinuation(input: {
     const undelivered = await undeliveredLegacyUserCommentIds(db, companyId, issueId, agentId, ids);
     if (undelivered.length !== ids.length) return null;
   }
-  const [comment] = retry ? [] : await db.select().from(issueComments).where(and(
+  const [comment] = retry || response ? [] : await db.select().from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
     eq(issueComments.id, commentId!), eq(issueComments.authorType, "user"),
     queuedInterrupt ? undefined : eq(issueComments.authorUserId, actorId), isNull(issueComments.createdByRunId),
     isNull(issueComments.deletedAt),
   ));
-  if (!retry && !comment?.body.trim()) return null;
-  const authorizedAt = comment?.createdAt ?? new Date();
+  if (!retry && !response && !comment?.body.trim()) return null;
+  const authorizedAt = response?.comment.createdAt ?? comment?.createdAt ?? new Date();
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
   if (!agent || (!isConversationAdapter(agent.adapterType) && agent.adapterType !== "paperclip_runner")) return null;
-  if (queuedInterrupt && !isConversationAdapter(agent.adapterType)) return null;
+  if (queuedInterrupt && !isConversationAdapter(agent.adapterType) && !response?.source.requiresFreshSession) return null;
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
@@ -162,7 +165,8 @@ export async function admitExplicitNativeContinuation(input: {
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       isConversationAdapter(agent.adapterType);
-    if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission) return null;
+    if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
+        !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
     // Saved input is a request for a new turn, never permission to undo an
     // operator Stop or redeliver a message already consumed by this run.
     if (queuedRequest && !queuedInterrupt && ((run.status === "cancelled" && !unusedAdmission) ||
@@ -236,7 +240,7 @@ export async function admitExplicitNativeContinuation(input: {
     context: { previousRunId: previous.id, wakeCommentId: commentId },
     summary: null, exposeLowTrustRaw: false });
   if (input.dryRun) return { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}) };
-  const authorization = { actorId, commentId, ...(retry ? { failedRunId: input.failedRunId } : {}),
+  const authorization = { actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}),
     ...(queuedRequest ? { queuedCommentRequestId: input.queuedCommentRequestId } : {}), runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };

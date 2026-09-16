@@ -335,6 +335,20 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       [last.id],
     );
   }
+  if (e.caseId === "accept-while-running") {
+    const accepted = approval?.interactions.find(i => i.status === "accepted" &&
+      ["request_confirmation", "request_checkbox_confirmation"].includes(i.kind));
+    const source = last.runs.find(r => r.id === accepted?.sourceRunId);
+    const acceptedAt = Date.parse(accepted?.resolvedAt ?? "");
+    const startedAt = Date.parse(source?.startedAt ?? "");
+    const finishedAt = Date.parse(source?.finishedAt ?? "");
+    const overlapped = Number.isFinite(acceptedAt) && Number.isFinite(startedAt) &&
+      Number.isFinite(finishedAt) && startedAt <= acceptedAt && acceptedAt < finishedAt;
+    add("accepted-while-running", overlapped,
+      "The persisted approval resolution must fall inside its source run's actual execution interval",
+      approval ? [approval.id, last.id] : [last.id],
+      overlapped ? undefined : "The recording did not prove acceptance during the source run; the concurrency regression was not exercised.");
+  }
   if (!scenario.firstResponseOnly && e.caseId !== "reject-no-execution") {
     const notReached = approval
       ? undefined

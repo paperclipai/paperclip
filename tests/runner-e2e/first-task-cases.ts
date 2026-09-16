@@ -24,6 +24,7 @@ export const FIRST_TASK_CASES = [
   ],
   ["interview-plan-accept", "Interview, plan, and acceptance", "interview", 3],
   ["task-card-accept", "Subtask accepted through a card", "task", 3],
+  ["accept-while-running", "Accept a proposal while its agent is still running", "task", 3],
   ["task-reply-accept", "Subtask accepted in conversation", "task", 3],
   [
     "clarify-propose-accept",
