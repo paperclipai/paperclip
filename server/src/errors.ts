@@ -29,6 +29,14 @@ export function conflict(message: string, details?: unknown) {
   return new HttpError(409, message, details);
 }
 
+export function payloadTooLarge(message: string, details?: unknown) {
+  return new HttpError(413, message, details);
+}
+
+export function unsupportedMediaType(message: string, details?: unknown) {
+  return new HttpError(415, message, details);
+}
+
 export function unprocessable(message: string, details?: unknown) {
   return new HttpError(422, message, details);
 }

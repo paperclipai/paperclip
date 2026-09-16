@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -19,6 +20,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
 }));
+const mockAuthoritativeQueueWakes = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFeedbackService = vi.hoisted(() => ({
@@ -32,6 +34,9 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
       censorUsernameInLogs: false,
       feedbackDataSharingPreference: "prompt",
     },
+  })),
+  getExperimental: vi.fn(async () => ({
+    enableExternalObjects: false,
   })),
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
@@ -124,7 +129,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
@@ -153,31 +158,10 @@ function registerModuleMocks() {
   }));
 }
 
-function createApp() {
-  const app = express();
-  app.use(express.json());
-  return app;
-}
+let lastErrorContext: unknown;
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
-
-  app.use((req, _res, next) => {
-    (req as any).actor = actor ?? {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
-    next();
-  });
-  app.use("/api", issueRoutes({} as any, {} as any));
-  app.use(errorHandler);
-  return app;
+function describeResponse(res: request.Response) {
+  return JSON.stringify({ body: res.body, errorContext: lastErrorContext });
 }
 
 function makeIssue() {
@@ -208,23 +192,52 @@ function makeComment(overrides: Record<string, unknown> = {}) {
 }
 
 describe.sequential("issue comment cancel routes", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    return { issueRoutes, errorHandler };
+  });
+
+  function installActor(app: express.Express, actor?: Record<string, unknown>) {
+    const { issueRoutes, errorHandler } = routeModules.value;
+
+    app.use((req, res, next) => {
+      res.on("finish", () => {
+        lastErrorContext = (res as any).__errorContext ?? null;
+      });
+      (req as any).actor = actor ?? {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn(async () => mockAuthoritativeQueueWakes),
+          })),
+        })),
+      })),
+    };
+    app.use("/api", issueRoutes(db as any, {} as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createApp() {
+    const app = express();
+    app.use(express.json());
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/access.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/decision-training.js");
-    vi.doUnmock("../services/external-objects.js");
-    vi.doUnmock("../services/feedback.js");
-    vi.doUnmock("../services/heartbeat.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/instance-settings.js");
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
+    lastErrorContext = undefined;
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -260,12 +273,16 @@ describe.sequential("issue comment cancel routes", () => {
       createdAt: new Date("2026-04-11T14:59:00.000Z"),
     });
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
+    mockAuthoritativeQueueWakes.length = 0;
     mockInstanceSettingsService.get.mockResolvedValue({
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: false,
         feedbackDataSharingPreference: "prompt",
       },
+    });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableExternalObjects: false,
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockLogActivity.mockResolvedValue(undefined);
@@ -366,7 +383,7 @@ describe.sequential("issue comment cancel routes", () => {
     const res = await request(await installActor(createApp()))
       .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
 
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.status, describeResponse(res)).toBe(200);
     expect(res.body).toMatchObject({
       id: "comment-1",
       body: "",
@@ -419,6 +436,35 @@ describe.sequential("issue comment cancel routes", () => {
     }));
     expect(JSON.stringify(deletedActivity?.details ?? {})).not.toContain("Sensitive original comment body");
     expect(JSON.stringify(deletedActivity?.details ?? {})).not.toContain("Sensitive metadata copy");
+  });
+
+  it("tombstones normally after the comment's queued wake has completed", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockAuthoritativeQueueWakes.push({
+      id: "wake-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      runId: "run-1",
+      status: "succeeded",
+      payload: {
+        issueId: "11111111-1111-4111-8111-111111111111",
+        _paperclipWakeContext: {
+          wakeCommentIds: ["comment-1"],
+        },
+      },
+      requestedAt: new Date("2026-04-11T15:02:00.000Z"),
+    });
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status, describeResponse(res)).toBe(200);
+    expect(mockIssueService.tombstoneComment).toHaveBeenCalledWith(
+      "comment-1",
+      expect.anything(),
+      expect.objectContaining({ afterTombstone: expect.any(Function) }),
+    );
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
   });
 
   it("rejects deleting another actor's normal comment", async () => {

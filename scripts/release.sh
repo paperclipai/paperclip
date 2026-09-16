@@ -12,6 +12,7 @@ dry_run=false
 skip_verify=false
 print_version_only=false
 from_candidate=false
+notes_file_override=
 tag_name=""
 
 cleanup_on_exit=false
@@ -19,7 +20,7 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
+  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--notes-file PATH]
 
 Examples:
   ./scripts/release.sh canary
@@ -48,7 +49,10 @@ Notes:
     validating the candidate branch before using it.
   - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
     create the git tag vYYYY.MDD.P.
-  - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md.
+  - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md,
+    or be supplied explicitly with --notes-file (stable only). The override
+    exists so promotions can read notes maintained on master instead of
+    requiring them inside the promoted source commit's tree.
   - The script rewrites versions temporarily and restores the working tree on
     exit. Tags always point at the original source commit, not a generated
     release commit.
@@ -114,6 +118,11 @@ while [ $# -gt 0 ]; do
     --skip-verify) skip_verify=true ;;
     --print-version) print_version_only=true ;;
     --from-candidate) from_candidate=true ;;
+    --notes-file)
+      shift
+      [ $# -gt 0 ] || release_fail "--notes-file requires a path."
+      notes_file_override="$1"
+      ;;
     -h|--help)
       usage
       exit 0
@@ -132,6 +141,10 @@ done
 
 if [ "$from_candidate" = true ] && [ "$channel" != "beta" ]; then
   release_fail "--from-candidate only applies to the beta channel."
+fi
+
+if [ -n "$notes_file_override" ] && [ "$channel" != "stable" ]; then
+  release_fail "--notes-file only applies to the stable channel."
 fi
 
 PUBLISH_REMOTE="$(resolve_release_remote)"
@@ -203,6 +216,9 @@ if [ "$print_version_only" = true ]; then
 fi
 
 NOTES_FILE="$(release_notes_file "$TARGET_STABLE_VERSION")"
+if [ -n "$notes_file_override" ]; then
+  NOTES_FILE="$notes_file_override"
+fi
 
 require_clean_worktree
 require_npm_publish_auth "$dry_run"
@@ -326,23 +342,29 @@ else
       node "$REPO_ROOT/scripts/prepare-bundled-package.mjs" "$REPO_ROOT/$pkg_dir" "$publish_dir"
       cd "$publish_dir"
     fi
-    if ! publish_package_to_npm_and_wait \
+    if ! publish_package_to_npm \
       "$DIST_TAG" \
       "$pkg_name" \
       "$pkg_version" \
-      "$publish_tool" \
-      "$VERIFY_ATTEMPTS" \
-      "$VERIFY_DELAY_SECONDS"; then
+      "$publish_tool"; then
       if [ "$publish_tool" = "npm" ]; then
         rm -rf "$publish_dir"
       fi
-      release_fail "stopping release: npm did not publish and expose ${pkg_name}@${pkg_version}"
+      release_fail "stopping release: npm did not accept the publish of ${pkg_name}@${pkg_version}"
     fi
     if [ "$publish_tool" = "npm" ]; then
       rm -rf "$publish_dir"
     fi
-    release_info "    ✓ Published version is registry-visible"
+    release_info "    ✓ npm accepted the publish"
   done <<< "$VERSIONED_PACKAGE_INFO"
+  release_info "  ✓ npm accepted every package publish under dist-tag $DIST_TAG"
+  release_info "  Waiting for registry visibility of all packages concurrently..."
+  if ! wait_for_npm_package_versions \
+    "$VERIFY_ATTEMPTS" \
+    "$VERIFY_DELAY_SECONDS" \
+    "$VERSIONED_PACKAGE_INFO"; then
+    release_fail "stopping release: npm did not expose every published version under dist-tag $DIST_TAG"
+  fi
   release_info "  ✓ Published the full package set under dist-tag $DIST_TAG"
 fi
 
@@ -353,7 +375,7 @@ else
   release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
   REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
   REGISTRY_STATE_VERIFY_DELAY_SECONDS="${NPM_REGISTRY_STATE_VERIFY_DELAY_SECONDS:-5}"
-  release_info "  ✓ Every version was registry-visible before the next package publish"
+  release_info "  ✓ Every version was registry-visible before tagging began"
 
   verify_args=(
     --channel "$channel"

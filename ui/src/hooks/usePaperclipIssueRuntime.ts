@@ -15,6 +15,7 @@ export interface PaperclipIssueRuntimeSendOptions {
   body: string;
   reopen?: boolean;
   reassignment?: PaperclipIssueRuntimeReassignment;
+  attachmentIds?: string[];
 }
 
 interface UsePaperclipIssueRuntimeOptions {
@@ -25,13 +26,19 @@ interface UsePaperclipIssueRuntimeOptions {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   return value as Record<string, unknown>;
 }
 
 function readTextContent(message: AppendMessage) {
   return message.content
-    .filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> => part.type === "text")
+    .filter(
+      (
+        part,
+      ): part is Extract<(typeof message.content)[number], { type: "text" }> =>
+        part.type === "text",
+    )
     .map((part) => part.text)
     .join("")
     .trim();
@@ -54,38 +61,61 @@ export function usePaperclipIssueRuntime({
     onCancelRef.current = onCancel;
   }, [onCancel]);
 
-  const adapter = useMemo<ExternalStoreAdapter<ThreadMessage>>(() => ({
-    messages,
-    isRunning,
-    onNew: async (message) => {
-      const body = readTextContent(message);
-      if (!body) return;
+  const adapter = useMemo<ExternalStoreAdapter<ThreadMessage>>(
+    () => ({
+      messages,
+      isRunning,
+      onNew: async (message) => {
+        const body = readTextContent(message);
+        if (!body) return;
 
-      const custom = asRecord(message.runConfig?.custom);
-      const reassignmentRecord = asRecord(custom?.reassignment);
-      const reassignment =
-        reassignmentRecord &&
-        ("assigneeAgentId" in reassignmentRecord || "assigneeUserId" in reassignmentRecord)
-          ? {
-              assigneeAgentId:
-                typeof reassignmentRecord.assigneeAgentId === "string" ? reassignmentRecord.assigneeAgentId : null,
-              assigneeUserId:
-                typeof reassignmentRecord.assigneeUserId === "string" ? reassignmentRecord.assigneeUserId : null,
-            }
-          : undefined;
+        const custom = asRecord(message.runConfig?.custom);
+        const reassignmentRecord = asRecord(custom?.reassignment);
+        const reassignment =
+          reassignmentRecord &&
+          ("assigneeAgentId" in reassignmentRecord ||
+            "assigneeUserId" in reassignmentRecord)
+            ? {
+                assigneeAgentId:
+                  typeof reassignmentRecord.assigneeAgentId === "string"
+                    ? reassignmentRecord.assigneeAgentId
+                    : null,
+                assigneeUserId:
+                  typeof reassignmentRecord.assigneeUserId === "string"
+                    ? reassignmentRecord.assigneeUserId
+                    : null,
+              }
+            : undefined;
 
-      await onSendRef.current({
-        body,
-        reopen: custom?.reopen === true ? true : undefined,
-        reassignment,
-      });
-    },
-    ...(onCancel ? {
-      onCancel: async () => {
-        await onCancelRef.current?.();
+        await onSendRef.current({
+          body,
+          reopen: custom?.reopen === true ? true : undefined,
+          reassignment,
+          ...(Array.isArray(custom?.attachmentIds) &&
+          custom.attachmentIds.length > 0
+            ? {
+                attachmentIds: [
+                  ...new Set(
+                    custom.attachmentIds.filter(
+                      (id): id is string =>
+                        typeof id === "string" && id.length > 0,
+                    ),
+                  ),
+                ],
+              }
+            : {}),
+        });
       },
-    } : {}),
-  }), [messages, isRunning, !!onCancel]);
+      ...(onCancel
+        ? {
+            onCancel: async () => {
+              await onCancelRef.current?.();
+            },
+          }
+        : {}),
+    }),
+    [messages, isRunning, !!onCancel],
+  );
 
   return useExternalStoreRuntime(adapter);
 }

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/command.schema.json",
+  "title": "PRP runner command",
+  "type": "object",
+  "required": ["schema", "commandId", "controllerSeq", "type", "issuedAt", "payload"],
+  "properties": {
+    "schema": { "const": "paperclip.prp.command.v1" },
+    "commandId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "controllerSeq": { "type": "integer", "minimum": 1 },
+    "type": {
+      "enum": [
+        "run.prepare",
+        "run.attach",
+        "session.open",
+        "turn.start",
+        "turn.steer",
+        "turn.interrupt",
+        "turn.stop",
+        "request.resolve",
+        "interaction.receipt",
+        "semantic_tool.result",
+        "session.snapshot",
+        "session.close",
+        "session.budget.increase",
+        "session.destroy",
+        "run.cancel",
+        "runner.drain",
+        "runner.suspend",
+        "runner.shutdown"
+      ]
+    },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "deadlineAt": { "type": "string", "format": "date-time" },
+    "precondition": {
+      "type": "object",
+      "properties": {
+        "runnerState": { "type": "array", "items": { "type": "string" } },
+        "runState": { "type": "array", "items": { "type": "string" } },
+        "sessionState": { "type": "array", "items": { "type": "string" } },
+        "activeTurnId": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "payload": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": true
+}

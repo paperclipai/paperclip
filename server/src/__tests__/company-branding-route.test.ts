@@ -69,7 +69,6 @@ function createCompany() {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
-    brandColor: "#123456",
     logoAssetId: "11111111-1111-4111-8111-111111111111",
     logoUrl: "/api/assets/11111111-1111-4111-8111-111111111111/content",
     createdAt: now,
@@ -168,14 +167,12 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       .patch("/api/companies/company-1/branding")
       .send({
         logoAssetId: "11111111-1111-4111-8111-111111111111",
-        brandColor: "#123456",
       });
 
     expect(res.status).toBe(200);
     expect(res.body.logoAssetId).toBe(company.logoAssetId);
     expect(mockCompanyService.update).toHaveBeenCalledWith("company-1", {
       logoAssetId: "11111111-1111-4111-8111-111111111111",
-      brandColor: "#123456",
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -188,7 +185,6 @@ describe("PATCH /api/companies/:companyId/branding", () => {
         action: "company.branding_updated",
         details: {
           logoAssetId: "11111111-1111-4111-8111-111111111111",
-          brandColor: "#123456",
         },
       }),
     );
@@ -198,7 +194,6 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     const company = createCompany();
     mockCompanyService.update.mockResolvedValue({
       ...company,
-      brandColor: null,
       logoAssetId: null,
       logoUrl: null,
     });
@@ -210,11 +205,29 @@ describe("PATCH /api/companies/:companyId/branding", () => {
 
     const res = await request(app)
       .patch("/api/companies/company-1/branding")
-      .send({ brandColor: null, logoAssetId: null });
+      .send({ description: null, logoAssetId: null });
 
     expect(res.status).toBe(200);
-    expect(res.body.brandColor ?? null).toBeNull();
     expect(res.body.logoAssetId ?? null).toBeNull();
+  });
+
+  it("rejects the retired brandColor field in the request body", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1/branding")
+      .send({
+        logoAssetId: "11111111-1111-4111-8111-111111111111",
+        brandColor: "#123456",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
   });
 
   it("rejects non-branding fields in the request body", async () => {

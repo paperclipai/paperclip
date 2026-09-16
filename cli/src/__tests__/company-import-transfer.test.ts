@@ -320,6 +320,24 @@ describe("uploadCompanyImportTransfer", () => {
     await expect(uploadCompanyImportTransfer(api, zipBytes)).rejects.toThrow(/already imported/);
     expect(putRaw).not.toHaveBeenCalled();
   });
+
+  it("names the company the completed transfer created", async () => {
+    const { api, putRaw } = fakeApi({
+      post: vi.fn().mockResolvedValue({
+        transferId: "transfer-1",
+        status: "completed",
+        alreadyCompleted: true,
+        totalParts: 2,
+        missingParts: [],
+        company: { id: "company-2", name: "Paperclip", issuePrefix: "PAPA" },
+      }),
+    });
+
+    await expect(uploadCompanyImportTransfer(api, zipBytes)).rejects.toThrow(
+      /landed in the company "Paperclip" \(PAPA\)/,
+    );
+    expect(putRaw).not.toHaveBeenCalled();
+  });
 });
 
 describe("company import command over the chunked transfer path", () => {

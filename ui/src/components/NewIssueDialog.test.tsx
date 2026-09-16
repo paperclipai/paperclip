@@ -27,7 +27,6 @@ const companyState = vi.hoisted(() => ({
       id: "company-1",
       name: "Paperclip",
       status: "active",
-      brandColor: "#123456",
       issuePrefix: "PAP",
     },
   ],
@@ -36,7 +35,6 @@ const companyState = vi.hoisted(() => ({
     id: "company-1",
     name: "Paperclip",
     status: "active",
-    brandColor: "#123456",
     issuePrefix: "PAP",
   },
 }));
@@ -188,11 +186,13 @@ vi.mock("./InlineEntitySelector", async () => {
       {
         value: string;
         placeholder?: string;
+        className?: string;
+        triggerDataSlot?: string;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, renderTriggerValue }, ref) {
+    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, renderTriggerValue }, ref) {
       return (
-        <button ref={ref} type="button">
+        <button ref={ref} type="button" className={className} data-slot={triggerDataSlot}>
           {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
         </button>
       );
@@ -414,6 +414,31 @@ describe("NewIssueDialog", () => {
     act(() => rerendered.root.unmount());
   });
 
+  it("uses the compact composer control proportions for mobile task fields", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const compactControls = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="new-issue-compact-control"]'),
+    );
+    const prefix = compactControls.find((control) => control.textContent === "PAP");
+    const assignee = compactControls.find((control) => control.textContent === "Assignee");
+    const project = compactControls.find((control) => control.textContent === "Project");
+    const status = compactControls.find((control) => control.textContent?.trim() === "Todo");
+    const upload = compactControls.find((control) => control.textContent?.trim() === "Upload");
+    const mode = compactControls.find((control) => control.hasAttribute("data-issue-work-mode-chip"));
+    const more = container.querySelector<HTMLElement>('[data-testid="new-issue-more-menu-trigger"]');
+
+    expect(prefix?.className).toContain("p-1.5");
+    for (const control of [assignee, project, status, upload, mode]) {
+      expect(control?.className).toContain("h-8");
+      expect(control?.className).toContain("px-2.5");
+    }
+    expect(more?.className).toContain("size-8");
+
+    act(() => root.unmount());
+  });
+
   it("submits parent and goal context for sub-issues", async () => {
     mockProjectsApi.list.mockResolvedValue([
       {
@@ -544,6 +569,76 @@ describe("NewIssueDialog", () => {
     });
 
     expect(container.textContent).toContain("agent_token,project_token");
+
+    act(() => root.unmount());
+  });
+
+  it("shows Astra-only efforts when a task inherits the agent model", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Use inherited Astra",
+      assigneeAgentId: "agent-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CodexCoder",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-6-astra" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Codex options");
+    });
+
+    const codexOptionsButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Codex options"));
+    expect(codexOptionsButton).not.toBeUndefined();
+    await act(async () => {
+      codexOptionsButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const customLane = Array.from(container.querySelectorAll('button[role="radio"]'))
+      .find((button) => button.textContent?.trim() === "Custom");
+    expect(customLane).not.toBeUndefined();
+    await act(async () => {
+      customLane!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Ultra");
+    expect(container.textContent).toContain("Max");
+    expect(container.textContent).not.toContain("Minimal");
+
+    act(() => root.unmount());
+  });
+
+  it("warns when the selected assignee is a paused imported agent", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Compare onboarding flows",
+      assigneeAgentId: "agent-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CEO",
+        status: "paused",
+        pauseReason: "import",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="new-issue-paused-assignee-note"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("arrived paused from an organization import");
 
     act(() => root.unmount());
   });
@@ -959,6 +1054,7 @@ describe("NewIssueDialog", () => {
 
     const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(modeChip()?.textContent).toContain("Auto mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -969,6 +1065,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(modeChip()?.textContent).toContain("Plan mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -979,6 +1076,7 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+    expect(modeChip()?.textContent).toContain("Ask mode");
 
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -1323,7 +1421,6 @@ describe("NewIssueDialog", () => {
   it("reveals the watchdog editor from the overflow menu", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableTaskWatchdogs: true,
     });
 
     const { root } = renderDialog(container);
@@ -1350,7 +1447,6 @@ describe("NewIssueDialog", () => {
   it("submits the configured watchdog from a restored draft", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableTaskWatchdogs: true,
     });
     localStorage.setItem(
       "paperclip:issue-draft",
@@ -1417,13 +1513,13 @@ describe("NewIssueDialog", () => {
       return button?.querySelector("svg")?.getAttribute("class") ?? "";
     }
 
-    it("uses agent-mode labels and brand status hues by default", async () => {
+    it("uses auto-mode labels and brand status hues by default", async () => {
       const { root } = renderDialog(container);
       await waitForAssertion(() => {
-        expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+        expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       });
 
-      expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
 
@@ -1442,7 +1538,6 @@ describe("NewIssueDialog", () => {
           id: "company-1",
           name: "Acme Labs",
           status: "active",
-          brandColor: "#123456",
           issuePrefix: "OPS",
         },
       ];
@@ -1450,7 +1545,6 @@ describe("NewIssueDialog", () => {
         id: "company-1",
         name: "Acme Labs",
         status: "active",
-        brandColor: "#123456",
         issuePrefix: "OPS",
       };
 

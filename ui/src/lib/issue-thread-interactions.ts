@@ -5,6 +5,9 @@ export type {
   AskUserQuestionsQuestion,
   AskUserQuestionsQuestionOption,
   AskUserQuestionsResult,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
   IssueThreadInteraction,
   IssueThreadInteractionActorFields,
   IssueThreadInteractionBase,
@@ -18,6 +21,8 @@ export type {
   RequestConfirmationIssueDocumentTarget,
   RequestConfirmationPayload,
   RequestConfirmationResult,
+  RequestConfirmationSecretProposalPayload,
+  RequestConfirmationSecretProposalResult,
   RequestConfirmationTarget,
   RequestConfirmationToolActionPayload,
   RequestConfirmationToolActionResult,
@@ -38,6 +43,7 @@ import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
+  ConnectionIntentInteraction,
   IssueThreadInteraction,
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,
@@ -57,6 +63,19 @@ export interface SuggestedTaskTreeNode {
   children: SuggestedTaskTreeNode[];
 }
 
+/**
+ * These takeovers already expose a deliberate non-accept path in their form.
+ * Showing the composer's generic Skip beside Reject/Revise duplicates that
+ * escape hatch and makes the action hierarchy ambiguous.
+ */
+export function interactionReplacesComposerSkip(
+  interaction: IssueThreadInteraction,
+): boolean {
+  return interaction.kind === "request_confirmation"
+    || interaction.kind === "request_checkbox_confirmation"
+    || interaction.kind === "suggest_tasks";
+}
+
 export function isIssueThreadInteraction(
   value: unknown,
 ): value is IssueThreadInteraction {
@@ -71,6 +90,7 @@ export function isIssueThreadInteraction(
       || candidate.kind === "request_confirmation"
       || candidate.kind === "request_checkbox_confirmation"
       || candidate.kind === "request_item_verdicts"
+      || candidate.kind === "connection_intent"
     );
 }
 
@@ -181,6 +201,7 @@ export function buildIssueThreadInteractionSummary(
   const administrativeOutcome = interaction.result && "outcome" in interaction.result
     ? interaction.result.outcome
     : null;
+  if (administrativeOutcome === "skipped") return "Skipped interaction";
   if (administrativeOutcome === "withdrawn") return "Withdrawn interaction";
   if (administrativeOutcome === "issue_closed") return "Expired when issue closed";
   if (administrativeOutcome === "addressee_deleted") return "Cancelled when addressee was deleted";
@@ -202,7 +223,10 @@ export function buildIssueThreadInteractionSummary(
 
   if (interaction.kind === "request_confirmation") {
     if (interaction.status === "accepted") return "Confirmed request";
-    if (interaction.status === "rejected") return "Declined request";
+    if (interaction.status === "rejected") {
+      const rejectLabel = interaction.payload.rejectLabel?.trim();
+      return rejectLabel ? `Selected “${rejectLabel}”` : "Declined request";
+    }
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
       if (outcome === "superseded_by_comment") return "Confirmation expired after comment";
@@ -237,6 +261,17 @@ export function buildIssueThreadInteractionSummary(
     return buildItemVerdictsSummary(interaction);
   }
 
+  if (interaction.kind === "connection_intent") {
+    if (interaction.status === "accepted") return `${interaction.payload.serviceName} connected`;
+    if (interaction.status === "rejected") return `${interaction.payload.serviceName} declined`;
+    if (interaction.status === "expired") {
+      return interaction.result?.outcome === "superseded"
+        ? `${interaction.payload.serviceName} request superseded`
+        : `${interaction.payload.serviceName} request expired`;
+    }
+    return `Connect ${interaction.payload.serviceName}`;
+  }
+
   const count = interaction.payload.questions.length;
   if (interaction.status === "answered") {
     return count === 1 ? "Answered 1 question" : `Answered ${count} questions`;
@@ -251,6 +286,34 @@ export function buildIssueThreadInteractionSummary(
     return count === 1 ? "Question expired" : "Questions expired";
   }
   return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
+}
+
+/** Readable model input for a durable answer delivered into a successor run. */
+export function buildAnsweredQuestionsDeliveryText(
+  interaction: AskUserQuestionsInteraction,
+): string {
+  const questionSet = interaction.payload.questionSet;
+  const legacyQuestionById = new Map(
+    interaction.payload.questions.map((question) => [question.id, question] as const),
+  );
+  const canonicalQuestionById = new Map(
+    (questionSet?.questions ?? []).map((question) => [question.id, question] as const),
+  );
+  const lines = (interaction.result?.answers ?? []).map((answer) => {
+    const canonical = canonicalQuestionById.get(answer.questionId);
+    const legacy = legacyQuestionById.get(answer.questionId);
+    const optionLabels = new Map(
+      (canonical?.options ?? legacy?.options ?? []).map((option) => [option.id, option.label] as const),
+    );
+    const values = answer.optionIds.map((optionId) => optionLabels.get(optionId) ?? optionId);
+    if (answer.otherText?.trim()) values.push(answer.otherText.trim());
+    const prompt = canonical?.prompt ?? legacy?.prompt ?? answer.questionId;
+    const label = canonical?.header && canonical.header !== prompt
+      ? `${canonical.header} — ${prompt}`
+      : prompt;
+    return `- ${label}: ${values.join(", ") || "No answer"}`;
+  });
+  return ["Answered questions", ...(lines.length > 0 ? ["", ...lines] : [])].join("\n");
 }
 
 export function buildSuggestedTaskTree(

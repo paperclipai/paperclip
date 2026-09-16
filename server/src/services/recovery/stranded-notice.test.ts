@@ -31,6 +31,42 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.body).not.toContain("Recovery action:");
   });
 
+  it("names the sandbox provider plugin and its status when that is the configuration gap", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.kubernetes-sandbox-provider",
+      pluginStatus: "error",
+    });
+    expect(seed.title).toBe("Configuration incomplete");
+    expect(seed.tone).toBe("danger");
+    expect(seed.body).toContain("`paperclip.kubernetes-sandbox-provider`");
+    expect(seed.body).toContain("`error`");
+    expect(seed.body).toContain("enable the plugin");
+    expect(seed.body).not.toContain("secret/env bindings");
+  });
+
+  it("asks for a capability review before enabling an upgrade_pending plugin, and names an operator disable", () => {
+    const upgrade = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.daytona-sandbox-provider",
+      pluginStatus: "upgrade_pending",
+    });
+    expect(upgrade.body).toContain("review and approve the upgraded plugin's capabilities");
+    const disabled = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.daytona-sandbox-provider",
+      pluginStatus: "disabled",
+    });
+    expect(disabled.body).toContain("an operator disabled it");
+  });
+
+  it("keeps the secret-binding copy for other configuration gaps", () => {
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
+      "secret/env bindings",
+    );
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+  });
+
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
@@ -40,6 +76,18 @@ describe("stranded recovery notice seeds", () => {
 });
 
 describe("buildStrandedRecoveryEscalationNotice", () => {
+  it("names a workspace timeout and its repair instead of claiming generic continuation", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: "scan-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "workspace_git_scan_timeout" },
+    });
+    expect(notice.presentation.title).toBe("Workspace scan timed out");
+    expect(notice.body).toContain("before the agent started");
+    expect(notice.body).not.toContain("retried continuation");
+    expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
+  });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
   const sourceRun = {
@@ -101,7 +149,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
 
     const ownerRow = allRows(notice.metadata).find((row) => row.label === "Recovery owner");
     expect(ownerRow?.type).toBe("key_value");
-    expect(String(ownerRow?.value)).toContain("Board escalation");
+    expect(ownerRow?.value).toBe("Board decision required");
   });
 
   it("derives title from the recovery cause and body from the plain-comment fallback", () => {
@@ -156,6 +204,37 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(rows.some((row) => row.label === "Failure summary")).toBe(false);
   });
 
+  it("leads with the classified run failure code over the generic seed title", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: actionId,
+      recoveryOwner: owner,
+      sourceRun: {
+        ...sourceRun,
+        errorCode: "provider_quota",
+        errorSummary: "You've hit your limit · resets 2:30am (UTC)",
+      },
+    });
+
+    expect(notice.presentation.title).toBe("Error: usage limit reached");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "provider_quota",
+    });
+  });
+
+  it("titles auth-required run failures as a login error", () => {
+    expect(
+      buildStrandedRecoveryEscalationNotice({
+        seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }),
+        recoveryActionId: actionId,
+        recoveryOwner: null,
+        sourceRun: { ...sourceRun, errorCode: "claude_auth_required" },
+      }).presentation.title,
+    ).toBe("Error: not logged in to Claude");
+  });
+
   it("is matched by the metadata-based escalation dedupe matcher", () => {
     const notice = buildStrandedRecoveryEscalationNotice({
       seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }),
@@ -173,4 +252,13 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
       noticeMetadataReferencesRecoveryAction(notice.metadata, "1f2e3d4c-5b6a-4798-8899-444444444444"),
     ).toBe(false);
   });
+});
+
+
+it("names the unavailable AI account instead of suggesting secret bindings", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_unavailable", provider: "openai" });
+  expect(notice.nextAction).toContain("Reconnect the selected AI account");
+  expect(notice.title).toBe("AI connection needs attention");
+  expect(notice.body).toContain("Reconnect the account");
+  expect(notice.body).not.toContain("secret/env");
 });

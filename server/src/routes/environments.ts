@@ -8,8 +8,10 @@ import {
   finishEnvironmentCustomImageSetupSessionSchema,
   getEnvironmentCapabilities,
   probeEnvironmentConfigSchema,
+  resolveDeclaredSandboxCapabilities,
   redactEnvironmentCustomImageSetupSession,
   redactEnvironmentCustomImageTemplate,
+  relinkEnvironmentCustomImageTemplateSchema,
   startEnvironmentCustomImageSetupSessionSchema,
   type EnvironmentDeleteBlastRadius,
   updateEnvironmentSchema,
@@ -55,7 +57,9 @@ import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { closeWarmNativeSessionsForEnvironment } from "../services/native-runtime/native-session-executor.js";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -327,6 +331,9 @@ export function environmentRoutes(
 ) {
   const router = Router();
   const svc = environmentService(db);
+  const environmentRuntime = environmentRuntimeService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const customImages = environmentCustomImageService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -582,6 +589,12 @@ export function environmentRoutes(
     if (impact.staticReferences.isInstanceDefault) {
       return "Cannot delete the current instance default environment. Set a new default environment before deleting this one.";
     }
+    if (impact.pendingCleanupLeaseCount > 0) {
+      return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
+    }
+    if (impact.reusableSandboxLeaseCount > 0) {
+      return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
+    }
     return null;
   }
 
@@ -589,6 +602,10 @@ export function environmentRoutes(
     actor: ReturnType<typeof getActorInfo>;
     environment: { id: string; driver: string };
     impact: EnvironmentDeleteBlastRadius;
+    // Sandboxes a consented delete destroyed before this rejection. Provider
+    // destruction is not transactional with the delete guard, so a rejection
+    // after a partial destroy must say what already happened.
+    destroyedReusableSandboxLeaseCount?: number;
   }): never {
     const message =
       environmentDeleteBlockMessage(input.impact)
@@ -598,6 +615,7 @@ export function environmentRoutes(
         environmentId: input.environment.id,
         environmentDriver: input.environment.driver,
         deleteBlockedReasons: input.impact.deleteBlockedReasons,
+        destroyedReusableSandboxLeaseCount: input.destroyedReusableSandboxLeaseCount ?? 0,
         actorType: input.actor.actorType,
         actorId: input.actor.actorId,
         agentId: input.actor.agentId,
@@ -605,7 +623,12 @@ export function environmentRoutes(
       },
       "environment delete rejected by guard",
     );
-    throw conflict(message, { deleteBlockedReasons: input.impact.deleteBlockedReasons });
+    throw conflict(message, {
+      deleteBlockedReasons: input.impact.deleteBlockedReasons,
+      ...(input.destroyedReusableSandboxLeaseCount
+        ? { destroyedReusableSandboxLeaseCount: input.destroyedReusableSandboxLeaseCount }
+        : {}),
+    });
   }
 
   function setupSessionActivityDetails(session: {
@@ -715,15 +738,26 @@ export function environmentRoutes(
             supportsSavedProbe: true,
             supportsUnsavedProbe: true,
             supportsRunExecution: true,
-            // Default absent to false, so the presentation agrees with the
-            // execution guard (=== true).
-            supportsReusableLeases: driver.supportsReusableLeases ?? false,
+            // Publish reusable-lease support only when the declaration allows it
+            // AND the live worker verified all reuse lifecycle methods, so the
+            // presentation matches the acquisition guard, which requires them.
+            // The declaration part uses the same resolver acquisition uses, so
+            // the nested `sandboxCapabilities` override wins over the legacy
+            // `supportsReusableLeases` flag: a manifest with legacy `true` and
+            // nested `false` presents as not reusable. Default an absent value
+            // to false with `=== true`. A ready worker that omits any reuse
+            // lifecycle method presents as not reusable, because acquisition
+            // would always fall back to an ephemeral lease.
+            supportsReusableLeases:
+              resolveDeclaredSandboxCapabilities(driver).reusableLeases === true
+              && driver.reusableLeaseMethodsVerified,
             supportsInteractiveSetup: driver.supportsInteractiveSetup,
             interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
             supportsTemplateCapture: driver.supportsTemplateCapture,
             templateRefKind: driver.templateRefKind,
             templateConfigBinding: driver.templateConfigBinding,
             supportsTemplateDelete: driver.supportsTemplateDelete,
+            supportsLoginPty: driver.supportsLoginPty ?? false,
             displayName: driver.displayName,
             description: driver.description,
             source: "plugin" as const,
@@ -934,6 +968,31 @@ export function environmentRoutes(
     res.json(result);
   });
 
+  router.post(
+    "/environments/:environmentId/custom-image-template/relink",
+    validate(relinkEnvironmentCustomImageTemplateSchema),
+    async (req, res) => {
+      assertCanAccessInstanceEnvironments(req);
+      const companyId = await resolveCustomImageCompanyId(req);
+      const actor = getActorInfo(req);
+      // The service classifies drift, re-stamps the fingerprint, and writes the
+      // activity row in one transaction. The route never classifies.
+      const result = await customImages.relinkActiveTemplate({
+        environmentId: req.params.environmentId as string,
+        confirmBootSourceDrift: req.body.confirmBootSourceDrift === true,
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+        },
+        companyId,
+      });
+      res.json(result);
+    },
+  );
+
   router.delete("/environments/:environmentId/custom-image-template", async (req, res) => {
     assertCanAccessInstanceEnvironments(req);
     const companyId = await resolveCustomImageCompanyId(req);
@@ -1078,6 +1137,27 @@ export function environmentRoutes(
         }),
     });
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
+    // The durable `pending_cleanup` lease row stores the provider, the provider
+    // lease id, and the immutable config metadata for an orphan sandbox. The
+    // teardown retry reads that row alone and never reads the current environment
+    // provider. So a provider change or an environment delete after the record
+    // lands cannot strand the teardown. That immutable record is the correctness
+    // invariant.
+    //
+    // This pre-transaction check is a best-effort fast-fail only. It rejects a
+    // provider change while a known `pending_cleanup` lease exists, so the
+    // operator resolves the cleanup first. An orphan record that lands after this
+    // check still carries its own immutable teardown context, so the
+    // time-of-check-to-time-of-use window here cannot strand a sandbox.
+    const changesProviderTarget =
+      (req.body.driver !== undefined && req.body.driver !== existing.driver) ||
+      req.body.config !== undefined;
+    if (changesProviderTarget && (await svc.hasUnresolvedPendingCleanupLeases(existing.id))) {
+      throw conflict(
+        "Cannot change the driver or provider config while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
+        { code: "environment_pending_sandbox_cleanup" },
+      );
+    }
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;
     const nextName = req.body.name ?? existing.name;
@@ -1187,13 +1267,65 @@ export function environmentRoutes(
     }
     await assertPlatformProvisionedEnvironmentWritable(existing);
     const actor = getActorInfo(req);
-    const impact = await svc.getDeleteBlastRadius(existing.id);
+    let impact = await svc.getDeleteBlastRadius(existing.id);
     if (!impact) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
+    // With explicit consent, destroy the environment's reusable sandbox leases
+    // so the delete can proceed — but only while those leases are the sole
+    // blocker. Destroying provider resources and then rejecting on another
+    // gate would be an irreversible action with nothing gained. The destroy
+    // must run before the delete: the driver needs the environment config to
+    // reach the provider. A lease whose teardown fails lands in
+    // `pending_cleanup`, and the re-fetched blast radius rejects below until
+    // the cleanup sweep resolves it — no sandbox is ever orphaned silently.
+    // A lease held by an in-flight run is skipped, keeps blocking, and the
+    // re-check rejects the delete without touching that run's sandbox.
+    //
+    // The gate above and the destroy are not one atomic step: provider calls
+    // cannot join a database transaction, so a blocker that lands in the
+    // window between them (a new instance default, a fresh pending cleanup)
+    // rejects the delete only after some sandboxes are already gone. Those
+    // sandboxes belonged to the environment the operator consented to
+    // destroy; the rejection reports the count so nothing is silent.
+    let destroyedReusableSandboxLeaseCount = 0;
+    if (
+      req.query.destroyReusableSandboxLeases === "true"
+      && impact.reusableSandboxLeaseCount > 0
+      && impact.deleteBlockedReasons.every((reason) => reason === "reusable_sandbox_lease")
+    ) {
+      const warmSessions = await closeWarmNativeSessionsForEnvironment({
+        environmentId: existing.id,
+        reason: "environment deleted",
+      });
+      if (warmSessions.busy > 0 || warmSessions.failed > 0) {
+        throw conflict(
+          warmSessions.busy > 0
+            ? "Cannot delete this environment while a native runner session is active. Wait for its run to finish, then retry."
+            : "Cannot delete this environment because its warm native runner did not shut down cleanly. Retry after the runner exits.",
+          { nativeRunnerSessions: warmSessions },
+        );
+      }
+      const destroyResult =
+        await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
+          environmentId: existing.id,
+          failureReason: "environment_deleted",
+        });
+      destroyedReusableSandboxLeaseCount = destroyResult.destroyed;
+      impact = await svc.getDeleteBlastRadius(existing.id);
+      if (!impact) {
+        res.status(404).json({ error: "Environment not found" });
+        return;
+      }
+    }
     if (!impact.canDelete) {
-      rejectEnvironmentDelete({ actor, environment: existing, impact });
+      rejectEnvironmentDelete({
+        actor,
+        environment: existing,
+        impact,
+        destroyedReusableSandboxLeaseCount,
+      });
     }
 
     const removed = await svc.removeIfDeletable(existing.id);
@@ -1236,9 +1368,15 @@ export function environmentRoutes(
         name: removed.name,
         driver: removed.driver,
         status: removed.status,
+        ...(destroyedReusableSandboxLeaseCount > 0
+          ? { destroyedReusableSandboxLeaseCount }
+          : {}),
       },
     });
-    res.json(presentEnvironmentForRead(req, removed));
+    res.json({
+      ...presentEnvironmentForRead(req, removed),
+      destroyedReusableSandboxLeaseCount,
+    });
   });
 
   router.post("/environments/:id/probe", async (req, res) => {

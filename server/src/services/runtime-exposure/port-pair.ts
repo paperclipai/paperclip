@@ -47,6 +47,17 @@ export interface AllocateExposurePortPairInput {
    * the caller special-case it.
    */
   preferredAppPort?: number | null;
+  /**
+   * Atomically take the pair for this allocation, or refuse it. Returning false
+   * makes the scan move on as if the pair were busy.
+   *
+   * Without it, two concurrent allocators observe identical reservations and
+   * identical probe results and both walk away with the lowest free pair —
+   * neither has bound anything yet, so nothing downstream can tell them apart.
+   * The claim must cover both ports together: a half-claimed pair is the
+   * orphaned-HMR-companion failure this allocator exists to prevent.
+   */
+  claimPair?: (pair: ExposurePortPair) => boolean;
 }
 
 /**
@@ -68,7 +79,11 @@ export async function allocateExposurePortPair(
     // Probe the app port first; short-circuit before probing the companion.
     if (!(await input.isPortAvailable(appPort))) return null;
     if (!(await input.isPortAvailable(hmrPort))) return null;
-    return { appPort, hmrPort };
+    const pair = { appPort, hmrPort };
+    // Claim last: the probes are the cheap filter, and claiming a pair we then
+    // reject would leak a hold on it for the claim's whole TTL.
+    if (input.claimPair && !input.claimPair(pair)) return null;
+    return pair;
   };
 
   if (input.preferredAppPort != null) {
