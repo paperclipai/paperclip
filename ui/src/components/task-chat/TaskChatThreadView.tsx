@@ -1,6 +1,7 @@
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
+import type { IssueChatThreadOrder } from "@/lib/issue-chat-messages";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type {
@@ -66,6 +67,19 @@ interface TaskChatThreadViewProps {
   retryFailedRunId?: string | null;
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
+  /**
+   * Display order for the thread. `newest_first` renders the settled items
+   * in reverse (each turn's internal order stays chronological) and moves
+   * the live `tail` above them so the newest activity sits at the top.
+   */
+  threadOrder?: IssueChatThreadOrder;
+  /**
+   * Content rendered inside the transcript scroller after the settled
+   * thread's chronological end — the load-older control's slot when the
+   * thread is newest-first (with `newest_first`, `tail` moves above the
+   * items and `footer` stays at the bottom of the list).
+   */
+  footer?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
   contentKey?: unknown;
   className?: string;
@@ -296,6 +310,8 @@ export function TaskChatThreadView({
   onRetryFailedRun,
   retryFailedRunId = null,
   tail,
+  threadOrder = "oldest_first",
+  footer,
   contentKey,
   className,
   scroll = true,
@@ -314,10 +330,15 @@ export function TaskChatThreadView({
                 item.label === "Usage limit reached"),
           )?.id
       : undefined;
+  const newestFirst = threadOrder === "newest_first";
+  const displayItems = useMemo(
+    () => (newestFirst ? [...items].reverse() : items),
+    [items, newestFirst],
+  );
   // Streaming tail and header updates must not rebuild settled markdown/tool trees.
   const history = useMemo(() => {
     const renderedItems = streamlined
-      ? items
+      ? displayItems
           .map((item) => ({
             item,
             content: renderItem(
@@ -362,7 +383,7 @@ export function TaskChatThreadView({
                 {content}
               </div>
             ))
-          : items.map((item, index) => (
+          : displayItems.map((item, index) => (
               <div
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
@@ -399,7 +420,7 @@ export function TaskChatThreadView({
       </>
     );
   }, [
-    items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
+    displayItems, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
     retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments,
@@ -420,15 +441,28 @@ export function TaskChatThreadView({
           {header}
         </div>
       ) : null}
+      {newestFirst && tail
+        ? streamlined
+          ? <div className="mb-4">{tail}</div>
+          : tail
+        : null}
       {history}
-      {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
+      {!newestFirst && tail
+        ? streamlined
+          ? <div className="mt-4">{tail}</div>
+          : tail
+        : null}
+      {footer}
     </div>
   );
 
   if (!scroll) return body;
 
   return (
-    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)}>
+    <TaskMessageScroller
+      contentKey={`${contentKey ?? taskChatContentKey(items)}:${threadOrder}`}
+      threadOrder={threadOrder}
+    >
       {body}
     </TaskMessageScroller>
   );
