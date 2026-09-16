@@ -18169,6 +18169,27 @@ export function heartbeatService(
       );
   }
 
+  // Move a guarded orphan candidate to the back of the sweep order. The
+  // shared-resource guard below can skip a row on every tick as long as the
+  // other owner stays live, retained, or pending cleanup. The select orders
+  // by `updatedAt` ascending and takes only the oldest page, so an untouched
+  // skipped row keeps refilling that same page and blocks every row behind
+  // it. The bump pushes the row past the fixed-size page, so the next tick
+  // reaches the rows behind it. It costs the row one extra backoff wait,
+  // which is safe because the guard means a physical sandbox still exists.
+  async function deferOrphanedActiveLease(leaseId: string): Promise<void> {
+    const now = new Date();
+    await db
+      .update(environmentLeases)
+      .set({ updatedAt: now })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "active"),
+        ),
+      );
+  }
+
   // An active lease is reachable only while its heartbeat run keeps the
   // running status. The reaper writes the run status and the lease release as
   // two separate statements, so a restart between them can leave a terminal
@@ -18228,7 +18249,13 @@ export function heartbeatService(
             ),
           )
           .limit(1);
-        if (otherOwner) continue;
+        if (otherOwner) {
+          // Defer this row so the fixed-size page reaches the rows behind
+          // it next tick, instead of re-selecting the same guarded rows
+          // forever.
+          await deferOrphanedActiveLease(lease.id);
+          continue;
+        }
       }
 
       // Keep the row's existing updatedAt value. The select above already

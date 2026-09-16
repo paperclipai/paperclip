@@ -276,6 +276,91 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     expect(row?.status).toBe("active");
   });
 
+  it("test_defers_a_guarded_lease_instead_of_leaving_it_at_the_front_of_the_page", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });
+    const sharedProviderLeaseId = "sandbox://fake/shared-resource";
+    const orphanedLeaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runId,
+      updatedAt: oldEnough(),
+      providerLeaseId: sharedProviderLeaseId,
+    });
+    await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: null,
+      updatedAt: new Date(),
+      providerLeaseId: sharedProviderLeaseId,
+      status: "retained",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 5 * 60 * 1000 });
+
+    const row = await leaseRow(orphanedLeaseId);
+    expect(row?.status).toBe("active");
+    // The guard moved the row's `updatedAt` forward, so a fresh backoff
+    // cutoff no longer selects it. The exact value is not the point; only
+    // that it moved out of the stale range the sweep reads by.
+    expect(row!.updatedAt.getTime()).toBeGreaterThan(oldEnough().getTime());
+  });
+
+  it("test_a_full_page_of_guarded_leases_does_not_starve_a_later_eligible_orphan", async () => {
+    const { companyId, environmentId } = await seedCompanyAgentAndEnvironment();
+    const veryOld = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    const staleButNewer = new Date(Date.now() - 60 * 60 * 1000);
+
+    // Fill one full sweep page (ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE = 20)
+    // with orphan candidates that are each guarded by a live second owner of
+    // the same provider resource. Every guarded row is older than the
+    // eligible orphan below, so an unbounded query would return them first
+    // on every tick.
+    for (let i = 0; i < 20; i += 1) {
+      const providerLeaseId = `sandbox://fake/guarded-${i}`;
+      await insertActiveLease({
+        companyId,
+        environmentId,
+        heartbeatRunId: null,
+        updatedAt: veryOld,
+        providerLeaseId,
+      });
+      await insertActiveLease({
+        companyId,
+        environmentId,
+        heartbeatRunId: null,
+        updatedAt: new Date(),
+        providerLeaseId,
+        status: "retained",
+      });
+    }
+
+    // This orphan has no other owner, so it is eligible for cleanup. It
+    // sorts behind the 20 guarded rows because it is newer than them, so
+    // the first sweep page does not reach it.
+    const eligibleLeaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: null,
+      updatedAt: staleButNewer,
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const firstTick = await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 5 * 60 * 1000 });
+    expect(firstTick).toEqual({ recovered: 0 });
+    const eligibleAfterFirstTick = await leaseRow(eligibleLeaseId);
+    expect(eligibleAfterFirstTick?.status).toBe("active");
+
+    // The guarded rows moved out of the stale page on the first tick, so
+    // the second tick reaches the eligible orphan behind them.
+    const secondTick = await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 5 * 60 * 1000 });
+    expect(secondTick).toEqual({ recovered: 1 });
+    const eligibleAfterSecondTick = await leaseRow(eligibleLeaseId);
+    expect(eligibleAfterSecondTick?.status).toBe("pending_cleanup");
+  });
+
   it("test_writes_a_failure_reason_on_each_flipped_lease", async () => {
     const { companyId, environmentId } = await seedCompanyAgentAndEnvironment();
     const leaseId = await insertActiveLease({
