@@ -126,37 +126,37 @@
     {
       "slug": "gmail",
       "provider": "Gmail",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/gmail.svg"
     },
     {
       "slug": "google-sheets",
       "provider": "Google Sheets",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-sheets.svg"
     },
     {
       "slug": "google-drive",
       "provider": "Google Drive",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-drive.svg"
     },
     {
       "slug": "google-docs",
       "provider": "Google Docs",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-docs.svg"
     },
     {
       "slug": "google-slides",
       "provider": "Google Slides",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-slides.svg"
     },
     {
       "slug": "google-calendar",
       "provider": "Google Calendar",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-calendar.svg",
       "aliases": [
         "gcal"
@@ -165,13 +165,13 @@
     {
       "slug": "google-chat",
       "provider": "Google Chat",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-chat.svg"
     },
     {
       "slug": "google-people",
       "provider": "Google People",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-people.svg",
       "aliases": [
         "google contacts"
@@ -180,7 +180,7 @@
     {
       "slug": "google-workspace-search",
       "provider": "Google Workspace Search",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/google-workspace-search.svg",
       "aliases": [
         "workspace search"
