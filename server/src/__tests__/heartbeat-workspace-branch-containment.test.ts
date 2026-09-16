@@ -39,6 +39,7 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { heartbeatService } from "../services/heartbeat.ts";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/index.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { isProspectiveBlockedTransition } from "../services/routable-blocked.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -995,16 +996,29 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
         executionAgentNameKey: issues.executionAgentNameKey,
+        unblockDescriptor: issues.unblockDescriptor,
+        blockedTransitionAt: issues.blockedTransitionAt,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(blockedIssue).toEqual({
+    expect(blockedIssue).toMatchObject({
       status: "blocked",
       checkoutRunId: null,
       executionRunId: null,
       executionAgentNameKey: null,
+      unblockDescriptor: {
+        owner: "board",
+        action: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+      },
     });
+    expect(blockedIssue?.blockedTransitionAt).toBeInstanceOf(Date);
+    expect(
+      isProspectiveBlockedTransition({
+        status: blockedIssue!.status,
+        blockedTransitionAt: blockedIssue!.blockedTransitionAt,
+      }),
+    ).toBe(true);
 
     const wakeup = await db
       .select({
