@@ -87,6 +87,7 @@ export function qualityInput(evidence: FirstTaskEvidence) {
       interactions: c.interactions,
       tasks: c.tasks,
       documents: c.documents,
+      attachments: c.attachments ?? [],
     })),
   });
 }

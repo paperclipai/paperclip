@@ -19,7 +19,7 @@ const html = (value: unknown) =>
   );
 export interface TranscriptEntry {
   id: string;
-  kind: "comment" | "interaction" | "answer" | "document" | "run";
+  kind: "comment" | "interaction" | "answer" | "document" | "attachment" | "run";
   at: string;
   checkpoint: string;
   row: Row;
@@ -33,6 +33,7 @@ export function firstTaskTranscript(e: FirstTaskEvidence): TranscriptEntry[] {
       ["comment", checkpoint.comments],
       ["interaction", checkpoint.interactions],
       ["document", checkpoint.documents],
+      ["attachment", checkpoint.attachments ?? []],
       ["run", checkpoint.runs],
     ] as const) {
       for (const row of rows) {
@@ -90,7 +91,7 @@ export function renderFirstTaskTranscript(
   );
   const entries = firstTaskTranscript(e);
   return `<section class="transcript" aria-label="Recorded conversation">
-    <details class="transcript-about"><summary>About this recording</summary><p class="detail">Recorded conversation: comments, question and approval cards, answers, and observed document revisions. Repeated checkpoints are deduplicated. Cards reconstruct saved prompts and recorded selections; multi-question forms are expanded for review. Run metadata is expandable; raw tool events are available through the evidence links. This is retained evidence, not a live task. Only messages and document revisions captured at checkpoints are available; messages from other tasks may not be included.</p></details>
+    <details class="transcript-about"><summary>About this recording</summary><p class="detail">Recorded conversation: comments, question and approval cards, answers, observed document revisions, and saved attachments. Repeated checkpoints are deduplicated. Cards reconstruct saved prompts and recorded selections; multi-question forms are expanded for review. Run metadata is expandable; raw tool events are available through the evidence links. This is retained evidence, not a live task. Only messages and document revisions captured at checkpoints are available; messages from other tasks may not be included.</p></details>
     ${
       entries
         .map((entry) => {
@@ -145,6 +146,10 @@ export function renderFirstTaskTranscript(
               : body(row.result.outcome ?? row.status) +
                 (row.result.reason ? body(row.result.reason) : "");
             content += raw(row.result, "Recorded answer");
+          } else if (entry.kind === "attachment") {
+            title = `Attachment · ${row.title ?? row.originalFilename ?? row.filename ?? row.id}`;
+            content = row.contentVerified ? body(row.body) : "<p>Attachment recorded; text content unavailable.</p>";
+            content += raw(row, "Saved attachment evidence");
           } else if (entry.kind === "document") {
             title = `Document · ${row.title ?? row.key} · revision ${row.latestRevisionNumber ?? row.revisionNumber ?? "unreported"}`;
             content = body(row.body);

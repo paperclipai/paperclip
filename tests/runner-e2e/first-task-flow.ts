@@ -1,3 +1,4 @@
+import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
 import {
   firstTaskNativeRuntimePatch,
@@ -245,6 +246,7 @@ export async function runFirstTaskFlow(input: {
       comments,
       interactions,
       documents,
+      attachments: await captureFirstTaskAttachments(api, tasks, input.secrets),
       runs,
     };
     e.checkpoints.push(checkpoint);

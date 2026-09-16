@@ -245,7 +245,18 @@ export const runnerApiReference: Record<string, { section: string; description?:
                   }
                 ]
               }
-            ]
+            ],
+            "questionSet": {
+              "schema": "paperclip.question_set.v1",
+              "questions": [
+                {
+                  "id": "responsibility",
+                  "prompt": "What should the new agent be responsible for?",
+                  "required": true,
+                  "answerMode": "text"
+                }
+              ]
+            }
           }
         }
       },

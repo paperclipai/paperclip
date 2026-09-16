@@ -57,8 +57,6 @@ function xml(value: unknown) {
 
 function validate(result: RunnerE2EResult, evidence: EvidenceManifest | null) {
   const errors: string[] = [];
-  if (result.status !== "passed")
-    errors.push(result.error ?? result.failureClass ?? "execution failed");
   if (result.cleanup !== "passed") errors.push(`cleanup=${result.cleanup}`);
   if (!evidence) errors.push("evidence manifest missing");
   if (evidence?.leaks?.length)
@@ -180,7 +178,7 @@ async function main() {
       result,
       evidence,
       directory,
-      valid: errors.length === 0,
+      valid: result.status === "passed" && errors.length === 0,
       errors,
     };
     candidates.set(result.executionId, [
@@ -260,6 +258,10 @@ async function main() {
     // of allowing retained result metadata to claim another revision.
     source: resolveRunnerE2ESource(entry.result.source),
     status: entry.valid ? entry.result.status : ("failed" as const),
+    // Evidence failures must not be mistaken for an interrupted behavior recording.
+    failureClass: entry.errors.length > 0
+      ? entry.evidence?.leaks?.length ? "secret_leak" as const : "permanent_infrastructure" as const
+      : entry.result.failureClass,
     billing: summarizeExecutionBilling(entry.result),
   }));
   const generatedAt = new Date().toISOString();
@@ -278,7 +280,7 @@ async function main() {
     ...campaign,
     results: selected.map((entry, index) => ({
       ...resolvedResults[index]!,
-      evidenceValid: entry.valid,
+      evidenceValid: entry.errors.length === 0,
       evidenceErrors: entry.errors,
     })),
   };
@@ -342,7 +344,7 @@ async function main() {
     "| Cell | Attempt | Result | Runtime | Duration | Tokens (in/out) | LLM reported | Runtime estimate | Detail |",
     "|---|---:|---|---|---:|---:|---:|---:|---|",
     ...selected.map((entry, index) => {
-      const detail = entry.errors.join("; ").replaceAll("|", "\\|") || "ok";
+      const detail = [entry.result.error, ...entry.errors].filter(Boolean).join("; ").replaceAll("|", "\\|") || "ok";
       const resolved = resolvedResults[index]!;
       const cellBilling = resolved.billing!;
       const runtimeCost = cellBilling.runtime.estimatedListCostUsd;
@@ -360,7 +362,7 @@ async function main() {
     .map((entry) => {
       const failure = entry.valid
         ? ""
-        : `<failure message="${xml(entry.errors.join("; "))}"/>`;
+        : `<failure message="${xml([entry.result.error, ...entry.errors].filter(Boolean).join("; "))}"/>`;
       return `<testcase classname="runner-full-stack-e2e" name="${xml(entry.result.executionId)}" time="${entry.result.durationMs / 1000}">${failure}</testcase>`;
     })
     .join("");

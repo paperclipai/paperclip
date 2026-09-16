@@ -1,3 +1,5 @@
+import { captureFirstTaskAttachments } from "./first-task-attachments.js";
+import type { RunnerApi } from "./api.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
 import { createIssueThreadInteractionSchema } from "../../packages/shared/src/validators/issue.js";
@@ -184,6 +186,29 @@ const scores = () =>
     rationale: "Concrete and relevant",
     evidence: ["response-1"],
   }));
+
+describe("first-task attachment evidence", () => {
+  it("reads persisted bytes, verifies their hash, and redacts the retained text", async () => {
+    const body = "Welcome SECRET-VALUE";
+    const attachment = { id: "attachment", issueId: "child", byteSize: Buffer.byteLength(body), sha256: digestText(body), contentType: "text/markdown" };
+    const request = { get: vi.fn().mockResolvedValue({ ok: () => true, body: async () => Buffer.from(body) }) };
+    const api = { get: vi.fn().mockResolvedValue([attachment]), request } as unknown as RunnerApi;
+    const rows = await captureFirstTaskAttachments(api, [{ id: "child" }], ["SECRET-VALUE"]);
+    expect(rows[0]).toMatchObject({ issueId: "child", contentVerified: true });
+    expect(rows[0].body).not.toContain("SECRET-VALUE");
+    expect(rows[0].contentSha256).toBe(digestText(rows[0].body));
+    expect(request.get).toHaveBeenCalledWith("/api/attachments/attachment/content");
+    attachment.sha256 = "wrong";
+    await expect(captureFirstTaskAttachments(api, [{ id: "child" }], [])).rejects.toThrow("hash mismatch");
+  });
+
+  it("retains unavailable text as metadata without claiming verified content", async () => {
+    const request = { get: vi.fn() };
+    const api = { get: vi.fn().mockResolvedValue([{ id: "binary", contentType: "application/pdf", byteSize: 100 }]), request } as unknown as RunnerApi;
+    expect(await captureFirstTaskAttachments(api, [{ id: "child" }], [])).toEqual([{ id: "binary", issueId: "child", contentType: "application/pdf", byteSize: 100 }]);
+    expect(request.get).not.toHaveBeenCalled();
+  });
+});
 
 describe("first-task question presentation grading", () => {
   it("documents an API-valid text card that renders without a one-option choice", async () => {
@@ -465,6 +490,56 @@ Accept the card above and I write it. This task stays in review until then.`;
     expect(failed(e)).toContain("subtask-proposal");
   });
 
+  it("accepts verified attached output on the child, but not metadata, a wrong task, or a changed body", () => {
+    const e = recording();
+    const final = e.checkpoints.at(-1)!;
+    const output = final.documents.pop()!;
+    const attachment = { ...output, issueId: "child", body: String(output.body), filename: "welcome.md", contentType: "text/markdown", contentVerified: true, contentSha256: digestText(output.body) };
+    final.attachments = [attachment];
+    expect(failed(e)).toEqual([]);
+    attachment.contentVerified = false;
+    expect(failed(e)).toContain("durable-completion");
+    attachment.contentVerified = true;
+    attachment.issueId = "onboarding";
+    expect(failed(e)).toContain("durable-completion");
+    attachment.issueId = "child";
+    attachment.body += " changed";
+    expect(failed(e)).toContain("durable-completion");
+  });
+
+  it("recognizes verified ordinary-task attachments and renders them for review", () => {
+    const e = recording("ordinary-task-control");
+    const last = e.checkpoints.at(-1)!;
+    last.tasks.pop();
+    const output = last.documents.pop()!;
+    last.attachments = [{ ...output, issueId: "onboarding", filename: "welcome.md", contentVerified: true, contentSha256: digestText(output.body) }];
+    expect(failed(e)).toEqual([]);
+    const page = renderFirstTaskDetails(result(e));
+    expect(page).toContain("Attachment · welcome.md");
+    expect(page).toContain(output.body);
+  });
+
+  it("allows a verified planning attachment before approval without treating it as finished output", () => {
+    const e = recording();
+    const body = "# Plan\n\nWrite the welcome note after approval.";
+    const plan = { id: "plan-file", issueId: "onboarding", filename: "plan.md", body, contentVerified: true, contentSha256: digestText(body) };
+    e.checkpoints[1].attachments = [plan];
+    expect(failed(e)).toEqual([]);
+    e.checkpoints.at(-1)!.documents = [];
+    e.checkpoints.at(-1)!.attachments = [plan];
+    expect(failed(e)).toContain("durable-completion");
+  });
+
+  it("counts attached finished output before approval and after rejection as work", () => {
+    const e = recording("reject-no-execution");
+    e.checkpoints = e.checkpoints.slice(0, 2);
+    const c = e.checkpoints[1];
+    c.attachments = [{ id: "file", issueId: "onboarding", filename: "welcome.md" }];
+    expect(failed(e)).toContain("no-premature-work");
+    e.checkpoints.push({ ...structuredClone(c), id: "rejected", phase: "rejected" });
+    expect(failed(e)).toContain("rejection-respected");
+  });
+
   it("allows a proposal document before acceptance but never counts it as finished output", () => {
     const e = recording();
     const proposal = {
@@ -489,9 +564,12 @@ Accept the card above and I write it. This task stays in review until then.`;
   // Reduced fixtures from gha-35021304437-1; no provider calls or private state.
   it.each([
     ["task-card-accept", "Neighborhood Garden Club Welcome Note — Proposal", "## Proposed child task"],
+    ["task-reply-accept", "Neighborhood Garden Club Welcome Note — Proposal", "# Task proposal"],
+    ["clarify-propose-accept", "First task proposal", "# First task proposal"],
+    ["revise-accept", "Proposed first task: Garden club welcome note", "# Proposed first task"],
     ["reject-no-execution", "Garden club welcome note — task proposal", "# Proposed single task"],
   ])("recognizes the recorded %s proposal without inventing downstream failures", (caseId, title, heading) => {
-    const e = recording(caseId);
+    const e = recording(caseId === "clarify-propose-accept" ? "task-card-accept" : caseId);
     e.checkpoints = e.checkpoints.slice(0, 2);
     const response = e.checkpoints[1];
     response.comments.pop();

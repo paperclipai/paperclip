@@ -18,6 +18,38 @@ afterEach(async () => {
 });
 
 describe("runner E2E report aggregation", () => {
+  it("keeps interrupted journeys incomplete unless their evidence is invalid", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-incomplete-report-"));
+    cleanupDirectories.push(root);
+    const ids: string[] = [];
+    for (const [caseId, validEvidence] of [["task-card-accept", true], ["task-reply-accept", false]] as const) {
+      const executionId = `first-task.runner-codex.local.${caseId}`;
+      ids.push(executionId);
+      const directory = path.join(root, caseId);
+      await mkdir(directory);
+      await writeFile(path.join(directory, "result.json"), JSON.stringify({
+        schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "first-task",
+        attempt: 1, status: "failed", failureClass: "candidate_failure", error: "Recording stopped before acceptance",
+        profileId: "runner-codex", environmentId: "local", caseId, provider: "codex", model: "fixture-model", runtimeMode: "native",
+        startedAt: "2026-09-15T00:00:00Z", finishedAt: "2026-09-15T00:01:00Z", durationMs: 60_000, cleanup: "passed",
+        firstTask: { caseId, nonce: "fixture", onboardingIssueId: "task", agentId: "agent", initialTaskIds: ["task"], instructions: [], configuredModel: null, observedModels: [], checkpoints: [],
+          checks: [{ id: "acceptance-recorded", passed: false, notReached: "No acceptance checkpoint", detail: "Acceptance recorded", evidence: [] }] },
+      } satisfies RunnerE2EResult));
+      if (validEvidence) await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: [], leaks: [], missing: [] }));
+    }
+    const output = path.join(root, "merged");
+    await expect(execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify(ids) },
+    })).rejects.toBeDefined();
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized).toMatchObject({ passed: 0, failed: 1, incomplete: 1 });
+    expect(normalized.results[0]).toMatchObject({ evidenceValid: true, evidenceErrors: [] });
+    expect(normalized.results[1]).toMatchObject({ evidenceValid: false, failureClass: "permanent_infrastructure" });
+    const page = await readFile(path.join(output, "index.html"), "utf8");
+    expect(page).toContain("Incomplete journey");
+    expect(page).toContain("evidence manifest missing");
+  });
+
   it("selects the latest retry and enforces cleanup and pass evidence", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "runner-e2e-report-test-"),

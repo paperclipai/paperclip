@@ -19,6 +19,7 @@ export interface FirstTaskCheckpoint {
   comments: Row[];
   interactions: Row[];
   documents: Row[];
+  attachments?: Row[];
   runs: Row[];
 }
 export interface FirstTaskEvidence {
@@ -158,10 +159,22 @@ function isPlanningDocument(document: Row): boolean {
   return (
     isPlanDocument(document) ||
     (/(?:^|[-_])proposal(?:$|[-_])/i.test(String(document.key)) &&
-      /(?:^|\n)(?:#+\s*)?(?:proposed (?:(?:child|single) )?task|single[- ]task proposal|proposal)\b/i.test(
+      /(?:^|\n)(?:#+\s*)?(?:proposed (?:(?:child|single|first) )?task|(?:(?:first|single)[- ])?task proposal|proposal)\b/i.test(
         `${document.title ?? ""}\n${document.body ?? ""}`,
       ))
   );
+}
+function isVerifiedAttachment(a: Row): boolean {
+  return a.contentVerified === true && typeof a.body === "string" && a.contentSha256 === digestText(a.body);
+}
+function attachmentDocument(a: Row): Row {
+  return { ...a, key: String(a.originalFilename ?? a.filename ?? "").replace(/\.(?:md|txt)$/i, ""), title: a.title ?? a.originalFilename ?? a.filename };
+}
+function isPlanningAttachment(a: Row): boolean {
+  return isVerifiedAttachment(a) && isPlanningDocument(attachmentDocument(a));
+}
+function verifiedFirstTaskOutputs(checkpoint: FirstTaskCheckpoint): Row[] {
+  return [...checkpoint.documents, ...(checkpoint.attachments ?? []).filter(isVerifiedAttachment).map(attachmentDocument)];
 }
 export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
   const scenario = firstTaskScenario(e.caseId, e.nonce);
@@ -299,6 +312,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
           extras(c).length === 0 &&
           c.agents.length === e.checkpoints[0].agents.length &&
           c.documents.every(isPlanningDocument) &&
+          (c.attachments ?? []).every(isPlanningAttachment) &&
           (c.tasks.find((t) => t.id === c.issueId)?.status !== "done" ||
             Boolean(rejection && Date.parse(c.at) >= Date.parse(rejection.at))),
       ),
@@ -310,7 +324,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       "ordinary-task-control",
       questions.length === 0 &&
         extras(last).length === 0 &&
-        last.documents.some(
+        verifiedFirstTaskOutputs(last).some(
           (d) =>
             !isPlanningDocument(d) && String(d.body).includes(scenario.marker),
         ),
@@ -375,7 +389,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
         "durable-completion",
         children.length === 1 &&
           children[0].status === "done" &&
-          last.documents.some(
+          verifiedFirstTaskOutputs(last).some(
             (d) =>
               d.issueId === children[0].id &&
               !isPlanningDocument(d) &&
@@ -395,6 +409,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       "rejection-respected",
       extras(last).length === 0 &&
         last.documents.every(isPlanningDocument) &&
+        (last.attachments ?? []).every(isPlanningAttachment) &&
         activeRuns(last.runs).length === 0,
       "Rejected work never executes",
       [last.id],
