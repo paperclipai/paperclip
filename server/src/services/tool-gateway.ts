@@ -4676,7 +4676,7 @@ export function createToolGatewayService(
       );
     }
     if (isRailwayEndpoint(connection.config.url) && isRailwayToolBlocked(entry.toolName)) {
-      throw new ToolGatewayHttpError(403, "This Railway action cannot be individually governed. Use the dedicated deployment actions.", "railway_action_blocked");
+      throw new ToolGatewayHttpError(403, "This Railway action cannot bind its effects to an approved target. Use redeploy, restart, or rollback for an existing deployment.", "railway_action_blocked");
     }
     return { entry, connection };
   }

@@ -102,6 +102,36 @@ const initialTools = [
     expect(JSON.stringify(await f.service.getConnection(f.connectionId))).not.toContain(token);
   });
 
+  it("denies retired source-deployment entries before refresh and disables them on refresh", async () => {
+    const f = await fixture();
+    const [agent] = await db.insert(agents).values({ companyId: f.company.id, name: "Railway operator", role: "engineer", adapterType: "process", adapterConfig: {} }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: agent.id, invocationSource: "on_demand", status: "running" }).returning();
+    const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, name: "Railway tools", profileKey: randomUUID(), defaultAction: "allow" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: agent.id });
+    const [existing] = await db.select().from(toolCatalogEntries).where(and(eq(toolCatalogEntries.connectionId, f.connectionId), eq(toolCatalogEntries.toolName, "paperclip-railway-restart")));
+    const names = ["paperclip-railway-deploy-revision", "paperclip_railway_deploy_revision", "paperclipRailwayDeployRevision"];
+    // Reproduce active catalog rows persisted by an older server, before refresh.
+    await db.insert(toolCatalogEntries).values(names.map((name) => ({ ...existing, id: randomUUID(), name, toolName: name, inputSchema: { type: "object" } })));
+    const gateway = createToolGatewayService(db, { remoteHttpRequest: f.request });
+    const session = await gateway.createSession({ companyId: f.company.id, agentId: agent.id, runId: run.id });
+    const listed = await gateway.listToolsForSession(session.token);
+    expect(listed.some((tool) => names.includes(tool.upstreamToolName ?? ""))).toBe(false);
+    const restart = listed.find((tool) => tool.upstreamToolName === "paperclip-railway-restart")!;
+    expect(restart).toBeTruthy();
+    f.request.mockClear();
+    const { deploymentId: _, ...ids } = target;
+    const parameters = { ...ids, repository: "example/app", commitSha: "a".repeat(40) };
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: restart.name.replace("paperclip-railway-restart", names[0]), parameters, idempotencyKey: randomUUID() })).rejects.toMatchObject({ reasonCode: "tool_not_found" });
+    for (const toolName of names) {
+      await expect(gateway.executeTestCall({ companyId: f.company.id, connectionId: f.connectionId, agentId: agent.id, userId: actor.actorId, toolName, parameters })).rejects.toMatchObject({ reasonCode: "tool_not_found" });
+    }
+    expect(f.request).not.toHaveBeenCalled();
+    await f.service.refreshCatalog(f.connectionId, actor);
+    const retired = (await f.service.listCatalog(f.connectionId)).filter((entry) => names.includes(entry.toolName));
+    expect(retired).toHaveLength(names.length);
+    expect(retired.every((entry) => entry.status === "disabled")).toBe(true);
+  });
+
   it("preserves the dedicated SSH grant key on reconnect and removes it while disconnected", async () => {
     const f = await fixture();
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, f.connectionId));

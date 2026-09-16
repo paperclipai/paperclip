@@ -11,7 +11,13 @@ export function railwayCommandBudgetMs(parameters: unknown): number {
   const requested = typeof seconds === "number" && Number.isFinite(seconds) ? seconds : 30;
   return Math.min(60_000, (Math.max(1, requested) + 10) * 1000);
 }
-export const RAILWAY_BLOCKED_TOOLS = new Set(["railway-agent", "accept-deploy"]);
+export const RAILWAY_BLOCKED_TOOLS = new Set([
+  "railway-agent", "accept-deploy",
+  // A separate repository preflight cannot bind serviceInstanceDeployV2 to the
+  // approved repository. Keep old catalog entries/calls blocked until Railway
+  // provides an atomic repository + revision mutation.
+  `${RAILWAY_TOOL_PREFIX}deploy-revision`,
+]);
 export function normalizeRailwayToolName(name: string): string {
   return name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().replace(/[:._-]+/g, "-");
 }
@@ -51,7 +57,6 @@ const schema = {
   redeploy: z.object(deploymentTarget).strict(),
   restart: z.object(deploymentTarget).strict(),
   rollback: z.object(deploymentTarget).strict(),
-  "deploy-revision": z.object({ ...target, repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/), commitSha: z.string().regex(/^[a-f0-9]{40}$/i) }).strict(),
   "run-command": z.object({ ...deploymentTarget, deploymentInstanceId: id, command: z.string().min(1).max(8192), timeoutSeconds: z.number().int().min(1).max(60).default(30) }).strict(),
 };
 type Operation = keyof typeof schema;
@@ -66,7 +71,6 @@ const titles: Record<Operation, string> = {
   redeploy: "Redeploy a deployment",
   restart: "Restart a deployment",
   rollback: "Roll back to a deployment",
-  "deploy-revision": "Deploy a Git revision",
   "run-command": "Run a container command",
 };
 const descriptions: Record<Operation, string> = {
@@ -80,7 +84,6 @@ const descriptions: Record<Operation, string> = {
   redeploy: "Redeploy an exact deployment using its previous image. This changes a running service.",
   restart: "Restart an exact deployment without rebuilding. This interrupts a running service.",
   rollback: "Roll back to an exact eligible deployment. This changes a running service.",
-  "deploy-revision": "Deploy an immutable Git commit from the service's already-connected GitHub repository. Specify the exact repository, revision and target.",
   "run-command": "Run a bounded noninteractive shell command in an exact deployed container using this connection's configured SSH key. Broad privileged access: commands can read secrets and mutate application data. Requires Container access setup. Timeout closes SSH; remote child termination is not guaranteed.",
 };
 const reads = new Set<Operation>(["list-projects", "list-services", "list-environments", "service-status", "list-deployments", "deployment-status", "read-logs"]);
@@ -95,6 +98,7 @@ export const RAILWAY_TOOLS = Object.entries(schema).map(([operation, validator])
 
 export function railwayRisk(name: string): "read" | "write" | "destructive" {
   name = normalizeRailwayToolName(name);
+  if (isRailwayToolBlocked(name)) return "destructive";
   const operation = name.slice(RAILWAY_TOOL_PREFIX.length) as Operation;
   if (name.startsWith(RAILWAY_TOOL_PREFIX) && operation in schema) return reads.has(operation) ? "read" : "destructive";
   if (["whoami", "list-projects", "list-services", "list-feature-flags", "get-feature-flag"].includes(name)) return "read";
@@ -133,7 +137,6 @@ export const RAILWAY_QUERIES = {
   redeploy: `mutation PaperclipRailwayRedeploy($deploymentId:String!) { deploymentRedeploy(id:$deploymentId,usePreviousImageTag:true) { id status } }`,
   restart: `mutation PaperclipRailwayRestart($deploymentId:String!) { deploymentRestart(id:$deploymentId) }`,
   rollback: `mutation PaperclipRailwayRollback($deploymentId:String!) { deploymentRollback(id:$deploymentId) }`,
-  deploy: `mutation PaperclipRailwayDeployRevision($environmentId:String!,$serviceId:String!,$commitSha:String!) { serviceInstanceDeployV2(environmentId:$environmentId,serviceId:$serviceId,commitSha:$commitSha) }`,
 };
 
 function record(value: unknown): Record<string, any> {
@@ -246,6 +249,7 @@ export function createRailwayClient(options: RailwayClientOptions) {
       await query(RAILWAY_QUERIES.projects, { workspaceId, first: 1 });
     },
     async call(name: string, parameters: unknown): Promise<unknown> {
+      if (isRailwayToolBlocked(name)) throw new RailwayError("railway_action_blocked", "This Railway action cannot bind its effects to an approved target. Use redeploy, restart, or rollback for an existing deployment.", 403);
       const operation = name.slice(RAILWAY_TOOL_PREFIX.length) as Operation;
       if (!name.startsWith(RAILWAY_TOOL_PREFIX) || !Object.hasOwn(schema, operation)) throw new RailwayError("railway_unknown_tool", "Unknown Railway operation.", 400);
       const parsed = schema[operation].safeParse(parameters);
@@ -294,14 +298,6 @@ export function createRailwayClient(options: RailwayClientOptions) {
             result = await query(RAILWAY_QUERIES.rollback, { deploymentId: args.deploymentId });
             if (record(result).deploymentRollback !== true) throw new RailwayError("railway_operation_unconfirmed", "Railway did not confirm the rollback. Inspect deployment status before retrying.");
             result = { ...record(result), targetDeploymentId: args.deploymentId };
-            break;
-          case "deploy-revision":
-            if (record(instance.source).repo !== args.repository) throw new RailwayError("railway_repository_mismatch", "The repository does not match the service's configured source.", 409);
-            {
-              const deploymentId = (await query(RAILWAY_QUERIES.deploy, { environmentId: args.environmentId, serviceId: args.serviceId, commitSha: args.commitSha })).serviceInstanceDeployV2;
-              if (!id.safeParse(deploymentId).success) throw new RailwayError("railway_invalid_response", "Railway did not confirm a resulting deployment ID. Inspect deployment status before retrying.");
-              result = { deploymentId, commitSha: args.commitSha };
-            }
             break;
           case "run-command":
             if (!Array.isArray(deployment?.instances) || !deployment.instances.some((entry: { id: string }) => entry.id === args.deploymentInstanceId) || deployment.status !== "SUCCESS") throw new RailwayError("railway_target_mismatch", "The container instance is not part of the selected running deployment.", 403);

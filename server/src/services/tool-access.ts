@@ -7763,6 +7763,15 @@ export function toolAccessService(
     const existingByName = new Map(
       existingRows.map((entry) => [entry.toolName, entry]),
     );
+    // Retired native actions are absent from discovery, but old catalog rows
+    // still need to show as disabled. Gateway denial also applies before refresh.
+    const blockedRailwayEntryIds = isRailwayEndpoint(connection.config.url)
+      ? existingRows.filter((entry) => isRailwayToolBlocked(entry.toolName)).map((entry) => entry.id)
+      : [];
+    if (blockedRailwayEntryIds.length > 0) {
+      await db.update(toolCatalogEntries).set({ status: "disabled", updatedAt: refreshedAt })
+        .where(and(eq(toolCatalogEntries.connectionId, connection.id), inArray(toolCatalogEntries.id, blockedRailwayEntryIds)));
+    }
     const updatedEntries: ToolCatalogEntry[] = [];
     let quarantinedCount = 0;
     const sourceTemplateKey =

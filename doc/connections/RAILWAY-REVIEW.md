@@ -1,8 +1,9 @@
 # Railway implementation verification
 
-Updated: 2026-09-14. Implementation and local verification were performed on
-2026-09-13. The change is being published for review on a dedicated branch.
-Live qualification and a green full suite remain open.
+Updated: 2026-09-16. Implementation and local verification were performed on
+2026-09-13. The change is published for review on a dedicated branch.
+Live qualification remains open. Full GitHub CI passed on commit `303340f19`
+before the source-deployment security follow-up below.
 
 ## Thinking Path
 
@@ -41,7 +42,8 @@ per-action review and could inherit ambient credentials.
 
 - Added Railway's generated definition, curated entry, official marks and provenance.
 - Added fixed GraphQL operations for service/deployment status, bounded logs,
-  redeploy/restart/rollback, and deployment of an immutable Git revision.
+  and redeploy/restart/rollback. Source deployment is blocked pending atomic
+  provider repository/revision binding.
 - Added grant-owned SSH key setup and container commands with host verification,
   target checks, deadlines, output caps and cleanup.
 - Blocked the hosted general agent and staged-change acceptance. Preserved normal
@@ -49,6 +51,13 @@ per-action review and could inherit ambient credentials.
 - Added setup guidance, provider fixtures, lifecycle/SSH/gateway tests and browser verification.
 
 ## Verification
+
+Security follow-up on 2026-09-16: removed the source-deployment schema and mutation.
+The provider block applies to old active catalog entries and normalized aliases
+before refresh; refresh marks them disabled. Regression tests cover direct-client
+and gateway denial before any upstream request. A repository preflight is no
+longer used as authorization for source deployment.
+All 386 focused Railway, catalog and gateway tests passed for this follow-up.
 
 After rebase onto master on 2026-09-14, 440 focused provider, connection, gateway,
 catalog and container-panel tests passed. The AppDetail and AppsConnect suites
@@ -110,7 +119,9 @@ cleanup still require operator-assisted proof. See
   are not local authorization allowlists.
 - Container commands have broad internal authority; timeout cannot guarantee remote
   child termination. Provider-side key removal is a separate operator action.
-- Provider repository reconfiguration can race a source-deployment preflight.
+- Source deployment is unavailable until the provider can atomically bind the
+  approved repository and commit. Existing deployments can still be redeployed,
+  restarted or rolled back.
 - No schema migration is needed. Rollback can remove promotion and direct dispatch
   while retaining connection data and the generic MCP path.
 - The full test suite must be resolved before claiming release readiness.

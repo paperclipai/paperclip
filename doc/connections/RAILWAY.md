@@ -1,6 +1,6 @@
 # Railway
 
-Updated: 2026-09-14. Status: implementation review; live provider qualification outstanding.
+Updated: 2026-09-16. Status: implementation review; live provider qualification outstanding.
 
 Railway appears in Apps and uses Paperclip's shared remote-MCP OAuth connection,
 vault, catalog, grants, policies, gateway, and audit trail. It is a resource
@@ -45,7 +45,7 @@ connecting. Loopback consent succeeded locally; HTTPS still needs live proof.
 | `service-status`, `list-deployments`, `deployment-status` | Explicit project/environment/service IDs; deployment ID where applicable | Read |
 | `read-logs` | Build/runtime; ≤500 lines; time bounds/filter; ≤64 KiB of log entries | Read; sensitive application data |
 | `redeploy`, `restart`, `rollback` | Exact deployment membership checked before mutation | Destructive |
-| `deploy-revision` | Existing service repository, exact 40-character Git SHA, explicit environment/service | Destructive |
+| `deploy-revision` | Unavailable: the provider mutation cannot atomically bind the approved repository and commit; old catalog entries and calls are blocked | Destructive; unavailable |
 | `run-command` | Exact running deployment/container instance, ≤60 seconds, ≤64 KiB combined output | Destructive; broad privileged access |
 
 Direct tool names have the `paperclip-railway-` prefix. Railway may not shadow
@@ -53,8 +53,8 @@ this reserved namespace. These are fixed first-party gateway operations, not a
 REST catalog entry or arbitrary GraphQL passthrough. GraphQL responses have a
 1 MiB hard limit, redirects are refused, provider error bodies are not surfaced,
 and deployment mutations are never automatically retried. After a timeout or
-ambiguous error, inspect status before retrying. Redeploy/source deployment
-return the provider's resulting deployment ID; restart/rollback use the provider's
+ambiguous error, inspect status before retrying. Redeploy returns the provider's
+resulting deployment ID; restart/rollback use the provider's
 boolean result and exact target ID rather than inventing a new deployment ID.
 
 Railway enforces the workspace/account permissions granted by consent. The
@@ -70,6 +70,15 @@ request to read logs does not make it read-only. Staged changes accepted by
 blocked by a narrow provider policy. Other providers and global defaults are
 unchanged. New or changed Railway schemas are quarantined after initial discovery,
 including reconnect flows that normally enable newly discovered actions.
+
+Source deployment (`paperclip-railway-deploy-revision`) is also blocked. The
+`serviceInstanceDeployV2` mutation accepts a commit SHA but cannot atomically
+verify the approved repository. A separate repository check can race a provider
+configuration change. Paperclip therefore offers 11 direct actions and no source
+deployment action. Calls saved by an older server are denied before upstream
+execution, including normalized aliases; refreshing actions marks their catalog
+entries disabled. Source deployment requires an atomic provider binding before
+it can be re-enabled. Redeploy uses an existing deployment's previous image.
 
 ## Container access
 
@@ -106,9 +115,7 @@ precedence and can stop the command earlier. Timeout/cancellation terminates the
 local SSH connection. Remote child process
 termination is not guaranteed. Persistent interactive sessions, file upload,
 unrestricted Railway CLI use and arbitrary local workspace deployment are out
-of scope. Source deployment uses only an already connected repository and immutable
-commit. A concurrent provider repository reconfiguration can race the preflight;
-Railway's API does not expose an atomic repository/revision binding for this call.
+of scope. Source deployment is unavailable as described above.
 
 Removing the container key deletes local private material and its grant binding
 in one transaction, including for revoked grants or disconnected connections.
@@ -170,10 +177,12 @@ manifest contains runtime artwork paths; this record retains source provenance.
 ## Verification and release gate
 
 `railway.test.ts` covers fixed API dispatch, bounds, errors, target checks and
-credential redaction. `railway-ssh.test.ts` covers isolated SSH state, completion,
+credential redaction, including source-deployment denial with no upstream request.
+`railway-ssh.test.ts` covers isolated SSH state, completion,
 output limits, timeout, cancellation and cleanup. `railway-connection.test.ts`
 uses observed metadata with synthetic provider responses to exercise the shared
-OAuth/catalog/grant/gateway lifecycle. The fixture explicitly does not claim an
+OAuth/catalog/grant/gateway lifecycle and denies retired source-deployment catalog
+entries before refresh. The fixture explicitly does not claim an
 authenticated provider tool capture. Shared generic MCP suites cover callback
 state/issuer binding, consent cancellation and credential handling.
 
@@ -185,6 +194,8 @@ refresh reported API access available, 44 active hosted actions, two disabled
 actions, and 12 new direct actions quarantined for review. Direct project,
 service and environment reads succeeded; the inspected project had no services,
 so deployment status and logs could not be exercised. No provider mutation ran.
+That preview included source deployment; the 2026-09-16 security fix removes it
+and blocks existing entries, leaving 11 supported direct actions.
 
 Full release acceptance remains outstanding. The operator must identify a
 disposable service and deployment for the remaining checks.

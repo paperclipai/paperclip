@@ -53,7 +53,8 @@ describe("Railway governed operations", () => {
     expect(isRailwayToolBlocked("accept_deploy")).toBe(true);
     expect(railwayRisk("paperclip-railway-run-command")).toBe("destructive");
     expect(railwayRisk("unfamiliar-tool")).toBe("write");
-    expect(RAILWAY_TOOLS).toHaveLength(12);
+    expect(RAILWAY_TOOLS).toHaveLength(11);
+    expect(RAILWAY_TOOLS.map((tool) => tool.name)).not.toContain("paperclip-railway-deploy-revision");
   });
 
   it("gives container commands time for target checks without exceeding the gateway limit", () => {
@@ -131,12 +132,15 @@ describe("Railway governed operations", () => {
     expect(f.request).toHaveBeenCalledTimes(1);
   });
 
-  it("binds source deployments to the current repository and immutable commit", async () => {
-    const f = fixture((q) => q === RAILWAY_QUERIES.deploy ? Response.json({ data: { serviceInstanceDeployV2: instanceId } }) : undefined);
+  it.each(["paperclip-railway-deploy-revision", "paperclip_railway_deploy_revision", "paperclipRailwayDeployRevision"])("blocks %s before any repository preflight or deployment mutation", async (name) => {
+    // Even a matching repository in the preflight can change before mutation.
+    // Without an atomic provider binding, no upstream request is safe to send.
+    const f = fixture();
     const { deploymentId: _, ...ids } = target;
-    await expect(f.client.call("paperclip-railway-deploy-revision", { ...ids, repository: "other/repo", commitSha: "a".repeat(40) })).rejects.toMatchObject({ code: "railway_repository_mismatch" });
-    await expect(f.client.call("paperclip-railway-deploy-revision", { ...ids, repository: "example/app", commitSha: "main" })).rejects.toMatchObject({ code: "railway_invalid_arguments" });
-    await expect(f.client.call("paperclip-railway-deploy-revision", { ...ids, repository: "example/app", commitSha: "a".repeat(40) })).resolves.toMatchObject({ deploymentId: instanceId });
+    await expect(f.client.call(name, { ...ids, repository: "example/app", commitSha: "a".repeat(40) })).rejects.toMatchObject({ code: "railway_action_blocked", status: 403 });
+    expect(f.request).not.toHaveBeenCalled();
+    expect(isRailwayToolBlocked(name)).toBe(true);
+    expect(railwayRisk(name)).toBe("destructive");
   });
 
   it("allows only an instance in the exact running deployment to reach SSH", async () => {
