@@ -2,6 +2,66 @@
   {
     "allowedModes": [
       "standard",
+      "skill_test"
+    ],
+    "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "markdown": {
+          "description": "Complete SKILL.md including name and description frontmatter and substantive instructions.",
+          "maxLength": 200000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "description": "Lowercase skill name, matching SKILL.md frontmatter.",
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
+        },
+        "slug": {
+          "description": "Optional; must equal name.",
+          "maxLength": 120,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "name",
+        "description",
+        "markdown"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_skill",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create skill",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "ask",
       "planning",
       "skill_test"

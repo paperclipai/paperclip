@@ -326,6 +326,11 @@ export class CapabilitySemanticDispatcher {
       case "answer_status_question":
         command = { kind: "report_progress", taskId, body: requiredString(input.body) };
         break;
+      case "create_skill":
+        command = { kind: "create_skill", taskId, name: requiredString(input.name),
+          slug: typeof input.slug === "string" ? input.slug : undefined,
+          description: requiredString(input.description), markdown: requiredString(input.markdown) };
+        break;
       case "write_document":
         command = {
           kind: "write_document",
@@ -403,6 +408,14 @@ export class CapabilitySemanticDispatcher {
         throw new SemanticDispatchFailure("operation_unavailable", "No mock operation is bound to this descriptor.");
     }
     const outcome = await this.port.tryApplyCommand({ runId, idempotencyKey, command });
+    if (operationId === "create_skill" && outcome.ok) {
+      const id = outcome.result.entityRefs.find(ref => ref.startsWith("skill:"))?.slice(6);
+      const skill = this.port.snapshot().skills?.find(candidate => candidate.id === id);
+      if (skill) return readSuccess(outcome.result.stateRevision, {
+        id: skill.id, name: skill.name, slug: skill.slug, description: skill.description,
+        versionId: skill.versionId, studioPath: `/skills/studio/${skill.id}`,
+      });
+    }
     return commandOutcome(outcome);
   }
 

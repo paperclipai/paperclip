@@ -36,6 +36,7 @@ import {
   type CapabilitySemanticToolRuntimeSnapshot,
   type CapabilityWakeContext,
 } from "./capability-control-plane-types.js";
+import { parseFrontmatterMarkdown, validateSkillFrontmatter } from "./skill-frontmatter.generated.js";
 
 const DEFAULT_WAKE: CapabilityWakeContext = { reason: "manual", payload: {} };
 
@@ -706,6 +707,31 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
         requireText(command.body, "progress body");
         const comment = this.#appendComment(task.id, run.actorId, command.body);
         entityRefs.push(`comment:${comment.id}`);
+        break;
+      }
+      case "create_skill": {
+        requireText(command.name, "skill name");
+        requireText(command.markdown, "skill markdown");
+        const document = parseFrontmatterMarkdown(command.markdown);
+        const validMetadata = validateSkillFrontmatter(document.frontmatter);
+        if (!document.hasFrontmatter || !validMetadata || !document.body.trim()
+          || document.frontmatter.name !== command.name
+          || document.frontmatter.description !== command.description.trim()
+          || (command.slug !== undefined && command.slug !== command.name)) {
+          throw new CapabilityMockControlPlaneError(
+            "invalid_skill_document",
+            "Provide a complete SKILL.md with name and description matching the command inputs, a nonempty body, and slug equal to name when supplied",
+          );
+        }
+        const slug = command.slug ?? command.name;
+        const skills = this.#state.skills ??= [];
+        if (skills.some(skill => skill.companyId === run.companyId && skill.slug === slug)) {
+          throw new CapabilityMockControlPlaneError("fixture_state_invalid", "A skill with that name already exists");
+        }
+        const skill = { id: this.#id("skill"), companyId: run.companyId, name: command.name,
+          slug, description: command.description.trim(), markdown: command.markdown, versionId: this.#id("skill-version") };
+        skills.push(skill);
+        entityRefs.push(`skill:${skill.id}`);
         break;
       }
       case "write_document": {

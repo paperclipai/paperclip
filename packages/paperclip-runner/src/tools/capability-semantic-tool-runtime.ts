@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import type {
   CapabilityCommandEnvelope,
   CapabilityJsonValue,
@@ -821,7 +819,7 @@ export class CapabilitySemanticToolRuntime {
     descriptor: CapabilitySemanticToolDescriptor,
     invocation: CapabilityToolInvocation,
   ): boolean {
-    const ownerId = randomUUID();
+    const ownerId = globalThis.crypto.randomUUID();
     let leaseExpiresAtMs = 0;
     let acquired = false;
     for (let attempt = 0; attempt < RUNTIME_PERSIST_CAS_ATTEMPTS; attempt += 1) {
@@ -1541,6 +1539,10 @@ function commandForOperation(
       };
     case "request_review":
       return { kind: "request_review", summary: requireString(input.summary) };
+    case "create_skill":
+      return { kind: "create_skill", name: requireString(input.name),
+        slug: typeof input.slug === "string" ? input.slug : undefined,
+        description: requireString(input.description), markdown: requireString(input.markdown) };
     case "write_document":
       return {
         kind: "write_document",

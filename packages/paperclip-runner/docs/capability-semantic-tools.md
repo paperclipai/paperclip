@@ -26,7 +26,7 @@ list, not a disposition — they are never exposed as tools. See
 [capability disposition](capability-disposition.md) and
 [authorization and exposure](capability-authorization-and-exposure.md).
 
-The catalog holds **37 tools**: 14 always-agent tools and 23 optional tools
+The catalog holds **38 tools**: 14 always-agent tools and 24 optional tools
 across 10 groups.
 
 <!-- These counts are drift-checked against src/tools/capability-semantic-tool-catalog.ts
@@ -39,7 +39,7 @@ by src/catalog/catalog-docs.test.ts; update the catalog, not the numbers. -->
 `finish_task`, `block_task`, `request_review`, `write_document`,
 `request_human_input`, `register_deliverable`, `inspect_operation_result`.
 
-### Optional tools (23), by group
+### Optional tools (24), by group
 
 | Group | Tools |
 | --- | --- |
@@ -49,7 +49,7 @@ by src/catalog/catalog-docs.test.ts; update the catalog, not the numbers. -->
 | cases | `list_cases`, `upsert_case` |
 | workspace_runtime | `get_workspace_runtime`, `control_workspace_service` |
 | routines | `list_routines`, `manage_routine` |
-| company_skills | `list_company_skills`, `sync_company_skills` |
+| company_skills | `create_skill`, `list_company_skills`, `sync_company_skills` |
 | secrets | `list_secret_metadata`, `read_secret_value` |
 | portability_admin | `export_company`, `administer_company` |
 | test_escape_hatch | `generic_api_request` |

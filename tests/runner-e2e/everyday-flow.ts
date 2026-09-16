@@ -761,6 +761,72 @@ export async function runEverydayFlow(input: Input) {
       });
     }
     await settled();
+    if (caseId === "create-skill-studio") {
+      const createdSkills = await api.get<Row[]>(
+        `/api/companies/${fixtures.company.id}/skills`,
+      );
+      const created = createdSkills.find(
+        (skill) => skill.slug === "release-readiness-checklist",
+      );
+      check(
+        "skill-persisted",
+        Boolean(created && String(created.name) === "release-readiness-checklist"),
+        "The runner-created skill is present in the company library after the run.",
+      );
+      if (created) {
+        await openParent();
+        const card = page.getByRole("article", {
+          name: "Skill created: release-readiness-checklist",
+        });
+        await expect(card).toHaveCount(1);
+        await expect(card).toBeVisible();
+        await card.getByRole("button").click();
+        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
+        await expect(page.getByText("Verify checks.", { exact: true })).toBeVisible();
+        check("feed-card-opened", true, "The task thread card opened the created skill sidebar.");
+        const openStudio = page.getByRole("button", { name: "Open in Skill Studio", exact: true });
+        await expect(openStudio).toBeVisible();
+        await openStudio.click();
+        await expect(page).toHaveURL(new RegExp(`/skills/studio/${created.id}$`));
+        // Studio's skill selector identifies the resource. Headings inside the
+        // authored document can differ from its canonical skill name.
+        await expect(page.getByRole("combobox").filter({ hasText: "release-readiness-checklist" })).toBeVisible();
+        const editor = page.getByRole("textbox", { name: "editable markdown", exact: true });
+        await editor.click();
+        await editor.press("ControlOrMeta+End");
+        await editor.press("Enter");
+        await editor.press("Enter");
+        await editor.pressSequentially("Studio edit marker: verified");
+        await page.getByRole("button", { name: /^Save$/ }).click();
+        await pollUntil({
+          label: "Skill Studio edit persisted",
+          deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000),
+          load: () => api.get<Row>(
+            `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
+          ),
+          accept: (detail) => JSON.stringify(detail).includes("Studio edit marker: verified"),
+        });
+        const detail = await api.get<Row>(
+          `/api/companies/${fixtures.company.id}/skills/${encodeURIComponent(String(created.id))}`,
+        );
+        check(
+          "studio-edit-persisted",
+          JSON.stringify(detail).includes("Studio edit marker: verified"),
+          "The Skill Studio edit remains in the persisted skill after returning to the page.",
+        );
+        check("studio-opened", true, "The skill detail opened in Skill Studio.");
+        await page.goBack();
+        await expect(page).toHaveURL(new RegExp(`/issues/`));
+        const returnedCard = page.getByRole("article", {
+          name: "Skill created: release-readiness-checklist",
+        });
+        await expect(returnedCard).toBeVisible();
+        await returnedCard.getByRole("button").click();
+        await expect(page.getByRole("heading", { name: "release-readiness-checklist" })).toBeVisible();
+        await expect(page.getByText("Studio edit marker: verified", { exact: true })).toBeVisible();
+        check("return-content-persisted", true, "Returning to the task shows the saved Skill Studio edit.");
+      }
+    }
     if (declining) {
       const issue = ev.issues.find((i) => i.id === parent!.id)!;
       const requests = issue.interactions as Row[];

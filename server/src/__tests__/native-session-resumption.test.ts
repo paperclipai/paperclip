@@ -567,9 +567,8 @@ describe("P6-25 pre-result native session recovery", () => {
     // The reconciler reports asynchronously; an unrelated database round trip
     // does not guarantee that callback has completed.
     await waitForPendingRunFailureReports();
-
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
     const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
-    expect(newCaptures).toHaveLength(1);
     expect(newCaptures[0]?.[0]).toMatchObject({ runId: freshRunId, runStatus: "failed" });
   });
 

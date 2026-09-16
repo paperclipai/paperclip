@@ -17,7 +17,7 @@ describe("manual everyday workflow catalog", () => {
     const selected = selectRunnerExecutions(
       parseRunnerSelectors(["--suite", "everyday-workflows"]),
     );
-    expect(selected).toHaveLength(30);
+    expect(selected).toHaveLength(35);
     expect(selected.every((e) => e.profile.generation === "native")).toBe(true);
     expect(
       selectRunnerExecutions(
@@ -68,9 +68,9 @@ describe("manual everyday workflow catalog", () => {
       (e) =>
         e.suite.id === "everyday-workflows" && e.environment.id === "daytona",
     );
-    expect(remote).toHaveLength(6);
+    expect(remote).toHaveLength(8);
     expect(new Set(remote.map((e) => e.task.id))).toEqual(
-      new Set(["build-revise", "delegate-feedback", "recover-controller"]),
+      new Set(["build-revise", "delegate-feedback", "recover-controller", "create-skill-studio"]),
     );
   });
 });

@@ -441,8 +441,10 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.status).toBe("failed");
     // The first write is a genuine transition into "failed": it reports
     // exactly one Sentry event.
+    await vi.waitFor(() => {
+      expect(captureRunFailureCallsFrom(captureCallsBeforeFirstFinalize)).toHaveLength(1);
+    }, { timeout: 5_000 });
     const firstFinalizeCaptures = captureRunFailureCallsFrom(captureCallsBeforeFirstFinalize);
-    expect(firstFinalizeCaptures).toHaveLength(1);
     expect(firstFinalizeCaptures[0]?.[0]).toMatchObject({
       runId: fixture.runId,
       runStatus: "failed",

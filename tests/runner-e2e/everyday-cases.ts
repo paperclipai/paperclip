@@ -80,6 +80,12 @@ const definitions = [
     SLUGIFY_REQUIREMENTS,
     2,
   ],
+  [
+    "create-skill-studio",
+    "Create and edit a company skill",
+    "Create one company skill using this complete SKILL.md content:\n---\nname: release-readiness-checklist\ndescription: A bounded checklist for validating a release before handoff.\n---\n\n# Release Readiness Checklist\n\n1. Verify checks.\n2. Review evidence.\n3. Record the handoff.\n\nUse request key create-skill-e2e-001. After creating it, report the created skill and finish the task.",
+    1,
+  ],
 ] as const;
 
 export const everydayTasks: readonly RunnerTaskFixture[] = definitions.map(

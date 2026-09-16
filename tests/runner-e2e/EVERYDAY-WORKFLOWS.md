@@ -17,6 +17,7 @@ exact execution ID explicitly.
 | Decline a new connection | `connection-decline` | Start without service connections; match a Notion connection intent; click Not now; verify the saved rejection, no new connection or repeated request, and an explanation followed by Done. |
 | Continue work after a controller restart | `recover-controller` | Observe saved source, persist a user message, restart the isolated controller, and independently test the delivered result. |
 | Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
+| Create and edit a company skill | `create-skill-studio` | Create one skill through the runner, verify its persisted library entry and activity-feed card, open Skill Studio, save an edit, and verify the edit after returning. Local Codex, local ACPX Claude, and warm Daytona cells are explicit. |
 
 For normal completion, all story tasks must reach Done, with no active run,
 pending completion confirmation, or scheduled recovery. Runs must prove native
@@ -35,10 +36,10 @@ See [controlled recovery tests](../runner-recovery/README.md).
 
 ## Matrix and running
 
-The local matrix has eight cases on native Codex `gpt-5.6-sol`, native ACPX Claude
-`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 24 cells. The two core profiles
-also declare build/revise, delegation, and controller-restart cases on Daytona:
-six cells. Remote runner-process killing is not supported. For remote controller
+The local matrix has nine cases on native Codex `gpt-5.6-sol`, native ACPX Claude
+`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 27 cells. The two core profiles
+also declare build/revise, delegation, controller-restart, and skill-creation cases
+on Daytona: eight cells. Remote runner-process killing is not supported. For remote controller
 restart, a verified first download supplies the persistence checkpoint; the
 controller is interrupted during a subsequent revision with another queued
 requirement.
@@ -105,7 +106,7 @@ inputs; that is distinct from provider-side model identity verification.
 
 Initial live results are diagnostic. They are not a reliability estimate or a
 model ranking. Before promotion, freeze both source revisions and harness
-digest, run at least three independent local repetitions, qualify the six
+digest, run at least three independent local repetitions, qualify the eight
 remote cells against a verified image, and review every failure. Keep model
 quality, lifecycle correctness, infrastructure availability, and latency separate.
 
@@ -171,7 +172,7 @@ that the final response was visible.
 
 ## Recovery scope correction (14 September)
 
-The current catalog has **30 cells: 24 local and six remote**. Forced runner
+This correction reduced the catalog to **30 cells: 24 local and six remote**. Forced runner
 crash probes are retired from paid selection. Their original attempt IDs remain
 in Evalbook's Diagnostics history and Latest pages; they are excluded from the
 main matrix without changing grades or deleting evidence. Reported spend still
@@ -186,3 +187,12 @@ A future user-facing crash-recovery case needs a reproducible recoverable fault,
 an identified supported recovery action, and evidence through the final usable
 result. A missing test premise must be reported as unexercised, not a model
 failure. Do not introduce a new paid case just to replace a retired row.
+
+## Skill creation (16 September)
+
+`create-skill-studio` adds five cells: three local profiles and the two core
+profiles on Daytona. The current catalog has **35 cells: 27 local and eight
+remote**. The test opens the created skill from its task-feed card, checks the
+canonical skill identity in Studio, saves an edit, and returns to the same skill
+in the task sidebar. A model's authored document heading is not used as the
+identity check.

@@ -315,6 +315,8 @@ export interface CapabilityFixtureState {
   outOfScopeTaskIds: string[];
   comments: CapabilityFixtureComment[];
   documents: CapabilityFixtureDocument[];
+  skills?: Array<{ id: string; companyId: string; name: string; slug: string; description: string; markdown: string; versionId: string }>;
+
   interactions: CapabilityFixtureInteraction[];
   approvals: CapabilityFixtureApproval[];
   artifacts: CapabilityFixtureArtifact[];
@@ -355,6 +357,7 @@ interface CapabilityBaseCommand {
 }
 
 export type CapabilitySemanticCommand =
+  | (CapabilityBaseCommand & { kind: "create_skill"; name: string; slug?: string; description: string; markdown: string })
   | (CapabilityBaseCommand & { kind: "report_progress"; body: string })
   | (CapabilityBaseCommand & {
       kind: "write_document";
@@ -472,6 +475,7 @@ export type CapabilityCommandOutcome =
  * bypass these checks.
  */
 export const CAPABILITY_COMMAND_REQUIRED_CLAIMS = {
+  create_skill: [],
   report_progress: [],
   write_document: [],
   request_human_input: [],
@@ -521,6 +525,7 @@ export interface CapabilityFixtureSeed {
   outOfScopeTaskIds?: string[];
   comments?: CapabilityFixtureComment[];
   documents?: CapabilityFixtureDocument[];
+  skills?: CapabilityFixtureState["skills"];
   interactions?: CapabilityFixtureInteraction[];
   approvals?: CapabilityFixtureApproval[];
   artifacts?: CapabilityFixtureArtifact[];
@@ -600,6 +605,7 @@ export function createCapabilityFixtureState(seed: CapabilityFixtureSeed = {}): 
     outOfScopeTaskIds: structuredClone(seed.outOfScopeTaskIds ?? []),
     comments: structuredClone(seed.comments ?? []),
     documents: structuredClone(seed.documents ?? []),
+    ...(seed.skills ? { skills: structuredClone(seed.skills) } : {}),
     interactions: structuredClone(seed.interactions ?? []),
     approvals: structuredClone(seed.approvals ?? []),
     artifacts: structuredClone(seed.artifacts ?? []),

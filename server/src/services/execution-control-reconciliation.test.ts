@@ -85,8 +85,10 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     expect(run?.status).toBe("failed");
     expect(run?.errorCode).toBe("execution_finalization_deadline_exceeded");
 
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
+    }, { timeout: 5_000 });
     const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
-    expect(newCaptures).toHaveLength(1);
     expect(newCaptures[0]?.[0]).toMatchObject({
       runId,
       runStatus: "failed",
@@ -97,6 +99,11 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
   it("reports zero events for a repeated sweep over the same already-failed run", async () => {
     const { runId } = await seedAbandonedRunFixture();
     await reconcileAbandonedExecutionControl(db);
+    // The first report is fire-and-forget. Observe it before taking the
+    // second sweep's baseline, so a late first report is not a duplicate.
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toHaveLength(1);
+    }, { timeout: 5_000 });
     // The first sweep already cleared executionControlDeadlineAt and moved the
     // run to "failed". Restore the deadline to simulate a second sweep still
     // observing the same run as a candidate.
