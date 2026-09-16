@@ -971,7 +971,7 @@ jobs:
       # This definition executes only from the authorized default-branch workflow.
       # Provision host policy before credentials reach target-controlled tests.
       - name: Provision Codex sandbox on the disposable trusted runner
-        if: matrix.environmentId == 'local' && matrix.profileId == 'runner-codex'
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini')
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
@@ -1001,6 +1001,15 @@ jobs:
           writeFileSync(profilePath, `abi <abi/4.0>,\ninclude <tunables/global>\nprofile ${name} "${binary}" flags=(unconfined) {\n  userns,\n}\n`, {mode:0o600, flag:"wx"});
           execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], {timeout:15000, stdio:"pipe"});
           NODE
+
+      - name: Prepare pinned Python artifact oracle image
+        if: matrix.suiteId == 'everyday-workflows' && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
+        run: |
+          set -euo pipefail
+          oracle_image='python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
+          timeout 30s docker version --format '{{.Server.Version}}'
+          timeout 120s docker pull "$oracle_image"
+          timeout 30s docker image inspect "$oracle_image" --format '{{.Id}}'
 
       - name: Run paid cell
         env:

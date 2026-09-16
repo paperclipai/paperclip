@@ -662,6 +662,8 @@ const PENDING_CLEANUP_SWEEP_ATTEMPT_CAP = 5;
 // The reaper stores its retry state under these keys in the lease metadata.
 const PENDING_CLEANUP_ATTEMPTS_METADATA_KEY = "pendingCleanupRetryAttempts";
 const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
+// The reaper sweeps at most this many orphaned active leases per tick.
+const ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE = 20;
 
 // A provider or plugin destroy rejection can carry a bearer credential, a
 // signed URL, or provider response detail in its name, code, message, cause, or
@@ -670,6 +672,7 @@ const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
 // catch site logs a constant, locally generated `errorKind` instead.
 const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
 const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
+const ORPHANED_ACTIVE_LEASE_SWEEP_ERROR_KIND = "orphaned_active_lease_sweep_failed";
 
 // Read the stored retry attempt count as a safe value, directly in SQL. A
 // provider can write a malformed value under the attempts key. The type guard
@@ -18166,6 +18169,119 @@ export function heartbeatService(
       );
   }
 
+  // Move a guarded orphan candidate to the back of the sweep order. The
+  // shared-resource guard below can skip a row on every tick as long as the
+  // other owner stays live, retained, or pending cleanup. The select orders
+  // by `updatedAt` ascending and takes only the oldest page, so an untouched
+  // skipped row keeps refilling that same page and blocks every row behind
+  // it. The bump pushes the row past the fixed-size page, so the next tick
+  // reaches the rows behind it. It costs the row one extra backoff wait,
+  // which is safe because the guard means a physical sandbox still exists.
+  async function deferOrphanedActiveLease(leaseId: string): Promise<void> {
+    const now = new Date();
+    await db
+      .update(environmentLeases)
+      .set({ updatedAt: now })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "active"),
+        ),
+      );
+  }
+
+  // An active lease is reachable only while its heartbeat run keeps the
+  // running status. The reaper writes the run status and the lease release as
+  // two separate statements, so a restart between them can leave a terminal
+  // run and an active lease. `releaseRunLeases` also skips a lease whose
+  // environment row is gone, so that lease stays active too. No later query
+  // finds either lease, because every production query selects an active
+  // lease by its environment or by its heartbeat run id, never by age. This
+  // sweep finds both stranded classes and moves each lease to pending_cleanup,
+  // so the existing pending_cleanup sweep tears the sandbox down from the
+  // data already on the lease row.
+  async function sweepOrphanedActiveLeases(opts: {
+    backoffMs: number;
+  }): Promise<{ recovered: number }> {
+    const cutoff = new Date(Date.now() - opts.backoffMs);
+
+    const rows = await db
+      .select({ lease: environmentLeases })
+      .from(environmentLeases)
+      .leftJoin(
+        heartbeatRuns,
+        eq(environmentLeases.heartbeatRunId, heartbeatRuns.id),
+      )
+      .where(
+        and(
+          eq(environmentLeases.status, "active"),
+          or(
+            isNull(environmentLeases.heartbeatRunId),
+            inArray(heartbeatRuns.status, [
+              ...HEARTBEAT_RUN_TERMINAL_STATUSES,
+            ]),
+          ),
+          lte(environmentLeases.updatedAt, cutoff),
+        ),
+      )
+      .orderBy(asc(environmentLeases.updatedAt))
+      .limit(ORPHANED_ACTIVE_LEASE_SWEEP_PAGE_SIZE);
+
+    let recovered = 0;
+    for (const { lease } of rows) {
+      // A provider resource id names one physical sandbox. A different lease
+      // row can still hold that same resource in a live status, so this sweep
+      // must not tear down a sandbox that a different lease still owns.
+      if (lease.provider && lease.providerLeaseId) {
+        const [otherOwner] = await db
+          .select({ id: environmentLeases.id })
+          .from(environmentLeases)
+          .where(
+            and(
+              ne(environmentLeases.id, lease.id),
+              eq(environmentLeases.provider, lease.provider),
+              eq(environmentLeases.providerLeaseId, lease.providerLeaseId),
+              inArray(environmentLeases.status, [
+                "active",
+                "retained",
+                "pending_cleanup",
+              ]),
+            ),
+          )
+          .limit(1);
+        if (otherOwner) {
+          // Defer this row so the fixed-size page reaches the rows behind
+          // it next tick, instead of re-selecting the same guarded rows
+          // forever.
+          await deferOrphanedActiveLease(lease.id);
+          continue;
+        }
+      }
+
+      // Keep the row's existing updatedAt value. The select above already
+      // proved the row is older than the backoff cutoff, so the
+      // pending_cleanup sweep can accept the same row in this same tick. A
+      // fresh timestamp here would push the row inside that sweep's own
+      // backoff window and delay the teardown by one full tick.
+      const flipped = await db
+        .update(environmentLeases)
+        .set({
+          status: "pending_cleanup",
+          failureReason: "orphaned_active_lease_recovered",
+        })
+        .where(
+          and(
+            eq(environmentLeases.id, lease.id),
+            eq(environmentLeases.status, "active"),
+          ),
+        )
+        .returning({ id: environmentLeases.id });
+      if (flipped.length > 0) recovered += 1;
+    }
+
+    return { recovered };
+  }
+
   // Retry the leases stranded in "pending_cleanup". A failed destroy leaves a
   // lease in that state forever without this sweep. The reaper tick runs the
   // sweep. The backoff equals the reaper staleness threshold, so a lease waits
@@ -18984,6 +19100,28 @@ export function heartbeatService(
       logger.warn(
         { reapedCount: reaped.length, runIds: reaped },
         "reaped orphaned heartbeat runs",
+      );
+    }
+
+    // Recover an active lease whose run already ended before the same-tick
+    // pending_cleanup sweep, so this tick can stop the recovered sandbox.
+    // Isolate the sweep so its failure never hides the reaper result.
+    try {
+      const orphanedActiveLeaseSweep = await sweepOrphanedActiveLeases({
+        backoffMs: staleThresholdMs,
+      });
+      if (orphanedActiveLeaseSweep.recovered > 0) {
+        logger.warn(
+          { recovered: orphanedActiveLeaseSweep.recovered },
+          "recovered orphaned active environment leases",
+        );
+      }
+    } catch {
+      // Log a constant errorKind only. The exception can carry a credential in
+      // its name, code, message, cause, or stack, so the sweep never reads it.
+      logger.error(
+        { errorKind: ORPHANED_ACTIVE_LEASE_SWEEP_ERROR_KIND },
+        "orphaned active environment lease sweep failed",
       );
     }
 
@@ -29033,6 +29171,7 @@ export function heartbeatService(
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
     reapOrphanedRuns,
+    sweepOrphanedActiveLeases,
     sweepPendingCleanupLeases,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that

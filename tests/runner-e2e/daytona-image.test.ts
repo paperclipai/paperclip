@@ -111,7 +111,11 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
     expect(workflow).toContain(`--format '{{json .Image}}'`);
     expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
-    expect(workflow).not.toContain("docker image inspect");
+    const daytonaImageJob = workflow.match(/^  daytona_image:\n[\s\S]*?(?=^  \w+:)/m)?.[0];
+    expect(daytonaImageJob).toBeDefined();
+    // Remote Daytona manifests must use registry inspection. Local oracle
+    // images in the test job can still use the Docker daemon.
+    expect(daytonaImageJob).not.toContain("docker image inspect");
     expect(workflow).not.toContain("docker buildx prune --all --force");
     expect(workflow).not.toContain("docker system prune --all --force");
     expect(workflow).toContain('.architecture == "amd64"');

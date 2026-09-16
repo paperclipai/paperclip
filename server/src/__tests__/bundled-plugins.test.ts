@@ -31,6 +31,18 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 describe("resolveBundledPluginInstalls", () => {
+  it("resolves the optional CreateOS sandbox provider without making it a self-hosted default", () => {
+    expect(resolveBundledPluginInstalls(["createos"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    })).toEqual([{
+      key: "createos",
+      pluginKey: "paperclip.createos-sandbox-provider",
+      localPath: path.join(CATALOG_ROOT, "sandbox-providers/createos"),
+    }]);
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("createos");
+  });
   it("resolves known keys to paths inside the catalog root", () => {
     const resolved = resolveBundledPluginInstalls(["kubernetes", "daytona"], {
       catalogRoot: CATALOG_ROOT,

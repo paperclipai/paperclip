@@ -29,6 +29,7 @@ function runPublishHelper({
   npmVersionExistsAfterChecks = 0,
   verifyAttempts = 1,
   verifyDelaySeconds = 0,
+  visibilityPackages = null,
 }) {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-release-lib-"));
   const binDir = join(fixtureDir, "bin");
@@ -86,6 +87,26 @@ exit 1
 set -euo pipefail
 printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
 if [ "$1" = "view" ]; then
+  if [ "\${NPM_VIEW_CROSS:-}" = "true" ]; then
+    # Cross-visibility mode: a package resolves only after every OTHER
+    # package has been polled at least once. Mutually dependent visibility
+    # can only converge when the polls run concurrently.
+    spec="$2"
+    name="\${spec%@*}"
+    safe="$(printf '%s' "$name" | tr '/@' '__')"
+    touch "$FAKE_STATE_DIR/seen-$safe"
+    all_seen=true
+    for other in $CROSS_PACKAGES; do
+      osafe="$(printf '%s' "$other" | tr '/@' '__')"
+      [ "$osafe" = "$safe" ] && continue
+      [ -f "$FAKE_STATE_DIR/seen-$osafe" ] || all_seen=false
+    done
+    if [ "$all_seen" = "true" ]; then
+      echo "1.2.3"
+      exit 0
+    fi
+    exit 1
+  fi
   checks=0
   if [ -f "$FAKE_STATE_DIR/view-checks" ]; then
     read -r checks < "$FAKE_STATE_DIR/view-checks"
@@ -147,15 +168,30 @@ exec npm "$@"
   );
 
   const shellOptions = callerPipefail ? "set -euo pipefail" : "set -eu";
+  // The cross-visibility concurrency test needs real (fractional-second)
+  // sleeps so slower-starting sibling polls get a chance to run; every other
+  // test records virtual waiting so registry-delay tests stay fast/offline.
+  const sleepStub = visibilityPackages
+    ? ""
+    : `sleep() { printf 'sleep %s\\n' "$*" >> "$FAKE_CALL_LOG"; }`;
+  const packageInfo = (
+    visibilityPackages ?? ["@paperclipai/example"]
+  )
+    .map((name) => `packages/example\\t${name}\\t1.2.3`)
+    .join("\\n");
   const script = `
 ${shellOptions}
 source "${repoRoot}/scripts/release-lib.sh"
-# Record virtual waiting so registry-delay tests remain fast and offline.
-sleep() { printf 'sleep %s\\n' "$*" >> "$FAKE_CALL_LOG"; }
+${sleepStub}
 ${
-  waitForRegistry
-    ? `publish_package_to_npm_and_wait ${distTag} @paperclipai/example 1.2.3 ${publishTool} "$VERIFY_ATTEMPTS" "$VERIFY_DELAY_SECONDS"`
-    : `publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}`
+  visibilityPackages
+    ? `PACKAGE_INFO="$(printf '${packageInfo}')"
+wait_for_npm_package_versions "$VERIFY_ATTEMPTS" "$VERIFY_DELAY_SECONDS" "$PACKAGE_INFO"`
+    : waitForRegistry
+      ? `publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}
+PACKAGE_INFO="$(printf '${packageInfo}')"
+wait_for_npm_package_versions "$VERIFY_ATTEMPTS" "$VERIFY_DELAY_SECONDS" "$PACKAGE_INFO"`
+      : `publish_package_to_npm ${distTag} @paperclipai/example 1.2.3 ${publishTool}`
 }
 `;
 
@@ -174,6 +210,8 @@ ${
         NPM_VERSION_EXISTS_AFTER_CHECKS: String(npmVersionExistsAfterChecks),
         VERIFY_ATTEMPTS: String(verifyAttempts),
         VERIFY_DELAY_SECONDS: String(verifyDelaySeconds),
+        NPM_VIEW_CROSS: visibilityPackages ? "true" : "false",
+        CROSS_PACKAGES: (visibilityPackages ?? []).join(" "),
         PNPM_MODE: pnpmMode,
         REPO_ROOT: fixtureDir,
       },
@@ -270,7 +308,7 @@ test("publish_package_to_npm does not retry stable publishes without provenance"
   assert.doesNotMatch(result.calls, /--provenance=false/);
 });
 
-test("publish_package_to_npm_and_wait confirms registry visibility before returning", () => {
+test("wait_for_npm_package_versions confirms registry visibility after a publish", () => {
   const result = runPublishHelper({
     pnpmMode: "success",
     npmVersionExists: true,
@@ -282,12 +320,29 @@ test("publish_package_to_npm_and_wait confirms registry visibility before return
   assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
 });
 
-test("publish_package_to_npm_and_wait blocks the release when registry visibility lags", () => {
+test("wait_for_npm_package_versions blocks the release and names the straggler", () => {
   const result = runPublishHelper({ pnpmMode: "success", waitForRegistry: true });
 
   assert.notEqual(result.status, 0);
   assert.match(result.calls, /^npm view @paperclipai\/example@1\.2\.3 version$/m);
-  assert.match(result.output, /did not become registry-visible/);
+  assert.match(result.output, /did not become registry-visible: @paperclipai\/example@1\.2\.3/);
+});
+
+test("wait_for_npm_package_versions polls every package concurrently", () => {
+  // In cross-visibility mode each fake package resolves only after the OTHER
+  // package has been polled at least once. Waiting out one package's full
+  // budget before polling the next can never satisfy the first package;
+  // only concurrent polling converges.
+  const result = runPublishHelper({
+    pnpmMode: "success",
+    visibilityPackages: ["@paperclipai/alpha", "@paperclipai/beta"],
+    verifyAttempts: 50,
+    verifyDelaySeconds: 0.2,
+  });
+
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /@paperclipai\/alpha@1\.2\.3 is registry-visible/);
+  assert.match(result.output, /@paperclipai\/beta@1\.2\.3 is registry-visible/);
 });
 
 test("the workflow budget tolerates the observed 15-minute 20-second registry delay", () => {

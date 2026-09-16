@@ -11,6 +11,8 @@ const buildRunnerNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,?\s*\]/u;
 const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
+const everydayOracleImage =
+  "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285";
 
 describe("public repository paid workflow security", () => {
   it("uses the reviewed master branch for the first-party trusted PR workflow", async () => {
@@ -280,13 +282,46 @@ describe("public repository paid workflow security", () => {
     const hostedChromiumInstall = paidJob.indexOf(
       "- name: Install Chromium headless shell on GitHub-hosted fallback",
     );
+    const everydayOraclePreparation = paidJob.indexOf(
+      "- name: Prepare pinned Python artifact oracle image",
+    );
     const paidExecution = paidJob.indexOf("- name: Run paid cell");
     expect(paidInstall).toBeGreaterThan(0);
     expect(daytonaPluginPreparation).toBeGreaterThan(paidInstall);
     expect(awsFfmpegInstall).toBeGreaterThan(daytonaPluginPreparation);
     expect(hostedChromiumInstall).toBeGreaterThan(awsFfmpegInstall);
+    expect(everydayOraclePreparation).toBeGreaterThan(hostedChromiumInstall);
     expect(paidExecution).toBeGreaterThan(awsFfmpegInstall);
     expect(paidExecution).toBeGreaterThan(daytonaPluginPreparation);
+    expect(paidExecution).toBeGreaterThan(everydayOraclePreparation);
+    const everydayOracleStep = paidJob.slice(
+      everydayOraclePreparation,
+      paidExecution,
+    );
+    expect(everydayOracleStep).toContain(
+      "if: matrix.suiteId == 'everyday-workflows' && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')",
+    );
+    expect(everydayOracleStep).toContain(
+      `oracle_image='${everydayOracleImage}'`,
+    );
+    expect(everydayOracleStep).toContain(
+      "timeout 30s docker version --format '{{.Server.Version}}'",
+    );
+    expect(everydayOracleStep).toContain(
+      'timeout 120s docker pull "$oracle_image"',
+    );
+    expect(everydayOracleStep).toContain(
+      "timeout 30s docker image inspect \"$oracle_image\" --format '{{.Id}}'",
+    );
+    const artifactSource = await readFile(
+      path.join(repositoryRoot, "tests/runner-e2e/everyday-artifact.py"),
+      "utf8",
+    );
+    const artifactImage = artifactSource.match(
+      /^SANDBOX_IMAGE = '([^']+)'$/mu,
+    )?.[1];
+    expect(artifactImage).toBe(everydayOracleImage);
+    expect(everydayOracleStep).not.toMatch(/secrets\./u);
     const awsFfmpegStep = paidJob.slice(
       awsFfmpegInstall,
       hostedChromiumInstall,
