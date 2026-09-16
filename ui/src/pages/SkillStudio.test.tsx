@@ -150,23 +150,21 @@ async function act(callback: () => void | Promise<void>) {
   await result;
 }
 
-async function flushReact() {
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-}
-
+/**
+ * Waits on the condition, not on a fixed number of turns. A hand-rolled retry
+ * loop is ample on an idle machine and not when the suite runs many workers in
+ * parallel: it gives up after N turns and reports a failure on behaviour that
+ * works. `vi.waitFor` retries against a time budget, so a loaded worker gets
+ * more turns instead.
+ *
+ * Same replacement as #11499 and #11521, which fixed the shorter-budget
+ * instances of this in the routing tests.
+ *
+ * This was a reimplementation of `vi.waitFor` down to rethrowing the last
+ * error, differing only in bounding on turns rather than on time.
+ */
 async function waitFor(assertion: () => void) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 25; attempt += 1) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await flushReact();
-    }
-  }
-  throw lastError;
+  await vi.waitFor(assertion);
 }
 
 async function renderStudio() {

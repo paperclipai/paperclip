@@ -1,10 +1,12 @@
-import type { ActivityEvent, RunLivenessState } from "@paperclipai/shared";
+import type { ActivityEvent, ExecutionProjection, RunLivenessState } from "@paperclipai/shared";
 import { api, type RequestOptions } from "./client";
 
 export type { RunLivenessState } from "@paperclipai/shared";
 
 export interface RunForIssue {
   runId: string;
+  execution?: ExecutionProjection | null;
+  runtimeMode?: "legacy" | "native";
   status: string;
   agentId: string;
   adapterType: string;
@@ -27,6 +29,10 @@ export interface RunForIssue {
   continuationAttempt?: number;
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
+  wakeCommentIds?: string[] | null;
+  wakeCommentId?: string | null;
+  contextCommentId?: string | null;
+  contextIssueId?: string | null;
   contextSnapshot?: Record<string, unknown> | null;
   environment?: {
     id: string;

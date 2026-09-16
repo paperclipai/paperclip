@@ -112,3 +112,18 @@ export interface Project {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** GitHub identity is the provider's stable repository ID, never a credential. */
+export interface ProjectRepository {
+  id: string;
+  fullName: string;
+  url: string;
+  private?: boolean;
+  connections: string[];
+}
+
+export interface ProjectRepositoryOptions {
+  repositories: ProjectRepository[];
+  connectionCount: number;
+  failedConnectionCount: number;
+}

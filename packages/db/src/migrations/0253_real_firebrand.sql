@@ -1,0 +1,1 @@
+ALTER TABLE "heartbeat_runs" ADD COLUMN IF NOT EXISTS "execution_status_delivery_id" uuid;

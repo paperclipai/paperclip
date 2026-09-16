@@ -5,18 +5,29 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySecret, EnvSecretRefBinding } from "@paperclipai/shared";
 
-// Stub SecretBindingPicker so the editor renders without CompanyContext /
-// react-query. The stub exposes a button that binds a fixed secret.
-vi.mock("./SecretBindingPicker", () => ({
-  SecretBindingPicker: ({
-    onChange,
-  }: {
-    onChange: (next: { secretId: string; version?: number | "latest" } | null) => void;
-  }) => (
-    <button type="button" data-testid="pick-secret" onClick={() => onChange({ secretId: "s1", version: "latest" })}>
-      pick
-    </button>
-  ),
+const mockSecretPickerRender = vi.hoisted(() => vi.fn());
+
+// Keep this component test focused on access-row behavior while asserting that
+// the editor routes selection through the shared, folder-aware env picker.
+vi.mock("./environment-variables-editor/SecretPicker", () => ({
+  SecretPicker: (props: {
+    secretId: string;
+    secrets: readonly CompanySecret[];
+    onSelect: (secretId: string) => void;
+    onCreateNew?: (query: string) => void;
+  }) => {
+    mockSecretPickerRender(props);
+    return <>
+      <button type="button" data-testid="pick-secret" onClick={() => props.onSelect("s1")}>
+        pick
+      </button>
+      {props.onCreateNew ? (
+        <button type="button" data-testid="create-secret" onClick={() => props.onCreateNew?.("new_secret")}>
+          create
+        </button>
+      ) : null}
+    </>;
+  },
 }));
 
 import {
@@ -155,10 +166,41 @@ describe("AgentSecretAccessEditor component", () => {
 
     // Bind a secret via the stubbed picker.
     const pick = container.querySelector<HTMLButtonElement>('[data-testid="pick-secret"]')!;
+    expect(mockSecretPickerRender).toHaveBeenLastCalledWith(
+      expect.objectContaining({ secretId: "", secrets }),
+    );
     flushSync(() => pick.click());
 
     const last = emitted.at(-1)!;
     expect(last).toEqual({ STRIPE: { type: "secret_ref", secretId: "s1", version: "latest" } });
+  });
+
+  it("keeps the create form open when focus returns to the shared picker anchor", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AgentSecretAccessEditor
+          config={{ "access.STRIPE": { type: "secret_ref", secretId: "s1" } }}
+          secrets={secrets}
+          onChange={() => {}}
+          onCreateSecret={async () => secrets[0]!}
+        />,
+      );
+
+      const createButton = container.querySelector<HTMLButtonElement>('[data-testid="create-secret"]')!;
+      flushSync(() => createButton.click());
+      flushSync(() => vi.runAllTimers());
+      expect(document.body.textContent).toContain("Create secret");
+
+      const pickerButton = container.querySelector<HTMLButtonElement>('[data-testid="pick-secret"]')!;
+      pickerButton.focus();
+      flushSync(() => {});
+
+      expect(document.body.textContent).toContain("Create secret");
+      expect(document.querySelector('input[aria-label="Secret name"]')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders pending binding proposals as Proposed rows with approve/reject", () => {

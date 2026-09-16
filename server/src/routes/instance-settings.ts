@@ -1,18 +1,81 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
-  issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
-import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { logger } from "../middleware/logger.js";
+import {
+  heartbeatService,
+  instanceSettingsService,
+  logActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a)
+      && Array.isArray(b)
+      && a.length === b.length
+      && a.every((value, i) => sameJsonValue(value, b[i]))
+    );
+  }
+  const aKeys = Object.keys(a);
+  const bKeys = new Set(Object.keys(b));
+  return aKeys.length === bKeys.size && aKeys.every((key) =>
+    bKeys.has(key) && sameJsonValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
+  );
+}
+
+/**
+ * Floor writes to operator-hidden settings. Same-value writes pass so clients
+ * that echo a full GET response keep working (the executionMode precedent);
+ * only a write that would actually change a hidden setting is rejected.
+ */
+async function assertNoHiddenSettingChanges(
+  body: Record<string, unknown>,
+  getCurrent: () => Promise<object>,
+  isHiddenField: (field: string) => boolean,
+) {
+  const hiddenKeys = Object.keys(body).filter(isHiddenField);
+  if (hiddenKeys.length === 0) return;
+  const current = (await getCurrent()) as Record<string, unknown>;
+  for (const key of hiddenKeys) {
+    if (sameJsonValue(body[key], current[key])) continue;
+    throw forbidden(`${key} is managed by the hosting operator on this instance`, {
+      code: "settings_operator_managed",
+    });
+  }
+}
+
+/**
+ * Publish activity events for an already-committed mutation. The audit row
+ * exists in the database no matter what happens here, so a publish failure
+ * must not turn into a route error: that would report the mutation as
+ * failed to the caller when it in fact succeeded. Log and swallow instead.
+ */
+function publishActivitiesBestEffort(publications: ActivityPublication[], action: string) {
+  for (const publication of publications) {
+    try {
+      publishActivity(publication);
+    } catch (err) {
+      logger.error({ err, action, companyId: publication.companyId }, "failed to publish activity event");
+    }
+  }
+}
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -22,6 +85,31 @@ function assertCanManageInstanceSettings(req: Request) {
     return;
   }
   throw forbidden("Instance admin access required");
+}
+
+// A task-drain start or stop reads the live drain state, writes an audit
+// transaction, and only then mutates the process-local drain state. The
+// audit write is an async gap: two overlapping requests can commit their
+// transactions in one order but reach the in-memory mutation in the other
+// order, so a stale transition would win, the audit log would not match the
+// live state, and the response for the newer request would not match what
+// actually ended up live. Run each request's whole read-audit-apply
+// sequence through this queue so overlapping requests execute one at a
+// time, in the order they enter it: audit order and apply order then always
+// agree, and each response reports exactly the state its own request
+// produced.
+let taskDrainTransitionQueue: Promise<void> = Promise.resolve();
+
+function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
+  const turn = taskDrainTransitionQueue.then(run);
+  // Normalize to a settled void promise for the next caller in line, so a
+  // rejected transition (a failed audit write, for example) cannot wedge
+  // every later transition behind it.
+  taskDrainTransitionQueue = turn.then(
+    () => undefined,
+    () => undefined,
+  );
+  return turn;
 }
 
 export function instanceSettingsRoutes(db: Db) {
@@ -122,6 +210,12 @@ export function instanceSettingsRoutes(db: Db) {
           });
         }
       }
+      const hidden = getHiddenSettings();
+      await assertNoHiddenSettingChanges(
+        req.body,
+        () => svc.getGeneral(),
+        (field) => hidden.has(`instance.general.${field}`),
+      );
       const updated = await svc.updateGeneral(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
@@ -161,6 +255,15 @@ export function instanceSettingsRoutes(db: Db) {
     validate(patchInstanceExperimentalSettingsSchema),
     async (req, res) => {
       assertCanManageInstanceSettings(req);
+      // Hiding the whole Experimental page floors every toggle; otherwise
+      // only individually hidden keys are floored.
+      const hidden = getHiddenSettings();
+      await assertNoHiddenSettingChanges(
+        req.body,
+        () => svc.getExperimental(),
+        (field) =>
+          hidden.has("instance.experimental") || hidden.has(`instance.experimental.${field}`),
+      );
       const updated = await svc.updateExperimental(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
@@ -187,54 +290,118 @@ export function instanceSettingsRoutes(db: Db) {
     },
   );
 
-  router.post(
-    "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
-    validate(issueGraphLivenessAutoRecoveryRequestSchema),
-    async (req, res) => {
-      assertCanManageInstanceSettings(req);
-      res.json(await heartbeat.buildIssueGraphLivenessAutoRecoveryPreview({
-        lookbackHours: req.body.lookbackHours,
-      }));
-    },
-  );
+  router.get("/instance/task-drain", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(heartbeat.getTaskDrainStatus());
+  });
 
   router.post(
-    "/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
-    validate(issueGraphLivenessAutoRecoveryRequestSchema),
+    "/instance/task-drain",
+    validate(startTaskDrainRequestSchema),
     async (req, res) => {
       assertCanManageInstanceSettings(req);
       const actor = getActorInfo(req);
-      const result = await heartbeat.reconcileIssueGraphLiveness({
-        runId: actor.runId,
-        force: true,
-        lookbackHours: req.body.lookbackHours,
-      });
       const companyIds = await svc.listCompanyIds();
-      await Promise.all(
-        companyIds.map((companyId) =>
-          logActivity(db, {
-            companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "instance.settings.issue_graph_liveness_auto_recovery_run",
-            entityType: "instance_settings",
-            entityId: "default",
-            details: {
-              lookbackHours: result.lookbackHours,
-              escalationsCreated: result.escalationsCreated,
-              existingEscalations: result.existingEscalations,
-              skippedOutsideLookback: result.skippedOutsideLookback,
-              escalationIssueIds: result.escalationIssueIds,
-            },
-          }),
-        ),
-      );
-      res.json(result);
+      const ttlMs = req.body.ttlMs ?? null;
+      // The whole read-audit-apply sequence runs as one queued transition
+      // (see withTaskDrainTransition above), so an overlapping start or
+      // stop cannot commit its audit row, or apply its live state, out of
+      // order against this one. computeTaskDrain runs inside the turn so
+      // startedAt reflects the moment this request actually took effect,
+      // not the moment it arrived and was queued behind another transition.
+      const drain = await withTaskDrainTransition(async () => {
+        const computed = heartbeat.computeTaskDrain({ ttlMs });
+        // One transaction for every company's audit row, so a write that
+        // succeeds for one company and fails for another never leaves a
+        // partial activity history behind — either every company gets the
+        // record, or none does. The drain mutation below runs only after
+        // this transaction commits, so a failed write leaves the live
+        // drain untouched and there is no partial state to roll back.
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        await db.transaction((tx) =>
+          Promise.all(
+            companyIds.map((companyId) =>
+              logActivity(tx as unknown as Db, {
+                companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                agentApiKeyId: actor.agentApiKeyId,
+                action: "instance.task_drain.started",
+                entityType: "instance_settings",
+                entityId: "default",
+                details: {
+                  startedAt: computed.startedAt,
+                  expiresAt: computed.expiresAt,
+                },
+              }, postCommitActivityPublications),
+            ),
+          ),
+        );
+        heartbeat.applyTaskDrain(computed);
+        // The audit record already committed, so a failure to publish it
+        // here is not a reason to undo the drain: reverting the in-memory
+        // state at this point would desync it from the committed row.
+        // Swallow a publish failure so it cannot turn a committed mutation
+        // into a false 500.
+        publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.started");
+        return computed;
+      });
+      res.json(drain);
     },
   );
+
+  router.delete("/instance/task-drain", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const actor = getActorInfo(req);
+    const companyIds = await svc.listCompanyIds();
+    // See the POST handler above for why the whole read-audit-apply
+    // sequence runs inside withTaskDrainTransition: it queues this stop
+    // behind any transition already in flight, so it cannot read a status
+    // an overlapping request is about to make stale, and its audit row and
+    // its live-state mutation always land in the same order as every other
+    // queued transition.
+    const wasActive = await withTaskDrainTransition(async () => {
+      const priorStatus = heartbeat.getTaskDrainStatus();
+      // Read wasActive once, here, and use this same value for the audit
+      // detail and the response body below. A TTL that expires between two
+      // separate reads would otherwise make the two values disagree.
+      const wasActive = priorStatus.draining;
+      // See the POST handler above for why this is one transaction, and why
+      // the drain mutation runs only after it commits.
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      await db.transaction((tx) =>
+        Promise.all(
+          companyIds.map((companyId) =>
+            logActivity(tx as unknown as Db, {
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "instance.task_drain.stopped",
+              entityType: "instance_settings",
+              entityId: "default",
+              details: {
+                wasActive,
+              },
+            }, postCommitActivityPublications),
+          ),
+        ),
+      );
+      heartbeat.stopTaskDrain();
+      // See the POST handler above for why a publish failure here is
+      // swallowed instead of failing the route: the audit record already
+      // committed, so a publish failure here must not undo a drain-stop
+      // that is already correct in the database, and must not report the
+      // stop as failed when it succeeded.
+      publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
+      return wasActive;
+    });
+    res.json({ wasActive });
+  });
 
   return router;
 }

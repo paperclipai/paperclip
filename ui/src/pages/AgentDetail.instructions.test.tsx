@@ -42,7 +42,6 @@ vi.mock("@/adapters/use-adapter-capabilities", () => ({
     supportsSkills: true,
     supportsLocalAgentJwt: true,
     requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: true,
   }),
 }));
 
@@ -62,6 +61,7 @@ vi.mock("../components/MarkdownEditor", () => ({
   }) => {
     markdownEditorRenderMock({
       value,
+      onChange,
       contentClassName,
       hasImageUploadHandler: Boolean(imageUploadHandler),
     });
@@ -76,6 +76,10 @@ vi.mock("../components/MarkdownEditor", () => ({
       />
     );
   },
+}));
+
+vi.mock("../components/MarkdownBody", () => ({
+  MarkdownBody: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -279,6 +283,13 @@ describe("PromptsTab instruction editor", () => {
     await flushReact();
   }
 
+  async function selectInstructionMode(mode: "Read" | "Edit" | "Raw") {
+    await act(async () => {
+      buttonByText(container, mode.toLowerCase()).click();
+    });
+    await flushReact();
+  }
+
   it("uses server markdown metadata for extensionless files and saves MarkdownEditor drafts", async () => {
     const summary = makeSummary("AGENTS", "AGENTS", {
       language: "markdown",
@@ -288,6 +299,13 @@ describe("PromptsTab instruction editor", () => {
       makeBundle("AGENTS", [summary]),
       { AGENTS: makeDetail(summary, "# Current") },
     );
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="markdown-body"]')?.textContent).toBe("# Current");
+    });
+    await selectInstructionMode("Raw");
+    expect(container.querySelector('[data-testid="instructions-raw-source"]')?.textContent?.trim()).toBe("# Current");
+    await selectInstructionMode("Edit");
 
     const editor = await waitFor(() => {
       const candidate = container.querySelector<HTMLTextAreaElement>('[data-testid="markdown-editor"]');
@@ -301,6 +319,7 @@ describe("PromptsTab instruction editor", () => {
     }));
 
     await act(async () => {
+      editor.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       setNativeValue(editor, "# Updated");
     });
     await waitFor(() => {
@@ -321,6 +340,77 @@ describe("PromptsTab instruction editor", () => {
     });
   });
 
+  it("ignores rich-editor mount normalization until the user interacts", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    const onDirtyChange = vi.fn();
+    await renderPromptsTab(
+      makeBundle("AGENTS.md", [summary]),
+      { "AGENTS.md": makeDetail(summary, "# Current") },
+      { onDirtyChange },
+    );
+    await selectInstructionMode("Edit");
+
+    const editorProps = await waitFor(() => {
+      const latest = markdownEditorRenderMock.mock.calls.at(-1)?.[0] as
+        | { onChange?: (value: string) => void }
+        | undefined;
+      expect(latest?.onChange).toEqual(expect.any(Function));
+      return latest!;
+    });
+
+    await act(async () => {
+      editorProps.onChange?.("# Current\n");
+    });
+    await flushReact();
+
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    expect(saveAction).toBeNull();
+    expect(mockAgentsApi.saveInstructionsFile).not.toHaveBeenCalled();
+  });
+
+  it("releases dirty state and save controls when the instructions tab unmounts", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    const onDirtyChange = vi.fn();
+    const onSavingChange = vi.fn();
+    let cancelAction: (() => void) | null = null;
+    await renderPromptsTab(
+      makeBundle("AGENTS.md", [summary]),
+      { "AGENTS.md": makeDetail(summary, "# Current") },
+      {
+        onDirtyChange,
+        onSavingChange,
+        onSaveActionChange: (next) => { saveAction = next; },
+        onCancelActionChange: (next) => { cancelAction = next; },
+      },
+    );
+    await selectInstructionMode("Edit");
+
+    const editor = await waitFor(() => {
+      const candidate = container.querySelector<HTMLTextAreaElement>('[data-testid="markdown-editor"]');
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
+    await act(async () => {
+      editor.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      setNativeValue(editor, "# Updated");
+    });
+    await waitFor(() => {
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      expect(saveAction).toEqual(expect.any(Function));
+      expect(cancelAction).toEqual(expect.any(Function));
+    });
+
+    await act(async () => {
+      root?.unmount();
+    });
+    root = null;
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(onSavingChange).toHaveBeenLastCalledWith(false);
+    expect(saveAction).toBeNull();
+    expect(cancelAction).toBeNull();
+  });
+
   it("uses the Markdown editor for pending new .md files before server metadata exists", async () => {
     const summary = makeSummary("settings.json", "settings.json", {
       language: "json",
@@ -331,6 +421,7 @@ describe("PromptsTab instruction editor", () => {
       { "settings.json": makeDetail(summary, "{\n  \"ok\": true\n}") },
     );
 
+    await selectInstructionMode("Edit");
     await waitFor(() => {
       expect(container.querySelector<HTMLTextAreaElement>('textarea[placeholder="File contents"]')).not.toBeNull();
     });
@@ -347,6 +438,7 @@ describe("PromptsTab instruction editor", () => {
       buttonByText(container, "Create").click();
     });
 
+    await selectInstructionMode("Edit");
     await waitFor(() => {
       expect(container.querySelector('[data-testid="markdown-editor"]')).not.toBeNull();
     });
@@ -363,6 +455,7 @@ describe("PromptsTab instruction editor", () => {
       { "FALLBACK.md": makeDetail(summary, "# Fallback", { markdown: undefined }) },
     );
 
+    await selectInstructionMode("Edit");
     await waitFor(() => {
       expect(container.querySelector("[data-testid=\"markdown-editor\"]")).not.toBeNull();
       expect(markdownEditorRenderMock).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -381,6 +474,7 @@ describe("PromptsTab instruction editor", () => {
       { "NOTES.md": makeDetail(summary, "raw instructions") },
     );
 
+    await selectInstructionMode("Edit");
     await waitFor(() => {
       expect(container.querySelector('[data-testid="markdown-editor"]')).toBeNull();
       expect(container.querySelector<HTMLTextAreaElement>('textarea[placeholder="File contents"]')?.value).toBe("raw instructions");

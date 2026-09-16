@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "local-falcon",
+  "name": "Local Falcon",
+  "description": "Connect Local Falcon's provider-hosted MCP server.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/local-falcon.png"
+  },
+  "urlPatterns": [
+    "https://mcp.localfalcon.com/*"
+  ],
+  "docsUrl": "https://docs.localfalcon.com/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.localfalcon.com"
+      },
+      "guidanceMd": "Connect Local Falcon in the browser. A Local Falcon account with MCP access.",
+      "riskTier": "S2",
+      "label": "Sign in with Local Falcon",
+      "consoleLinks": {
+        "docs": "https://docs.localfalcon.com/"
+      },
+      "warnings": [
+        "A Local Falcon account with MCP access."
+      ]
+    }
+  ]
+}

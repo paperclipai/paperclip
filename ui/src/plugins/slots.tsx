@@ -311,12 +311,19 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
       source = createReactShimSource(ReactModule);
       break;
     case "react/jsx-runtime":
+      // Prefer the host's real jsx runtime: rebuilding jsx/jsxs on top of
+      // createElement(type, { children }) drops React's static-children
+      // marking, so dev React emits "unique key" warnings for every
+      // multi-child element rendered by a plugin component.
       source = `
-        const R = globalThis.__paperclipPluginBridge__?.react;
+        const BRIDGE = globalThis.__paperclipPluginBridge__;
+        const RUNTIME = BRIDGE?.reactJsxRuntime;
+        const R = BRIDGE?.react;
         const withKey = ${applyJsxRuntimeKey.toString()};
-        export const jsx = (type, props, key) => R.createElement(type, withKey(props, key));
-        export const jsxs = (type, props, key) => R.createElement(type, withKey(props, key));
-        export const Fragment = R.Fragment;
+        const fallbackJsx = (type, props, key) => R.createElement(type, withKey(props, key));
+        export const jsx = RUNTIME?.jsx ?? fallbackJsx;
+        export const jsxs = RUNTIME?.jsxs ?? fallbackJsx;
+        export const Fragment = RUNTIME?.Fragment ?? R.Fragment;
       `;
       break;
     case "react-dom":

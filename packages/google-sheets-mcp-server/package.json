@@ -46,12 +46,15 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "googleapis": "^164.1.0",
-    "zod": "^3.24.2"
+    "googleapis": "^176.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
-    "typescript": "^5.7.3",
-    "vitest": "^4.1.10"
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

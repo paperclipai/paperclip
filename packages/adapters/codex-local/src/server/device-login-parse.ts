@@ -7,14 +7,19 @@
 // structure `XXXX-XXXXX` (four characters, a hyphen, then five characters). The
 // parser never logs the URL, the code, or any input byte, and it keeps them out
 // of every thrown error. The parser is a pure function.
+//
+// The parser returns the printed URL after the platform `URL` parser validates
+// and normalizes it. It never returns the raw matched token: the accepting
+// rules above already bound the token to the exact origin, path, and empty
+// query and fragment, so the normalized form carries no unvalidated byte.
 
 export interface DeviceLoginPrompt {
   url: string;
   code: string;
 }
 
-// The one and only accepted device-login URL. The parser returns this exact
-// constant string on a match, so the output is never a caller-controlled value.
+// The one and only accepted device-login origin and path. `findExactDeviceUrl`
+// checks a candidate token against these exact values before it accepts it.
 export const DEVICE_LOGIN_URL = "https://auth.openai.com/codex/device";
 
 // Codex CLI 0.128.0 and later wrap the login URL and the one-time code in ANSI
@@ -74,12 +79,13 @@ interface DeviceUrlMatch {
 }
 
 /**
- * Returns the exact device-login URL and its end index when `text` holds it as
- * a standalone token with the exact origin `https://auth.openai.com` and the
+ * Returns the validated device-login URL and its end index when `text` holds it
+ * as a standalone token with the exact origin `https://auth.openai.com` and the
  * exact path `/codex/device` and no query, fragment, or credentials. Returns
- * null otherwise. Returns the canonical {@link DEVICE_LOGIN_URL} constant on a
- * match. The `end` index is the position of the first character after the
- * matched token in `text`.
+ * null otherwise. Returns the platform `URL` parser's normalized form of the
+ * matched token, so the accepting rules bound the output even though it is not a
+ * fixed constant. The `end` index is the position of the first character after
+ * the matched token in `text`.
  */
 function findExactDeviceUrl(text: string): DeviceUrlMatch | null {
   for (const match of text.matchAll(URL_TOKEN_RE)) {
@@ -100,7 +106,7 @@ function findExactDeviceUrl(text: string): DeviceUrlMatch | null {
       parsed.username === "" &&
       parsed.password === ""
     ) {
-      return { url: DEVICE_LOGIN_URL, end: (match.index ?? 0) + token.length };
+      return { url: parsed.toString(), end: (match.index ?? 0) + token.length };
     }
   }
   return null;

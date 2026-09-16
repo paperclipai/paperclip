@@ -2,12 +2,20 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
+import { applyPendingMigrations, closeRegisteredClients, ensurePostgresDatabase } from "./client.js";
 import {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+
+// Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
+// test that starts an embedded Postgres cluster and runs migrations. Measured
+// evidence: this cost class normally finishes in well under 10s. Under a
+// contended CI runner the same test took up to 4.9x longer. This budget
+// gives about 10x headroom over the clean time, so a contended run still
+// passes while a genuine hang still fails fast.
+export const EMBEDDED_POSTGRES_TEST_TIMEOUT_MS = 90_000;
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -279,6 +287,12 @@ export async function startEmbeddedPostgresTestDatabase(
     return {
       connectionString,
       cleanup: async () => {
+        // End every client a caller created against this cluster first. A
+        // client that still holds a reserved connection when the cluster
+        // stops can crash the process: the stop kills the backend socket,
+        // but a queued write on that connection still fires later and finds
+        // a null socket.
+        await closeRegisteredClients(connectionString);
         await stopEmbeddedPostgresBounded(instance, () => cleanupEmbeddedPostgresTestDirs(dataDir));
       },
     };

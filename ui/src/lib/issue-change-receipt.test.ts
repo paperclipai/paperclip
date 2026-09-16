@@ -12,6 +12,7 @@ describe("issueChangeFieldLabel", () => {
     expect(issueChangeFieldLabel("assigneeAgentId")).toBe("Assignee");
     expect(issueChangeFieldLabel("blockedByIssueIds")).toBe("Blockers");
     expect(issueChangeFieldLabel("workMode")).toBe("Work mode");
+    expect(issueChangeFieldLabel("reviewPolicy")).toBe("Who can approve");
   });
 
   it("humanizes unknown camelCase and snake_case fields", () => {
@@ -33,6 +34,14 @@ describe("formatIssueChangeValue", () => {
   it("humanizes enum-ish values", () => {
     expect(formatIssueChangeValue("in_progress")).toBe("in progress");
     expect(formatIssueChangeValue("high")).toBe("high");
+  });
+
+  // A cleared `reviewPolicy` means "anyone can approve" (PAP-16506), so the
+  // receipt must not report the default as an absent value.
+  it("reads a cleared review policy as 'anyone', not 'none'", () => {
+    expect(formatIssueChangeValue(null, { field: "reviewPolicy" })).toBe("anyone");
+    expect(formatIssueChangeValue("human_only", { field: "reviewPolicy" })).toBe("human only");
+    expect(formatIssueChangeValue("not_creator", { field: "reviewPolicy" })).toBe("anyone else");
   });
 
   it("renders booleans and numbers plainly", () => {

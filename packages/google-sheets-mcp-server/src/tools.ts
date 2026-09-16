@@ -7,7 +7,7 @@ export type ToolResult = CallToolResult;
 export interface GoogleSheetsToolDefinition {
   name: string;
   description: string;
-  schema: z.AnyZodObject;
+  schema: z.ZodObject;
   annotations: ToolAnnotations;
   execute: (input: Record<string, unknown>) => Promise<ToolResult>;
 }
@@ -84,7 +84,7 @@ function formatTextResponse(value: unknown): ToolResult {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof z.ZodError) return error.errors.map((entry) => entry.message).join("; ");
+  if (error instanceof z.ZodError) return error.issues.map((entry) => entry.message).join("; ");
   if (error instanceof Error) return error.message;
   return String(error);
 }
