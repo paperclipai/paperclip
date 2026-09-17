@@ -44,7 +44,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
-import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import { grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -314,13 +314,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Held before the remote block below, so the remote lane can stage this
     // same host home into the sandbox without re-resolving it.
     const hostGrokHome = config.managedAiConnection ? asString(env.GROK_HOME, "") : resolveManagedGrokHomeDir(process.env, agent.companyId);
-    // Subscription mode (no XAI_API_KEY): point the run at the company-scoped
-    // Grok home a completed device login wrote. Leaves the API-key path below
-    // (`resolveBillingType`) unchanged when the key exists.
+    // Subscription mode (no XAI_API_KEY): pin GROK_HOME to the company-scoped
+    // home a completed device login wrote. Do not pin an empty local home —
+    // that shadows the host `~/.grok` login and fails with "Not signed in"
+    // (#13568). Remote/sandbox runs and managed AI connections still pin so
+    // they cannot fall through to the host credential. The API-key path below
+    // (`resolveBillingType`) stays unchanged when the key exists.
     const isGrokSubscriptionMode =
       !hasNonEmptyEnvValue(env, "XAI_API_KEY") && (Boolean(config.managedAiConnection) || !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY"));
     if (isGrokSubscriptionMode) {
-      env.GROK_HOME = hostGrokHome;
+      const pinManagedHome =
+        executionTargetIsRemote ||
+        Boolean(config.managedAiConnection) ||
+        (hostGrokHome.length > 0 && await grokHomeHasUsableAuth(hostGrokHome));
+      if (pinManagedHome) {
+        env.GROK_HOME = hostGrokHome;
+      }
     }
 
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(

@@ -305,29 +305,82 @@ describe("grok_local execute", () => {
     }
   });
 
-  it("sets GROK_HOME to the company home in subscription mode, and leaves it unset when XAI_API_KEY exists", async () => {
-    let seenEnv: Record<string, string> = {};
-    runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
-      seenEnv = options.env;
-      return makeSuccessfulRunResult();
+  describe("local lane GROK_HOME", () => {
+    let previousApiKey: string | undefined;
+    let previousPaperclipHome: string | undefined;
+
+    beforeEach(async () => {
+      previousApiKey = process.env.XAI_API_KEY;
+      previousPaperclipHome = process.env.PAPERCLIP_HOME;
+      process.env.PAPERCLIP_HOME = await makeTempRoot();
+      delete process.env.XAI_API_KEY;
     });
 
-    const previousApiKey = process.env.XAI_API_KEY;
-    try {
-      delete process.env.XAI_API_KEY;
-      await execute(await makeCtx("run-subscription-home", await makeTempRoot()));
-      expect(seenEnv.GROK_HOME).toBe(resolveManagedGrokHomeDir(process.env, "company-1"));
+    afterEach(() => {
+      if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previousApiKey;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    });
 
-      // The XAI_API_KEY path stays unchanged: no GROK_HOME is set when the key
-      // exists, because the CLI authenticates via the environment variable
-      // directly, not from the company Grok home's auth.json.
+    it("leaves GROK_HOME unset when the company home has no usable auth", async () => {
+      let seenEnv: Record<string, string> = {};
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        seenEnv = options.env;
+        return makeSuccessfulRunResult();
+      });
+
+      await execute(await makeCtx("run-subscription-home-empty", await makeTempRoot()));
+      expect(seenEnv.GROK_HOME).toBeUndefined();
+    });
+
+    it("pins GROK_HOME to the company home when that home has usable auth", async () => {
+      const companyHome = resolveManagedGrokHomeDir(process.env, "company-1");
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(
+        path.join(companyHome, "auth.json"),
+        grokAuth({ key: "local-key", expiresAt: NEWER_EXPIRY }),
+        "utf8",
+      );
+
+      let seenEnv: Record<string, string> = {};
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        seenEnv = options.env;
+        return makeSuccessfulRunResult();
+      });
+
+      await execute(await makeCtx("run-subscription-home-seeded", await makeTempRoot()));
+      expect(seenEnv.GROK_HOME).toBe(companyHome);
+    });
+
+    it("leaves GROK_HOME unset when XAI_API_KEY exists", async () => {
+      let seenEnv: Record<string, string> = {};
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        seenEnv = options.env;
+        return makeSuccessfulRunResult();
+      });
+
       process.env.XAI_API_KEY = "test-key";
       await execute(await makeCtx("run-api-home", await makeTempRoot()));
       expect(seenEnv.GROK_HOME).toBeUndefined();
-    } finally {
-      if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
-      else process.env.XAI_API_KEY = previousApiKey;
-    }
+    });
+
+    it("pins GROK_HOME for a managed AI connection even when the home has no usable auth", async () => {
+      let seenEnv: Record<string, string> = {};
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        seenEnv = options.env;
+        return makeSuccessfulRunResult();
+      });
+
+      const ctx = await makeCtx("run-connection-home", await makeTempRoot());
+      ctx.config = {
+        ...ctx.config,
+        managedAiConnection: true,
+        env: { GROK_HOME: "/connection/grok-home" },
+      };
+      await execute(ctx);
+      expect(seenEnv.GROK_HOME).toBe("/connection/grok-home");
+    });
   });
 
   it("passes an explicitly configured permissionMode through to the CLI", async () => {

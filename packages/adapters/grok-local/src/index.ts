@@ -42,4 +42,5 @@ Notes:
 - Sessions resume with \`--resume <sessionId>\` when the saved session cwd matches the current cwd.
 - Paperclip stages desired runtime skills into \`.claude/skills\` inside the execution workspace so Grok discovers them as project skills.
 - Use \`grok models\` to inspect authentication and available models on the host.
+- Local subscription runs use the host \`grok login\` (\`~/.grok\`) until the company Grok home has a usable \`auth.json\` (sandbox device login). \`XAI_API_KEY\` authenticates without a home. Remote/sandbox runs never fall back to the host login.
 `;
