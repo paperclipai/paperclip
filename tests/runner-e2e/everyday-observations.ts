@@ -340,15 +340,14 @@ export function storyHasStrandedBlockedLeaf(
 
 /**
  * A completed native review is a durable continuation trigger even when the
- * parent projection has not yet exposed the claimed wake. Allow ten seconds
- * after reviewer completion for that projection, within the existing deadline.
+ * parent projection has not yet exposed the claimed wake. Keep the existing
+ * workflow deadline; its timeout diagnostic identifies a missing continuation.
  */
 export function storyHasDurableAgentReviewContinuation(
   issues: StoryIssue[],
   parentId: string,
   leadId: string,
   runs: StoryRun[],
-  nowMs = Date.now(),
 ): boolean {
   const parent = issues.find((issue) => issue.id === parentId);
   if (parent?.status !== "blocked") return false;
@@ -369,9 +368,6 @@ export function storyHasDurableAgentReviewContinuation(
         | Record<string, unknown>
         | undefined;
       const reviewRun = runs.find((run) => run.id === interaction.resolvedByRunId);
-      const reviewFinishedAt = Date.parse(
-        reviewRun?.finishedAt ?? interaction.resolvedAt ?? "",
-      );
       return (
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
@@ -385,10 +381,7 @@ export function storyHasDurableAgentReviewContinuation(
         target?.type === "custom" &&
         target?.key === "native_completion_review" &&
         reviewRun?.status === "succeeded" &&
-        reviewRun.agentId === leadId &&
-        Number.isFinite(reviewFinishedAt) &&
-        nowMs >= reviewFinishedAt &&
-        nowMs - reviewFinishedAt <= 10_000
+        reviewRun.agentId === leadId
       );
     }) ?? false),
   );

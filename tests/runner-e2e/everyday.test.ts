@@ -611,18 +611,15 @@ describe("reply completion boundary", () => {
     }];
     expect(storyHasStrandedBlockedLeaf(issues, "lead")).toBe(true);
     expect(storyHasDurableAgentReviewContinuation(
-      issues, "parent", "lead", runs, Date.parse("2026-09-17T19:08:16.000Z"),
+      issues, "parent", "lead", runs,
     )).toBe(true);
-    expect(storyHasDurableAgentReviewContinuation(
-      issues, "parent", "lead", runs, Date.parse("2026-09-17T19:08:22.000Z"),
-    )).toBe(false);
     for (const status of ["completed", "failed", "cancelled"]) {
       expect(storyHasDurableAgentReviewContinuation([
         { ...issues[0]!, wakeDiagnostics: { events: [{
           kind: "wake_request", agentId: "lead", reason: "issue_blockers_resolved", status,
         }] } },
         issues[1]!,
-      ], "parent", "lead", runs, Date.parse("2026-09-17T19:08:16.000Z"))).toBe(false);
+      ], "parent", "lead", runs)).toBe(false);
     }
     expect(storyHasDurableAgentReviewContinuation([
       { ...issues[0]!, blockedTransitionAt: "2026-09-17T19:09:00.000Z" }, issues[1]!,

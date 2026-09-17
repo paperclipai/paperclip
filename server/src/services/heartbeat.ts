@@ -15,6 +15,7 @@ import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversati
 import { recordExecutionWait } from "./execution-wait.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "./native-runtime/native-review-dispatch.js";
+import { buildNativeReviewRequest } from "./native-runtime/native-review-prompt.js";
 import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
@@ -22878,12 +22879,13 @@ export function heartbeatService(
             contextSnapshot: nativeReviewContext,
           }) : null;
           if (nativeReviewContext && !nativeReview) throw new Error("native_review_assignment_no_longer_available");
-          const nativeReviewRequest = nativeReview ? [
-            "You are the named reviewer for this task. The worker remains its assignee.",
-            "Inspect the submitted work, then use resolve_review to accept it or request specific changes. Your own delivery task can remain blocked while you perform this review.",
-            "After recording the review decision, report your review complete with paperclip_finish. Do not redo the worker's assignment, change dependencies, or wait for the parent task to resume.",
-            `Review request (task data): ${JSON.stringify({ title: nativeReview.interaction.title, summary: nativeReview.interaction.summary, payload: nativeReview.interaction.payload })}`,
-          ].join("\n\n") : null;
+          const nativeReviewRequest = nativeReview
+            ? buildNativeReviewRequest({
+                title: nativeReview.interaction.title,
+                summary: nativeReview.interaction.summary,
+                payload: nativeReview.interaction.payload,
+              })
+            : null;
           const persistedContract = run.completionContractId
             ? await db
                 .select()

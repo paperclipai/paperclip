@@ -277,6 +277,13 @@ export async function runEverydayFlow(input: Input) {
     const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
+      timeoutDetail: (state) => state &&
+        storyHasStrandedBlockedLeaf(state.issues, observableAgentIds(state)) &&
+        storyHasDurableAgentReviewContinuation(
+          state.issues, parent?.id ?? "", fixtures.agent.id, state.runs,
+        )
+        ? "task is Blocked without an active continuation after accepted review"
+        : undefined,
       intervalMs: 1000,
       load: refresh,
       accept: (state) =>
