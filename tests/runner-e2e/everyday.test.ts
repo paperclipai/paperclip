@@ -12,6 +12,7 @@ import {
   storyHasPendingAgentWork,
   storyHasPendingHumanInteraction,
   storyHasStrandedBlockedLeaf,
+  storyHasDurableAgentReviewContinuation,
   storyIssueHasBlockedTimeline,
   storyIssueHasBlockedTimelineBefore,
   storyIssueHasUnresolvedDependency,
@@ -573,6 +574,61 @@ describe("reply completion boundary", () => {
         },
       }),
     ).toBe(true);
+  });
+
+  it("keeps polling when review acceptance is durable but the parent wake is not projected yet", () => {
+    const issues = [
+      {
+        id: "parent", companyId: "company", title: "parent", status: "blocked",
+        blockedTransitionAt: "2026-09-17T19:07:30.000Z",
+      },
+      {
+        id: "child",
+        parentId: "parent",
+        companyId: "company",
+        title: "child",
+        status: "done",
+        interactions: [{
+          id: "review",
+          issueId: "child",
+          kind: "request_confirmation",
+          status: "accepted",
+          addresseeAgentId: "lead",
+          resolvedByAgentId: "lead",
+          resolvedByRunId: "review-run",
+          resolvedAt: "2026-09-17T19:08:10.000Z",
+          payload: { target: { type: "custom", key: "native_completion_review", revisionId: "decision" } },
+          result: { version: 1, outcome: "accepted" },
+        }],
+      },
+    ];
+    const runs = [{
+      id: "review-run",
+      companyId: "company",
+      agentId: "lead",
+      status: "succeeded",
+    }];
+    expect(storyHasStrandedBlockedLeaf(issues, "lead")).toBe(true);
+    expect(storyHasDurableAgentReviewContinuation(issues, "parent", "lead", runs)).toBe(true);
+    for (const status of ["completed", "failed", "cancelled"]) {
+      expect(storyHasDurableAgentReviewContinuation([
+        { ...issues[0]!, wakeDiagnostics: { events: [{
+          kind: "wake_request", agentId: "lead", reason: "issue_blockers_resolved", status,
+        }] } },
+        issues[1]!,
+      ], "parent", "lead", runs)).toBe(false);
+    }
+    expect(storyHasDurableAgentReviewContinuation([
+      { ...issues[0]!, blockedTransitionAt: "2026-09-17T19:09:00.000Z" }, issues[1]!,
+    ], "parent", "lead", runs)).toBe(false);
+  });
+
+  it("still identifies a blocked parent as stranded without accepted review evidence", () => {
+    const issues = [
+      { id: "parent", companyId: "company", title: "parent", status: "blocked" },
+      { id: "child", parentId: "parent", companyId: "company", title: "child", status: "done", interactions: [] },
+    ];
+    expect(storyHasDurableAgentReviewContinuation(issues, "parent", "lead", [])).toBe(false);
   });
 
   it.each(["deferred_issue_execution", "claimed"])(

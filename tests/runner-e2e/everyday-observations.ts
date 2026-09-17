@@ -22,6 +22,7 @@ export interface StoryIssue {
   interactions?: StoryInteraction[];
   activity?: StoryActivityRecord[];
   wakeDiagnostics?: StoryWakeDiagnostics;
+  blockedTransitionAt?: string | null;
 }
 export interface StoryComment {
   id?: string;
@@ -101,6 +102,7 @@ export function storyAcceptedAgentReview(
 export interface StoryWakeDiagnosticEvent {
   kind?: string;
   agentId?: string | null;
+  reason?: string | null;
   status?: string;
   payload?: Record<string, unknown> | null;
 }
@@ -333,6 +335,55 @@ export function storyHasStrandedBlockedLeaf(
   return (
     issues.some((issue) => issue.status === "blocked") &&
     !storyHasPendingAgentWork(issues, agentIds)
+  );
+}
+
+/**
+ * A completed native review is a durable continuation trigger even when the
+ * parent projection has not yet exposed the claimed wake. Keep polling the
+ * existing deadline so the scheduler can settle the parent.
+ */
+export function storyHasDurableAgentReviewContinuation(
+  issues: StoryIssue[],
+  parentId: string,
+  leadId: string,
+  runs: StoryRun[],
+): boolean {
+  const parent = issues.find((issue) => issue.id === parentId);
+  if (parent?.status !== "blocked") return false;
+  const blockedAt = Date.parse(parent.blockedTransitionAt ?? "");
+  const terminalWake = parent.wakeDiagnostics?.events?.some(
+    (event) =>
+      event.kind === "wake_request" &&
+      event.agentId === leadId &&
+      event.reason === "issue_blockers_resolved" &&
+      ["completed", "failed", "cancelled"].includes(String(event.status)),
+  );
+  if (terminalWake) return false;
+  return issues.some((child) =>
+    child.parentId === parentId &&
+    child.status === "done" &&
+    (child.interactions?.some((interaction) => {
+      const target = interaction.payload?.target as
+        | Record<string, unknown>
+        | undefined;
+      const reviewRun = runs.find((run) => run.id === interaction.resolvedByRunId);
+      return (
+        interaction.kind === "request_confirmation" &&
+        interaction.status === "accepted" &&
+        interaction.issueId === child.id &&
+        interaction.addresseeAgentId === leadId &&
+        interaction.resolvedByAgentId === leadId &&
+        interaction.result?.version === 1 &&
+        interaction.result?.outcome === "accepted" &&
+        Number.isFinite(blockedAt) &&
+        Date.parse(interaction.resolvedAt ?? "") >= blockedAt &&
+        target?.type === "custom" &&
+        target?.key === "native_completion_review" &&
+        reviewRun?.status === "succeeded" &&
+        reviewRun.agentId === leadId
+      );
+    }) ?? false),
   );
 }
 

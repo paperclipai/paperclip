@@ -27,6 +27,7 @@ import {
   storyHasAgentReply,
   storyHasPendingHumanInteraction,
   storyHasStrandedBlockedLeaf,
+  storyHasDurableAgentReviewContinuation,
   storyIssueHasBlockedTimelineBefore,
   storyIssueHasUnresolvedDependency,
   storyRunReportsDependencyBlock,
@@ -311,7 +312,13 @@ export async function runEverydayFlow(input: Input) {
           return;
         if (
           state.runs.length &&
-          storyHasStrandedBlockedLeaf(state.issues, observableAgentIds(state))
+          storyHasStrandedBlockedLeaf(state.issues, observableAgentIds(state)) &&
+          !storyHasDurableAgentReviewContinuation(
+            state.issues,
+            parent?.id ?? "",
+            fixtures.agent.id,
+            state.runs,
+          )
         )
           return "task is Blocked without an active continuation";
         if (
