@@ -9,6 +9,7 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  list: vi.fn(),
   buildRunOutputSilence: vi.fn(),
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
@@ -323,6 +324,7 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.list.mockResolvedValue([]);
     mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
       ...run,
       currentStatusMessage: null,
@@ -393,6 +395,54 @@ describe("agent live run routes", () => {
       skipReasons: [],
     });
   });
+
+  it("validates and forwards heartbeat run pagination", async () => {
+    const app = await createApp();
+    const defaultRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/heartbeat-runs"),
+    );
+
+    expect(defaultRes.status, JSON.stringify(defaultRes.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      "company-1",
+      undefined,
+      undefined,
+      { summary: false, offset: 0 },
+    );
+
+    mockHeartbeatService.list.mockClear();
+    const paginatedRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(
+        "/api/companies/company-1/heartbeat-runs?agentId=agent-1&limit=25&offset=50&summary=true",
+      ),
+    );
+
+    expect(paginatedRes.status, JSON.stringify(paginatedRes.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith(
+      "company-1",
+      "agent-1",
+      25,
+      { summary: true, offset: 50 },
+    );
+
+    for (const query of [
+      "limit=0",
+      "limit=1001",
+      "limit=1.5",
+      "limit=invalid",
+      "offset=-1",
+      "offset=1.5",
+      "offset=invalid",
+    ]) {
+      mockHeartbeatService.list.mockClear();
+      const invalidRes = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(`/api/companies/company-1/heartbeat-runs?${query}`),
+      );
+
+      expect(invalidRes.status, `${query}: ${JSON.stringify(invalidRes.body)}`).toBe(400);
+      expect(mockHeartbeatService.list, query).not.toHaveBeenCalled();
+    }
+  }, 60_000);
 
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>

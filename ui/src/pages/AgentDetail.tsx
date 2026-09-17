@@ -2,7 +2,7 @@ import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
@@ -151,6 +151,7 @@ const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string 
 };
 
 const RUN_LOG_PAGE_BYTES = 256_000;
+const AGENT_HEARTBEAT_RUN_PAGE_SIZE = 25;
 
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
@@ -913,10 +914,35 @@ export function AgentDetail() {
     enabled: Boolean(resolvedAgentId) && needsOverviewData,
   });
 
-  const { data: heartbeats } = useQuery({
-    queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
+  const heartbeatRuns = useInfiniteQuery({
+    queryKey: [
+      ...queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
+      "infinite",
+      AGENT_HEARTBEAT_RUN_PAGE_SIZE,
+    ],
+    queryFn: ({ pageParam }) => heartbeatsApi.list(
+      resolvedCompanyId!,
+      agent?.id ?? undefined,
+      AGENT_HEARTBEAT_RUN_PAGE_SIZE,
+      { summary: true, offset: pageParam },
+    ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      lastPage.length === AGENT_HEARTBEAT_RUN_PAGE_SIZE
+        ? lastPageParam + AGENT_HEARTBEAT_RUN_PAGE_SIZE
+        : undefined,
     enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
+  });
+  const heartbeats = useMemo(() => {
+    const byId = new Map<string, HeartbeatRun>();
+    for (const run of heartbeatRuns.data?.pages.flat() ?? []) byId.set(run.id, run);
+    return Array.from(byId.values());
+  }, [heartbeatRuns.data]);
+
+  const { data: selectedHeartbeat } = useQuery({
+    queryKey: queryKeys.runDetail(urlRunId ?? "__none__"),
+    queryFn: () => heartbeatsApi.get(urlRunId!),
+    enabled: !!urlRunId && !!resolvedCompanyId && !!agent?.id,
   });
 
   const { data: allIssues } = useQuery({
@@ -953,9 +979,21 @@ export function AgentDetail() {
     const namesByKey = new Map((overviewCompanySkills ?? []).map((skill) => [skill.key, skill.name]));
     return (skillSnapshot?.desiredSkills ?? []).map((key) => namesByKey.get(key) ?? key);
   }, [overviewCompanySkills, skillSnapshot?.desiredSkills]);
+  const heartbeatRows = useMemo(() => {
+    const rows = heartbeats;
+    if (
+      !selectedHeartbeat ||
+      selectedHeartbeat.companyId !== resolvedCompanyId ||
+      selectedHeartbeat.agentId !== agent?.id ||
+      rows.some((run) => run.id === selectedHeartbeat.id)
+    ) {
+      return rows;
+    }
+    return [selectedHeartbeat, ...rows];
+  }, [agent?.id, heartbeats, resolvedCompanyId, selectedHeartbeat]);
   const mobileLiveRun = useMemo(
-    () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
-    [heartbeats],
+    () => heartbeatRows.find((r) => r.status === "running" || r.status === "queued") ?? null,
+    [heartbeatRows],
   );
 
   useEffect(() => {
@@ -1390,7 +1428,7 @@ export function AgentDetail() {
       {activeView === "overview" && (
         <AgentOverview
           agent={agent}
-          runs={heartbeats ?? []}
+          runs={heartbeatRows}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
           reportsToAgent={reportsToAgent}
@@ -1487,13 +1525,16 @@ export function AgentDetail() {
 
       {activeView === "run-detail" && (
         <RunsTab
-          runs={heartbeats ?? []}
+          runs={heartbeatRows}
           companyId={resolvedCompanyId!}
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
           adapterConfig={agent.adapterConfig}
+          hasMoreRuns={heartbeatRuns.hasNextPage === true}
+          isLoadingMoreRuns={heartbeatRuns.isFetchingNextPage}
+          onLoadMoreRuns={() => void heartbeatRuns.fetchNextPage()}
         />
       )}
 
@@ -3117,6 +3158,9 @@ function RunsTab({
   selectedRunId,
   adapterType,
   adapterConfig,
+  hasMoreRuns,
+  isLoadingMoreRuns,
+  onLoadMoreRuns,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -3125,8 +3169,37 @@ function RunsTab({
   selectedRunId: string | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
+  hasMoreRuns: boolean;
+  isLoadingMoreRuns: boolean;
+  onLoadMoreRuns: () => void;
 }) {
   const { isMobile } = useSidebar();
+  const loadMoreRef = useRef<HTMLDivElement>(null);
+  const loadMoreInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (!isLoadingMoreRuns) loadMoreInFlightRef.current = false;
+  }, [isLoadingMoreRuns]);
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !hasMoreRuns || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (
+          entry?.isIntersecting &&
+          !isLoadingMoreRuns &&
+          !loadMoreInFlightRef.current
+        ) {
+          loadMoreInFlightRef.current = true;
+          onLoadMoreRuns();
+        }
+      },
+      { rootMargin: "50%" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasMoreRuns, isLoadingMoreRuns, isMobile, onLoadMoreRuns]);
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;
@@ -3162,6 +3235,13 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
+        <div ref={loadMoreRef} className="flex min-h-8 items-center justify-center">
+          {isLoadingMoreRuns ? (
+            <span className="text-xs text-muted-foreground">Loading more runs…</span>
+          ) : hasMoreRuns ? (
+            <Button variant="ghost" size="sm" onClick={onLoadMoreRuns}>Load more runs</Button>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -3178,6 +3258,13 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
         ))}
+        <div ref={loadMoreRef} className="flex min-h-8 items-center justify-center">
+          {isLoadingMoreRuns ? (
+            <span className="text-xs text-muted-foreground">Loading more runs…</span>
+          ) : hasMoreRuns ? (
+            <Button variant="ghost" size="sm" onClick={onLoadMoreRuns}>Load more runs</Button>
+          ) : null}
+        </div>
         </div>
       </div>
 

@@ -97,6 +97,34 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
   }
 
+  it("applies limit when listing issues without a status filter", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values(
+      Array.from({ length: 12 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        title: `Unfiltered issue ${index + 1}`,
+        status: index % 2 === 0 ? "todo" : "done",
+        priority: "medium" as const,
+      })),
+    );
+
+    const res = await request(createApp(companyId))
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ limit: "10" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(10);
+  });
+
   it("returns only unassigned issues for assigneeAgentId=null", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

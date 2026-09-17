@@ -26,9 +26,11 @@ describe("heartbeatsApi.list", () => {
   });
 
   it("requests summary rows for hot-path history consumers", async () => {
-    await heartbeatsApi.list("company-1", undefined, 200, { summary: true });
+    await heartbeatsApi.list("company-1", undefined, 200, { summary: true, offset: 400 });
 
-    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?limit=200&summary=true");
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/heartbeat-runs?limit=200&summary=true&offset=400",
+    );
   });
 
   it("keeps full row requests as the default for run-history screens", async () => {

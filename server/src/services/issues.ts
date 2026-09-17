@@ -8178,6 +8178,7 @@ export function issueService(db: Db) {
         visibleIssueCondition(),
         nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
+        inboxVisibleForUserCondition(companyId, userId),
       ];
       const statuses = parseStatusFilter(status);
       if (statuses.length === 1) {

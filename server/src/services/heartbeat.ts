@@ -3639,6 +3639,10 @@ type UsageTotals = {
   outputTokens: number;
 };
 
+// Keep every caller bounded, including routes or internal consumers that omit pagination.
+const HEARTBEAT_RUN_LIST_DEFAULT_LIMIT = 200;
+const HEARTBEAT_RUN_LIST_MAX_LIMIT = 1000;
+
 type SessionCompactionDecision = {
   rotate: boolean;
   reason: string | null;
@@ -28901,10 +28905,20 @@ export function heartbeatService(
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; offset?: number } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
+      const resolvedLimit =
+        typeof limit === "number" && Number.isInteger(limit) && limit > 0
+          ? Math.min(limit, HEARTBEAT_RUN_LIST_MAX_LIMIT)
+          : HEARTBEAT_RUN_LIST_DEFAULT_LIMIT;
+      const offset =
+        typeof options.offset === "number" &&
+        Number.isInteger(options.offset) &&
+        options.offset >= 0
+          ? options.offset
+          : 0;
       const query = db
         .select(
           summary
@@ -28933,9 +28947,9 @@ export function heartbeatService(
               )
             : eq(heartbeatRuns.companyId, companyId),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      const rows = await query.limit(resolvedLimit).offset(offset);
       return rows.map((row) => {
         const {
           contextIssueId,

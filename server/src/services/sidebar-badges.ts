@@ -32,35 +32,37 @@ export function sidebarBadgeService(db: Db) {
         unreadTouchedIssues?: number;
       },
     ): Promise<SidebarBadges> => {
-      const actionableApprovals = await db
-        .select({ id: approvals.id, updatedAt: approvals.updatedAt })
-        .from(approvals)
-        .where(
-          and(
-            eq(approvals.companyId, companyId),
-            inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+      const [approvalRows, latestRunByAgent] = await Promise.all([
+        db
+          .select({ id: approvals.id, updatedAt: approvals.updatedAt })
+          .from(approvals)
+          .where(
+            and(
+              eq(approvals.companyId, companyId),
+              inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+            ),
           ),
-        )
-        .then((rows) =>
-          rows.filter((row) => !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt)).length
-        );
+        db
+          .selectDistinctOn([heartbeatRuns.agentId], {
+            id: heartbeatRuns.id,
+            runStatus: heartbeatRuns.status,
+            createdAt: heartbeatRuns.createdAt,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(agents.companyId, companyId),
+              not(eq(agents.status, "terminated")),
+            ),
+          )
+          .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt)),
+      ]);
 
-      const latestRunByAgent = await db
-        .selectDistinctOn([heartbeatRuns.agentId], {
-          id: heartbeatRuns.id,
-          runStatus: heartbeatRuns.status,
-          createdAt: heartbeatRuns.createdAt,
-        })
-        .from(heartbeatRuns)
-        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            eq(agents.companyId, companyId),
-            not(eq(agents.status, "terminated")),
-          ),
-        )
-        .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
+      const actionableApprovals = approvalRows.filter((row) =>
+        !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt)
+      ).length;
 
       const failedRuns = latestRunByAgent.filter((row) =>
         FAILED_HEARTBEAT_STATUSES.includes(row.runStatus)
@@ -80,6 +82,7 @@ export function sidebarBadgeService(db: Db) {
         approvals: actionableApprovals,
         failedRuns,
         joinRequests,
+        mineIssues: unreadTouchedIssues,
       };
     },
   };

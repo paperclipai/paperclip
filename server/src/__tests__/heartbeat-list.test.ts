@@ -224,6 +224,59 @@ describeEmbeddedPostgres("heartbeat list", () => {
     });
   });
 
+  it("bounds the default page and supports stable offset pagination", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runIds = Array.from({ length: 205 }, () => randomUUID());
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values(
+      runIds.map((id, index) => ({
+        id,
+        companyId,
+        agentId,
+        invocationSource: "assignment" as const,
+        status: "succeeded" as const,
+        createdAt: new Date(Date.UTC(2026, 7, 1, 0, 0, 0, index)),
+      })),
+    );
+
+    const service = heartbeatService(db);
+    const firstPage = await service.list(companyId, agentId, undefined, {
+      summary: true,
+    });
+    const finalPage = await service.list(companyId, agentId, 10, {
+      summary: true,
+      offset: 200,
+    });
+
+    expect(firstPage).toHaveLength(200);
+    expect(firstPage[0]?.id).toBe(runIds[204]);
+    expect(firstPage[199]?.id).toBe(runIds[5]);
+    expect(finalPage.map((run) => run.id)).toEqual(runIds.slice(0, 5).reverse());
+    expect(
+      finalPage.every(
+        (run) => !firstPage.some((firstRun) => firstRun.id === run.id),
+      ),
+    ).toBe(true);
+  });
+
   it("bounds oversized legacy result json payloads on getRun", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

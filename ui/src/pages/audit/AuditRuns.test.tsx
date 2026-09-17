@@ -122,7 +122,10 @@ describe("AuditRuns", () => {
   it("renders a filterable flat run list with existing run-detail links", async () => {
     await render();
 
-    expect(listRunsMock).toHaveBeenCalledWith("company-1", undefined, 200, { summary: true });
+    expect(listRunsMock).toHaveBeenCalledWith("company-1", undefined, 25, {
+      summary: true,
+      offset: 0,
+    });
     expect(container.textContent).toContain("Agent");
     expect(container.textContent).toContain("Status");
     expect(container.textContent).toContain("Reviewed the release checklist");
@@ -137,7 +140,10 @@ describe("AuditRuns", () => {
     currentSearch = "agentId=agent-1&runStatus=succeeded";
     await render();
 
-    expect(listRunsMock).toHaveBeenCalledWith("company-1", "agent-1", 200, { summary: true });
+    expect(listRunsMock).toHaveBeenCalledWith("company-1", "agent-1", 25, {
+      summary: true,
+      offset: 0,
+    });
     expect(container.textContent).toContain("Clear filters");
   });
 
