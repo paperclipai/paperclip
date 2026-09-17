@@ -32,6 +32,10 @@ describe("adapter model listing", () => {
     vi.restoreAllMocks();
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("returns an empty list for unknown adapters", async () => {
     const models = await listAdapterModels("unknown_adapter");
     expect(models).toEqual([]);
@@ -278,6 +282,27 @@ describe("adapter model listing", () => {
         { id: "tensorix/deepseek/deepseek-chat-v3.1", label: "DeepSeek v3.1" },
         { id: "tensorix/z-ai/glm-4.7", label: "tensorix/z-ai/glm-4.7" },
       ]);
+    });
+
+    it("prefers OpenCode discovery when global provider configuration is present", async () => {
+      vi.stubEnv(
+        "PAPERCLIP_ADAPTER_MODELS",
+        JSON.stringify({ opencode_local: [{ id: "static/model" }] }),
+      );
+      vi.stubEnv(
+        "PAPERCLIP_OPENCODE_PROVIDERS",
+        JSON.stringify({ "9router": { models: { "model-a": {} } } }),
+      );
+      const adapter = listServerAdapters().find((candidate) => candidate.type === "opencode_local");
+      if (!adapter?.listModels) throw new Error("Expected OpenCode adapter model discovery");
+      const discovery = vi
+        .spyOn(adapter, "listModels")
+        .mockResolvedValue([{ id: "9router/model-a", label: "9router/model-a" }]);
+
+      await expect(listAdapterModels("opencode_local")).resolves.toEqual([
+        { id: "9router/model-a", label: "9router/model-a" },
+      ]);
+      expect(discovery).toHaveBeenCalledOnce();
     });
 
     it("observes env changes between calls (memo keyed by raw env value)", async () => {
