@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { pollUntil } from "./api.js";
 import { classifyFailure } from "./failure-classifier.js";
-import { storyHasDurableAgentReviewContinuation, storyHasStrandedBlockedLeaf, type StoryIssue } from "./everyday-observations.js";
+import { storyHasDurableAgentReviewContinuation, storyHasStrandedBlockedLeaf, storyReviewContinuationTimeoutDetail, type StoryIssue } from "./everyday-observations.js";
 
 describe("workflow timeout classification", () => {
   it("does not classify observed task data as an infrastructure error", async () => {
@@ -65,6 +65,24 @@ describe("review continuation deadline", () => {
     return { issues, runs };
   }
 
+  it("uses the review timeout detail only with stranded work and durable review evidence", () => {
+    const state = fixture(Date.now());
+    expect(
+      storyReviewContinuationTimeoutDetail(state.issues, "parent", "lead", state.runs, ["lead"]),
+    ).toBe("task is Blocked without an active continuation after accepted review");
+    state.issues[1]!.interactions = [];
+    expect(
+      storyReviewContinuationTimeoutDetail(state.issues, "parent", "lead", state.runs, ["lead"]),
+    ).toBeUndefined();
+    const completed = fixture(Date.now());
+    completed.issues[0]!.status = "done";
+    expect(
+      storyReviewContinuationTimeoutDetail(
+        completed.issues, "parent", "lead", completed.runs, ["lead"],
+      ),
+    ).toBeUndefined();
+  });
+
   it("permits a delayed parent continuation within the existing deadline", async () => {
     vi.useFakeTimers();
     try {
@@ -94,13 +112,35 @@ describe("review continuation deadline", () => {
       const pending = pollUntil({
         label: "review handoff", deadlineAt: Date.now() + 30_000, intervalMs: 1000,
         load: async () => state, accept: () => false,
-        timeoutDetail: (last) => last && storyHasStrandedBlockedLeaf(last.issues, "lead")
-          ? "task is Blocked without an active continuation after accepted review" : undefined,
+        timeoutDetail: (last) => last && storyReviewContinuationTimeoutDetail(
+          last.issues, "parent", "lead", last.runs, ["lead"],
+        ),
       });
       const caught = pending.catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(30_001);
       const error = await caught;
       expect((error as Error).message).toContain("Blocked without an active continuation after accepted review");
+      expect(classifyFailure(error)).toBe("candidate_failure");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("uses the generic timeout when durable review evidence is absent", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = fixture(Date.now());
+      state.issues[1]!.interactions = [];
+      const pending = pollUntil({
+        label: "review handoff", deadlineAt: Date.now() + 30_000, intervalMs: 1000,
+        load: async () => state, accept: () => false,
+        timeoutDetail: (last) => last && storyReviewContinuationTimeoutDetail(
+          last.issues, "parent", "lead", last.runs, ["lead"],
+        ),
+      });
+      const caught = pending.catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(30_001);
+      const error = await caught;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain("after accepted review");
       expect(classifyFailure(error)).toBe("candidate_failure");
     } finally { vi.useRealTimers(); }
   });

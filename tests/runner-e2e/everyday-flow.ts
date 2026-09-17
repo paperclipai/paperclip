@@ -26,6 +26,7 @@ import {
   storyRepliesConsumed,
   storyHasAgentReply,
   storyHasPendingHumanInteraction,
+  storyReviewContinuationTimeoutDetail,
   storyHasStrandedBlockedLeaf,
   storyHasDurableAgentReviewContinuation,
   storyIssueHasBlockedTimelineBefore,
@@ -278,12 +279,10 @@ export async function runEverydayFlow(input: Input) {
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
       timeoutDetail: (state) => state &&
-        storyHasStrandedBlockedLeaf(state.issues, observableAgentIds(state)) &&
-        storyHasDurableAgentReviewContinuation(
+        storyReviewContinuationTimeoutDetail(
           state.issues, parent?.id ?? "", fixtures.agent.id, state.runs,
-        )
-        ? "task is Blocked without an active continuation after accepted review"
-        : undefined,
+          observableAgentIds(state),
+        ),
       intervalMs: 1000,
       load: refresh,
       accept: (state) =>

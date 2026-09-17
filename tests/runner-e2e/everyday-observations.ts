@@ -387,6 +387,22 @@ export function storyHasDurableAgentReviewContinuation(
   );
 }
 
+/** Timeout evidence requires a stranded leaf with durable accepted-review evidence. */
+export function storyReviewContinuationTimeoutDetail(
+  issues: StoryIssue[],
+  parentId: string,
+  leadId: string,
+  runs: StoryRun[],
+  observableAgentIds: string | readonly string[],
+): string | undefined {
+  return (
+    storyHasStrandedBlockedLeaf(issues, observableAgentIds) &&
+    storyHasDurableAgentReviewContinuation(issues, parentId, leadId, runs)
+  )
+    ? "task is Blocked without an active continuation after accepted review"
+    : undefined;
+}
+
 /** A pending interaction is agent-owned when its wake policy and wake request agree. */
 export function storyHasPendingAgentReview(
   issue: StoryIssue | undefined,
