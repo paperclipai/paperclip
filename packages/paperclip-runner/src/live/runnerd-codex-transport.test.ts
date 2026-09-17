@@ -2911,7 +2911,7 @@ it("queues a fresh suspension when a completed old command belongs to a resumed 
   expect(commands[1]!.commandId).not.toBe("old-suspend");
 });
 
-it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
+it("includes ACPX terminal tools in the authenticated bridge catalog", () => {
   const tools = [
     {
       name: "get_task_context",
@@ -2922,7 +2922,11 @@ it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
   ];
 
   expect(authorizedToolSetForProvider("acpx", tools)).toMatchObject({
-    operations: [{ operationId: "get_task_context" }],
+    operations: [
+      { operationId: "get_task_context" },
+      { operationId: "paperclip_block" },
+      { operationId: "paperclip_finish" },
+    ],
   });
   expect(authorizedToolSetForProvider("codex", tools)).toMatchObject({
     operations: [

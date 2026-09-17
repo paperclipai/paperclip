@@ -13,6 +13,7 @@ import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
+import { claimNativeReviewExecutionLock, getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
@@ -17588,7 +17589,13 @@ export function heartbeatService(
       claimedWakeReason !== "source_scoped_recovery_action"
     ) {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
+      if (readNativeReviewAssignmentContext(claimedContext)) {
+        await claimNativeReviewExecutionLock(db, {
+          companyId: claimed.companyId, issueId: claimedIssueId, agentId: claimed.agentId,
+          runId: claimed.id, contextSnapshot: claimedContext,
+          agentNameKey: normalizeAgentNameKey(claimedAgent?.name), claimedAt,
+        });
+      } else await db
         .update(issues)
         .set({
           executionRunId: claimed.id,
@@ -20909,8 +20916,9 @@ export function heartbeatService(
       });
       // A live holder is always consulted for shared workspaces. Depending on policy and the final
       // execution target it either remains the existing deferral gate or becomes dispatch context.
-      // Holder staleness and the workspace_busy retry ladder are intentionally unchanged for every
-      // path that serializes.
+      // Local/SSH folders never take an exclusive workspace lock, including when older
+      // project or issue settings request serialization. Sandbox protection still uses
+      // the existing holder staleness and workspace_busy retry ladder.
       if (
         issueRef?.projectWorkspaceId &&
         effectiveExecutionWorkspaceMode === "shared_workspace"
@@ -20926,11 +20934,10 @@ export function heartbeatService(
           const environmentDriver =
             selectedEnvironmentForConfig?.driver ?? null;
           const shouldSerialize =
-            sharedWorkspaceConcurrency === "serialize" ||
-            (sharedWorkspaceConcurrency === "auto" &&
-              (executionForcedToKubernetes ||
-                (environmentDriver !== "local" &&
-                  environmentDriver !== "ssh")));
+            sharedWorkspaceConcurrency !== "allow" &&
+            (executionForcedToKubernetes ||
+              (environmentDriver !== "local" &&
+                environmentDriver !== "ssh"));
           if (shouldSerialize) {
             throw new WorkspaceBusyDeferral({
               holder: workspaceHolder,
@@ -22812,6 +22819,18 @@ export function heartbeatService(
           }
           const nativeExecutionWorkspaceId =
             persistedExecutionWorkspace?.id ?? run.id;
+          const nativeReviewContext = readNativeReviewAssignmentContext(context);
+          const nativeReview = nativeReviewContext ? await getNativeReviewAssignment(db, {
+            companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id,
+            contextSnapshot: nativeReviewContext,
+          }) : null;
+          if (nativeReviewContext && !nativeReview) throw new Error("native_review_assignment_no_longer_available");
+          const nativeReviewRequest = nativeReview ? [
+            "You are the named reviewer for this task. The worker remains its assignee.",
+            "Inspect the submitted work, then use resolve_review to accept it or request specific changes. Your own delivery task can remain blocked while you perform this review.",
+            "After recording the review decision, report your review complete with paperclip_finish. Do not redo the worker's assignment, change dependencies, or wait for the parent task to resume.",
+            `Review request (task data): ${JSON.stringify({ title: nativeReview.interaction.title, summary: nativeReview.interaction.summary, payload: nativeReview.interaction.payload })}`,
+          ].join("\n\n") : null;
           const persistedContract = run.completionContractId
             ? await db
                 .select()
@@ -22841,10 +22860,11 @@ export function heartbeatService(
                   issue: issueRef,
                   actorId: agent.id,
                   immediateRequest:
-                    executionContinuation?.objective ??
+                    nativeReviewRequest ?? executionContinuation?.objective ??
                     safeWakeCommentContext?.body ??
                     null,
                   immediateRequests: (() => {
+                    if (nativeReviewRequest) return [nativeReviewRequest];
                     const requests = nativeCompletionRequestsForComments(
                       safeWakeComments.length > 0
                         ? safeWakeComments
@@ -23200,9 +23220,9 @@ export function heartbeatService(
                   buildNativeExecutionInput({
                     companyId: agent.companyId,
                     runId: run.id,
-                    issue: issueRef,
+                    issue: nativeReviewRequest ? { ...issueRef, title: `Review: ${issueRef.title}`, description: nativeReviewRequest } : issueRef,
                     taskPrompt: [
-                      readNonEmptyString(
+                      nativeReviewRequest ?? readNonEmptyString(
                         selectPaperclipTaskMarkdown(context, {
                           resumedSession,
                         }),
@@ -26777,7 +26797,9 @@ export function heartbeatService(
               }).where(eq(agentWakeupRequests.id, executionWaitRequestId));
               return { kind: "deferred" as const };
             }
-            if (durableRequest || wakeCommentId || hasInteractionContinuationWakeContext(enrichedContextSnapshot)) {
+            if (durableRequest || wakeCommentId ||
+                hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
+                readNonEmptyString(enrichedContextSnapshot.nativeStatusWakeIntentId)) {
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields,
                 companyId: agent.companyId, agentId, source, triggerDetail, reason,
@@ -28056,12 +28078,15 @@ export function heartbeatService(
         .then((rows) => rows[0] ?? null);
 
       if (existingDispatch) {
+        const recoveredStatus = existingDispatch.runId
+          ? "coalesced"
+          : existingDispatch.status === "deferred_issue_execution"
+            ? "coalesced"
+            : existingDispatch.status;
         await db
           .update(agentWakeupRequests)
           .set({
-            status: existingDispatch.runId
-              ? "coalesced"
-              : existingDispatch.status,
+            status: recoveredStatus,
             runId: existingDispatch.runId,
             finishedAt:
               (existingDispatch.runId ?? existingDispatch.finishedAt)
@@ -28117,7 +28142,7 @@ export function heartbeatService(
         readNonEmptyString(wakeContext.issueId) ??
         null;
       const scopeKey = issueId
-        ? `${candidate.companyId}:${candidate.agentId}:${issueId}`
+        ? `${candidate.companyId}:${candidate.agentId}:${issueId}:${readNativeReviewAssignmentContext(wakeContext)?.nativeReviewInteractionId ?? ""}`
         : null;
       const priorDelivery = scopeKey
         ? deliveredByIssueScope.get(scopeKey)
@@ -28152,10 +28177,17 @@ export function heartbeatService(
           )
           .limit(1)
           .then((rows) => rows[0] ?? null);
+        const nativeReview = candidate.reason === "native_completion_review"
+          ? await getNativeReviewAssignment(db, {
+              companyId: candidate.companyId, issueId, agentId: candidate.agentId,
+              contextSnapshot: wakeContext,
+            })
+          : null;
         if (
           !targetIssue ||
           ["done", "cancelled"].includes(targetIssue.status) ||
-          targetIssue.assigneeAgentId !== candidate.agentId
+          (targetIssue.assigneeAgentId !== candidate.agentId && !nativeReview) ||
+          (candidate.reason === "native_completion_review" && !nativeReview)
         ) {
           await db
             .update(agentWakeupRequests)
@@ -28209,10 +28241,18 @@ export function heartbeatService(
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
+        // The committer intent is the durable outbox entry. When admission is
+        // blocked, enqueueWakeup creates a separate deferred dispatch receipt;
+        // leave the original intent coalesced so the release drain cannot
+        // promote both rows (the original has no nativeStatusWakeIntentId
+        // provenance and would otherwise run once before the dispatch receipt).
+        const deliveredStatus = delivered?.status ?? "queued";
         await db
           .update(agentWakeupRequests)
           .set({
-            status: wakeRun ? "coalesced" : (delivered?.status ?? "queued"),
+            status: wakeRun || deliveredStatus === "deferred_issue_execution"
+              ? "coalesced"
+              : deliveredStatus,
             runId: wakeRun?.id ?? delivered?.runId ?? null,
             finishedAt:
               wakeRun || delivered?.finishedAt

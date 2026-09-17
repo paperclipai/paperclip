@@ -110,6 +110,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.prp.command.v1",
   "paperclip.prp.contract_manifest.v1",
   "paperclip.prp.event.v1",
+  "paperclip.prp.event.v2",
   "paperclip.prp.fixture.v1",
   "paperclip.prp.identity.v1",
   "paperclip.prp.semantic_tool.v1",
@@ -302,6 +303,16 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "issue.status.decision.rejected",
   "issue.status.decision.superseded",
   "run.terminal",
+]);
+// PRP v2 currently adds the session capability/goal notifications below. Keep
+// this set separate so the v1 parity test remains meaningful; common v1 event
+// types are accepted for v2 envelopes as well. Unknown dotted values still go
+// through the normal secret redaction path.
+export const PRP_V2_EVENT_TYPES = new Set([
+  "session.capabilities.updated",
+  "session.goal.snapshot",
+  "session.goal.updated",
+  "session.goal.cleared",
 ]);
 const NATIVE_RUN_SPAN_SCHEMA = "paperclip.run-performance-span.v1";
 const NATIVE_RUN_SPAN_FIELDS = ["span", "parentSpan"] as const;
@@ -843,10 +854,13 @@ function isKnownPrpEventDiscriminator(
 ): value is string {
   return (
     key === "eventType" &&
-    container.schema === "paperclip.prp.event.v1" &&
-    container.schemaVersion === 1 &&
     typeof value === "string" &&
-    PRP_V1_EVENT_TYPES.has(value)
+    ((container.schema === "paperclip.prp.event.v1" &&
+      container.schemaVersion === 1 &&
+      PRP_V1_EVENT_TYPES.has(value)) ||
+      (container.schema === "paperclip.prp.event.v2" &&
+        container.schemaVersion === 2 &&
+        (PRP_V1_EVENT_TYPES.has(value) || PRP_V2_EVENT_TYPES.has(value))))
   );
 }
 

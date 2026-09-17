@@ -6,9 +6,50 @@ import {
   isStoryWorkspaceDeferral,
   storyLifecycleChecks,
   storyRepliesConsumed,
+  storyHasAgentReply,
+  storyHasPendingAgentReview,
+  storyHasPendingAgentWake,
+  storyHasPendingAgentWork,
+  storyHasPendingHumanInteraction,
+  storyHasStrandedBlockedLeaf,
+  storyIssueHasBlockedTimeline,
+  storyIssueHasBlockedTimelineBefore,
+  storyIssueHasUnresolvedDependency,
+  storyRunReportsDependencyBlock,
   storyParentFinishedAfterChildren,
+  artifactGradeModeForPhase,
+  storyParentCompletionPrecedesReview,
   type StoryRun,
 } from "./everyday-observations.js";
+
+describe("everyday workflow grader and review timing", () => {
+  it("uses base grading for review delivery and preserves late max-length cases", () => {
+    expect(artifactGradeModeForPhase("reviewed-delivery")).toBe("base");
+    expect(artifactGradeModeForPhase("delegated-delivery")).toBe("max-length");
+    expect(artifactGradeModeForPhase("recovered-delivery")).toBe("max-length");
+  });
+
+  it("compares parent completion with review start rather than card creation", () => {
+    const interactionCreatedAt = "2026-09-17T10:00:00.000Z";
+    const parentFinishedAt = "2026-09-17T10:05:00.000Z";
+    const reviewStartedAt = "2026-09-17T10:06:00.000Z";
+    expect(interactionCreatedAt < parentFinishedAt).toBe(true);
+    expect(
+      storyParentCompletionPrecedesReview(
+        parentFinishedAt,
+        reviewStartedAt,
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      storyParentCompletionPrecedesReview(
+        "2026-09-17T10:07:00.000Z",
+        reviewStartedAt,
+        false,
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("manual everyday workflow catalog", () => {
   it("is discoverable and explicitly selected without changing scheduled --all", () => {
@@ -17,7 +58,7 @@ describe("manual everyday workflow catalog", () => {
     const selected = selectRunnerExecutions(
       parseRunnerSelectors(["--suite", "everyday-workflows"]),
     );
-    expect(selected).toHaveLength(35);
+    expect(selected).toHaveLength(38);
     expect(selected.every((e) => e.profile.generation === "native")).toBe(true);
     expect(
       selectRunnerExecutions(
@@ -40,10 +81,17 @@ describe("manual everyday workflow catalog", () => {
     expect(selected.some((e) => e.task.id === "stop-redirect")).toBe(true);
   });
   it("keeps ordinary prompts free of completion/API instructions", () => {
-    for (const task of everydayTasks)
+    for (const task of everydayTasks.filter(
+      (candidate) => candidate.id !== "agent-review-handoff",
+    ))
       expect(task.buildPrompt("sample")).not.toMatch(
         /finish_task|paperclip_finish|PATCH|mark .*done|idempotencyKey/i,
       );
+    expect(
+      everydayTasks
+        .find((task) => task.id === "agent-review-handoff")!
+        .buildPrompt("sample"),
+    ).toContain("resolve_review");
     const profile = runnerSuites.find((s) => s.id === "everyday-workflows")!
       .profiles[0]!;
     const value = productionStoryProfile(profile).buildAgent({
@@ -187,6 +235,269 @@ describe("reply completion boundary", () => {
     ).toBe(false);
     expect(storyRepliesConsumed([run, next], ["later-comment"])).toBe(true);
   });
+
+  it("waits for the expected agent reply after terminal state is visible", () => {
+    const issue = {
+      id: "parent",
+      companyId: "company",
+      title: "Stop and redirect",
+      status: "done",
+      comments: [
+        {
+          id: "user-reply",
+          authorAgentId: null,
+          body: "Change direction. Reference nonce.",
+        },
+      ],
+    };
+    expect(storyHasAgentReply(issue, "lead", "Reference nonce")).toBe(false);
+    expect(
+      storyHasAgentReply(
+        {
+          ...issue,
+          comments: [
+            ...issue.comments,
+            {
+              id: "agent-reply",
+              authorAgentId: "lead",
+              body: "The studio is ready. Reference nonce.",
+            },
+          ],
+        },
+        "lead",
+        "Reference nonce",
+      ),
+    ).toBe(true);
+    expect(
+      storyHasAgentReply(
+        {
+          ...issue,
+          comments: [
+            ...issue.comments,
+            {
+              id: "other-agent-reply",
+              authorAgentId: "worker",
+              body: "The studio is ready. Reference nonce.",
+            },
+          ],
+        },
+        "lead",
+        "Reference nonce",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps a blocked lead alive when its child has a durable agent wake", () => {
+    const child = {
+      id: "child",
+      companyId: "company",
+      title: "Worker delivery",
+      status: "in_progress",
+      interactions: [
+        {
+          id: "review",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          addresseeAgentId: "lead",
+        },
+      ],
+      wakeDiagnostics: {
+        events: [
+          {
+            kind: "wake_request",
+            agentId: "lead",
+            status: "queued",
+          },
+        ],
+      },
+    };
+    expect(storyHasPendingAgentWake(child, "lead")).toBe(true);
+    expect(
+      storyHasPendingAgentWork(
+        [
+          { ...child, status: "blocked", wakeDiagnostics: { events: [] } },
+          child,
+        ],
+        "lead",
+      ),
+    ).toBe(true);
+    expect(
+      storyHasPendingAgentWork(
+        [{ ...child, status: "blocked", wakeDiagnostics: { events: [] } }],
+        "lead",
+      ),
+    ).toBe(false);
+    expect(
+      storyHasStrandedBlockedLeaf(
+        [{ ...child, status: "blocked", wakeDiagnostics: { events: [] } }],
+        "lead",
+      ),
+    ).toBe(true);
+    expect(
+      storyHasStrandedBlockedLeaf(
+        [
+          { ...child, status: "blocked", wakeDiagnostics: { events: [] } },
+          child,
+        ],
+        "lead",
+      ),
+    ).toBe(false);
+    expect(storyHasPendingHumanInteraction(child, "lead")).toBe(false);
+    expect(storyHasPendingAgentReview(child, "lead")).toBe(true);
+    expect(storyHasPendingAgentWake(child, "worker")).toBe(false);
+    expect(
+      storyHasPendingHumanInteraction(
+        {
+          ...child,
+          wakeDiagnostics: { events: [] },
+        },
+        "lead",
+      ),
+    ).toBe(true);
+    const sameAgentCards = {
+      ...child,
+      interactions: [
+        {
+          id: "review-a",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          addresseeAgentId: "lead",
+        },
+        {
+          id: "review-b",
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          addresseeAgentId: "lead",
+        },
+      ],
+      wakeDiagnostics: {
+        events: [
+          {
+            kind: "wake_request",
+            agentId: "lead",
+            status: "queued",
+            payload: { nativeReviewInteractionId: "review-a" },
+          },
+        ],
+      },
+    };
+    expect(storyHasPendingAgentReview(sameAgentCards, "lead")).toBe(true);
+    expect(storyHasPendingHumanInteraction(sameAgentCards, "lead")).toBe(
+      true,
+    );
+    expect(
+      storyHasPendingHumanInteraction(
+        {
+          ...child,
+          interactions: [
+            {
+              id: "review",
+              status: "pending",
+              continuationPolicy: "wake_assignee",
+              effectiveResolverPolicy: "human_only",
+              addresseeAgentId: "lead",
+            },
+          ],
+        },
+        "lead",
+      ),
+    ).toBe(true);
+    expect(
+      storyHasPendingHumanInteraction(
+        {
+          ...child,
+          interactions: [
+            ...(child.interactions ?? []),
+            {
+              id: "human-review",
+              status: "pending",
+              continuationPolicy: "wake_assignee",
+              resolverPolicy: "human_only",
+              addresseeAgentId: null,
+            },
+          ],
+        },
+        ["lead", "hired-worker"],
+      ),
+    ).toBe(true);
+    expect(storyHasPendingAgentWake(child, ["hired-worker", "lead"])).toBe(
+      true,
+    );
+    expect(
+      storyIssueHasBlockedTimeline({
+        ...child,
+        status: "done",
+        activity: [
+          {
+            action: "issue.updated",
+            details: { fromStatus: "in_progress", toStatus: "blocked" },
+            createdAt: "2026-09-17T08:00:00.000Z",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      storyIssueHasBlockedTimelineBefore(
+        {
+          ...child,
+          status: "done",
+          activity: [
+            {
+              action: "issue.updated",
+              details: { status: "blocked" },
+              createdAt: "2026-09-17T08:00:00.000Z",
+            },
+          ],
+        },
+        "2026-09-17T08:01:00.000Z",
+      ),
+    ).toBe(true);
+    expect(
+      storyIssueHasUnresolvedDependency({
+        ...child,
+        status: "blocked",
+        wakeDiagnostics: {
+          events: [],
+          blockerDiagnostics: {
+            readiness: { unresolvedBlockerCount: 1 },
+          },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      storyRunReportsDependencyBlock({
+        id: "parent-run",
+        companyId: "company",
+        agentId: "lead",
+        status: "succeeded",
+        resultJson: {
+          nativeResult: {
+            reportedWorkDisposition: "blocked",
+            blocker: { reasonCode: "dependency_unresolved" },
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it.each(["deferred_issue_execution", "claimed"])(
+    "keeps a %s agent wake actionable",
+    (status) =>
+      expect(
+        storyHasPendingAgentWake(
+          {
+            id: "child",
+            companyId: "company",
+            title: "Worker delivery",
+            status: "in_progress",
+            wakeDiagnostics: {
+              events: [{ kind: "wake_request", agentId: "lead", status }],
+            },
+          },
+          "lead",
+        ),
+      ).toBe(true),
+  );
 });
 
 describe("delegation completion order", () => {

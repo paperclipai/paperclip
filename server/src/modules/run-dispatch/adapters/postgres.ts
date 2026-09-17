@@ -1,5 +1,6 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -105,6 +106,17 @@ const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   currentStageType: null,
   currentParticipant: null,
 };
+
+async function readNativeReviewParticipantFacts(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; contextSnapshot: unknown;
+}): Promise<ReviewParticipantFacts | null> {
+  const review = await getNativeReviewAssignment(db, input);
+  return review ? {
+    isInReview: true, hasParticipant: true, participantIsAgent: true,
+    participantAgentId: input.agentId, currentStageType: "native_completion_review",
+    currentParticipant: { type: "agent", agentId: input.agentId, interactionId: review.interaction.id },
+  } : null;
+}
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -360,7 +372,10 @@ export function createPostgresRunDispatchAdapter(
       ]);
       facts.pendingResponse = interactions.length > 0 ? "interaction" : linkedApprovals.length > 0 ? "approval" : null;
     }
-    facts.reviewParticipant = buildReviewParticipantFacts({
+    facts.reviewParticipant = await readNativeReviewParticipantFacts(dbOrTx, {
+      companyId: input.companyId, issueId, agentId: input.agentId,
+      contextSnapshot: input.contextSnapshot,
+    }) ?? buildReviewParticipantFacts({
       isInReview: issue.status === "in_review",
       executionState: parseIssueExecutionState(issue.executionState),
     });
@@ -580,7 +595,10 @@ export function createPostgresRunDispatchAdapter(
       wakeReason,
       retryReason,
       reviewParticipant: issue
-        ? buildReviewParticipantFacts({
+        ? await readNativeReviewParticipantFacts(dbOrTx, {
+            companyId: input.companyId, issueId, agentId: input.agentId,
+            contextSnapshot: context,
+          }) ?? buildReviewParticipantFacts({
             isInReview: issue.status === "in_review",
             executionState: issue.status === "in_review" ? parseIssueExecutionState(issue.executionState) : null,
           })

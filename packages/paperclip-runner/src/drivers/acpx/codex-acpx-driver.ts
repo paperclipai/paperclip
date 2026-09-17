@@ -134,6 +134,8 @@ export interface CodexAcpxDriverOptions {
   managedCodexCredentialSourcePath?: string;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: (call: CodexAcpxDynamicToolCall) => Promise<unknown>;
+  /** Server-owned task completion validation, shared with Codex tool calls. */
+  completionFeedback?: (result: PrpStructuredRunResult) => Promise<string>;
   now?: () => Date;
 }
 
@@ -462,6 +464,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         agent: this.#options.agent ?? "codex",
         input,
         dynamicToolHandler: this.#options.dynamicToolHandler,
+        completionFeedback: this.#options.completionFeedback,
         now: this.#options.now ?? (() => new Date()),
         closeSettlementTimeoutMs: this.#closeSettlementTimeoutMs,
         maxBufferedEvents: this.#maxBufferedEvents,
@@ -705,6 +708,7 @@ class CodexAcpxSession implements HarnessSession {
   readonly #agent: QualifiedAcpxAgent;
   readonly #input: OpenHarnessSessionInput;
   readonly #dynamicToolHandler?: CodexAcpxDriverOptions["dynamicToolHandler"];
+  readonly #completionFeedback?: CodexAcpxDriverOptions["completionFeedback"];
   readonly #now: () => Date;
   readonly #closeSettlementTimeoutMs: number;
   readonly #maxBufferedEvents: number;
@@ -761,6 +765,7 @@ class CodexAcpxSession implements HarnessSession {
     agent: QualifiedAcpxAgent;
     input: OpenHarnessSessionInput;
     dynamicToolHandler?: CodexAcpxDriverOptions["dynamicToolHandler"];
+    completionFeedback?: CodexAcpxDriverOptions["completionFeedback"];
     now: () => Date;
     closeSettlementTimeoutMs: number;
     maxBufferedEvents: number;
@@ -777,6 +782,7 @@ class CodexAcpxSession implements HarnessSession {
     this.#agent = input.agent;
     this.#input = structuredClone(input.input);
     this.#dynamicToolHandler = input.dynamicToolHandler;
+    this.#completionFeedback = input.completionFeedback;
     this.#now = input.now;
     this.#closeSettlementTimeoutMs = input.closeSettlementTimeoutMs;
     this.#maxBufferedEvents = input.maxBufferedEvents;
@@ -1051,6 +1057,32 @@ class CodexAcpxSession implements HarnessSession {
         claimsLaterTurn &&
         this.#pendingSemanticTransfer?.fingerprint === fingerprint &&
         this.#pendingSemanticTransfer.turnId === turnId;
+      let feedback = "Completion report accepted. Task status is committed after this turn and workspace finalization finish.";
+      if (this.#semanticFingerprint === null || (claimsLaterTurn && !repeatsPendingTransfer)) {
+        try {
+          feedback = await this.#completionFeedback?.(validation.result) ?? feedback;
+        } catch (error) {
+          this.#emit(
+            "run.result.rejected",
+            {
+              result: validation.result,
+              reason: error instanceof Error ? error.message : String(error),
+              recovery: { required: true, recoverable: true },
+            },
+            { turnId, itemId: call.callId },
+          );
+          return {
+            accepted: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        if (this.#activeTurnId !== turnId) {
+          return {
+            accepted: false,
+            error: "The turn ended while checking completion. The result was not accepted.",
+          };
+        }
+      }
       if (
         this.#semanticFingerprint === null ||
         (claimsLaterTurn && !repeatsPendingTransfer)
@@ -1083,7 +1115,7 @@ class CodexAcpxSession implements HarnessSession {
           this.#semanticTurnId = turnId;
         }
       }
-      return { accepted: true };
+      return { accepted: true, feedback };
     }
     if (!this.#dynamicToolHandler) {
       throw new Error(`Unsupported Paperclip operation ${tool}`);

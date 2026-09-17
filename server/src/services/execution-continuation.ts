@@ -13,6 +13,7 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -361,14 +362,14 @@ export async function buildExecutionContinuation(input: {
       const response = projectHumanInteractionResponse(row);
       return response ? [response] : [];
     }),
-    interactionOutcomes: interactions
+    interactionOutcomes: [...interactions
       .filter((row) => row.status !== "pending")
       .map((row) => ({
         id: row.id,
         kind: row.kind,
         status: row.status,
         result: row.result,
-      })),
+      })), ...await childReviewOutcomes(db, companyId, issueId)],
     // Low-trust evidence only: renderPaperclipWakePrompt removes completedWork
     // from requestContext and encodes it in the fenced, non-authoritative
     // continuation-evidence section. It cannot supply objective or authority.

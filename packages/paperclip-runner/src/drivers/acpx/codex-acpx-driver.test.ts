@@ -232,7 +232,10 @@ describe("Codex ACPX harness driver", () => {
         arguments: completedResult(),
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ accepted: true });
+    ).resolves.toMatchObject({
+      accepted: true,
+      feedback: "Completion report accepted. Task status is committed after this turn and workspace finalization finish.",
+    });
     fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
 
     const events = await terminalEvents;
@@ -285,6 +288,40 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "complete" });
     await session.close({ reason: "idempotent close" });
     expect(fixture.host.close).toHaveBeenCalledOnce();
+  });
+
+  it("checks server completion feedback before ACPX semantic admission", async () => {
+    const completionFeedback = vi.fn()
+      .mockRejectedValueOnce(new Error("Name the reviewer and decision."))
+      .mockResolvedValue("Completion report accepted.");
+    const fixture = driverFixture({ completionFeedback });
+    const session = await fixture.driver.openSession({
+      runId: "run-feedback",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    const bridgeHandler = fixture.hostOptions!.semanticTools!.handler;
+    const call = (callId: string) => bridgeHandler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId,
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    await expect(call("rejected")).resolves.toMatchObject({ accepted: false });
+    expect((await session.snapshot()).semanticResult).toBeNull();
+    await expect(call("corrected")).resolves.toMatchObject({
+      accepted: true,
+      feedback: "Completion report accepted.",
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+    const events = await terminalEvents;
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+    expect(events.find((event) => event.eventType === "run.result.rejected")?.payload).toMatchObject({
+      recovery: { required: true, recoverable: true },
+    });
+    await session.close({ reason: "completion feedback verified" });
   });
 
   it("keeps ACPX reasoning and assistant identities stable through settlement", async () => {
@@ -1181,7 +1218,10 @@ describe("Codex ACPX harness driver", () => {
         arguments: completedResult(),
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ accepted: true });
+    ).resolves.toMatchObject({
+      accepted: true,
+      feedback: "Completion report accepted. Task status is committed after this turn and workspace finalization finish.",
+    });
     fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
 
     await vi.waitFor(async () => {

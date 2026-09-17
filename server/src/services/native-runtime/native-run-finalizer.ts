@@ -1,4 +1,5 @@
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -1169,7 +1170,15 @@ export async function finalizeNativeRun(input: {
         runId: run.id,
       }),
     ]);
+    const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+    const nativeReview = reviewContext ? await getNativeReviewAssignment(input.db, {
+      companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId,
+      contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
+    }) : null;
     const proposedDecision = resolveNativeFinalizerStatus({
+      ...(reviewContext ? { nativeReviewOutcome: nativeReview
+        ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
+        : "stale" as const } : {}),
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,

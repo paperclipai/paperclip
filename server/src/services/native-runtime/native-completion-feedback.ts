@@ -1,9 +1,12 @@
 import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
+import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { issueService } from "../issues.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   approvals,
+  agents,
   heartbeatRuns,
   issueApprovals,
   issueThreadInteractions,
@@ -39,6 +42,19 @@ export async function nativeCompletionFeedback(
     )
     .then((rows) => rows[0]);
   if (!issue) throw new Error("Completion task no longer exists.");
+  const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+  if (reviewContext) {
+    const review = await getNativeReviewAssignment(db, {
+      companyId: run.companyId, issueId: issue.id, agentId: run.agentId,
+      contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
+    });
+    if (review?.interaction.status === "pending" && result.reportedWorkDisposition !== "blocked") {
+      throw new Error("Resolve your assigned review with resolve_review before finishing. If you cannot review the work, report the concrete blocker with paperclip_block.");
+    }
+    return review?.interaction.status === "pending"
+      ? "Review blocker recorded. Paperclip will preserve the task and record the reviewer recovery action."
+      : "Review report accepted. The recorded review decision controls task completion; this report cannot override it.";
+  }
   const signals = normalizePrpResultSignals(result);
   if (
     result.reportedWorkDisposition === "done" &&
@@ -129,6 +145,21 @@ export async function nativeCompletionFeedback(
     throw new Error(
       "needs_review requires a concrete decision and a named reviewer in attentionRequests. Continue unfinished work or checks; report done when complete. Paperclip will not create an automatic completion approval.",
     );
+  }
+  for (const request of signals.actionableAttentionRequests) {
+    if (request.ownerClass !== "agent") continue;
+    if (request.targetAgentId === run.agentId) {
+      throw new Error("Name a different agent to review this task. A worker cannot review its own completion.");
+    }
+    if (!request.targetAgentId || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(request.targetAgentId)) {
+      throw new Error("Name the reviewer's exact agent ID in targetAgentId.");
+    }
+    const reviewer = await db.select().from(agents).where(and(
+      eq(agents.id, request.targetAgentId), eq(agents.companyId, run.companyId),
+    )).limit(1).then((rows) => rows[0]);
+    if (!reviewer || !(await evaluateAgentInvokabilityFromDb(db, reviewer)).invokable) {
+      throw new Error("The named reviewer is not available in this company. Choose an available reviewer or report the concrete blocker.");
+    }
   }
   return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Describe the completed work and any explicitly requested reviewer action; do not claim an approval is needed unless one was requested.";
 }

@@ -612,6 +612,24 @@ async function materializeDecisionEffect(input: {
       reviewInput,
       { systemId: "native-status-committer", runId: input.runId },
     );
+    // The card and its next actor commit together. The post-commit dispatcher
+    // revalidates this exact review before granting a scoped reviewer run.
+    const reviewContext = {
+      nativeReviewInteractionId: interaction.id,
+      nativeReviewDecisionId: input.decisionId,
+    };
+    const reviewerWakeId = effect.ownerAgentId && interaction.effectiveResolverPolicy !== "human_only"
+      ? await enqueueWake({
+          tx: input.tx,
+          companyId: input.companyId,
+          issueId: input.issue.id,
+          agentId: effect.ownerAgentId,
+          reason: "native_completion_review",
+          idempotencyKey: `native-review:${interaction.id}`,
+          payload: reviewContext,
+          contextSnapshot: { ...reviewContext, forceFreshSession: true },
+        })
+      : null;
     return {
       effectKind: effect.kind,
       targetType: "issue_thread_interaction",
@@ -621,6 +639,7 @@ async function materializeDecisionEffect(input: {
         interactionKind: interaction.kind,
         ownerUserId: effect.ownerUserId,
         ownerAgentId: effect.ownerAgentId ?? null,
+        reviewerWakeId,
       },
     };
   }

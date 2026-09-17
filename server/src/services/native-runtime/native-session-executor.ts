@@ -113,6 +113,7 @@ import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
 import {
   assertCurrentWakeCommentsRead,
@@ -9972,7 +9973,17 @@ async function createRunnerdBackendWithinSessionClaim(
   const pinnedSkills = new Set("runtimeContext" in input.execution ? input.execution.runtimeContext.skills.map((skill) => skill.key) : []);
   const connectorAssignments = [...pinnedSkills].some(isConnectorSkill)
     ? await resolveConnectorAssignments(input.db, input.execution.binding) : [];
+  const reviewRun = await input.db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+    .from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, input.execution.binding.runId),
+      eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+    )).limit(1).then((rows) => rows[0]);
+  const nativeReview = readNativeReviewAssignmentContext(reviewRun?.contextSnapshot);
+  if (nativeReview && !await getNativeReviewAssignment(input.db, {
+    ...input.execution.binding, contextSnapshot: nativeReview,
+  })) throw new Error("native_review_assignment_no_longer_available");
   const authority = new PaperclipRunnerToolAuthority(input.db, {
+    ...(nativeReview ? { nativeReview } : {}),
     connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,

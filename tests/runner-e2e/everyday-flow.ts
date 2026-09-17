@@ -24,7 +24,15 @@ import {
   isStoryWorkspaceDeferral,
   storyLifecycleChecks,
   storyRepliesConsumed,
+  storyHasAgentReply,
+  storyHasPendingHumanInteraction,
+  storyHasStrandedBlockedLeaf,
+  storyIssueHasBlockedTimelineBefore,
+  storyIssueHasUnresolvedDependency,
+  storyRunReportsDependencyBlock,
   storyParentFinishedAfterChildren,
+  artifactGradeModeForPhase,
+  storyParentCompletionPrecedesReview,
   type StoryCheck,
   type StoryIssue,
   type StoryRun,
@@ -146,6 +154,15 @@ export async function runEverydayFlow(input: Input) {
   let decisionResolvedAt: string | undefined;
   let initialConnections: string[] = [];
   let stoppedWorkspace: Record<string, string> | undefined;
+  let settledAgentReply: Row | undefined;
+  let reviewHandoffBoundary: {
+    childId: string;
+    assigneeAgentId: string | null | undefined;
+    interactionId: string;
+    interactionCreatedAt?: string;
+    parentRunId?: string;
+    parentBlockedObserved: boolean;
+  } | undefined;
   async function workspaceFiles() {
     const files: Record<string, string> = {};
     for (const entry of await readdir(input.workspacePath, {
@@ -192,6 +209,10 @@ export async function runEverydayFlow(input: Input) {
         interactions: await api.get<Row[]>(
           `/api/issues/${issue.id}/interactions`,
         ),
+        wakeDiagnostics: await api.get<Row>(
+          `/api/issues/${issue.id}/diagnostics/wakes`,
+        ),
+        activity: await api.get<Row[]>(`/api/issues/${issue.id}/activity`),
       })),
     );
     if (parent) {
@@ -204,6 +225,19 @@ export async function runEverydayFlow(input: Input) {
     `/${prefix}/issues/${issue.identifier ?? issue.id}`;
   async function openParent() {
     await page.goto(taskUrl(parent!), { waitUntil: "domcontentloaded" });
+  }
+  function observableAgentIds(state: EverydayEvidence) {
+    return [
+      fixtures.agent.id,
+      ...state.issues.flatMap((issue) =>
+        [
+          issue.assigneeAgentId,
+          ...(issue.interactions ?? []).map(
+            (interaction) => interaction.addresseeAgentId,
+          ),
+        ].filter((agentId): agentId is string => Boolean(agentId)),
+      ),
+    ];
   }
   async function reply(message: string, target: StoryIssue = parent!) {
     const priorFailures = ev.checks.filter((c) => !c.passed);
@@ -237,8 +271,8 @@ export async function runEverydayFlow(input: Input) {
       commentIds: added.map((c) => c.id),
     });
   }
-  async function settled() {
-    await pollUntil({
+  async function settled(expectedAgentReply?: string) {
+    const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
       intervalMs: 1000,
@@ -253,7 +287,13 @@ export async function runEverydayFlow(input: Input) {
         !state.runs.some(isActiveStoryRun) &&
         state.runs.some(
           (r) => Date.parse(r.finishedAt ?? "") >= lastSubmissionAt,
-        ),
+        ) &&
+        (!expectedAgentReply ||
+          storyHasAgentReply(
+            state.issues.find((issue) => issue.id === parent?.id),
+            fixtures.agent.id,
+            expectedAgentReply,
+          )),
       reject: (state) => {
         if (state.runs.length > 12) return "bounded execution count exceeded";
         const bad = state.runs.find(
@@ -270,19 +310,40 @@ export async function runEverydayFlow(input: Input) {
           return;
         if (
           state.runs.length &&
-          state.issues.some((i) => i.status === "blocked")
+          storyHasStrandedBlockedLeaf(state.issues, observableAgentIds(state))
         )
           return "task is Blocked without an active continuation";
         if (
           state.issues.some(
             (i) =>
               i.status === "in_review" &&
-              i.interactions.some((x: Row) => x.status === "pending"),
+              storyHasPendingHumanInteraction(i, observableAgentIds(state)),
           )
         )
           return "unexpected human interaction: task did not finish autonomously";
       },
     });
+    if (expectedAgentReply) {
+      const issue = settledState.issues.find((candidate) => candidate.id === parent?.id);
+      const reply = issue?.comments?.find(
+        (comment) =>
+          comment.authorAgentId === fixtures.agent.id &&
+          String(comment.body ?? "").includes(expectedAgentReply),
+      );
+      if (reply) {
+        // Keep the exact snapshot that satisfied the readiness predicate. A
+        // later refresh may return a newer projection and must not change the
+        // evidence used by the assertion below.
+        settledAgentReply = { ...reply };
+        note("expected-agent-reply-visible-at-settlement", {
+          issueId: issue?.id,
+          commentId: reply.id,
+          authorAgentId: reply.authorAgentId,
+          createdAt: reply.createdAt,
+          body: reply.body,
+        });
+      }
+    }
     await openParent();
     await expect(
       page.getByTestId("issue-detail-header").getByRole("button", {
@@ -499,7 +560,7 @@ export async function runEverydayFlow(input: Input) {
       canCreateAgents: true,
       canAssignTasks: true,
     });
-    if (caseId === "delegate-feedback") {
+    if (caseId === "delegate-feedback" || caseId === "agent-review-handoff") {
       const config = execution.profile.buildAgent({
         environmentId: fixtures.environment.id,
         environmentFixtureId: execution.environment.id,
@@ -567,6 +628,117 @@ export async function runEverydayFlow(input: Input) {
     input.observe(parent!, []);
     note("task-submitted", { issueId: parent!.id });
     await openParent();
+    if (caseId === "agent-review-handoff") {
+      const boundary = await pollUntil({
+        label: "blocked parent with agent review wake",
+        deadlineAt: input.deadlineAt,
+        load: refresh,
+        accept: (state) => {
+          const child = state.issues.find((issue) => issue.parentId === parent!.id);
+          const interaction = child?.interactions?.find(
+            (candidate) =>
+              ["pending", "accepted"].includes(String(candidate.status)) &&
+              candidate.addresseeAgentId === fixtures.agent.id &&
+              candidate.effectiveResolverPolicy !== "human_only",
+          );
+          const parentIssue = state.issues.find((issue) => issue.id === parent!.id);
+          const reviewRun = interaction?.resolvedByRunId
+            ? state.runs.find((run) => run.id === interaction.resolvedByRunId)
+            : undefined;
+          const parentRun = state.runs.find(
+            (run) =>
+              (run.nativeIssueId === parent!.id ||
+                run.contextSnapshot?.issueId === parent!.id ||
+                run.contextSnapshot?.taskId === parent!.id) &&
+              run.status === "succeeded" &&
+              run.finishedAt &&
+              (reviewRun?.startedAt
+                ? Date.parse(run.finishedAt) <= Date.parse(reviewRun.startedAt)
+                : parentIssue?.status === "blocked"),
+          );
+          const parentBlockedEvidence =
+            Boolean(
+              parentIssue && storyIssueHasUnresolvedDependency(parentIssue),
+            ) ||
+            Boolean(
+              parentIssue &&
+                storyIssueHasBlockedTimelineBefore(
+                  parentIssue,
+                  reviewRun?.startedAt ?? undefined,
+                ),
+            ) ||
+            Boolean(parentRun && storyRunReportsDependencyBlock(parentRun));
+          return Boolean(
+              parentIssue &&
+              ["blocked", "done"].includes(parentIssue.status) &&
+              ["in_review", "done"].includes(String(child?.status)) &&
+              interaction &&
+              parentBlockedEvidence &&
+              parentRun &&
+              (parentIssue.status === "blocked" || reviewRun),
+          );
+        },
+        reject: (state) => {
+          const failed = state.runs.find((run) =>
+            ["failed", "timed_out"].includes(run.status),
+          );
+          return failed
+            ? `Review handoff prerequisite failed: ${failed.errorCode}: ${failed.error}`
+            : undefined;
+        },
+      });
+      const child = boundary.issues.find((issue) => issue.parentId === parent!.id)!;
+      const interaction = child.interactions!.find(
+        (candidate) =>
+          ["pending", "accepted"].includes(String(candidate.status)) &&
+          candidate.addresseeAgentId === fixtures.agent.id,
+      )!;
+      const reviewRun = interaction.resolvedByRunId
+        ? boundary.runs.find((run) => run.id === interaction.resolvedByRunId)
+        : undefined;
+      const parentAtBoundary = boundary.issues.find(
+        (issue) => issue.id === parent!.id,
+      );
+      const parentRun = boundary.runs.find(
+        (run) =>
+          (run.nativeIssueId === parent!.id ||
+            run.contextSnapshot?.issueId === parent!.id ||
+            run.contextSnapshot?.taskId === parent!.id) &&
+          run.status === "succeeded" &&
+          run.finishedAt &&
+          storyParentCompletionPrecedesReview(
+            run.finishedAt,
+            reviewRun?.startedAt,
+            parentAtBoundary?.status === "blocked",
+          ),
+      );
+      reviewHandoffBoundary = {
+        childId: child.id,
+        assigneeAgentId: child.assigneeAgentId,
+        interactionId: interaction.id!,
+        interactionCreatedAt: interaction.createdAt,
+        parentRunId: parentRun?.id,
+        parentBlockedObserved: boundary.issues.some(
+          (issue) =>
+            issue.id === parent!.id && storyIssueHasUnresolvedDependency(issue),
+        ),
+      };
+      check(
+        "parent-blocked-before-agent-review",
+        reviewHandoffBoundary.parentBlockedObserved || Boolean(parentRun),
+        "The completed lead run and durable dependency projection precede the child review card.",
+      );
+      note("agent-review-requested", {
+        childId: child.id,
+        childAssigneeAgentId: child.assigneeAgentId,
+        interactionId: interaction.id,
+        parentStatus: boundary.issues.find((issue) => issue.id === parent!.id)?.status,
+        parentRunId: parentRun?.id,
+        parentRunFinishedAt: parentRun?.finishedAt,
+        interactionCreatedAt: interaction.createdAt,
+      });
+      await openParent();
+    }
     if (caseId === "delegate-feedback") {
       await pollUntil({
         label: "active delegated child",
@@ -760,7 +932,9 @@ export async function runEverydayFlow(input: Input) {
         status: decisionStatus,
       });
     }
-    await settled();
+    await settled(
+      caseId === "stop-redirect" ? `Reference ${nonce}` : undefined,
+    );
     if (caseId === "create-skill-studio") {
       const createdSkills = await api.get<Row[]>(
         `/api/companies/${fixtures.company.id}/skills`,
@@ -837,7 +1011,7 @@ export async function runEverydayFlow(input: Input) {
           requests[0]?.status === "rejected",
         "The saved decline remains rejected and no replacement request appears.",
       );
-      const replies = issue.comments.filter(
+      const replies = (issue.comments ?? []).filter(
         (c: Row) =>
           c.authorAgentId &&
           Date.parse(c.createdAt) >= Date.parse(decisionResolvedAt ?? ""),
@@ -983,27 +1157,111 @@ export async function runEverydayFlow(input: Input) {
         "A completed child execution consumed the delivered user feedback.",
       );
       if (children[0])
-        await downloadDelegated("max-length", "delegated-delivery");
+        await downloadDelegated(
+          artifactGradeModeForPhase("delegated-delivery"),
+          "delegated-delivery",
+        );
       check(
         "feedback-delivered-to-child",
         Boolean(
-          children[0]?.comments.some((c: Row) =>
+          children[0]?.comments?.some((c: Row) =>
             String(c.body).includes("--max-length"),
           ),
         ),
         "The child history contains the late requirement.",
       );
+    } else if (caseId === "agent-review-handoff") {
+      const children = ev.issues.filter((i) => i.parentId === parent!.id);
+      const child = children.find((candidate) =>
+        candidate.id === reviewHandoffBoundary?.childId,
+      );
+      const interaction = child?.interactions?.find(
+        (candidate) => candidate.id === reviewHandoffBoundary?.interactionId,
+      ) as Row | undefined;
+      const reviewRun = interaction?.resolvedByRunId
+        ? ev.runs.find((run) => run.id === interaction.resolvedByRunId)
+        : undefined;
+      const parentContinuationRun = ev.runs.find(
+        (run) =>
+          run.agentId === fixtures.agent.id &&
+          run.status === "succeeded" &&
+          run.id !== reviewHandoffBoundary?.parentRunId &&
+          (run.nativeIssueId === parent!.id ||
+            run.contextSnapshot?.issueId === parent!.id ||
+            run.contextSnapshot?.taskId === parent!.id) &&
+          interaction?.resolvedAt &&
+          run.startedAt &&
+          Date.parse(run.startedAt) >= Date.parse(interaction.resolvedAt),
+      );
+      check(
+        "agent-review-one-child",
+        children.length === 1 && Boolean(child),
+        "Exactly one child remains attached to the lead task.",
+      );
+      check(
+        "agent-review-child-completed",
+        child?.status === "done" && interaction?.status === "accepted",
+        "The named agent review is accepted and the child reaches Done.",
+      );
+      check(
+        "agent-review-assignee-preserved",
+        child?.assigneeAgentId === reviewHandoffBoundary?.assigneeAgentId,
+        "Review resolution preserves the child task assignee.",
+      );
+      check(
+        "agent-review-run-scoped",
+        reviewRun?.status === "succeeded" &&
+          reviewRun.agentId === fixtures.agent.id &&
+          reviewRun.contextSnapshot?.nativeReviewInteractionId ===
+            reviewHandoffBoundary?.interactionId &&
+          typeof reviewRun.contextSnapshot?.nativeReviewDecisionId === "string",
+        "The lead resolves the review from a successful review-scoped native run.",
+      );
+      check(
+        "agent-review-parent-resumed",
+        parent?.status === "done" &&
+          Boolean(parentContinuationRun) &&
+          Boolean(
+            parentContinuationRun?.finishedAt &&
+              parentContinuationRun.startedAt &&
+              Date.parse(parentContinuationRun.finishedAt) >=
+                Date.parse(parentContinuationRun.startedAt),
+          ),
+        "The parent continuation starts after review acceptance and finishes successfully.",
+      );
+      note("agent-review-accepted", {
+        childId: child?.id,
+        childAssigneeAgentId: child?.assigneeAgentId,
+        interactionId: interaction?.id,
+        interactionStatus: interaction?.status,
+        resolvedByRunId: interaction?.resolvedByRunId,
+        reviewRunId: reviewRun?.id,
+        reviewRunAgentId: reviewRun?.agentId,
+        parentContinuationRunId: parentContinuationRun?.id,
+        parentContinuationStartedAt: parentContinuationRun?.startedAt,
+        nativeReviewInteractionId:
+          reviewRun?.contextSnapshot?.nativeReviewInteractionId,
+        nativeReviewDecisionId:
+          reviewRun?.contextSnapshot?.nativeReviewDecisionId,
+      });
+      // The review handoff case uses the base slugify requirements. The
+      // max-length grader belongs to the later follow-up requirement cases.
+      if (child)
+        await downloadDelegated(
+          artifactGradeModeForPhase("reviewed-delivery"),
+          "reviewed-delivery",
+        );
     } else if (caseId === "recover-controller")
-      await download(parent!.id, "max-length", "recovered-delivery");
+      await download(
+        parent!.id,
+        artifactGradeModeForPhase("recovered-delivery"),
+        "recovered-delivery",
+      );
     else if (caseId === "stop-redirect")
       check(
         "new-direction-delivered",
-        ev.issues
-          .find((i) => i.id === parent!.id)
-          ?.comments.some(
-            (c: Row) =>
-              c.authorAgentId && String(c.body).includes(`Reference ${nonce}`),
-          ) ?? false,
+        settledAgentReply?.authorAgentId === fixtures.agent.id &&
+          String(settledAgentReply.body ?? "").includes(`Reference ${nonce}`),
         "The new request is answered after Stop and reload.",
       );
     if (stoppedWorkspace) {
@@ -1080,7 +1338,11 @@ export async function runEverydayFlow(input: Input) {
       storyRepliesConsumed(ev.runs, submittedCommentIds),
       "Every submitted user message appears in a successfully completed native execution input.",
     );
-    if (caseId === "delegate-feedback" || caseId === "hire-reuse") {
+    if (
+      caseId === "delegate-feedback" ||
+      caseId === "hire-reuse" ||
+      caseId === "agent-review-handoff"
+    ) {
       check(
         "parent-finishes-after-child",
         storyParentFinishedAfterChildren(
@@ -1132,7 +1394,7 @@ export async function runEverydayFlow(input: Input) {
     check(
       "no-pending-bookkeeping",
       ev.issues.every((i) =>
-        i.interactions.every((x: Row) => x.status !== "pending"),
+        (i.interactions ?? []).every((x: Row) => x.status !== "pending"),
       ),
       "No completion confirmation or unanswered interaction remains.",
     );
@@ -1145,7 +1407,7 @@ export async function runEverydayFlow(input: Input) {
     ).toBeVisible();
     const latestAgentComment = ev.issues
       .find((i) => i.id === parent!.id)
-      ?.comments.filter((c: Row) => c.authorAgentId)
+      ?.comments?.filter((c: Row) => c.authorAgentId)
       .at(-1);
     if (latestAgentComment) {
       const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);

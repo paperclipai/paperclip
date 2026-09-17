@@ -11,12 +11,54 @@ export interface StoryIssue {
   identifier?: string | null;
   description?: string | null;
   createdAt?: string;
+  updatedAt?: string;
   assigneeAgentId?: string | null;
   parentId?: string | null;
   projectId?: string | null;
   executionRunId?: string | null;
   scheduledRetry?: unknown;
   activeRecoveryAction?: unknown;
+  comments?: StoryComment[];
+  interactions?: StoryInteraction[];
+  activity?: StoryActivityRecord[];
+  wakeDiagnostics?: StoryWakeDiagnostics;
+}
+export interface StoryComment {
+  id?: string;
+  authorAgentId?: string | null;
+  body?: unknown;
+  createdAt?: string;
+}
+export interface StoryActivityRecord {
+  action?: string;
+  details?: unknown;
+  createdAt?: string;
+}
+export interface StoryInteraction {
+  id?: string;
+  kind?: string;
+  status?: string;
+  continuationPolicy?: string | null;
+  resolverPolicy?: string | null;
+  effectiveResolverPolicy?: string | null;
+  addresseeAgentId?: string | null;
+  resolvedByRunId?: string | null;
+  resolvedAt?: string | null;
+  result?: Record<string, unknown> | null;
+  createdAt?: string;
+}
+export interface StoryWakeDiagnosticEvent {
+  kind?: string;
+  agentId?: string | null;
+  status?: string;
+  payload?: Record<string, unknown> | null;
+}
+export interface StoryWakeDiagnostics {
+  events?: StoryWakeDiagnosticEvent[];
+  blockerDiagnostics?: {
+    readiness?: { unresolvedBlockerCount?: number | null } | null;
+    blockers?: unknown[];
+  };
 }
 export interface StoryRun {
   id: string;
@@ -43,6 +85,45 @@ export interface StoryRun {
   errorCode?: string | null;
   error?: string | null;
 }
+
+export type StoryArtifactGradeMode = "base" | "separator" | "max-length";
+
+/** Select the artifact oracle variant required by each workflow's actual case. */
+export function artifactGradeModeForPhase(
+  phase:
+    | "hired-delivery"
+    | "reused-delivery"
+    | "delegated-delivery"
+    | "reviewed-delivery"
+    | "recovered-delivery",
+): StoryArtifactGradeMode {
+  switch (phase) {
+    case "hired-delivery":
+    case "reviewed-delivery":
+      return "base";
+    case "reused-delivery":
+      return "separator";
+    case "delegated-delivery":
+    case "recovered-delivery":
+      return "max-length";
+  }
+}
+
+/** A review run is valid only after the lead run has completed. */
+export function storyParentCompletionPrecedesReview(
+  parentFinishedAt: string | null | undefined,
+  reviewStartedAt: string | null | undefined,
+  parentBlocked: boolean,
+): boolean {
+  if (reviewStartedAt) {
+    return Boolean(
+      parentFinishedAt &&
+        Date.parse(parentFinishedAt) <= Date.parse(reviewStartedAt),
+    );
+  }
+  return parentBlocked;
+}
+
 export const isActiveStoryRun = (run: StoryRun) =>
   ["queued", "running", "scheduled_retry"].includes(run.status);
 export function isStoryWorkspaceDeferral(run: StoryRun) {
@@ -145,6 +226,188 @@ export function storyRepliesConsumed(
       return input?.task?.prompt?.includes(id) === true;
     }),
   );
+}
+
+/** A terminal task is only ready for response assertions after its agent reply is visible. */
+export function storyHasAgentReply(
+  issue: StoryIssue | undefined,
+  agentId: string,
+  expectedText: string,
+): boolean {
+  return (
+    issue?.comments?.some(
+      (comment) =>
+        comment.authorAgentId === agentId &&
+        String(comment.body ?? "").includes(expectedText),
+    ) ?? false
+  );
+}
+
+const RUNNABLE_WAKE_STATUSES = new Set([
+  "queued",
+  "deferred_issue_execution",
+  "claimed",
+]);
+
+/** A durable wake means an agent still has a recorded next action. */
+export function storyHasPendingAgentWake(
+  issue: StoryIssue | undefined,
+  agentIds: string | readonly string[],
+): boolean {
+  const ids = new Set(typeof agentIds === "string" ? [agentIds] : agentIds);
+  return (
+    issue?.wakeDiagnostics?.events?.some(
+      (event) =>
+        event.kind === "wake_request" &&
+        event.agentId != null &&
+        ids.has(event.agentId) &&
+        RUNNABLE_WAKE_STATUSES.has(String(event.status)),
+    ) ?? false
+  );
+}
+
+/** Any issue-scoped wake keeps the workflow actionable while it is being dispatched. */
+export function storyHasPendingAgentWork(
+  issues: StoryIssue[],
+  agentIds: string | readonly string[],
+): boolean {
+  return issues.some((issue) => storyHasPendingAgentWake(issue, agentIds));
+}
+
+/** A blocked story is stranded only when no issue has a durable continuation wake. */
+export function storyHasStrandedBlockedLeaf(
+  issues: StoryIssue[],
+  agentIds: string | readonly string[],
+): boolean {
+  return (
+    issues.some((issue) => issue.status === "blocked") &&
+    !storyHasPendingAgentWork(issues, agentIds)
+  );
+}
+
+/** A pending interaction is agent-owned when its wake policy and wake request agree. */
+export function storyHasPendingAgentReview(
+  issue: StoryIssue | undefined,
+  agentIds: string | readonly string[],
+): boolean {
+  return Boolean(
+    issue?.interactions?.some((interaction) =>
+      storyHasPendingAgentReviewForInteraction(issue, interaction, agentIds),
+    ),
+  );
+}
+
+/** Pending review is human-owned only when no matching agent review wake is runnable. */
+export function storyHasPendingHumanInteraction(
+  issue: StoryIssue | undefined,
+  agentIds: string | readonly string[],
+): boolean {
+  const pendingInteraction = issue?.interactions?.some(
+    (interaction) =>
+      interaction.status === "pending" &&
+      !storyHasPendingAgentReviewForInteraction(issue, interaction, agentIds),
+  );
+  return Boolean(
+    pendingInteraction,
+  );
+}
+
+function storyHasPendingAgentReviewForInteraction(
+  issue: StoryIssue | undefined,
+  interaction: StoryInteraction,
+  agentIds: string | readonly string[],
+): boolean {
+  const ids = new Set(typeof agentIds === "string" ? [agentIds] : agentIds);
+  if (
+    interaction.status !== "pending" ||
+    interaction.continuationPolicy !== "wake_assignee" ||
+    interaction.resolverPolicy === "human_only" ||
+    interaction.effectiveResolverPolicy === "human_only" ||
+    !interaction.addresseeAgentId ||
+    !ids.has(interaction.addresseeAgentId)
+  )
+    return false;
+  const wakeEvents =
+    issue?.wakeDiagnostics?.events?.filter(
+      (event) =>
+        event.kind === "wake_request" &&
+        event.agentId === interaction.addresseeAgentId &&
+        RUNNABLE_WAKE_STATUSES.has(String(event.status)),
+    ) ?? [];
+  const explicitlyBound = wakeEvents.some(
+    (event) =>
+      event.payload?.nativeReviewInteractionId === interaction.id,
+  );
+  if (explicitlyBound) return true;
+  if (
+    wakeEvents.some(
+      (event) => event.payload?.nativeReviewInteractionId != null,
+    )
+  )
+    return false;
+  const sameAgentPendingCards =
+    issue?.interactions?.filter(
+      (candidate) =>
+        candidate.status === "pending" &&
+        candidate.continuationPolicy === "wake_assignee" &&
+        candidate.resolverPolicy !== "human_only" &&
+        candidate.effectiveResolverPolicy !== "human_only" &&
+        candidate.addresseeAgentId === interaction.addresseeAgentId,
+    ).length ?? 0;
+  // The public v1 wake projection has no binding payload. With multiple cards
+  // for one agent, conservatively refuse to attribute an unbound wake.
+  return wakeEvents.length > 0 && sameAgentPendingCards === 1;
+}
+
+/** The public blocker projection is durable evidence of a dependency hold. */
+export function storyIssueHasUnresolvedDependency(issue: StoryIssue): boolean {
+  const readiness = issue.wakeDiagnostics?.blockerDiagnostics?.readiness;
+  return (
+    issue.status === "blocked" &&
+    ((readiness?.unresolvedBlockerCount ?? 0) > 0 ||
+      (issue.wakeDiagnostics?.blockerDiagnostics?.blockers?.length ?? 0) > 0)
+  );
+}
+
+/** Status history remains observable after the scheduler clears the blocker. */
+export function storyIssueHasBlockedTimeline(issue: StoryIssue): boolean {
+  return storyIssueHasBlockedTimelineBefore(issue);
+}
+
+/** A blocker timeline entry is useful only when it predates the review card. */
+export function storyIssueHasBlockedTimelineBefore(
+  issue: StoryIssue,
+  before?: string,
+): boolean {
+  return Boolean(
+    issue.activity?.some((record) => {
+      const action = String(record.action ?? "").toLowerCase();
+      const details = (record.details ?? {}) as Record<string, unknown>;
+      const changes = (details.changes ?? {}) as Record<string, unknown>;
+      const statusChange = (changes.status ?? {}) as Record<string, unknown>;
+      const recordAt = Date.parse(String(record.createdAt ?? ""));
+      const beforeAt = before ? Date.parse(before) : Number.NaN;
+      return (
+        action === "issue.updated" &&
+        Number.isFinite(recordAt) &&
+        (!Number.isFinite(beforeAt) || recordAt <= beforeAt) &&
+        (details.status === "blocked" ||
+          details.toStatus === "blocked" ||
+          statusChange.to === "blocked")
+      );
+    }),
+  );
+}
+
+/** Native result evidence survives a fast transition past the blocked projection. */
+export function storyRunReportsDependencyBlock(run: StoryRun): boolean {
+  const result = run.resultJson?.nativeResult as
+    | Record<string, unknown>
+    | undefined;
+  if (result?.reportedWorkDisposition !== "blocked") return false;
+  const blocker = result.blocker as Record<string, unknown> | undefined;
+  const reason = String(blocker?.reasonCode ?? "").toLowerCase();
+  return reason.includes("depend");
 }
 
 export function storyParentFinishedAfterChildren(

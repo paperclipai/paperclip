@@ -94,6 +94,7 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { getNativeReviewAssignment } from "./native-runtime/native-review-participant.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -484,6 +485,13 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
     (await isIssueReviewVerdictInteraction(tx, { issue, interaction }));
 
   assertInteractionResolutionAllowed(interaction, actor);
+  if (actor.agentId && isNativeCompletionReview(interaction)) {
+    const target = (interaction.payload as { target?: { revisionId?: string } }).target;
+    if (!await getNativeReviewAssignment(tx, {
+      companyId: issue.companyId, issueId: issue.id, agentId: actor.agentId,
+      contextSnapshot: { nativeReviewInteractionId: interaction.id, nativeReviewDecisionId: target?.revisionId },
+    })) throw conflict("This completion review is no longer current or assigned to this agent.");
+  }
   if (!isReviewVerdict) return;
 
   const verdictActor = actor.agentId

@@ -26,6 +26,7 @@ import {
   providerSessionContinuityFailures,
 } from "./run-observations.js";
 import { resolveRunnerE2ESource } from "./source.js";
+import { isValidNativePrpEnvelope } from "./native-event-envelope.js";
 import {
   isPublicRunnerScreenshotRoute,
   PUBLIC_RUNNER_SCREENSHOT_MARKER,
@@ -392,12 +393,10 @@ function nativeRunEventIntegrityFailures(
     }
     const envelope = record(event.payload?.prpEvent);
     if (Object.keys(envelope).length === 0) continue;
-    if (
-      envelope.schema !== "paperclip.prp.event.v1" ||
-      envelope.schemaVersion !== 1 ||
-      event.protocolSchemaVersion !== 1
-    ) {
-      failures.push(`run ${run.id} exposed a malformed PRP v1 envelope`);
+    if (!isValidNativePrpEnvelope(envelope, event.protocolSchemaVersion)) {
+      failures.push(
+        `run ${run.id} exposed a malformed PRP envelope (schema=${String(envelope.schema)}, version=${String(envelope.schemaVersion)})`,
+      );
     }
     if (envelope.runId !== run.id) {
       failures.push(
@@ -1281,9 +1280,12 @@ for (const execution of executions) {
           })
           .last()
           .check();
-        // Required single-select questions submit as soon as the radio is
-        // checked; waiting for the multi-answer submit control would race the
-        // successful continuation and misreport it as a UI failure.
+        // The one-question form is on its last page, so selecting the radio
+        // records the answer and the existing form button submits it.
+        await page
+          .getByRole("button", { name: "Submit answers", exact: true })
+          .last()
+          .click();
         questionLifecycleEvidence = {
           interaction: questionInteraction,
           answer: expectedAnswer.optionLabel,

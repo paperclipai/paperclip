@@ -83,6 +83,59 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             continue;
         }
+        if mode == "turns-reserved-feedback-roundtrip" && command == "tool.resolve" {
+            let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+            let turn_id = params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .unwrap_or("turn-1");
+            if params.get("error").is_some_and(|value| !value.is_null())
+                && params.pointer("/error/message").and_then(Value::as_str)
+                    != Some("Name the reviewer and decision.")
+            {
+                write_json(
+                    &mut stdout,
+                    &json!({
+                        "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "id":id,"ok":false,"error":{"message":"unexpected completion feedback"}
+                    }),
+                )?;
+                continue;
+            }
+            write_json(
+                &mut stdout,
+                &json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":true,"result":{"resolved":true}
+                }),
+            )?;
+            if params.get("error").is_some_and(|value| !value.is_null()) {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.tool_called",
+                    "run-1",
+                    turn_id,
+                    json!({
+                        "callId":"call-finish-2",
+                        "operationId":"paperclip_finish",
+                        "input":valid_reserved_completion_result(),
+                    }),
+                )?;
+                next_sequence += 1;
+            } else {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.turn_terminal",
+                    "run-1",
+                    turn_id,
+                    json!({"status":"completed"}),
+                )?;
+                next_sequence += 1;
+            }
+            continue;
+        }
         match mode {
             "mcp-environment" => {
                 write_json(
@@ -162,6 +215,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-tool-result-terminal"
             | "turns-tool-error-result-terminal"
             | "turns-multiple-tool-results-terminal"
+            | "turns-reserved-feedback-roundtrip"
             | "turns-reserved-result-terminal"
             | "turns-reserved-yielded-terminal"
             | "turns-reserved-block-terminal"
@@ -351,7 +405,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if command == "turn.start"
                     && matches!(
                         mode,
-                        "turns-reserved-result-terminal"
+                        "turns-reserved-feedback-roundtrip"
+                            | "turns-reserved-result-terminal"
                             | "turns-reserved-yielded-terminal"
                             | "turns-reserved-block-terminal"
                             | "turns-sensitive-reserved-result-terminal"
@@ -361,7 +416,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             | "turns-mismatched-reserved-result-terminal"
                     )
                 {
-                    let (operation_id, result) = if matches!(
+                    let (operation_id, result) = if mode == "turns-reserved-feedback-roundtrip" {
+                        (
+                            "paperclip_finish",
+                            json!({
+                                "schema":"paperclip.run_result.v1",
+                                "reportedWorkDisposition":"needs_review",
+                                "summary":"Needs review before completion.",
+                                "completionClaim":{"contractRevision":"acpx-provider-turns-v1","objectiveSatisfied":false,"criteria":[],"remainingWork":[]},
+                                "evidence":[],"verification":[],"attentionRequests":[],"artifacts":[],
+                            }),
+                        )
+                    } else if matches!(
                         mode,
                         "turns-reserved-block-terminal" | "turns-invalid-reserved-block-terminal"
                     ) {
@@ -448,6 +514,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }),
                         )
                     };
+                    if mode == "turns-reserved-feedback-roundtrip" {}
                     if mode != "turns-uncorrelated-reserved-result-terminal" {
                         write_turn_event(
                             &mut stdout,
@@ -463,41 +530,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         )?;
                         next_sequence += 1;
                     }
-                    let semantic_result = if mode == "turns-mismatched-reserved-result-terminal" {
-                        let mut changed = result.clone();
-                        changed["summary"] = json!("A different terminal result.");
-                        changed
-                    } else if mode == "turns-mismatched-sensitive-reserved-result-terminal" {
-                        let mut changed = result.clone();
-                        changed["summary"] = json!("token=different-sensitive-value");
-                        changed
+                    if mode == "turns-reserved-feedback-roundtrip" {
                     } else {
-                        result
-                    };
-                    write_turn_event(
-                        &mut stdout,
-                        next_sequence,
-                        "runtime.event",
-                        "run-1",
-                        turn_id,
-                        json!({
-                            "type":"semantic_result",
-                            "callId":"call-finish",
-                            "operationId":operation_id,
-                            "ok":true,
-                            "result":semantic_result,
-                        }),
-                    )?;
-                    next_sequence += 1;
-                    write_turn_event(
-                        &mut stdout,
-                        next_sequence,
-                        "runtime.turn_terminal",
-                        "run-1",
-                        turn_id,
-                        json!({"status":"completed"}),
-                    )?;
-                    next_sequence += 1;
+                        let semantic_result = if mode == "turns-mismatched-reserved-result-terminal"
+                        {
+                            let mut changed = result.clone();
+                            changed["summary"] = json!("A different terminal result.");
+                            changed
+                        } else if mode == "turns-mismatched-sensitive-reserved-result-terminal" {
+                            let mut changed = result.clone();
+                            changed["summary"] = json!("token=different-sensitive-value");
+                            changed
+                        } else {
+                            result
+                        };
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.event",
+                            "run-1",
+                            turn_id,
+                            json!({
+                                "type":"semantic_result",
+                                "callId":"call-finish",
+                                "operationId":operation_id,
+                                "ok":true,
+                                "result":semantic_result,
+                            }),
+                        )?;
+                        next_sequence += 1;
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.turn_terminal",
+                            "run-1",
+                            turn_id,
+                            json!({"status":"completed"}),
+                        )?;
+                        next_sequence += 1;
+                    }
                 }
                 if command == "session.suspend" && mode == "turns-late-tool-after-suspend" {
                     // Simulate a session-lifetime callback that wakes after
@@ -735,6 +806,16 @@ fn success(id: u64, command: &str, request: &Value) -> Value {
             "command": command,
             "params": request.get("params").cloned().unwrap_or_else(|| json!({})),
         },
+    })
+}
+
+fn valid_reserved_completion_result() -> Value {
+    json!({
+        "schema":"paperclip.run_result.v1",
+        "reportedWorkDisposition":"done",
+        "summary":"Corrected completion.",
+        "completionClaim":{"contractRevision":"acpx-provider-turns-v1","objectiveSatisfied":true,"criteria":[],"remainingWork":[]},
+        "evidence":[],"verification":[],"attentionRequests":[],"artifacts":[],
     })
 }
 

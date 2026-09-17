@@ -107,7 +107,8 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
       vi.fn(),
     );
     expect(concurrencySelect().value).toBe("serialize");
-    expect(container.textContent).toContain("Runs always take turns in the shared project workspace");
+    expect(container.textContent).toContain("Sandbox runs take turns in the shared project workspace");
+    expect(container.textContent).toContain("Local/SSH folders allow concurrent runs");
   });
 
   it("writes the picked value onto executionWorkspacePolicy when changed", () => {
