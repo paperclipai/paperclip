@@ -8,6 +8,7 @@ import { githubGuestBotConnectionForSession, githubBotToolsForSession } from "./
 import { githubChatReviewService } from "./chat-github-reviews.js";
 import { runIdentityContexts } from "@paperclipai/db";
 import { captureRunIdentity } from "./run-identity.js";
+import { emitConnectorInvocationCompleted } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
@@ -2223,6 +2224,7 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, input.invocation.id));
+      void emitConnectorInvocationCompleted(db, input.invocation.id);
       await writeToolCallEvent({
         invocationId: input.invocation.id,
         actionRequestId: input.actionRequest?.id ?? null,
@@ -2260,6 +2262,7 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, input.invocation.id));
+      void emitConnectorInvocationCompleted(db, input.invocation.id);
       throw new ToolGatewayHttpError(
         500,
         "Approval request was not created",
@@ -2309,6 +2312,7 @@ export function createToolGatewayService(
             updatedAt: new Date(),
           })
           .where(eq(toolInvocations.id, input.invocation.id));
+        void emitConnectorInvocationCompleted(db, input.invocation.id);
         throw new ToolGatewayHttpError(
           500,
           error.message,
@@ -2475,6 +2479,7 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, input.invocation.id));
+      void emitConnectorInvocationCompleted(db, input.invocation.id);
       throw new ToolGatewayHttpError(
         409,
         "The approval request was resolved before it could be signed",
@@ -7136,6 +7141,7 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, args.invocationId));
+      void emitConnectorInvocationCompleted(db, args.invocationId);
       await writeToolCallEvent({
         invocationId: args.invocationId,
         session: args.session,
@@ -7206,6 +7212,7 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, args.invocationId));
+      void emitConnectorInvocationCompleted(db, args.invocationId);
       await writeToolCallEvent({
         invocationId: args.invocationId,
         session: args.session,
@@ -7320,6 +7327,7 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, invocation.id));
+      void emitConnectorInvocationCompleted(db, invocation.id);
       await reflectToolActionInteractionLifecycle({
         actionRequestId,
         status: "failed",
@@ -7363,6 +7371,7 @@ export function createToolGatewayService(
           updatedAt: new Date(),
         })
         .where(eq(toolInvocations.id, invocation.id));
+      void emitConnectorInvocationCompleted(db, invocation.id);
       await reflectToolActionInteractionLifecycle({
         actionRequestId,
         status: "failed",
@@ -7528,6 +7537,7 @@ export function createToolGatewayService(
       return true;
     });
     if (!settled) return { reasonCode, message, settled: false };
+    void emitConnectorInvocationCompleted(db, input.invocationId);
     await reflectToolActionInteractionLifecycle({
       actionRequestId: input.actionRequestId,
       status: "failed",
@@ -7580,6 +7590,7 @@ export function createToolGatewayService(
         updatedAt: now,
       })
       .where(eq(toolInvocations.id, input.invocationId));
+    void emitConnectorInvocationCompleted(db, input.invocationId);
     await reflectToolActionInteractionLifecycle({
       actionRequestId: expired.id,
       status: "expired",
@@ -7976,6 +7987,7 @@ export function createToolGatewayService(
           updatedAt: now,
         })
         .where(eq(toolInvocations.id, invocation.id));
+      void emitConnectorInvocationCompleted(db, invocation.id);
       await db
         .update(toolActionRequests)
         .set({ status: "executed", resolvedAt: now, updatedAt: now })
@@ -9045,6 +9057,7 @@ export function createToolGatewayService(
                 updatedAt: new Date(),
               })
               .where(eq(toolInvocations.id, invocationId));
+            void emitConnectorInvocationCompleted(db, invocationId);
             throw new ToolGatewayHttpError(
               500,
               error.message,
@@ -9316,6 +9329,7 @@ export function createToolGatewayService(
               updatedAt: now,
             })
             .where(eq(toolInvocations.id, row.invocationId));
+          void emitConnectorInvocationCompleted(db, row.invocationId);
           await reflectToolActionInteractionLifecycle({
             actionRequestId: row.id,
             status,
@@ -10415,6 +10429,7 @@ export function createToolGatewayService(
             updatedAt: completedAt,
           })
           .where(eq(toolInvocations.id, invocationId));
+        void emitConnectorInvocationCompleted(db, invocationId);
         if (input.approvedActionRequestId) {
           const [executedRequest] = await db
             .update(toolActionRequests)
@@ -10541,6 +10556,7 @@ export function createToolGatewayService(
             updatedAt: completedAt,
           })
           .where(eq(toolInvocations.id, invocationId));
+        void emitConnectorInvocationCompleted(db, invocationId);
         if (input.approvedActionRequestId) {
           const [failedRequest] = await db
             .update(toolActionRequests)
@@ -10804,6 +10820,7 @@ export function createToolGatewayService(
             updatedAt: new Date(),
           })
           .where(eq(toolInvocations.id, invocationId));
+        void emitConnectorInvocationCompleted(db, invocationId);
         await writeToolCallEvent({
           invocationId,
           session: sessionLike,
@@ -10856,6 +10873,7 @@ export function createToolGatewayService(
             updatedAt: new Date(),
           })
           .where(eq(toolInvocations.id, invocationId));
+        void emitConnectorInvocationCompleted(db, invocationId);
         await writeToolCallEvent({
           invocationId,
           session: sessionLike,
