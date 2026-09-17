@@ -407,6 +407,7 @@ vi.mock("../components/TaskChatThread", () => ({
       onSelect: (runId: string) => Promise<void> | void;
     }[];
     composerPause?: TaskComposerPause | null;
+    composerDisabledReason?: string | null;
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -5288,6 +5289,62 @@ describe("IssueDetail", () => {
       "Draft follow-up message",
     );
     localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
+  });
+
+  it("does not disable the desktop composer while tree control state is pending", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.getTreeControlState.mockImplementation(
+      () => new Promise(() => {}),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(mockIssueChatThreadRender).toHaveBeenCalled();
+    });
+
+    const lastChatThreadProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      composerDisabledReason?: string | null;
+    };
+    expect(lastChatThreadProps.composerDisabledReason).not.toBe(
+      "Checking task status…",
+    );
+    expect(lastChatThreadProps.composerDisabledReason ?? null).toBeNull();
+  });
+
+  it("disables the composer when tree control state cannot be loaded", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.getTreeControlState.mockRejectedValue(
+      new Error("tree control unavailable"),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const lastChatThreadProps =
+        mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+          composerDisabledReason?: string | null;
+        };
+      expect(lastChatThreadProps.composerDisabledReason).toBe(
+        "Couldn’t check whether this task is paused. Refresh to try again.",
+      );
+    });
   });
 
   it("renders a quiet task pause notice and defaults leaf resume to wake the assignee", async () => {
