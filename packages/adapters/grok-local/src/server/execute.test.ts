@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
@@ -308,12 +309,15 @@ describe("grok_local execute", () => {
   describe("local lane GROK_HOME", () => {
     let previousApiKey: string | undefined;
     let previousPaperclipHome: string | undefined;
+    let previousGrokHome: string | undefined;
 
     beforeEach(async () => {
       previousApiKey = process.env.XAI_API_KEY;
       previousPaperclipHome = process.env.PAPERCLIP_HOME;
+      previousGrokHome = process.env.GROK_HOME;
       process.env.PAPERCLIP_HOME = await makeTempRoot();
       delete process.env.XAI_API_KEY;
+      delete process.env.GROK_HOME;
     });
 
     afterEach(() => {
@@ -321,6 +325,8 @@ describe("grok_local execute", () => {
       else process.env.XAI_API_KEY = previousApiKey;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousGrokHome === undefined) delete process.env.GROK_HOME;
+      else process.env.GROK_HOME = previousGrokHome;
     });
 
     it("leaves GROK_HOME unset when the company home has no usable auth", async () => {
@@ -332,6 +338,38 @@ describe("grok_local execute", () => {
 
       await execute(await makeCtx("run-subscription-home-empty", await makeTempRoot()));
       expect(seenEnv.GROK_HOME).toBeUndefined();
+    });
+
+    it("lets a local child read the host login when the company home is empty", async () => {
+      const hostRoot = await makeTempRoot();
+      const hostHome = path.join(hostRoot, ".grok");
+      await fs.mkdir(hostHome);
+      const auth = grokAuth({ key: "fixture-host-key", expiresAt: NEWER_EXPIRY });
+      await fs.writeFile(path.join(hostHome, "auth.json"), auth);
+      const companyHome = resolveManagedGrokHomeDir(process.env, "company-1");
+      await fs.mkdir(companyHome, { recursive: true });
+      const ctx = await makeCtx("run-host-login-child", await makeTempRoot());
+      ctx.config.env = { HOME: hostRoot };
+      runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+        // A real subprocess with Grok's home lookup contract, using only
+        // disposable fixture credentials. No provider request is made.
+        const stdout = execFileSync(process.execPath, ["-e", `
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const home = process.env.GROK_HOME || path.join(process.env.HOME, ".grok");
+          const auth = JSON.parse(fs.readFileSync(path.join(home, "auth.json"), "utf8"));
+          if (Object.values(auth)[0].key !== "fixture-host-key") process.exit(1);
+          console.log(JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "host-login" }));
+        `], { env: { ...process.env, ...options.env }, encoding: "utf8" });
+        return { ...makeSuccessfulRunResult(), stdout };
+      });
+
+      const result = await execute(ctx);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.sessionId).toBe("host-login");
+      expect(await fs.readdir(companyHome)).toEqual([]);
+      expect(await fs.readFile(path.join(hostHome, "auth.json"), "utf8")).toBe(auth);
     });
 
     it("pins GROK_HOME to the company home when that home has usable auth", async () => {
@@ -353,6 +391,52 @@ describe("grok_local execute", () => {
       expect(seenEnv.GROK_HOME).toBe(companyHome);
     });
 
+    it.each(["{invalid", "{}", JSON.stringify({ [GROK_IDENTITY]: { key: "incomplete" } })])(
+      "uses host login when company auth is unusable (%s)",
+      async (contents) => {
+        const companyHome = resolveManagedGrokHomeDir(process.env, "company-1");
+        await fs.mkdir(companyHome, { recursive: true });
+        await fs.writeFile(path.join(companyHome, "auth.json"), contents);
+        runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+        await execute(await makeCtx("run-unusable-company-auth", await makeTempRoot()));
+
+        expect(runProcessMock.mock.calls[0][4].env.GROK_HOME).toBeUndefined();
+        expect(await fs.readFile(path.join(companyHome, "auth.json"), "utf8")).toBe(contents);
+      },
+    );
+
+    it.each(["inherited", "configured"])("preserves the %s host GROK_HOME fallback", async (source) => {
+      const hostHome = await makeTempRoot();
+      const ctx = await makeCtx("run-custom-host-home", await makeTempRoot());
+      if (source === "inherited") process.env.GROK_HOME = hostHome;
+      else ctx.config.env = { GROK_HOME: hostHome };
+      runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+      await execute(ctx);
+
+      // Command resolution receives the merged child environment, including
+      // inherited values that are absent from the explicit spawn overrides.
+      const commandCall = ensureCommandMock.mock.calls[0] as unknown as [unknown, unknown, unknown, Record<string, string>];
+      expect(commandCall[3].GROK_HOME).toBe(hostHome);
+    });
+
+    it("uses company login when an explicit empty API key overrides an inherited key", async () => {
+      process.env.XAI_API_KEY = "host-api-key";
+      process.env.GROK_HOME = await makeTempRoot();
+      const companyHome = resolveManagedGrokHomeDir(process.env, "company-1");
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(path.join(companyHome, "auth.json"), grokAuth({ key: "company-key", expiresAt: NEWER_EXPIRY }));
+      const ctx = await makeCtx("run-cleared-host-api-key", await makeTempRoot());
+      ctx.config.env = { XAI_API_KEY: "" };
+      runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+      const result = await execute(ctx);
+
+      expect(runProcessMock.mock.calls[0][4].env.GROK_HOME).toBe(companyHome);
+      expect(result.billingType).toBe("subscription");
+    });
+
     it("leaves GROK_HOME unset when XAI_API_KEY exists", async () => {
       let seenEnv: Record<string, string> = {};
       runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
@@ -366,6 +450,8 @@ describe("grok_local execute", () => {
     });
 
     it("pins GROK_HOME for a managed AI connection even when the home has no usable auth", async () => {
+      process.env.GROK_HOME = await makeTempRoot();
+      process.env.XAI_API_KEY = "inherited-host-key";
       let seenEnv: Record<string, string> = {};
       runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
         seenEnv = options.env;
@@ -543,6 +629,30 @@ describe("grok_local execute", () => {
       await execute(await makeCtx("run-remote-subscription-home", await makeTempRoot()));
 
       expect(seenEnv.GROK_HOME).toBe("/remote/workspace/.paperclip-runtime/grok/home");
+    });
+
+    it("stages an empty company home instead of a configured host login for remote runs", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      const hostHome = await makeTempRoot();
+      await fs.writeFile(path.join(hostHome, "auth.json"), grokAuth({ key: "host-only", expiresAt: NEWER_EXPIRY }));
+      const ctx = await makeCtx("run-remote-empty-company", await makeTempRoot());
+      ctx.config.env = { GROK_HOME: hostHome };
+      let stagedEntries: string[] | undefined;
+      prepareRuntimeMock.mockImplementationOnce(async (input) => {
+        stagedEntries = await fs.readdir(input.assets![0].localDir);
+        return {
+          workspaceRemoteDir: "/remote/workspace",
+          assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+          restoreWorkspace: async () => {},
+        };
+      });
+      runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+      await execute(ctx);
+
+      expect(stagedEntries).toEqual([]);
+      expect(runProcessMock.mock.calls[0][4].env.GROK_HOME).toBe("/remote/workspace/.paperclip-runtime/grok/home");
     });
 
     it("uses the fallback remote path when assetDirs.home is absent", async () => {

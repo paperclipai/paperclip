@@ -58,7 +58,7 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
+function hasNonEmptyEnvValue(env: Record<string, string | undefined>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
 }
@@ -320,8 +320,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // (#13568). Remote/sandbox runs and managed AI connections still pin so
     // they cannot fall through to the host credential. The API-key path below
     // (`resolveBillingType`) stays unchanged when the key exists.
-    const isGrokSubscriptionMode =
-      !hasNonEmptyEnvValue(env, "XAI_API_KEY") && (Boolean(config.managedAiConnection) || !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY"));
+    // Explicit empty overrides clear inherited API keys in the child process.
+    // Use the same precedence here when selecting its credential home.
+    const isGrokSubscriptionMode = !hasNonEmptyEnvValue(
+      config.managedAiConnection ? env : { ...process.env, ...env },
+      "XAI_API_KEY",
+    );
     if (isGrokSubscriptionMode) {
       const pinManagedHome =
         executionTargetIsRemote ||
