@@ -1,6 +1,6 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
-import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -32,27 +32,39 @@ import {
   getIssueContinuationSummaryDocument,
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
-import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
+import {
+  decideQueuedRunStaleness,
+  decideScheduledRetryGate,
+  EARLY_UPSTREAM_REPROBE_GREEN_LOOKBACK_MS,
+  EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS,
+} from "../domain/policy.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
   RetryReasonKind,
   ScheduledRetryFacts,
+  UpstreamRecoveryEvidence,
 } from "../domain/policy.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
+  TRANSIENT_FAILURE_RETRY_REASON,
   allowsIssueInteractionWake,
   deriveCommentId,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
 } from "../domain/wake-context.js";
 import type {
+  AdvanceScheduledRetryPinInput,
+  AdvanceScheduledRetryPinOutcome,
   CancelStaleQueuedRunInput,
   DispatchResolvedInteractionInput,
   DispatchResolvedInteractionOutcome,
   DueRetryRun,
+  EarlyUpstreamReprobeCandidate,
   EvaluateScheduledRetryGateInput,
+  FindUpstreamRecoveryEvidenceInput,
   ListDueRetriesInput,
+  ListEarlyUpstreamReprobeCandidatesInput,
   PromoteOrCancelDueRetryInput,
   RunDispatchWriter,
   ScheduledRetryReader,
@@ -466,6 +478,117 @@ export function createPostgresRunDispatchAdapter(
       runId: row.id,
       companyId: row.companyId,
     }));
+  }
+
+  async function listEarlyUpstreamReprobeCandidates(
+    input: ListEarlyUpstreamReprobeCandidatesInput,
+  ): Promise<EarlyUpstreamReprobeCandidate[]> {
+    // Only pins past the bounded backoff ceiling are abnormal enough to be a
+    // usage-limit hint rather than ordinary transient backoff.
+    const reprobeThreshold = new Date(
+      input.now.getTime() + EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS,
+    );
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        createdAt: heartbeatRuns.createdAt,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, TRANSIENT_FAILURE_RETRY_REASON),
+          gt(heartbeatRuns.scheduledRetryAt, reprobeThreshold),
+          input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined,
+        ),
+      )
+      .orderBy(
+        asc(heartbeatRuns.scheduledRetryAt),
+        asc(heartbeatRuns.createdAt),
+        asc(heartbeatRuns.id),
+      )
+      .limit(input.limit);
+
+    return rows.map((row) => ({
+      runId: row.id,
+      companyId: row.companyId,
+      retryReason: row.scheduledRetryReason,
+      scheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt) : null,
+      pinSetAt: row.updatedAt
+        ? new Date(row.updatedAt)
+        : row.createdAt
+          ? new Date(row.createdAt)
+          : null,
+    }));
+  }
+
+  async function findUpstreamRecoveryEvidence(
+    input: FindUpstreamRecoveryEvidenceInput,
+  ): Promise<UpstreamRecoveryEvidence | null> {
+    const lookbackFloor = new Date(
+      input.now.getTime() - EARLY_UPSTREAM_REPROBE_GREEN_LOOKBACK_MS,
+    );
+    const row = await db
+      .select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "succeeded"),
+          gt(heartbeatRuns.finishedAt, lookbackFloor),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!row?.finishedAt) return null;
+    return { runId: row.id, finishedAt: new Date(row.finishedAt) };
+  }
+
+  async function advanceScheduledRetryPin(
+    input: AdvanceScheduledRetryPinInput,
+  ): Promise<AdvanceScheduledRetryPinOutcome> {
+    // Guarded on the pin still being in the future, so a retry another writer
+    // already released or promoted is never re-pinned by this sweep.
+    const [row] = await db
+      .update(heartbeatRuns)
+      .set({ scheduledRetryAt: input.now, updatedAt: input.now })
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          eq(heartbeatRuns.scheduledRetryReason, TRANSIENT_FAILURE_RETRY_REASON),
+          gt(heartbeatRuns.scheduledRetryAt, input.now),
+        ),
+      )
+      .returning();
+    if (!row) return { advanced: false };
+
+    await appendHeartbeatRunEvent(db, {
+      companyId: row.companyId,
+      runId: row.id,
+      agentId: row.agentId,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message:
+        "Scheduled retry re-probed early because the upstream recovered before the pinned retry window",
+      payload: {
+        scheduledRetryAttempt: row.scheduledRetryAttempt,
+        scheduledRetryReason: row.scheduledRetryReason,
+        originalScheduledRetryAt: input.originalScheduledRetryAt
+          ? input.originalScheduledRetryAt.toISOString()
+          : null,
+        upstreamRecoveryEvidenceRunId: input.evidenceRunId,
+      },
+    });
+
+    return { advanced: true };
   }
 
   async function loadStalenessFacts(
@@ -1038,8 +1161,11 @@ export function createPostgresRunDispatchAdapter(
   return {
     evaluateScheduledRetryGate,
     listDueRetries,
+    listEarlyUpstreamReprobeCandidates,
+    findUpstreamRecoveryEvidence,
     cancelStaleQueuedRun,
     dispatchResolvedInteractionIfCurrent,
     promoteOrCancelDueRetry,
+    advanceScheduledRetryPin,
   };
 }

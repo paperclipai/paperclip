@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  decideEarlyUpstreamReprobe,
   decideQueuedRunStaleness,
   decideScheduledRetryGate,
+  EARLY_UPSTREAM_REPROBE_GREEN_LOOKBACK_MS,
+  EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS,
+  type EarlyUpstreamReprobeFacts,
   type QueuedRunFacts,
   type ReviewParticipantFacts,
   type ScheduledRetryFacts,
@@ -504,5 +508,109 @@ describe("AI subscription wait ownership", () => {
       .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
     expect(decideQueuedRunStaleness({ ...queued, ...nonAssignee, retryReasonKind: "max_turn_continuation" }, NOW))
       .toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
+  });
+});
+
+describe("decideEarlyUpstreamReprobe", () => {
+  // A 529 storm pinned this retry to a weekly-quota reset 15h out, then the
+  // account started being served again minutes later.
+  const FAR_FUTURE_PIN = new Date(NOW.getTime() + 15 * 60 * 60 * 1000);
+  const PIN_SET_AT = new Date(NOW.getTime() - 10 * 60 * 1000);
+
+  function baseReprobeFacts(): EarlyUpstreamReprobeFacts {
+    return {
+      runId: "run-1",
+      retryReason: "transient_failure",
+      scheduledRetryAt: FAR_FUTURE_PIN,
+      pinSetAt: PIN_SET_AT,
+      recoveryEvidence: {
+        runId: "green-run",
+        finishedAt: new Date(NOW.getTime() - 60_000),
+      },
+    };
+  }
+
+  it("re-probes a far-future pin once a run after it succeeded", () => {
+    expect(decideEarlyUpstreamReprobe(baseReprobeFacts(), NOW)).toEqual({
+      reprobe: true,
+      evidenceRunId: "green-run",
+    });
+  });
+
+  it("holds the pin while the upstream is still down", () => {
+    expect(
+      decideEarlyUpstreamReprobe({ ...baseReprobeFacts(), recoveryEvidence: null }, NOW),
+    ).toEqual({ reprobe: false, reason: "no_recovery_evidence" });
+  });
+
+  it("rejects a success that predates the pin as proof of recovery", () => {
+    const facts = baseReprobeFacts();
+    expect(
+      decideEarlyUpstreamReprobe(
+        {
+          ...facts,
+          recoveryEvidence: {
+            runId: "green-run",
+            finishedAt: new Date(PIN_SET_AT.getTime() - 60_000),
+          },
+        },
+        NOW,
+      ),
+    ).toEqual({ reprobe: false, reason: "recovery_predates_pin" });
+  });
+
+  it("rejects a success too old to describe the upstream's current state", () => {
+    expect(
+      decideEarlyUpstreamReprobe(
+        {
+          ...baseReprobeFacts(),
+          pinSetAt: new Date(NOW.getTime() - EARLY_UPSTREAM_REPROBE_GREEN_LOOKBACK_MS * 2),
+          recoveryEvidence: {
+            runId: "green-run",
+            finishedAt: new Date(NOW.getTime() - EARLY_UPSTREAM_REPROBE_GREEN_LOOKBACK_MS - 1),
+          },
+        },
+        NOW,
+      ),
+    ).toEqual({ reprobe: false, reason: "recovery_evidence_stale" });
+  });
+
+  it("leaves an ordinary transient backoff on its own schedule", () => {
+    for (const scheduledRetryAt of [
+      new Date(NOW.getTime() + EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS),
+      new Date(NOW.getTime() + 1_000),
+      null,
+    ]) {
+      expect(decideEarlyUpstreamReprobe({ ...baseReprobeFacts(), scheduledRetryAt }, NOW)).toEqual({
+        reprobe: false,
+        reason: "pin_not_far_future",
+      });
+    }
+    expect(
+      decideEarlyUpstreamReprobe(
+        {
+          ...baseReprobeFacts(),
+          scheduledRetryAt: new Date(NOW.getTime() + EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS + 1),
+        },
+        NOW,
+      ),
+    ).toEqual({ reprobe: true, evidenceRunId: "green-run" });
+  });
+
+  it.each(["max_turns_continuation", "workspace_busy", "native_safe_replacement", null])(
+    "never re-probes a retry scheduled for a non-transient reason: %s",
+    (retryReason) => {
+      expect(decideEarlyUpstreamReprobe({ ...baseReprobeFacts(), retryReason }, NOW)).toEqual({
+        reprobe: false,
+        reason: "retry_reason_not_transient",
+      });
+    },
+  );
+
+  it("treats a run with no recorded pin timestamp as having no lower bound", () => {
+    expect(decideEarlyUpstreamReprobe({ ...baseReprobeFacts(), pinSetAt: null }, NOW)).toEqual({
+      reprobe: true,
+      evidenceRunId: "green-run",
+    });
   });
 });
