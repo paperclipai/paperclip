@@ -589,6 +589,9 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
   const callId = boundedIdentity(call.callId, "callId");
   if (tools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
+  if (tools.size >= MAX_PENDING_TOOLS) {
+    throw new Error("ACPX pending tool limit reached");
+  }
   if (
     operationId === PRP_COMPLETION_TOOL_NAME ||
     operationId === PRP_BLOCK_TOOL_NAME
@@ -637,9 +640,6 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       });
       if (call.signal.aborted) abort();
     });
-  }
-  if (tools.size >= MAX_PENDING_TOOLS) {
-    throw new Error("ACPX pending tool limit reached");
   }
   emit(
     "runtime.tool_called",
