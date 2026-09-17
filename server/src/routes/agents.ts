@@ -3743,8 +3743,12 @@ export function agentRoutes(
   router.post("/heartbeat-runs/:runId/purge-output", async (req, res) => {
     assertBoard(req);
     const runId = req.params.runId as string;
-    const existing = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
+    const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
+    if (existing.status === "queued" || existing.status === "running") {
+      res.status(409).json({ error: "Cannot purge output for an active heartbeat run" });
+      return;
+    }
 
     const result = await purgeHeartbeatRunOutput(db, runId);
     if (!result) {

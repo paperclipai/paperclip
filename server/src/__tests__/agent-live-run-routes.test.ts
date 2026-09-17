@@ -11,6 +11,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  getRun: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
@@ -367,6 +368,24 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+  });
+
+  it("does not purge output from an active heartbeat run", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: routeAgentId,
+      status: "running",
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).post("/api/heartbeat-runs/run-1/purge-output"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toEqual({ error: "Cannot purge output for an active heartbeat run" });
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
   });
 
   it("caps company live run polling by default", async () => {
