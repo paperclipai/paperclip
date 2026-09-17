@@ -189,6 +189,15 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
   // Only reference a run we just proved exists; an unknown id would violate the FK and fail
   // the already-committed mutation this row is describing. See loadActivityRunRef.
   const runId = (await loadActivityRunRef(db, input.companyId, input.runId))?.id ?? null;
+  if (runId === null && readNonEmptyString(input.runId)) {
+    // The caller supplied a run id that does not resolve to a heartbeat_runs row -- surface it,
+    // since the insert now silently drops it to null instead of FK-violating. Without this, the
+    // condition is only inferable from a null runId on the persisted row.
+    logger.warn(
+      { companyId: input.companyId, runId: input.runId },
+      "activity log run id did not resolve to a heartbeat_runs row; recording activity without a run reference",
+    );
+  }
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,

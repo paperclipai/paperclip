@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   activityLog,
@@ -20,6 +20,7 @@ import {
   type ActivityRunRef,
   type LogActivityInput,
 } from "../services/activity-log.js";
+import { logger } from "../middleware/logger.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -244,6 +245,8 @@ function createForeignKeyDb(runRows: ActivityRunRef[]) {
 }
 
 describe("persistActivity run-id foreign key", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it("reproduces the 500: writing the caller's run id straight through violates the FK", async () => {
     const { db } = createForeignKeyDb([]);
 
@@ -263,24 +266,42 @@ describe("persistActivity run-id foreign key", () => {
     }).returning({ id: activityLog.id })).rejects.toMatchObject({ code: "23503" });
   });
 
-  it("drops an unknown run id so the insert survives", async () => {
+  it("drops an unknown run id so the insert survives, and warns with the run id and company", async () => {
     const { db, insertedRows } = createForeignKeyDb([]);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
 
     await expect(persistActivity(db, activityInput({ runId: missingRunId })))
       .resolves.toMatchObject({ activity: { id: expect.any(String) } });
 
     expect(insertedRows).toHaveLength(1);
     expect(insertedRows[0]?.runId).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId, runId: missingRunId }),
+      expect.stringContaining("did not resolve"),
+    );
   });
 
-  it("keeps a run id that really exists", async () => {
+  it("keeps a run id that really exists, and does not warn", async () => {
     const { db, insertedRows } = createForeignKeyDb([{ id: runId, responsibleUserId: "run-user" }]);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
 
     const { publication } = await persistActivity(db, activityInput({ runId }));
 
     expect(insertedRows).toHaveLength(1);
     expect(insertedRows[0]?.runId).toBe(runId);
     expect(publication.payload).toMatchObject({ runId, responsibleUserId: "run-user" });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("does not warn when no run id was supplied at all", async () => {
+    const { db, insertedRows } = createForeignKeyDb([]);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+
+    await persistActivity(db, activityInput());
+
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0]?.runId).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
