@@ -24,6 +24,7 @@ import {
   agentMineInboxQuerySchema,
   ADAPTER_AGNOSTIC_KEYS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  HEARTBEAT_RUN_STATUSES,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -36,6 +37,7 @@ import {
   type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
+  type HeartbeatRunStatus,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
@@ -314,6 +316,17 @@ function readHeartbeatRunListOffset(value: unknown) {
     throw badRequest("offset must be a non-negative integer");
   }
   return offset;
+}
+
+function readHeartbeatRunListStatus(value: unknown): HeartbeatRunStatus | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    !HEARTBEAT_RUN_STATUSES.includes(value as HeartbeatRunStatus)
+  ) {
+    throw badRequest(`status must be one of: ${HEARTBEAT_RUN_STATUSES.join(", ")}`);
+  }
+  return value as HeartbeatRunStatus;
 }
 
 function readRunIssueId(context: Record<string, unknown> | null) {
@@ -6567,8 +6580,9 @@ export function agentRoutes(
     const agentId = req.query.agentId as string | undefined;
     const limit = readHeartbeatRunListLimit(req.query.limit);
     const offset = readHeartbeatRunListOffset(req.query.offset);
+    const status = readHeartbeatRunListStatus(req.query.status);
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary, offset });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, offset, status });
     res.json(await runRedactions.redactForRuns(companyId, runs));
   });
 

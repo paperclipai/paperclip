@@ -407,13 +407,13 @@ describe("agent live run routes", () => {
       "company-1",
       undefined,
       undefined,
-      { summary: false, offset: 0 },
+      { summary: false, offset: 0, status: undefined },
     );
 
     mockHeartbeatService.list.mockClear();
     const paginatedRes = await requestApp(app, (baseUrl) =>
       request(baseUrl).get(
-        "/api/companies/company-1/heartbeat-runs?agentId=agent-1&limit=25&offset=50&summary=true",
+        "/api/companies/company-1/heartbeat-runs?agentId=agent-1&limit=25&offset=50&summary=true&status=failed",
       ),
     );
 
@@ -422,7 +422,7 @@ describe("agent live run routes", () => {
       "company-1",
       "agent-1",
       25,
-      { summary: true, offset: 50 },
+      { summary: true, offset: 50, status: "failed" },
     );
 
     for (const query of [
@@ -433,6 +433,7 @@ describe("agent live run routes", () => {
       "offset=-1",
       "offset=1.5",
       "offset=invalid",
+      "status=invalid",
     ]) {
       mockHeartbeatService.list.mockClear();
       const invalidRes = await requestApp(app, (baseUrl) =>

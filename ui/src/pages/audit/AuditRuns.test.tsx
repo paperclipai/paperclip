@@ -125,6 +125,7 @@ describe("AuditRuns", () => {
     expect(listRunsMock).toHaveBeenCalledWith("company-1", undefined, 25, {
       summary: true,
       offset: 0,
+      status: undefined,
     });
     expect(container.textContent).toContain("Agent");
     expect(container.textContent).toContain("Status");
@@ -143,6 +144,7 @@ describe("AuditRuns", () => {
     expect(listRunsMock).toHaveBeenCalledWith("company-1", "agent-1", 25, {
       summary: true,
       offset: 0,
+      status: "succeeded",
     });
     expect(container.textContent).toContain("Clear filters");
   });

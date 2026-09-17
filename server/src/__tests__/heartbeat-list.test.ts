@@ -252,7 +252,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
         companyId,
         agentId,
         invocationSource: "assignment" as const,
-        status: "succeeded" as const,
+        status: index === 0 ? "failed" as const : "succeeded" as const,
         createdAt: new Date(Date.UTC(2026, 7, 1, 0, 0, 0, index)),
       })),
     );
@@ -265,11 +265,16 @@ describeEmbeddedPostgres("heartbeat list", () => {
       summary: true,
       offset: 200,
     });
+    const failedRuns = await service.list(companyId, agentId, 10, {
+      summary: true,
+      status: "failed",
+    });
 
     expect(firstPage).toHaveLength(200);
     expect(firstPage[0]?.id).toBe(runIds[204]);
     expect(firstPage[199]?.id).toBe(runIds[5]);
     expect(finalPage.map((run) => run.id)).toEqual(runIds.slice(0, 5).reverse());
+    expect(failedRuns.map((run) => run.id)).toEqual([runIds[0]]);
     expect(
       finalPage.every(
         (run) => !firstPage.some((firstRun) => firstRun.id === run.id),
