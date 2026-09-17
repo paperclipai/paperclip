@@ -659,7 +659,8 @@ const NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE =
   "Native execution ownership could not be verified; automatic recovery is blocked";
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
-// The reaper stops retrying a pending_cleanup lease after this many attempts.
+const pendingCleanupAttemptsInFlight = new Set<string>();
+// Escalate and slow cleanup after this many attempts; never abandon a live lease.
 const PENDING_CLEANUP_SWEEP_ATTEMPT_CAP = 5;
 // The reaper stores its retry state under these keys in the lease metadata.
 const PENDING_CLEANUP_ATTEMPTS_METADATA_KEY = "pendingCleanupRetryAttempts";
@@ -698,6 +699,23 @@ function pendingCleanupAttemptsSql() {
         )
       else 0
     end`;
+}
+
+function pendingCleanupRetryDueSql(explicitRetry = false) {
+  // Ownership renewal and retry cooldown are separate clocks. A late renewal
+  // cannot change when a completed attempt may retry. Older claims used the
+  // retry field for both clocks, so retain that fallback until they settle.
+  const deadline = sql`case
+    when ${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'
+      and ${environmentLeases.metadata} ? 'pendingCleanupLeaseExpiresAtMs'
+      then ${environmentLeases.metadata}->'pendingCleanupLeaseExpiresAtMs'
+    else ${environmentLeases.metadata}->'pendingCleanupRetryAfterMs' end`;
+  return sql`case
+    when ${explicitRetry} and coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true' then true
+    when jsonb_typeof(${deadline}) = 'number'
+      then (${deadline})::numeric <= ${Date.now()}
+        or (${deadline})::numeric > ${Date.now() + 30 * 60_000 + 1_000}
+    else true end`;
 }
 
 // Choose the `jsonb_set` target root. A provider can write a scalar or array
@@ -10141,7 +10159,7 @@ export function heartbeatService(
             state: "acknowledged", acknowledgedAt: new Date().toISOString(),
             proof: "provider_termination_receipt" },
           conversationContinuation: CONVERSATION_CONTINUATION_POLICY,
-        })}::jsonb`,
+                 })}::jsonb`,
         updatedAt: new Date(),
       }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.status, "cancelled")));
@@ -18098,25 +18116,29 @@ export function heartbeatService(
   // only matches when the lease is still pending_cleanup and its stored attempt
   // count still equals `expectedAttempts`. Two concurrent sweeps read the same
   // count, but Postgres serializes the two updates on the row and only the first
-  // matches the guard. The loser gets zero rows and skips the lease. This bounds
-  // the retries to the cap and stops a second destroy of the same lease.
-  // Returns true only for the sweep that won the claim.
+  // matches the guard. The loser gets zero rows and skips the lease. The persisted in-flight deadline also prevents a later tick
+  // from starting another attempt while this one is still running.
+  // Returns the attempt identity only for the sweep that won the claim.
   //
-  // The update writes only the attempts key with `jsonb_set`. It never writes a
-  // copied metadata object, so a concurrent write to an unrelated metadata key
+  // The update patches cleanup ownership fields without writing a copied
+  // metadata object, so a concurrent write to an unrelated metadata key
   // survives. The guard reads the stored count through the safe SQL reader, so a
   // malformed value never throws.
   async function claimPendingCleanupRetryAttempt(
     leaseId: string,
     expectedAttempts: number,
     manualAttempt?: { previousId: unknown },
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     const now = new Date();
+    const attemptId = randomUUID();
     const claimed = await db
       .update(environmentLeases)
       .set({
         metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)
-          || ${JSON.stringify(manualAttempt ? { pendingCleanupManualAttemptId: randomUUID() } : {})}::jsonb`,
+          || ${JSON.stringify({ ...(manualAttempt ? { pendingCleanupManualAttemptId: randomUUID() } : {}),
+            pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
+            pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+          })}::jsonb`,
         lastUsedAt: now,
         updatedAt: now,
       })
@@ -18126,10 +18148,11 @@ export function heartbeatService(
           eq(environmentLeases.status, "pending_cleanup"),
           sql`${pendingCleanupAttemptsSql()} = ${expectedAttempts}`,
           manualAttempt ? sql`coalesce(${environmentLeases.metadata}->'pendingCleanupManualAttemptId', 'null'::jsonb) is not distinct from ${JSON.stringify(manualAttempt.previousId ?? null)}::jsonb` : undefined,
+          pendingCleanupRetryDueSql(Boolean(manualAttempt)),
         ),
       )
       .returning({ id: environmentLeases.id });
-    return claimed.length > 0;
+    return claimed.length > 0 ? attemptId : null;
   }
 
   // Atomically claim the one-time cap warning for a lease. The update only
@@ -18305,12 +18328,13 @@ export function heartbeatService(
   // sweep. The backoff equals the reaper staleness threshold, so a lease waits
   // for that period between attempts. The sweep reads and writes the attempt
   // count in the lease metadata. It warns once when a lease reaches the attempt
-  // cap and then stops the retries for that lease.
+  // threshold, then continues with slower retries. Live attempts renew their
+  // cleanup claim; after controller loss, exact-resource destruction may repeat.
   async function sweepPendingCleanupLeases(opts?: {
     backoffMs?: number;
     /** One cleanup attempt per explicit user Retry, for this failed run only.
-     * A later user Retry may try again after a provider failure; automatic
-     * sweeps retain their exhausted budget and never gain extra attempts.
+     * A later user Retry may bypass the cooldown after a provider failure,
+     * but cannot take over an in-flight cleanup attempt.
      */
     explicitRetry?: { companyId: string; runId: string; actorId: string; reason?: "retry_failed_run" | "queued_comment_interrupt" };
   }): Promise<{
@@ -18353,6 +18377,7 @@ export function heartbeatService(
           eq(environmentLeases.status, "pending_cleanup"),
           opts?.explicitRetry ? eq(environmentLeases.companyId, opts.explicitRetry.companyId) : undefined,
           opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
+          pendingCleanupRetryDueSql(Boolean(opts?.explicitRetry)),
           backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
         ),
       )
@@ -18362,24 +18387,9 @@ export function heartbeatService(
     let destroyed = 0;
     let capped = 0;
     for (const row of rows) {
+      if (pendingCleanupAttemptsInFlight.has(row.id)) continue;
       const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
       const attempts = readPendingCleanupRetryAttempts(metadata);
-
-      if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP && !opts?.explicitRetry) {
-        capped += 1;
-        // Warn once, then leave the lease for manual cleanup. The atomic claim
-        // keeps the warning to one log line even when two sweeps overlap.
-        if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
-          const warned = await claimPendingCleanupCapWarning(row.id);
-          if (warned) {
-            logger.warn(
-              { leaseId: row.id, environmentId: row.environmentId, attempts },
-              "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
-            );
-          }
-        }
-        continue;
-      }
 
       const environment = row.environmentId
         ? await environmentsSvc.getById(row.environmentId)
@@ -18433,19 +18443,34 @@ export function heartbeatService(
 
       // Atomically claim the attempt before the retry. Only the winning sweep
       // increments the count and tears the sandbox down, so an overlapping sweep
-      // never tears the same sandbox down twice or exceeds the attempt cap. The
-      // claim records the attempt before the retry, so a thrown driver error
-      // still counts against the cap.
+      // cannot start another attempt while this one holds the cleanup lease.
+      // The deadline survives a server restart; the counter saturates at the
+      // escalation threshold while attempt identities remain unique.
       const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts,
         opts?.explicitRetry ? { previousId: metadata.pendingCleanupManualAttemptId } : undefined);
       if (!claimed) continue;
-      if (opts?.explicitRetry) await logActivity(db, {
-        companyId: row.companyId, actorType: "user", actorId: opts.explicitRetry.actorId,
-        action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
-        runId: opts.explicitRetry.runId, details: { attempt: attempts + 1, reason: opts.explicitRetry.reason ?? "retry_failed_run" },
-      });
+      pendingCleanupAttemptsInFlight.add(row.id);
+      lease.metadata = { ...lease.metadata, pendingCleanupAttemptId: claimed };
+      let activeRenewal: Promise<void> | null = null;
+      const renewal = setInterval(() => {
+        if (activeRenewal) return;
+        activeRenewal = db.update(environmentLeases).set({
+          metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${Date.now() + 15 * 60_000}::bigint))`,
+        }).where(and(eq(environmentLeases.id, row.id), eq(environmentLeases.status, "pending_cleanup"),
+          sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`,
+          sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`))
+          .then(() => {})
+          .catch(() => logger.warn({ leaseId: row.id }, "cleanup ownership renewal failed"))
+          .finally(() => { activeRenewal = null; });
+      }, 30_000);
+      renewal.unref();
 
       try {
+        if (opts?.explicitRetry) await logActivity(db, {
+          companyId: row.companyId, actorType: "user", actorId: opts.explicitRetry.actorId,
+          action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
+          runId: opts.explicitRetry.runId, details: { attempt: attempts + 1, reason: opts.explicitRetry.reason ?? "retry_failed_run" },
+        });
         if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
           // cleanup-authorized secret versions. Preserve any provider receipt;
@@ -18454,12 +18479,13 @@ export function heartbeatService(
             environment,
             lease,
           });
-          await environmentsSvc.releaseLease(lease.id, "expired", {
+          const released = await environmentsSvc.releaseLease(lease.id, "expired", {
+            expectedPendingCleanupAttemptId: claimed,
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",
             remoteExecutionTermination: remoteTerminationReceipt(lease, receipt),
           });
-          destroyed += 1;
+          if (released) destroyed += 1;
         } else if (environment) {
           const result = await environmentRuntime.destroyRunLease({
             environment,
@@ -18473,11 +18499,12 @@ export function heartbeatService(
       } catch {
         // The recorded-data teardown throws on failure, so revert the lease to
         // pending_cleanup for a later sweep. The claimed attempt still counts
-        // against the cap, so the retries stay bounded. The `destroyRunLease`
+        // for backoff, so requests stay bounded. The `destroyRunLease`
         // path reverts the lease itself, so this revert only runs for the
         // recorded-data teardown path.
         if (useRecordedTeardown) {
           await environmentsSvc.releaseLease(lease.id, "pending_cleanup", {
+            expectedPendingCleanupAttemptId: claimed,
             cleanupStatus: "failed",
             failureReason: "pending_cleanup_retry",
           });
@@ -18493,7 +18520,36 @@ export function heartbeatService(
           },
           "pending_cleanup lease retry failed",
         );
+      } finally {
+        clearInterval(renewal);
+        // A hung renewal must not retain process-local cleanup ownership.
+        // Late renewals are attempt-fenced and never write the retry cooldown.
+        pendingCleanupAttemptsInFlight.delete(row.id);
       }
+      if (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
+        capped += 1;
+        // Warn once, then continue automatic cleanup with backoff. The atomic claim
+        // keeps the warning to one log line even when two sweeps overlap.
+        if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
+          const warned = await claimPendingCleanupCapWarning(row.id);
+          if (warned) {
+            logger.warn(
+              { leaseId: row.id, environmentId: row.environmentId, attempts },
+              "environment lease needs operator attention; automatic cleanup continues with backoff",
+            );
+          }
+        }
+      }
+      // Persist the cooldown independently of process memory. A crash before
+      // this write leaves the bounded in-flight lease for a later sweep.
+      await db.update(environmentLeases).set({
+        metadata: sql`${pendingCleanupMetadataObjectSql()} || ${JSON.stringify({
+          pendingCleanupInFlight: false,
+          pendingCleanupRetryAfterMs: Date.now() + (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP
+            ? 30 * 60_000 : Math.min(30 * 60_000, Math.max(30_000, backoffMs))),
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, lease.id),
+        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`));
       if (lease.heartbeatRunId) {
         // Delivery failure must not revert successful provider cleanup. A new
         // message can still use the persisted receipt on its next admission.
