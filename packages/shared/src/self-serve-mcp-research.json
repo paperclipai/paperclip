@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "verifiedAt": "2026-09-16",
+  "verifiedAt": "2026-08-26",
   "entries": [
     { "slug": "jira", "name": "Jira", "wave": 1, "status": "self_serve", "docsUrl": "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/", "serverUrl": "https://mcp.atlassian.com/v1/mcp/authv2", "authMode": "dcr_cimd", "prerequisite": "An active Jira or Confluence site; tenant policy may require an administrator to approve the client.", "riskTier": "S3" },
     { "slug": "airtable", "name": "Airtable", "wave": 1, "status": "self_serve", "docsUrl": "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server", "serverUrl": "https://mcp.airtable.com/mcp", "authMode": "dcr", "prerequisite": "An Airtable account; enterprise administrators may need to allowlist the client.", "riskTier": "S3" },

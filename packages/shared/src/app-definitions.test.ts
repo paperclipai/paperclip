@@ -432,7 +432,10 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
   it("keeps a complete, unique, dated evidence ledger for all 47 researched MCP providers", () => {
-    expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-09-16");
+    // Ledger-wide date reflects the last full re-verification (2026-08-26);
+    // the You.com entry added here carries its own research evidence, but
+    // bumping the shared date would overstate freshness for the other providers.
+    expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
     expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(47);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
