@@ -123,25 +123,15 @@ export async function loadActivityRunRef(
     .then((rows) => rows[0] ?? null);
 }
 
-export async function resolveResponsibleUserIdForActivity(
-  db: Db,
-  input: LogActivityInput,
-  /** Pre-resolved run row, so a caller that already looked it up does not query twice. */
-  preloadedRun?: ActivityRunRef | null,
-) {
+export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
   if (input.responsibleUserIdOverride !== undefined) {
     return readNonEmptyString(input.responsibleUserIdOverride);
   }
   if (input.actorType === "user") return readNonEmptyString(input.actorId);
 
-  const runId = readNonEmptyString(input.runId);
-  if (runId && isUuidLike(runId)) {
-    const run = preloadedRun !== undefined
-      ? preloadedRun
-      : await loadActivityRunRef(db, input.companyId, runId);
-    const runResponsibleUserId = readNonEmptyString(run?.responsibleUserId);
-    if (runResponsibleUserId) return runResponsibleUserId;
-  }
+  const run = await loadActivityRunRef(db, input.companyId, input.runId);
+  const runResponsibleUserId = readNonEmptyString(run?.responsibleUserId);
+  if (runResponsibleUserId) return runResponsibleUserId;
 
   const issueIdCandidate = readNonEmptyString(input.issueId)
     ?? (input.entityType === "issue" ? readNonEmptyString(input.entityId) : null);
@@ -195,11 +185,10 @@ export function publishActivity(publication: ActivityPublication) {
 
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
-  const run = await loadActivityRunRef(db, input.companyId, input.runId);
-  const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input, run);
+  const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   // Only reference a run we just proved exists; an unknown id would violate the FK and fail
   // the already-committed mutation this row is describing. See loadActivityRunRef.
-  const runId = run?.id ?? null;
+  const runId = (await loadActivityRunRef(db, input.companyId, input.runId))?.id ?? null;
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,

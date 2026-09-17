@@ -93,34 +93,6 @@ describe("loadActivityRunRef", () => {
 });
 
 describe("resolveResponsibleUserIdForActivity", () => {
-  it("uses a preloaded run row instead of querying again", async () => {
-    const db = createReader(new Map([
-      [heartbeatRuns, [{ id: runId, responsibleUserId: "stale-user" }]],
-      [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
-      [companies, [{ defaultResponsibleUserId: "default-user" }]],
-    ]));
-
-    await expect(resolveResponsibleUserIdForActivity(
-      db,
-      activityInput({ runId }),
-      { id: runId, responsibleUserId: "preloaded-user" },
-    )).resolves.toBe("preloaded-user");
-  });
-
-  it("falls through when the preloaded run row is null", async () => {
-    const db = createReader(new Map([
-      [heartbeatRuns, [{ id: runId, responsibleUserId: "run-user" }]],
-      [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
-      [companies, [{ defaultResponsibleUserId: "default-user" }]],
-    ]));
-
-    await expect(resolveResponsibleUserIdForActivity(
-      db,
-      activityInput({ runId }),
-      null,
-    )).resolves.toBe("issue-user");
-  });
-
   it("attributes user actions directly without database lookups", async () => {
     const db = {
       select: () => {
