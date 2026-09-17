@@ -91,6 +91,13 @@ describe("PaperclipRunnerToolAuthority", () => {
       runId,
     });
     expect(authority.definitions()).toHaveLength(26);
+    const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
+    expect(questions.description).toContain("ask only the next unanswered question");
+    expect(questions.description).toContain("Never infer answers");
+    expect(questions.description).toContain("Do not fabricate answer links");
+    expect(JSON.stringify(questions.inputSchema)).toContain("at least two distinct meaningful options");
+    expect(JSON.stringify(questions.inputSchema)).toContain("answerMode:'text'");
+
     expect(authority.definitions().map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         "connections_search",
@@ -250,13 +257,13 @@ describe("PaperclipRunnerToolAuthority", () => {
         "current Paperclip task bound to this run",
       );
       expect(advertised.description).toContain(
-        "interactionKind 'questions' with payload.questions",
+        "payload.questions for choices",
       );
       expect(advertised.description).toContain(
-        "supported provider question controls or a safe fallback",
+        "Paperclip renders it and authenticates the response",
       );
       expect(advertised.description).toContain(
-        "Normal task permissions and review gates still apply",
+        "Preserve existing review gates",
       );
       expect(advertised.description).not.toContain("mock");
       expect(advertised.description).not.toContain("questionSpec");

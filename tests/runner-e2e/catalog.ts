@@ -1,3 +1,4 @@
+import { continuationTasks } from "./continuation-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
@@ -893,6 +894,15 @@ const everydayProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "continuation", label: "Task continuation",
+    description: "Human direction, approval boundaries, untrusted evidence, and completed actions across turns.",
+    groups: ["local"], environments: [localEnvironment],
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(productionStoryProfile),
+    tasks: continuationTasks, expectedMatrixSize: 22,
+    excludedExecutionIds: ["legacy-codex", "legacy-claude"].map(profile => `continuation.${profile}.local.question-tool-documentation`),
+    definitionMetadata: { version: 3, grading: "durable-state-and-approval-boundaries", instructions: "production" },
+  },
+  {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
     groups: ["native"], profiles: everydayProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
@@ -1079,6 +1089,7 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 export function validateRunnerCatalog(): MatrixExecution[] {
   const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...continuationTasks,
     ...everydayTasks,
     ...runnerTasks,
     ...localIntegrityTasks,

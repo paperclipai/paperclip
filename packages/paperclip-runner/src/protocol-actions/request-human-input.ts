@@ -27,7 +27,7 @@ export const requestHumanInputAction = {
   },
   "documentation": {
     "title": "Request structured human input",
-    "description": "Create a typed, durable interaction on the active task.",
+    "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never infer answers, answer your own card, or treat clarification as approval. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or substitute call_api. Use payload.questions for choices and payload.questionSet for text fields; see the payload schema for formats.",
     "note": null
   },
   "examples": {
@@ -74,7 +74,7 @@ export const requestHumanInputAction = {
       "operationId": "request_human_input",
       "version": 1,
       "title": "Request structured human input",
-      "description": "Create a typed, durable interaction on the active task.",
+      "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never infer answers, answer your own card, or treat clarification as approval. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or substitute call_api. Use payload.questions for choices and payload.questionSet for text fields; see the payload schema for formats.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [

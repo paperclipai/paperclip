@@ -41,10 +41,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      35, 52, 24, 42, 14, 10, 2,
+      22, 35, 52, 24, 42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(179);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(179);
+    expect(validateRunnerCatalog()).toHaveLength(201);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(201);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -68,7 +68,7 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(300);
+    ).toBe(362);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
@@ -504,6 +504,7 @@ describe("runner E2E selectors", () => {
       "local",
     ]);
     expect(selectRunnerExecutions(options).map((entry) => entry.id)).toEqual([
+      ...runnerMatrix.filter(entry => entry.suite.id === "continuation" && ["legacy-codex", "runner-codex"].includes(entry.profile.id)).map(entry => entry.id),
       ...runnerMatrix.filter(entry => entry.suite.id === "first-task" && ["legacy-codex", "runner-codex"].includes(entry.profile.id)).map(entry => entry.id),
       ...runnerMatrix.filter(entry => entry.suite.id === "agent-chat" && ["legacy-codex", "runner-codex"].includes(entry.profile.id)).map(entry => entry.id),
       "core-compatibility.legacy-codex.local.message-marker",
@@ -560,10 +561,10 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(144);
+    expect(jobs).toHaveLength(166);
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(23);
-    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(121);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(144);
+    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(143);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(166);
     expect(
       jobs.find(
         (job) =>

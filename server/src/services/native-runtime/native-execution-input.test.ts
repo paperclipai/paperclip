@@ -102,19 +102,13 @@ describe("native execution input external-chat framing", () => {
       const input = buildNativeExecutionInput(args);
       expect(input.task.title).toBe("External chat follow-up");
       expect(input.task.prompt).toContain("Amber");
+      expect(input.task.prompt).not.toContain("## Questions that need a user response");
       expect(input.task.prompt).toContain(
         "semantic completion summary is the user-visible final answer",
       );
       expect(input.task.prompt).not.toContain(
         "including marking the task done",
       );
-      expect(input.task.prompt).toContain("request_human_input");
-      expect(input.task.prompt).toContain('interactionKind="questions"');
-      expect(input.task.prompt).toContain("at least two distinct meaningful options");
-      expect(input.task.prompt).toContain("payload.questionSet");
-      expect(input.task.prompt).toContain('answerMode="text"');
-      expect(input.task.prompt).toContain("one question at a time");
-      expect(input.task.prompt).toContain("Never fabricate answer URLs");
       expect(input.task.prompt.indexOf("Choose a color: Amber")).toBeLessThan(
         input.task.prompt.indexOf(
           "Ask for a color, then tell me the selected color.",
@@ -245,7 +239,7 @@ describe("native execution input external-chat framing", () => {
       expect(sequential.task.title).toBe("External chat follow-up");
       expect(sequential.task.prompt).toContain("Circle");
       expect(sequential.task.prompt).toContain("Amber");
-      expect(sequential.task.prompt).toContain("next unanswered question");
+      expect(sequential.task.prompt).not.toContain("## Questions that need a user response");
       expect(
         sequential.task.prompt.indexOf("Choose a shape: Circle"),
       ).toBeLessThan(sequential.task.prompt.indexOf("Choose a color: Amber"));
@@ -336,10 +330,6 @@ describe("native execution input external-chat framing", () => {
       expect(input.task.description).toBeNull();
       expect(input.task.prompt).toContain("read_current_wake_comments");
       expect(input.task.prompt).toContain(staleRootTitle);
-      expect(input.task.prompt).toContain("request_human_input");
-      expect(input.task.prompt).toContain("Never fabricate answer URLs");
-      expect(input.task.prompt).toContain("not a self-contained text answer");
-      expect(input.task.prompt).toContain('continuationPolicy="wake_assignee"');
     },
   );
 
@@ -454,7 +444,12 @@ describe("native execution input external-chat framing", () => {
       }
     },
   );
-  it("gives ordinary Board tasks the same durable-question guidance as external chat", () => {
+  it.each([
+    { provider: "codex", resumedSession: false },
+    { provider: "codex", resumedSession: true },
+    { provider: "acpx", resumedSession: false },
+    { provider: "acpx", resumedSession: true },
+  ] as const)("keeps question documentation in the tool on $provider (resumed: $resumedSession)", ({ provider, resumedSession }) => {
     const input = buildNativeExecutionInput({
       companyId: "10000000-0000-4000-8000-000000000001",
       runId: "50000000-0000-4000-8000-000000000005",
@@ -462,21 +457,19 @@ describe("native execution input external-chat framing", () => {
       issue: { id: "20000000-0000-4000-8000-000000000002", identifier: "QA-1", title: "Welcome", description: null, workMode: "standard" },
       taskPrompt: "Ask whether the welcome should sound warm or formal before writing it.",
       workspace: { id: "40000000-0000-4000-8000-000000000004", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
-      normalizedSessionId: null,
-      provider: "codex",
+      normalizedSessionId: resumedSession ? "60000000-0000-4000-8000-000000000006" : null,
+      provider, resumedSession,
+      acpxAgent: "claude",
+      model: provider === "acpx" ? "claude-sonnet-5" : "gpt-5.6-sol",
       completionContract: {
         id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
         contract: { revision: "1", objective: "Write a welcome after the user's answer", criteria: [{ id: "objective", requirement: "Use the selected tone" }] },
       },
       runtimeContext: nativeRuntimeContextFixture(),
     });
-    expect(input.task.prompt).toContain('interactionKind="questions"');
-    expect(input.task.prompt).toContain("at least two distinct meaningful options");
-    expect(input.task.prompt).toContain("payload.questionSet");
-    expect(input.task.prompt).toContain('answerMode="text"');
-    expect(input.task.prompt).toContain('continuationPolicy="wake_assignee"');
-    expect(input.task.prompt).toContain("Create the actual question before yielding");
-    expect(input.task.prompt).toContain("Wait for its real answer");
+    expect(input.task.prompt).not.toContain("## Questions that need a user response");
+    expect(input.task.prompt).toContain("Use Paperclip's request_human_input for durable task questions.");
+    expect(input.task.prompt).not.toContain("payload.questionSet");
   });
 
 });

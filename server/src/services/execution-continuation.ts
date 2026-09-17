@@ -38,6 +38,29 @@ export function continuationOriginCommentIds(context: unknown): string[] {
   ];
 }
 
+/** Keep service/tool results and generated summaries out of human authority. */
+export function projectHumanInteractionResponse(row: {
+  id: string; kind: string; status: string; result: unknown;
+  resolvedByUserId: string | null; resolvedByAgentId: string | null;
+  resolvedByRunId: string | null; resolvedAt: Date | null;
+}): NonNullable<ExecutionContinuationEnvelope["humanResponses"]>[number] | null {
+  if (!row.resolvedByUserId || row.resolvedByAgentId || row.resolvedByRunId || !row.resolvedAt) return null;
+  const result = object(row.result);
+  let response: Record<string, unknown>;
+  if (row.kind === "ask_user_questions" && row.status === "answered" && Array.isArray(result.answers)) {
+    response = { answers: result.answers.map(value => {
+      const answer = object(value);
+      return { questionId: answer.questionId, optionIds: answer.optionIds, otherText: answer.otherText };
+    }) };
+  } else if (["request_confirmation", "request_checkbox_confirmation"].includes(row.kind)
+    && ["accepted", "rejected"].includes(row.status) && result.outcome === row.status) {
+    response = { outcome: result.outcome, reason: result.reason,
+      ...(Array.isArray(result.selectedOptionIds) ? { selectedOptionIds: result.selectedOptionIds } : {}) };
+  } else return null;
+  return { id: row.id, kind: row.kind, status: row.status, resolvedByUserId: row.resolvedByUserId,
+    resolvedAt: row.resolvedAt.toISOString(), result: response };
+}
+
 /** Also retain user direction delivered after the source run's initial wake. */
 export async function currentContinuationOrigins(
   db: Db,
@@ -334,6 +357,10 @@ export async function buildExecutionContinuation(input: {
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
     messages,
+    humanResponses: interactions.flatMap(row => {
+      const response = projectHumanInteractionResponse(row);
+      return response ? [response] : [];
+    }),
     interactionOutcomes: interactions
       .filter((row) => row.status !== "pending")
       .map((row) => ({
