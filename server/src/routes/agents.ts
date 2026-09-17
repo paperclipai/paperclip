@@ -5186,6 +5186,8 @@ export function agentRoutes(
     const requestedAdapterType = nextAdapterType === existing.adapterType
       ? nextAdapterType
       : await assertSelectableAdapterType(nextAdapterType);
+    const changingAdapterType =
+      typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -5206,8 +5208,6 @@ export function agentRoutes(
     if (touchesAdapterConfiguration) {
       assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
-      const changingAdapterType =
-        typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
       const requestedAdapterConfig = hasOwn(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : null;
@@ -5286,16 +5286,59 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+    const effectiveAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+    const existingRuntimeConfig = (asRecord(existing.runtimeConfig) ?? {}) as Record<string, unknown>;
+    const existingAiConnection = existingRuntimeConfig.aiConnection;
+    const existingAiBinding = aiConnectionBindingSchema.safeParse(existingAiConnection).data;
+    const canPreserveExistingAiConnection = Boolean(
+      existingAiBinding &&
+      (!changingAdapterType || isAiConnectionCompatible(
+        existingAiBinding,
+        requestedAdapterType,
+        effectiveAiConfig.model,
+        effectiveAiConfig.provider,
+        effectiveAiConfig.acpxAgent,
+      )),
+    );
+
+    if (canPreserveExistingAiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) {
+      requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
+    }
+
+    const fallbackAiConnection = canPreserveExistingAiConnection ? existing.runtimeConfig.aiConnection : undefined;
+    const nextAiBinding = aiConnectionBindingSchema.safeParse(
+      requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : fallbackAiConnection,
+    ).data;
+
     if (nextAiBinding) {
       await assertCanUpdateAgent(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
-      const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-      if (!isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
-      if (changed) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
+      if (!isAiConnectionCompatible(nextAiBinding, requestedAdapterType, effectiveAiConfig.model, effectiveAiConfig.provider, effectiveAiConfig.acpxAgent)) {
+        throw unprocessable("Select an AI connection compatible with the new harness and model");
+      }
+      if (changed) {
+        await validateManagedAgentBinding(
+          req,
+          existing.companyId,
+          existing.id,
+          requestedAdapterType,
+          effectiveAiConfig,
+          nextAiBinding,
+          (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
+          true,
+        );
+      }
     }
-    if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
+
+    if (changingAdapterType && existingAiConnection && !canPreserveExistingAiConnection && !requestedRuntimeConfig?.aiConnection) {
+      const nextRc = {
+        ...(requestedRuntimeConfig ?? existingRuntimeConfig),
+      };
+      delete nextRc.aiConnection;
+      patchData.runtimeConfig = nextRc;
+    } else if (requestedRuntimeConfig) {
+      patchData.runtimeConfig = requestedRuntimeConfig;
+    }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
