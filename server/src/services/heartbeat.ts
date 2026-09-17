@@ -6863,11 +6863,13 @@ export function shouldAutoCheckoutIssueForWake(input: {
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
   issueExecutionState?: unknown;
+  issueUnblockDescriptor?: unknown;
   isDependencyReady: boolean;
   agentId: string;
 }) {
   if (input.issueAssigneeAgentId !== input.agentId) return false;
   if (!input.isDependencyReady) return false;
+  if (input.issueUnblockDescriptor != null) return false;
   const executionState = parseIssueExecutionState(input.issueExecutionState);
   if (executionState?.status === "pending") return false;
 
@@ -6883,6 +6885,7 @@ export function shouldAutoCheckoutIssueForWake(input: {
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
+  if (wakeReason === "issue_unblock_requested") return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
@@ -7982,7 +7985,24 @@ export async function buildPaperclipWakePayload(input: {
           notice: externalAttachmentOmissionNotice(omission),
         }))
     : [];
+  const unblockDescriptor = parseObject(
+    input.contextSnapshot.unblockDescriptor,
+  );
+  const unblockAction = readNonEmptyString(
+    input.contextSnapshot.unblockAction,
+  );
   const payload = {
+    // Binding hold instructions intentionally lead the wake payload so the
+    // named owner sees the required action before the ordinary wake context.
+    ...(unblockAction
+      ? {
+          unblockAction,
+          unblockDescriptor:
+            Object.keys(unblockDescriptor).length > 0
+              ? unblockDescriptor
+              : null,
+        }
+      : {}),
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     executionContinuation: input.contextSnapshot.executionContinuation ?? null,
     attachmentOmissions,
@@ -10565,6 +10585,7 @@ export function heartbeatService(
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
+        unblockDescriptor: issues.unblockDescriptor,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
         parentId: issues.parentId,
         createdByUserId: issues.createdByUserId,
@@ -17153,6 +17174,42 @@ export function heartbeatService(
         return null;
       }
 
+      const bindingIssue = await getIssueExecutionContext(run.companyId, issueId);
+      const bindingWakeReason = readNonEmptyString(context.wakeReason);
+      const bindingOwner = bindingIssue?.unblockDescriptor?.owner;
+      const isNamedAgentUnblockWake =
+        bindingWakeReason === "issue_unblock_requested" &&
+        typeof bindingOwner === "object" &&
+        "agentId" in bindingOwner &&
+        bindingOwner.agentId === run.agentId;
+      if (
+        bindingIssue?.unblockDescriptor &&
+        !isNamedAgentUnblockWake
+      ) {
+        await cancelRunInternal(
+          run.id,
+          "Cancelled because issue is held by a binding unblock descriptor",
+        );
+        await logActivity(db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "issue.unblock_hold_run_skipped",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          issueId,
+          details: {
+            issueId,
+            requestedReason: bindingWakeReason,
+            unblockDescriptor: bindingIssue.unblockDescriptor,
+            source: "heartbeat.claim_queued_run",
+          },
+        });
+        return null;
+      }
+
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(
         run.companyId,
         [issueId],
@@ -20120,6 +20177,7 @@ export function heartbeatService(
           issueStatus: issueContext.status,
           issueAssigneeAgentId: issueContext.assigneeAgentId,
           issueExecutionState: issueContext.executionState,
+          issueUnblockDescriptor: issueContext.unblockDescriptor,
           isDependencyReady:
             issueDependencyReadiness?.isDependencyReady ?? true,
           agentId: agent.id,
@@ -26329,6 +26387,55 @@ export function heartbeatService(
     }
 
     if (issueId) {
+      const bindingIssue = await getIssueExecutionContext(agent.companyId, issueId);
+      const bindingWakeReason =
+        reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason);
+      if (bindingIssue?.unblockDescriptor) {
+        enrichedContextSnapshot.unblockDescriptor = bindingIssue.unblockDescriptor;
+        enrichedContextSnapshot.unblockAction = bindingIssue.unblockDescriptor.action;
+        const bindingOwner = bindingIssue.unblockDescriptor.owner;
+        const isNamedAgentUnblockWake =
+          bindingWakeReason === "issue_unblock_requested" &&
+          typeof bindingOwner === "object" &&
+          "agentId" in bindingOwner &&
+          bindingOwner.agentId === agentId;
+        if (!isNamedAgentUnblockWake) {
+          const wait = await writeSkippedRequest(
+            "issue_unblock_hold_active",
+            {
+              error: bindingIssue.unblockDescriptor.action,
+              payload: {
+                ...(payload ?? {}),
+                unblockDescriptor: bindingIssue.unblockDescriptor,
+              },
+            },
+            {
+              issueId,
+              unblockDescriptor: bindingIssue.unblockDescriptor,
+            },
+          );
+          if (wait.created) {
+            await logActivity(db, {
+              companyId: agent.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId,
+              runId: null,
+              action: "issue.unblock_hold_wakeup_skipped",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                requestedReason: bindingWakeReason,
+                source,
+                triggerDetail,
+                unblockDescriptor: bindingIssue.unblockDescriptor,
+              },
+            });
+          }
+          return null;
+        }
+      }
+
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         agent.companyId,
         issueId,

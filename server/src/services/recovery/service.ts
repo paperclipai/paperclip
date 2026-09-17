@@ -100,7 +100,7 @@ import {
 } from "../issue-execution-policy.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-  buildIssueBlockersResolvedWakeStateKey,
+  buildIssueBlockersResolvedResolutionEventKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -5358,23 +5358,68 @@ export function recoveryService(
           continue;
         }
 
-        // Level-triggered dedup: key on the full blocker set (the current ready
-        // state), not on any single resolved edge. An older completed per-edge
-        // wake for an earlier partial resolution has a different key, so it does
-        // not suppress this wake. The shared helper still suppresses a duplicate
-        // wake for the SAME ready state, which bounds reconciliation.
-        const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
-          dependentIssueId: candidate.id,
-          blockerIssueIds: readiness.blockerIssueIds,
-          blockedTransitionAt: candidate.blockedTransitionAt,
-        });
-        const existingWake =
+        const resolvedBlocker = await db
+          .select({
+            id: issues.id,
+            statusVersion: issues.statusVersion,
+            completedAt: issues.completedAt,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              inArray(issues.id, readiness.blockerIssueIds),
+              eq(issues.status, "done"),
+            ),
+          )
+          .orderBy(desc(issues.completedAt), desc(issues.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!resolvedBlocker) {
+          result.notReadySkipped += 1;
+          continue;
+        }
+
+        // Preserve deploy-overlap compatibility with the former ready-state
+        // and per-edge formats. New writes below always use the immutable
+        // status-version event key.
+        const existingLegacyWake =
           await findExistingIssueBlockersResolvedWakeForReadyState(db, {
             companyId,
             dependentIssueId: candidate.id,
             blockerIssueIds: readiness.blockerIssueIds,
             blockedTransitionAt: candidate.blockedTransitionAt,
           });
+        if (existingLegacyWake) {
+          result.existingWakeSkipped += 1;
+          continue;
+        }
+
+        // Recovery shares the same immutable completion-event identity as the
+        // route and native-finalization emitters. Later writes to the dependent
+        // therefore cannot mint a second wake for the same blocker completion.
+        const idempotencyKey = buildIssueBlockersResolvedResolutionEventKey({
+          dependentIssueId: candidate.id,
+          resolvedBlockerIssueId: resolvedBlocker.id,
+          blockerStatusVersion: resolvedBlocker.statusVersion,
+        });
+        const existingWake = await db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+              inArray(agentWakeupRequests.status, [
+                "queued",
+                "deferred_issue_execution",
+                "claimed",
+                "completed",
+              ]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
         if (existingWake) {
           result.existingWakeSkipped += 1;
           continue;
@@ -5412,7 +5457,7 @@ export function recoveryService(
             reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
             payload: {
               issueId: candidate.id,
-              resolvedBlockerIssueId,
+              resolvedBlockerIssueId: resolvedBlocker.id,
               blockerIssueIds: readiness.blockerIssueIds,
               backstop: payloadBackstop,
             },
@@ -5424,7 +5469,7 @@ export function recoveryService(
               taskId: candidate.id,
               wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
               source,
-              resolvedBlockerIssueId,
+              resolvedBlockerIssueId: resolvedBlocker.id,
               blockerIssueIds: readiness.blockerIssueIds,
             },
           });
@@ -5452,7 +5497,7 @@ export function recoveryService(
               source,
               wakeupRunId: wake.id,
               idempotencyKey,
-              resolvedBlockerIssueId,
+              resolvedBlockerIssueId: resolvedBlocker.id,
               blockerIssueIds: readiness.blockerIssueIds,
             },
           });

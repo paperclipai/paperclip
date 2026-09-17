@@ -1,4 +1,5 @@
 import type { ReleaseRecoveryBlockedNoticeKind } from "../domain/policy.js";
+import type { IssueUnblockDescriptor } from "@paperclipai/shared";
 
 export type RunSummary = {
   id: string;
@@ -39,6 +40,7 @@ export type IssueSnapshot = {
   originKind: string | null;
   monitorNextCheckAt: Date | null;
   executionState: Record<string, unknown> | null;
+  unblockDescriptor?: IssueUnblockDescriptor | null;
   /** Carried so the routine-env and responsible-user reader ports can use this
    * transaction-scoped snapshot instead of reading the issue again. */
   responsibleUserId: string | null;

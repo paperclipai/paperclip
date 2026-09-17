@@ -258,8 +258,7 @@ import {
 } from "../services/onboarding-first-task-assets.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-  buildIssueBlockersResolvedWakeStateKey,
-  findExistingIssueBlockersResolvedWakeForReadyState,
+  buildIssueBlockersResolvedResolutionEventKey,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
@@ -650,6 +649,28 @@ function buildCreateIssueActivityStatusDetails(
         ? "assigned_backlog"
         : "no_agent_assignee"
       : null,
+  };
+}
+
+function buildCreateIssueDispatchDetails(
+  issue: { assigneeAgentId: string | null; status: string },
+  res: Response,
+  wake: unknown,
+) {
+  const statusDetails = buildCreateIssueActivityStatusDetails(issue, res);
+  const assignmentWakeRunId =
+    wake && typeof wake === "object" && "id" in wake && typeof wake.id === "string"
+      ? wake.id
+      : null;
+  if (statusDetails.assignmentWakeSkipped) {
+    return { ...statusDetails, assignmentWakeRunId: null };
+  }
+  return {
+    ...statusDetails,
+    assignmentWakeSkipped: assignmentWakeRunId === null,
+    assignmentWakeSkipReason:
+      assignmentWakeRunId === null ? "dispatch_not_created" : null,
+    assignmentWakeRunId,
   };
 }
 
@@ -6897,7 +6918,9 @@ export function issueRoutes(
       : null;
 
     if (
-      (!runToInterrupt || runToInterrupt.status !== "running") &&
+      (!runToInterrupt ||
+        (runToInterrupt.status !== "queued" &&
+          runToInterrupt.status !== "running")) &&
       issue.assigneeAgentId
     ) {
       const activeRun = await heartbeat.getActiveRunForAgent(
@@ -6921,7 +6944,10 @@ export function issueRoutes(
       }
     }
 
-    return runToInterrupt?.status === "running" ? runToInterrupt : null;
+    return runToInterrupt?.status === "queued" ||
+      runToInterrupt?.status === "running"
+      ? runToInterrupt
+      : null;
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -12015,21 +12041,22 @@ export function issueRoutes(
       // token should be spent until the user types: the greeting is posted above
       // (deterministic, no LLM) and the user's first comment wakes the assignee
       // through the normal comment path. Every other create path keeps its wake.
-      if (!isOnboardingFirstTask) {
-        void queueIssueAssignmentWakeup({
-          heartbeat,
-          issue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "issue.create",
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-        });
-      }
+      const assignmentWake = !isOnboardingFirstTask
+        ? await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "issue.create",
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          })
+        : null;
       await queueTaskWatchdogEvaluation(issue, actor.runId);
 
       res.status(201).json({
         ...issue,
+        ...buildCreateIssueDispatchDetails(issue, res, assignmentWake),
         relatedWork: referenceSummary,
         referencedIssueIdentifiers: referenceSummary.outbound.map(
           (item) => item.issue.identifier ?? item.issue.id,
@@ -12254,8 +12281,9 @@ export function issueRoutes(
         });
       }
 
-      if (!serializationContext || !currentSerializedChild) {
-        void queueIssueAssignmentWakeup({
+      const assignmentWake =
+        !serializationContext || !currentSerializedChild
+          ? await queueIssueAssignmentWakeup({
           heartbeat,
           issue,
           reason: "issue_assigned",
@@ -12263,8 +12291,8 @@ export function issueRoutes(
           contextSource: "issue.child_create",
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-        });
-      }
+            })
+          : null;
       await blockWatchdogParentOnCurrentChild({
         actor,
         watchdogParentIssueId: serializationContext?.watchdogParentIssueId,
@@ -12272,7 +12300,10 @@ export function issueRoutes(
       });
       await queueTaskWatchdogEvaluation(issue, actor.runId);
 
-      res.status(201).json(issue);
+      res.status(201).json({
+        ...issue,
+        ...buildCreateIssueDispatchDetails(issue, res, assignmentWake),
+      });
     },
   );
 
@@ -12756,6 +12787,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!existing) return;
+      const actor = getActorInfo(req);
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
@@ -12783,6 +12815,43 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      if (
+        req.body.status !== undefined &&
+        req.body.interrupt !== true &&
+        existing.executionRunId
+      ) {
+        const liveRun = await resolveActiveIssueRun(existing);
+        if (liveRun && liveRun.id !== actor.runId) {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.status_write_skipped_live_lock",
+            entityType: "issue",
+            entityId: existing.id,
+            issueId: existing.id,
+            details: {
+              requestedStatus: req.body.status,
+              activeRunId: liveRun.id,
+              activeRunAgentId: liveRun.agentId,
+              resolution: "skipped",
+              retryAfter: "active_run_release",
+            },
+          });
+          res.status(409).json({
+            error:
+              "Issue status write skipped while another run holds the execution lock",
+            code: "issue_status_write_live_lock",
+            issueId: existing.id,
+            activeRunId: liveRun.id,
+            retryAfter: "active_run_release",
+          });
+          return;
+        }
+      }
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"
@@ -12792,7 +12861,6 @@ export function issueRoutes(
             )
           : issueWriteAuthorizationReason(req, true);
 
-      const actor = getActorInfo(req);
       const isClosed = isClosedIssueStatus(existing.status);
       const isBlocked = existing.status === "blocked";
       const normalizedAssigneeAgentId =
@@ -12978,6 +13046,7 @@ export function issueRoutes(
           actorId: actor.actorId,
         });
       const effectiveMoveToTodoRequested =
+        existing.unblockDescriptor == null &&
         !assigneeSelfCommentOnTerminal &&
         (explicitMoveToTodoRequested ||
           (!!commentBody &&
@@ -13188,18 +13257,44 @@ export function issueRoutes(
       Object.assign(updateFields, transition.patch);
 
       const nextStatus = updateFields.status ?? existing.status;
-      if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
-        throw unprocessable("unblockDescriptor requires blocked status");
+      const existingDescriptor = existing.unblockDescriptor;
+      const actorOwnsExistingDescriptor = (() => {
+        if (!existingDescriptor) return true;
+        const owner = existingDescriptor.owner;
+        if (owner === "board") return req.actor.type === "board";
+        if ("agentId" in owner) {
+          return req.actor.type === "agent" && req.actor.agentId === owner.agentId;
+        }
+        return req.actor.type === "board" && req.actor.userId === owner.userId;
+      })();
+      if (
+        existingDescriptor &&
+        !actorOwnsExistingDescriptor &&
+        (updateFields.status !== undefined ||
+          req.body.unblockDescriptor !== undefined)
+      ) {
+        throw forbidden("Only the named unblock owner may change this hold or issue status", {
+          code: "issue_unblock_hold_owner_required",
+          unblockDescriptor: existingDescriptor,
+        });
       }
-      const descriptor = updateFields.unblockDescriptor ?? null;
+      const descriptor =
+        updateFields.unblockDescriptor !== undefined
+          ? updateFields.unblockDescriptor
+          : existingDescriptor;
+      if (descriptor && nextStatus !== "blocked") {
+        throw unprocessable(
+          "unblockDescriptor must be cleared when leaving blocked status",
+        );
+      }
       if (descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
         if (
           req.actor.type === "agent" &&
-          (owner === "board" || "userId" in owner)
+          existing.assigneeAgentId !== req.actor.agentId
         ) {
           throw forbidden(
-            "Agents may only name themselves as an unblock owner",
+            "Only the assigned agent may set or escalate an unblock owner",
           );
         }
         if (owner !== "board" && "agentId" in owner) {
@@ -13223,7 +13318,7 @@ export function issueRoutes(
             req.actor.agentId !== owner.agentId
           ) {
             throw forbidden(
-              "Agents may only name themselves as an unblock owner",
+              "Agents may not name another agent as an unblock owner",
             );
           }
         } else if (owner !== "board" && "userId" in owner) {
@@ -14475,10 +14570,6 @@ export function issueRoutes(
         type WakeupRequest = NonNullable<
           Parameters<typeof heartbeat.wakeup>[1]
         >;
-        type DependencyReadinessProvider = {
-          getDependencyReadiness?: typeof svc.getDependencyReadiness;
-        };
-        const dependencyReadinessSvc = svc as DependencyReadinessProvider;
         const wakeups = new Map<
           string,
           { agentId: string; wakeup: WakeupRequest }
@@ -14498,29 +14589,15 @@ export function issueRoutes(
           resolvedBlockerIssueId: string;
           blockerIssueIds: string[];
           blockedTransitionAt?: Date | string | null;
+          blockerStatusVersion: number;
           source: string;
           mutation: string;
         }) => {
-          const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
+          const idempotencyKey = buildIssueBlockersResolvedResolutionEventKey({
             dependentIssueId: input.dependentIssueId,
-            blockerIssueIds: input.blockerIssueIds,
-            blockedTransitionAt: input.blockedTransitionAt,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerStatusVersion: input.blockerStatusVersion,
           });
-          try {
-            const existingWake =
-              await findExistingIssueBlockersResolvedWakeForReadyState(db, {
-                companyId: issue.companyId,
-                dependentIssueId: input.dependentIssueId,
-                blockerIssueIds: input.blockerIssueIds,
-                blockedTransitionAt: input.blockedTransitionAt,
-              });
-            if (existingWake) return;
-          } catch (err) {
-            logger.warn(
-              { err, issueId: input.dependentIssueId, idempotencyKey },
-              "failed to check existing dependency wake before issue update wake",
-            );
-          }
           addWakeup(input.agentId, {
             source: "automation",
             triggerDetail: "system",
@@ -14751,39 +14828,9 @@ export function issueRoutes(
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,
               blockedTransitionAt: dependent.blockedTransitionAt,
+              blockerStatusVersion: issue.statusVersion,
               source: "issue.blockers_resolved",
               mutation: "blocker_done",
-            });
-          }
-        }
-
-        const restoredBlockedReadyDependency =
-          issue.status === "blocked" &&
-          issue.assigneeAgentId &&
-          (existing.status !== "blocked" ||
-            Array.isArray(req.body.blockedByIssueIds) ||
-            existing.assigneeAgentId !== issue.assigneeAgentId);
-        if (
-          restoredBlockedReadyDependency &&
-          typeof dependencyReadinessSvc.getDependencyReadiness === "function"
-        ) {
-          const readiness = await dependencyReadinessSvc.getDependencyReadiness(
-            issue.id,
-          );
-          const resolvedBlockerIssueId = readiness.blockerIssueIds[0] ?? null;
-          if (
-            resolvedBlockerIssueId &&
-            readiness.isDependencyReady &&
-            readiness.blockerIssueIds.length > 0
-          ) {
-            await addDependencyResolvedWakeup({
-              agentId: issue.assigneeAgentId!,
-              dependentIssueId: issue.id,
-              resolvedBlockerIssueId,
-              blockerIssueIds: readiness.blockerIssueIds,
-              blockedTransitionAt: issue.blockedTransitionAt,
-              source: "issue.blockers_restored",
-              mutation: "blocked_dependency_restored",
             });
           }
         }
@@ -17377,6 +17424,7 @@ export function issueRoutes(
           actorId: actor.actorId,
         });
       const effectiveMoveToTodoRequested =
+        issue.unblockDescriptor == null &&
         !assigneeSelfCommentOnTerminal &&
         (explicitMoveToTodoRequested ||
           shouldImplicitlyMoveCommentedIssueToTodo({
@@ -17959,27 +18007,13 @@ export function issueRoutes(
           resolvedBlockerIssueId: string;
           blockerIssueIds: string[];
           blockedTransitionAt?: Date | string | null;
+          blockerStatusVersion: number;
         }) => {
-          const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
+          const idempotencyKey = buildIssueBlockersResolvedResolutionEventKey({
             dependentIssueId: input.dependentIssueId,
-            blockerIssueIds: input.blockerIssueIds,
-            blockedTransitionAt: input.blockedTransitionAt,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerStatusVersion: input.blockerStatusVersion,
           });
-          try {
-            const existingWake =
-              await findExistingIssueBlockersResolvedWakeForReadyState(db, {
-                companyId: currentIssue.companyId,
-                dependentIssueId: input.dependentIssueId,
-                blockerIssueIds: input.blockerIssueIds,
-                blockedTransitionAt: input.blockedTransitionAt,
-              });
-            if (existingWake) return;
-          } catch (err) {
-            logger.warn(
-              { err, issueId: input.dependentIssueId, idempotencyKey },
-              "failed to check existing dependency wake before issue comment wake",
-            );
-          }
           addWakeup(input.agentId, {
             source: "automation",
             triggerDetail: "system",
@@ -18179,6 +18213,7 @@ export function issueRoutes(
               resolvedBlockerIssueId: currentIssue.id,
               blockerIssueIds: dependent.blockerIssueIds,
               blockedTransitionAt: dependent.blockedTransitionAt,
+              blockerStatusVersion: currentIssue.statusVersion,
             });
           }
         }

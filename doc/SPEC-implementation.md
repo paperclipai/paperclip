@@ -277,6 +277,14 @@ Invariants:
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
 - terminal states: `done | cancelled`
 
+Binding hold rules:
+
+- `unblockDescriptor` is the agent-scoped equivalent of a subtree pause for one assigned issue. It is a control, not advisory metadata.
+- While it is set, ordinary wakes are recorded as skipped, checkout is refused, and deferred comment wakes cannot reopen or promote the issue.
+- The named owner is the only actor that can write status. An assigned agent may name itself, the board, or an active company user as the owner. Other-agent ownership is not allowed.
+- An `issue_unblock_requested` wake is the only wake admitted through the hold. It does not check out the issue. Its context starts with the descriptor action.
+- External status writes cannot replace the status or clear locks while a different queued or running heartbeat owns checkout or execution. The API records the skipped attempt and returns a conflict. A board user can use the explicit interrupt flow first.
+
 ## 7.7 `issue_comments`
 
 - `id` uuid pk
@@ -1070,9 +1078,13 @@ not create issue comments.
 
 Server behavior:
 
-1. single SQL update with `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
-2. if updated row count is 0, return `409` with current owner/status
-3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+1. refuse checkout when `unblock_descriptor` is set or an effective subtree pause covers the issue
+2. single SQL update with `WHERE id = ? AND status IN (?) AND unblock_descriptor IS NULL AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
+3. if updated row count is 0, return `409` with current owner/status
+4. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+5. a `blocked -> in_progress` checkout writes `issue.checkout_claimed` activity with the claiming run id
+
+Issue creation dispatch is status-sensitive. `todo` with an agent assignee queues an assignment wake immediately. `backlog` with an agent assignee does not queue a wake. The create activity and response expose `assignmentWakeSkipped` and `assignmentWakeSkipReason` so the caller can confirm which path applied.
 
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 

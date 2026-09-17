@@ -114,6 +114,7 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     originKind: row.originKind,
     monitorNextCheckAt: row.monitorNextCheckAt,
     executionState: (row.executionState as Record<string, unknown> | null) ?? null,
+    unblockDescriptor: row.unblockDescriptor,
     responsibleUserId: row.responsibleUserId,
     parentId: row.parentId,
     originId: row.originId,
@@ -338,6 +339,22 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     async getPauseHoldFacts({ companyId, issueId, wakeAgentId, deferredContextSeed, requestedByActorType, requestedByActorId }) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(companyId, issueId);
       if (!activePauseHold) {
+        const bindingIssue = await tx
+          .select({ unblockDescriptor: issues.unblockDescriptor })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+          .then((rows) => rows[0] ?? null);
+        if (bindingIssue?.unblockDescriptor) {
+          return {
+            activePauseHold: true,
+            treeHoldInteractionWake: false,
+            holdId: `unblock-descriptor:${issueId}`,
+            rootIssueId: issueId,
+            mode: "unblock_descriptor",
+            reason: bindingIssue.unblockDescriptor.action,
+            releasePolicy: bindingIssue.unblockDescriptor.owner,
+          };
+        }
         return {
           activePauseHold: false,
           treeHoldInteractionWake: false,

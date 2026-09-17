@@ -191,7 +191,7 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 }
 ```
 
-Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
+Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup. One resolution event uses the stable idempotency identity `{dependentIssueId}:{resolvedBlockerIssueId}:{blockerStatusVersion}`; later writes to the dependent do not create a new event. Issue creation dispatch is also strict: `todo` with an agent assignee queues an assignment wake immediately, while assigned `backlog` stays parked; read `assignmentWakeSkipped` and `assignmentWakeSkipReason` in the create response or `issue.created` activity before assuming the issue is idle. `unblockDescriptor` is a binding single-issue hold and the agent-level equivalent of a scoped pause: ordinary wakes are skipped, checkout is refused, and deferred comment wakes do not reopen the issue while it exists. Only the named owner may change status. An agent assigned to the issue may name itself, the board, or an active company user, but not another agent. An `issue_unblock_requested` wake may notify an agent owner; its context contains the descriptor action and it does not check out the issue.
 
 ### Issue Update Response (`PATCH /api/issues/:issueId`)
 
@@ -972,7 +972,7 @@ PATCH /api/issues/{issueId}
 }
 ```
 
-The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
+The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker. An agent assigned to the issue may escalate a real unblock action to `"board"` or an active company user, but a question that needs a response belongs in an interaction.
 
 For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
 

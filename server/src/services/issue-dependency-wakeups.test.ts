@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
+  buildIssueBlockersResolvedResolutionEventKey,
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
   findExistingIssueBlockersResolvedWakeForReadyState,
@@ -37,6 +38,31 @@ function dbWithWakes(rows: WakeRow[]): Db {
 }
 
 describe("buildIssueBlockersResolvedWakeStateKey", () => {
+  it("keys one immutable blocker-resolution event by status version", () => {
+    expect(
+      buildIssueBlockersResolvedResolutionEventKey({
+        dependentIssueId,
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerStatusVersion: 7,
+      }),
+    ).toBe(
+      `issue_blockers_resolved:${dependentIssueId}:${blockerIssueId}:7`,
+    );
+    expect(
+      buildIssueBlockersResolvedResolutionEventKey({
+        dependentIssueId,
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerStatusVersion: 8,
+      }),
+    ).not.toBe(
+      buildIssueBlockersResolvedResolutionEventKey({
+        dependentIssueId,
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerStatusVersion: 7,
+      }),
+    );
+  });
+
   it("is identical for the same dependent, blockers, and blockedTransitionAt", () => {
     const first = buildIssueBlockersResolvedWakeStateKey({
       dependentIssueId,

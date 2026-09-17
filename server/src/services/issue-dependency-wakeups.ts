@@ -84,12 +84,29 @@ function buildStateKey(dependentIssueId: string, digest: string, blockerCount: n
 export function buildIssueBlockersResolvedWakeIdempotencyKey(input: {
   dependentIssueId: string;
   resolvedBlockerIssueId: string;
+  blockerStatusVersion?: number;
 }) {
   return [
     ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
     input.dependentIssueId,
     input.resolvedBlockerIssueId,
+    ...(input.blockerStatusVersion === undefined
+      ? []
+      : [String(input.blockerStatusVersion)]),
   ].join(":");
+}
+
+/**
+ * Stable identity for one blocker-resolution event. The blocker's status
+ * version changes only when its status changes, so writes to the dependent
+ * cannot mint another wake for the same completion.
+ */
+export function buildIssueBlockersResolvedResolutionEventKey(input: {
+  dependentIssueId: string;
+  resolvedBlockerIssueId: string;
+  blockerStatusVersion: number;
+}) {
+  return buildIssueBlockersResolvedWakeIdempotencyKey(input);
 }
 
 /**

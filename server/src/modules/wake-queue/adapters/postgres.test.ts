@@ -422,6 +422,61 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(drainCalls).toBe(1);
   });
 
+  it("treats a binding unblock descriptor as a deferred-wake pause hold", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({
+      companyId,
+      assigneeAgentId: agentId,
+      status: "blocked",
+    });
+    const runId = await seedRun({
+      companyId,
+      agentId,
+      contextSnapshot: { issueId },
+      status: "succeeded",
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: runId,
+        unblockDescriptor: {
+          owner: "board",
+          action: "Approve the isolation permit",
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock(
+      { companyId, runId, now: new Date() },
+      async (_locked, ports) => {
+        await expect(
+          ports.transaction.getPauseHoldFacts({
+            companyId,
+            issueId,
+            wakeAgentId: agentId,
+            deferredContextSeed: {
+              issueId,
+              wakeReason: "issue_commented",
+            },
+            requestedByActorType: "user",
+            requestedByActorId: "responsible-user",
+          }),
+        ).resolves.toMatchObject({
+          activePauseHold: true,
+          treeHoldInteractionWake: false,
+          holdId: `unblock-descriptor:${issueId}`,
+          rootIssueId: issueId,
+          mode: "unblock_descriptor",
+          reason: "Approve the isolation permit",
+          releasePolicy: "board",
+        });
+        return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+      },
+    );
+  });
+
   // Review test (a): a foreign-company agent id produces the current failed
   // wake status and the current error text, and creates no run.
   it("skips preserved handoff receipts for one drain without changing their durable state", async () => {

@@ -47,4 +47,28 @@ describe("shouldAutoCheckoutIssueForWake", () => {
       agentId: reviewerAgentId,
     })).toBe(false);
   });
+
+  it("keeps a blocked issue held when an actionable wake arrives", () => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: { wakeReason: "issue_commented" },
+      issueStatus: "blocked",
+      issueAssigneeAgentId: "agent-1",
+      issueUnblockDescriptor: {
+        owner: "board",
+        action: "Approve the isolation permit",
+      },
+      isDependencyReady: true,
+      agentId: "agent-1",
+    })).toBe(false);
+  });
+
+  it("delivers an unblock request without checking the held issue out", () => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: { wakeReason: "issue_unblock_requested" },
+      issueStatus: "blocked",
+      issueAssigneeAgentId: "agent-1",
+      isDependencyReady: true,
+      agentId: "agent-1",
+    })).toBe(false);
+  });
 });

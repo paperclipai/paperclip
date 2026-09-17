@@ -1698,7 +1698,7 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["board", "board"],
     ["a company user", { userId: "board-user" }],
-  ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
+  ])("allows the assigned agent to escalate an unblock hold to %s", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
 
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
@@ -1706,24 +1706,33 @@ describe("agent issue mutation checkout ownership", () => {
       unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      }),
+    );
   });
 
   it.each([
     ["board", "board"],
     ["a company user", { userId: "board-user" }],
-  ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
+  ])("allows the assigned agent to add an unblock owner to an already-blocked issue: %s", async (_label, unblockOwner) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
 
     const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
       unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      }),
+    );
   });
 
   it("allows a board actor to name the board as unblock owner", async () => {
@@ -1745,6 +1754,100 @@ describe("agent issue mutation checkout ownership", () => {
         status: "blocked",
         unblockDescriptor: { owner: "board", action: "Review the blocker" },
       }),
+    );
+  });
+
+  it("keeps a descriptor-held issue blocked on a comment-only write", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Approve the isolation permit",
+      },
+    }));
+
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Evidence attached; the permit is still required." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  });
+
+  it("rejects a status write from an actor who does not own the unblock hold", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Approve the isolation permit",
+      },
+    }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code).toBe("issue_unblock_hold_owner_required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a no-op status write from an actor who does not own the unblock hold", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Approve the isolation permit",
+      },
+    }));
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code).toBe("issue_unblock_hold_owner_required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("requires the named owner to clear the binding hold when leaving blocked", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Approve the isolation permit",
+      },
+    }));
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(
+      "unblockDescriptor must be cleared when leaving blocked status",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows the named owner to clear the binding hold and resume", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Approve the isolation permit",
+      },
+    }));
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "todo", unblockDescriptor: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "todo", unblockDescriptor: null }),
     );
   });
 

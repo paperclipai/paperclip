@@ -698,7 +698,11 @@ const createIssueBaseSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
-  status: z.enum(ISSUE_STATUSES),
+  status: z
+    .enum(ISSUE_STATUSES)
+    .describe(
+      "Dispatch policy: todo with an agent assignee queues an assignment wake immediately; backlog with an agent assignee stays parked and does not queue an assignment wake",
+    ),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),

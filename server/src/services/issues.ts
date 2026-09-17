@@ -79,6 +79,7 @@ import type {
   IssueBlockerAttention,
   IssueReviewAttention,
   IssueReviewAttentionPath,
+  IssueUnblockDescriptor,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
   IssueRelationIssueSummary,
@@ -7046,6 +7047,57 @@ export function issueService(db: Db) {
     }
   }
 
+  async function assertValidUnblockDescriptorOwner(
+    companyId: string,
+    descriptor: IssueUnblockDescriptor | null | undefined,
+    input: {
+      actorAgentId?: string | null;
+      assigneeAgentId?: string | null;
+      reader?: DbReader;
+    } = {},
+  ) {
+    if (!descriptor) return;
+    const reader = input.reader ?? db;
+    const owner = descriptor.owner;
+    if (input.actorAgentId && input.assigneeAgentId !== input.actorAgentId) {
+      throw unprocessable(
+        "Only the assigned agent may set or escalate an unblock owner",
+      );
+    }
+    if (owner === "board") return;
+    if ("agentId" in owner) {
+      const target = await reader
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, owner.agentId), eq(agents.companyId, companyId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!target) {
+        throw unprocessable("Unblock owner agent must belong to the issue company");
+      }
+      if (input.actorAgentId && owner.agentId !== input.actorAgentId) {
+        throw unprocessable("Agents may not name another agent as an unblock owner");
+      }
+      return;
+    }
+    const member = await reader
+      .select({ id: companyMemberships.id })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, owner.userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!member) {
+      throw unprocessable("Unblock owner user must be an active company member");
+    }
+  }
+
   async function assertValidProjectWorkspace(
     companyId: string,
     projectId: string | null | undefined,
@@ -9671,6 +9723,11 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
+      await assertValidUnblockDescriptorOwner(companyId, data.unblockDescriptor, {
+        actorAgentId: data.createdByAgentId,
+        assigneeAgentId: data.assigneeAgentId,
+        reader: dbOrTx,
+      });
       if (
         data.status === "in_progress" &&
         !data.assigneeAgentId &&
@@ -10606,6 +10663,16 @@ export function issueService(db: Db) {
           ? issueData.assigneeUserId
           : existing.assigneeUserId;
 
+      await assertValidUnblockDescriptorOwner(
+        existing.companyId,
+        issueData.unblockDescriptor,
+        {
+          actorAgentId,
+          assigneeAgentId: nextAssigneeAgentId,
+          reader: dbOrTx,
+        },
+      );
+
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -11223,7 +11290,11 @@ export function issueService(db: Db) {
       checkoutRunId: string | null,
     ) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          status: issues.status,
+          unblockDescriptor: issues.unblockDescriptor,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -11231,6 +11302,42 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, {
         kind: "work",
       });
+
+      if (issueCompany.unblockDescriptor) {
+        throw conflict("Issue checkout blocked by binding unblock descriptor", {
+          code: "issue_unblock_hold_active",
+          issueId: id,
+          unblockDescriptor: issueCompany.unblockDescriptor,
+        });
+      }
+
+      const recordBlockedCheckout = async (
+        activityDb: Db,
+        row: typeof issues.$inferSelect,
+        previousStatus: string,
+      ) => {
+        if (previousStatus === "blocked" && checkoutRunId) {
+          await logActivity(activityDb, {
+            companyId: row.companyId,
+            actorType: "agent",
+            actorId: agentId,
+            agentId,
+            runId: checkoutRunId,
+            action: "issue.checkout_claimed",
+            entityType: "issue",
+            entityId: row.id,
+            details: {
+              previousStatus,
+              nextStatus: "in_progress",
+              claimingRunId: checkoutRunId,
+            },
+          });
+        }
+      };
+      const returnCheckedOutIssue = async (row: typeof issues.$inferSelect) => {
+        const [enriched] = await withIssueLabels(db, [row]);
+        return enriched;
+      };
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
@@ -11300,31 +11407,42 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        const locked = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!locked) return null;
+        const row = await tx
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              isNull(issues.unblockDescriptor),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (row) await recordBlockedCheckout(tx as unknown as Db, row, locked.status);
+        return row;
+      });
 
       if (updated) {
-        const [enriched] = await withIssueLabels(db, [updated]);
-        return enriched;
+        return returnCheckedOutIssue(updated);
       }
 
       const current = await db
@@ -11334,12 +11452,20 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
           executionRunId: issues.executionRunId,
+          unblockDescriptor: issues.unblockDescriptor,
         })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+      if (current.unblockDescriptor) {
+        throw conflict("Issue checkout blocked by binding unblock descriptor", {
+          code: "issue_unblock_hold_active",
+          issueId: id,
+          unblockDescriptor: current.unblockDescriptor,
+        });
+      }
 
       if (
         current.assigneeAgentId === agentId &&
@@ -11361,6 +11487,7 @@ export function issueService(db: Db) {
               eq(issues.id, id),
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
+              isNull(issues.unblockDescriptor),
               isNull(issues.checkoutRunId),
               or(
                 isNull(issues.executionRunId),
@@ -11431,6 +11558,7 @@ export function issueService(db: Db) {
               and(
                 eq(issues.id, id),
                 inArray(issues.status, expectedStatuses),
+                isNull(issues.unblockDescriptor),
                 eq(issues.executionRunId, current.executionRunId),
                 or(
                   isNull(issues.assigneeAgentId),
@@ -11441,8 +11569,8 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (adopted) {
-            const [enriched] = await withIssueLabels(db, [adopted]);
-            return enriched;
+            await recordBlockedCheckout(db, adopted, current.status);
+            return returnCheckedOutIssue(adopted);
           }
         }
       }

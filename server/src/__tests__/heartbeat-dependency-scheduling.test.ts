@@ -266,6 +266,132 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(dispatchedRequests[0]).toMatchObject({ runId: dispatchedRun!.id });
   });
 
+  it("runs an unblock-owner heartbeat without checking out the held issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const action = "Confirm the isolation permit number";
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `H${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "HoldOwner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Held field task",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      unblockDescriptor: { owner: { agentId }, action },
+    });
+
+    const commentWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      contextSnapshot: { issueId, wakeReason: "issue_commented" },
+    });
+    expect(commentWake).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(
+      await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.reason, "issue_unblock_hold_active")),
+    ).toEqual([
+      expect.objectContaining({
+        status: "skipped",
+        error: action,
+      }),
+    ]);
+
+    const ownerWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_unblock_requested",
+      payload: { issueId, action },
+      requestedByActorType: "system",
+      requestedByActorId: "issue-unblock-notification",
+      contextSnapshot: { issueId, wakeReason: "issue_unblock_requested" },
+    });
+    expect(ownerWake).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    await waitForCondition(async () => {
+      const current = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, ownerWake!.id))
+        .then((rows) => rows[0]);
+      return current?.status === "succeeded";
+    });
+
+    const [run, issue] = await Promise.all([
+      db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, ownerWake!.id))
+        .then((rows) => rows[0]),
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]),
+    ]);
+    expect(run).toMatchObject({
+      status: "succeeded",
+      contextSnapshot: expect.objectContaining({
+        wakeReason: "issue_unblock_requested",
+        unblockAction: action,
+        unblockDescriptor: { owner: { agentId }, action },
+        paperclipWake: expect.objectContaining({
+          unblockAction: action,
+          unblockDescriptor: { owner: { agentId }, action },
+        }),
+      }),
+    });
+    expect(issue).toMatchObject({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      unblockDescriptor: { owner: { agentId }, action },
+    });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+    await db
+      .update(issues)
+      .set({ unblockDescriptor: { owner: "board", action } })
+      .where(eq(issues.id, issueId));
+    const nonOwnerWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_unblock_requested",
+      payload: { issueId, action },
+      requestedByActorType: "system",
+      requestedByActorId: "issue-unblock-notification",
+      contextSnapshot: { issueId, wakeReason: "issue_unblock_requested" },
+    });
+    expect(nonOwnerWake).toBeNull();
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

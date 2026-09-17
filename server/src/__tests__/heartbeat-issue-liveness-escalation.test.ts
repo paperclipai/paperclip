@@ -72,7 +72,7 @@ import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import {
-  buildIssueBlockersResolvedWakeStateKey,
+  buildIssueBlockersResolvedResolutionEventKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
 } from "../services/issue-dependency-wakeups.ts";
 
@@ -306,6 +306,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         projectId: workspaceState === "none" ? null : projectId,
         title: "Synthetic completed blocker",
         status: "done",
+        completedAt: new Date("2026-08-01T12:01:00.000Z"),
         priority: "medium",
         executionWorkspaceId: workspaceState === "none" ? null : executionWorkspaceId,
         issueNumber: 2,
@@ -455,9 +456,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
 
     expect(wake?.reason).toBe("issue_blockers_resolved");
     expect(wake?.idempotencyKey).toBe(
-      buildIssueBlockersResolvedWakeStateKey({
+      buildIssueBlockersResolvedResolutionEventKey({
         dependentIssueId: blockedIssueId,
-        blockerIssueIds: [blockerIssueId],
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerStatusVersion: 0,
       }),
     );
     expect(["queued", "claimed", "completed"]).toContain(wake?.status);
@@ -495,9 +497,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
 
     expect(wake?.reason).toBe("issue_blockers_resolved");
     expect(wake?.idempotencyKey).toBe(
-      buildIssueBlockersResolvedWakeStateKey({
+      buildIssueBlockersResolvedResolutionEventKey({
         dependentIssueId: blockedIssueId,
-        blockerIssueIds: [blockerIssueId],
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerStatusVersion: 0,
       }),
     );
     expect(["queued", "claimed", "completed"]).toContain(wake?.status);
@@ -541,9 +544,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       .then((rows) => rows[0] ?? null);
     expect(wake).toMatchObject({
       reason: "issue_blockers_resolved",
-      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+      idempotencyKey: buildIssueBlockersResolvedResolutionEventKey({
         dependentIssueId: blockedIssueId,
-        blockerIssueIds: [blockerIssueId],
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerStatusVersion: 0,
       }),
     });
   });
@@ -656,9 +660,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     // The route-time wake writes the level-triggered state key. A skip records a
     // `skipped` row with that key. `skipped` is not an in-flight status, so the
     // backstop must still re-emit for the same ready state.
-    const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
+    const idempotencyKey = buildIssueBlockersResolvedResolutionEventKey({
       dependentIssueId: blockedIssueId,
-      blockerIssueIds: [blockerIssueId],
+      resolvedBlockerIssueId: blockerIssueId,
+      blockerStatusVersion: 0,
     });
     await db.insert(agentWakeupRequests).values({
       companyId,
@@ -739,9 +744,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       .then((rows) => rows[0] ?? null);
     expect(wake).toMatchObject({
       reason: "issue_blockers_resolved",
-      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+      idempotencyKey: buildIssueBlockersResolvedResolutionEventKey({
         dependentIssueId: blockedIssueId,
-        blockerIssueIds: [blockerIssueId],
+        resolvedBlockerIssueId: blockerIssueId,
+        blockerStatusVersion: 0,
       }),
     });
   });
@@ -758,6 +764,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       priority: "medium",
       issueNumber: 3,
       identifier: "R-MULTI-3",
+      completedAt: new Date("2026-08-01T12:00:00.000Z"),
     });
     await db.insert(issueRelations).values({
       companyId,
@@ -813,6 +820,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       companyId,
       title: "Earlier completed blocker",
       status: "done",
+      completedAt: new Date("2026-08-01T12:00:00.000Z"),
       priority: "medium",
       issueNumber: 3,
       identifier: "R-MULTI-3",
@@ -852,16 +860,17 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(result.issueIds).toEqual([blockedIssueId]);
     expect(result.existingWakeSkipped).toBe(0);
 
-    const stateKey = buildIssueBlockersResolvedWakeStateKey({
+    const stateKey = buildIssueBlockersResolvedResolutionEventKey({
       dependentIssueId: blockedIssueId,
-      blockerIssueIds: readiness.blockerIssueIds,
+      resolvedBlockerIssueId: blockerIssueId,
+      blockerStatusVersion: 0,
     });
-    const healedWake = await db
+    const wakeRows = await db
       .select({ status: agentWakeupRequests.status, idempotencyKey: agentWakeupRequests.idempotencyKey })
       .from(agentWakeupRequests)
-      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.idempotencyKey, stateKey)))
-      .then((rows) => rows[0] ?? null);
-    expect(healedWake).not.toBeNull();
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    const healedWake = wakeRows.find((row) => row.idempotencyKey === stateKey) ?? null;
+    expect(healedWake, JSON.stringify(wakeRows)).not.toBeNull();
     expect(["queued", "claimed", "completed"]).toContain(healedWake?.status);
 
     // A second reconciliation pass finds the state-key wake and stays bounded:
@@ -911,10 +920,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(result.issueIds).toEqual([blockedIssueId]);
     expect(result.existingWakeSkipped).toBe(0);
 
-    const cycleKey = buildIssueBlockersResolvedWakeStateKey({
+    const cycleKey = buildIssueBlockersResolvedResolutionEventKey({
       dependentIssueId: blockedIssueId,
-      blockerIssueIds: [blockerIssueId],
-      blockedTransitionAt,
+      resolvedBlockerIssueId: blockerIssueId,
+      blockerStatusVersion: 0,
     });
     const healedWake = await db
       .select({ status: agentWakeupRequests.status, idempotencyKey: agentWakeupRequests.idempotencyKey })

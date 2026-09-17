@@ -41,7 +41,7 @@ import {
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
-import { buildIssueBlockersResolvedWakeIdempotencyKey } from "../issue-dependency-wakeups.js";
+import { buildIssueBlockersResolvedResolutionEventKey } from "../issue-dependency-wakeups.js";
 import {
   persistActivity,
   publishActivity,
@@ -1915,9 +1915,10 @@ export async function commitNativeStatusDecision(input: {
         const isCompletedChildParent = parent?.id === dependent.id;
         const idempotencyKey = isCompletedChildParent
           ? `issue_children_completed:${dependent.id}:${input.issueId}`
-          : buildIssueBlockersResolvedWakeIdempotencyKey({
+          : buildIssueBlockersResolvedResolutionEventKey({
               dependentIssueId: dependent.id,
               resolvedBlockerIssueId: input.issueId,
+              blockerStatusVersion: updated.statusVersion,
             });
         const childCompletionContext =
           isCompletedChildParent && parent
