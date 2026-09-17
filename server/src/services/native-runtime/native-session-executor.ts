@@ -59,6 +59,7 @@ import {
   completeRetainedNativeSessionCleanup,
   completeTerminatedLocalNativeSessionCleanup,
   acpxRuntimeSessionDirectoryName,
+  opencodeRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,
@@ -5036,7 +5037,14 @@ export function resolveNativeHarnessPersistenceProfile(
         ? {
             name: "opencode",
             location: "filesystem",
-            excludeEntries: [],
+            // OpenCode regenerates config (including MCP credentials and npm
+            // executable symlinks) and cache on launch. Its resumable session
+            // database lives in data, which must remain in the checkpoint.
+            // Each launch also creates a disposable home-* with skills and npm
+            // caches. It is never reused for provider-session recovery.
+            excludeEntries: ["config", "cache", "home-*"].map(
+              (entry) => `${opencodeRuntimeSessionDirectoryName(nativeSessionKey(execution))}/${entry}`,
+            ),
           }
         : execution.provider.kind === "acpx"
           ? {
@@ -9087,7 +9095,7 @@ function archiveExcludeArgs(entries: readonly string[]): string[] {
           segment === "" ||
           segment === "." ||
           segment === ".." ||
-          !/^[A-Za-z0-9._-]+$/.test(segment),
+          !/^[A-Za-z0-9._-]+\*?$/.test(segment),
       )
     ) {
       throw new Error("runner_remote_checkpoint_exclusion_invalid");
@@ -9114,7 +9122,7 @@ export async function stageRemoteRunnerDirectory(input: {
         const archive = execFileSync(
           "tar",
           [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
-          { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
+          { encoding: "buffer", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, COPYFILE_DISABLE: "1" } },
         );
         execFileSync("tar", ["-xzf", "-", "-C", stagingRoot], {
           input: archive,
@@ -9143,11 +9151,18 @@ export async function stageRemoteRunnerDirectory(input: {
   const archive = execFileSync(
     "tar",
     [...excludeArgs, "-czf", "-", "-C", input.sourcePath, "."],
-    { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 },
+    { encoding: "buffer", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, COPYFILE_DISABLE: "1" } },
   );
   const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
+  // Runtime instruction/skill snapshots are read-only after staging. A durable
+  // VM reuses this path on the next turn: permit replacing its entries without
+  // following symlinks into another workspace, then restore archive modes.
+  const prepareReadonly = input.mode === 0o555
+    ? `test ! -L '${escapedTarget}' && find '${escapedTarget}' -type d -exec chmod u+w {} + && `
+    : "";
   const script =
     `umask 077; mkdir -p '${escapedTarget}' && ` +
+    prepareReadonly +
     `base64 -d | tar -xzf - -C '${escapedTarget}' && ` +
     `chmod ${input.mode.toString(8)} '${escapedTarget}'`;
   const result = await input.runner.execute({

@@ -579,7 +579,16 @@ export interface PluginEnvironmentDiagnostic {
   details?: Record<string, unknown>;
 }
 
+export interface PluginEnvironmentResourceBinding {
+  provider: string;
+  companyId: string;
+  resourceId: string;
+  identity: string;
+}
+
 export interface PluginEnvironmentDriverBaseParams {
+  /** Host-owned durable resource identity, independent of run lease lifetime. */
+  resourceBinding?: PluginEnvironmentResourceBinding;
   driverKey: string;
   companyId: string;
   environmentId: string;

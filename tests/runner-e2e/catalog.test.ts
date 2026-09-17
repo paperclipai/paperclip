@@ -12,6 +12,7 @@ import {
   runnerSuites,
   runnerTasks,
   daytonaWarmContinuityTask,
+  warmPromptForGeneration,
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
   suiteDefinitionHash,
@@ -25,6 +26,24 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("gives warm runners only their own completion protocol on all three turns", () => {
+    const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
+    for (const prompt of prompts) {
+      const native = warmPromptForGeneration(prompt, "native");
+      expect(native).toContain("paperclip_finish");
+      expect(native).toContain("register_deliverable");
+      expect(native).toContain("byteSize:<computed byte size>");
+      expect(native).toContain('sha256:"<computed SHA-256>"');
+      expect(native).toContain("deliverable:<attachmentId>");
+      expect(native).not.toContain("PATCH /api/issues");
+      expect(native).not.toContain("In a legacy runner,");
+      const legacy = warmPromptForGeneration(prompt, "legacy");
+      expect(legacy).not.toContain("paperclip_finish");
+      expect(legacy).toContain("issue");
+      expect(legacy).toContain("Do not recreate, truncate, reorder, or duplicate prior lines.");
+    }
+  });
+
   it("defines sixteen local connection-review journeys without expanding the default matrix", () => {
     expect(connectionReviewSuite.expectedMatrixSize).toBe(16);
     expect(new Set(connectionReviewSuite.profiles.map(profile => profile.id))).toEqual(new Set(["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"]));
@@ -41,10 +60,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      22, 35, 52, 24, 42, 14, 10, 2,
+      22, 35, 52, 24, 21, 4, 2, 42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(201);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(201);
+    expect(validateRunnerCatalog()).toHaveLength(228);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(228);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -72,7 +91,7 @@ describe("runner E2E catalog", () => {
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
-    ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
+    ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 });
   });
 
   it("defines the warm Daytona continuity fixture as exactly two Codex cells", () => {

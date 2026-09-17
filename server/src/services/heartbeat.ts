@@ -14758,6 +14758,7 @@ export function heartbeatService(
     // whether any provider authority needs to be reopened.
     await reconcileNativeFinalizations(db, undefined, {
       environmentRuntime,
+      isRunActive: (runId) => activeRunExecutions.has(runId),
       onWorkspaceSettled: settleRecoveredNativeWorkspace,
     });
     scheduleRetainedNativeSessionCleanup();
@@ -18627,6 +18628,7 @@ export function heartbeatService(
     // mode, never the current feature flag.
     await reconcileNativeFinalizations(db, undefined, {
       environmentRuntime,
+      isRunActive: (runId) => activeRunExecutions.has(runId),
       onWorkspaceSettled: settleRecoveredNativeWorkspace,
     }).catch((error) => {
       logger.warn(

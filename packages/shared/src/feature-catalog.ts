@@ -50,6 +50,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableExeEnvironments: {
+    title: "exe.dev Environments",
+    description: "Allow experimental durable exe.dev VMs for trusted groups of agents.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableNativeRunner: {
     title: "Paperclip Runner",
     description:

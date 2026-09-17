@@ -34,6 +34,7 @@ describe("instance settings service", () => {
       enableNewestFirstIssueThread: true,
     })).toEqual({
       enableEnvironments: true,
+      enableExeEnvironments: false,
       enableNativeRunner: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,

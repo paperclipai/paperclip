@@ -1,0 +1,150 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+# Keep the Rust toolchain explicit so the runner artifact is reproducible and
+# is always built for the same platform as the final exe.dev image. Base-image
+# digests are the reviewed linux/amd64 manifests; the tags are annotations.
+FROM rust:1.97-bookworm@sha256:408fe88047cef61a2087653b0c5255fa51c0f2d6d94ddedd7a2562a9b91a46f6 AS runnerd-build
+
+WORKDIR /workspace/packages/paperclip-runner/runner
+COPY packages/paperclip-runner/runner/Cargo.toml packages/paperclip-runner/runner/Cargo.lock ./
+COPY packages/paperclip-runner/runner/crates ./crates
+COPY packages/paperclip-runner/protocol ../protocol
+RUN cargo build --locked --release -p paperclip-runner-core --bin paperclip-runnerd \
+    && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd
+
+FROM node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b AS provider-pack-build
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+WORKDIR /workspace
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+COPY patches ./patches
+COPY scripts/link-plugin-dev-sdk.mjs ./scripts/link-plugin-dev-sdk.mjs
+# Build from the committed workspace lock; never resolve new dependency versions
+# while creating an image. Include the workspace graph for source-owned patches.
+COPY packages ./packages
+COPY server/package.json ./server/package.json
+COPY ui/package.json ./ui/package.json
+COPY cli/package.json ./cli/package.json
+# The complete resolved lock (including transitive integrity hashes) is reviewed.
+# Reject registry-time drift BEFORE installing packages or running lifecycle code.
+# Refresh this digest together with source/provider dependency changes.
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=af3b879fea127a608b0f9279627f357638299441bbf41835f0b91ab0162e441c
+RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
+    && sha256sum -c /tmp/provider-lock.sha256 \
+    && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
+ARG PAPERCLIP_RUNNER_SOURCE_REVISION
+RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
+RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
+    && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
+      node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+    && chmod -R a+rX /provider-pack
+
+# Fleet sandbox base image. Keep this section aligned with
+# paperclipai/paperclip-cloud/fleet-sandbox-image/Dockerfile. The only Paperclip
+# runner-specific addition is /usr/local/bin/paperclip-runnerd below.
+FROM ghcr.io/boldsoftware/exeuntu@sha256:5db55eada806b5c4c72eda61f11643a62d34ada2617db91152e4186a47cd730e
+
+USER root
+COPY --from=provider-pack-build /usr/local/ /usr/local/
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv rsync && rm -rf /var/lib/apt/lists/*
+
+ENV PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=/opt/paperclip-runner/provider-pack
+ENV PATH=${PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT}/node_modules/.bin:/usr/local/share/nvm/current/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:${PATH}
+
+# Share the pack's latest stable Codex, Claude and OpenCode with every adapter.
+# Never add a second CLI version to work around a runner compatibility pin.
+RUN npm uninstall -g @anthropic-ai/claude-code @openai/codex opencode-ai \
+    && npm install -g \
+      @xai-official/grok@1.0.13 \
+      @google/gemini-cli@0.58.0 \
+      @moonshot-ai/kimi-code@0.41.0 \
+    && npm cache clean --force
+
+# Hermes requires Python >=3.11,<3.14; the image's default Python is newer.
+# Use the distro interpreter in a dedicated environment without changing PATH
+# or keeping an older Hermes CLI. Everything is installed before sandbox boot.
+# Debian 13 in the sandbox base already includes Python 3.13 and python3-venv.
+RUN /usr/bin/python3 -m venv /opt/hermes \
+    && /opt/hermes/bin/pip install --no-cache-dir hermes-agent==0.19.0 \
+    && ln -sf /opt/hermes/bin/hermes /usr/local/bin/hermes
+
+ARG CURSOR_VERSION=2026.09.02-c22c1a3
+ARG CURSOR_SHA256_AMD64=b73b59854762535c0fc20d7ccc51c3b5a356a851491088d60a362be48750f53c
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    [ "$arch" = "amd64" ] || { echo "FATAL: cursor pin only covers amd64, not $arch" >&2; exit 1; }; \
+    dir="/opt/cursor/versions/${CURSOR_VERSION}"; mkdir -p "$dir"; \
+    curl -fsSL "https://downloads.cursor.com/lab/${CURSOR_VERSION}/linux/x64/agent-cli-package.tar.gz" -o /tmp/cursor.tgz; \
+    printf '%s  /tmp/cursor.tgz\n' "${CURSOR_SHA256_AMD64}" > /tmp/cursor.sha256; \
+    sha256sum -c /tmp/cursor.sha256; \
+    tar --strip-components=1 -xzf /tmp/cursor.tgz -C "$dir"; \
+    rm -f /tmp/cursor.tgz /tmp/cursor.sha256; \
+    ln -sf "$dir/cursor-agent" /usr/local/bin/cursor-agent; \
+    ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent; \
+    chmod -R a+rX /opt/cursor
+
+ARG GH_VERSION=2.100.0
+ARG GH_SHA256_AMD64=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    [ "$arch" = "amd64" ] || { echo "FATAL: gh pin only covers amd64, not $arch" >&2; exit 1; }; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" -o /tmp/gh.tgz; \
+    printf '%s  /tmp/gh.tgz\n' "${GH_SHA256_AMD64}" > /tmp/gh.sha256; \
+    sha256sum -c /tmp/gh.sha256; \
+    tar -xzf /tmp/gh.tgz -C /tmp; \
+    install "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tgz /tmp/gh.sha256 "/tmp/gh_${GH_VERSION}_linux_amd64"
+
+COPY --from=runnerd-build /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd
+COPY --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
+RUN set -eu; for cli in codex claude opencode; do \
+      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
+      chmod 755 "/usr/local/bin/$cli"; \
+    done
+
+# Keep revision-dependent metadata below the stable agent CLI installation
+# layers. A source-only image miss can then reuse those expensive layers from
+# the trusted registry cache.
+ARG PAPERCLIP_RUNNER_CONTENT_ID
+ARG PAPERCLIP_RUNNER_SOURCE_REVISION
+RUN test -n "${PAPERCLIP_RUNNER_CONTENT_ID}" \
+    && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
+
+RUN set -eu; \
+    printf '%s\n' 'export PATH=/opt/paperclip-runner/provider-pack/node_modules/.bin:$PATH' \
+      > /etc/profile.d/01-paperclip-runner-provider-pack.sh; \
+    chmod 0644 /etc/profile.d/01-paperclip-runner-provider-pack.sh; \
+    for command_name in acpx claude-agent-acp codex-acp claude codex grok gemini kimi opencode cursor-agent agent hermes gh paperclip-runnerd; do \
+      command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH after build" >&2; exit 1; }; \
+    done; \
+    metadata="$(paperclip-runnerd --build-metadata)"; \
+    /opt/paperclip-runner/provider-pack/node_modules/node/bin/node -e "const [major,minor,patch]=process.versions.node.split('.').map(Number); if (major<24 || (major===24 && (minor<11 || (minor===11 && patch<0)))) process.exit(1)"; \
+    test -f /opt/paperclip-runner/provider-pack/provider-pack.json; \
+    printf '%s' "$metadata" | grep -q '"dial_ws_loopback"'; \
+    printf '%s' "$metadata" | grep -q '"dial_wss"'; \
+    printf '%s' "$metadata" | grep -q '"listen_ws"'; \
+    echo "all agent CLIs and runnerd transport modes are available"
+
+USER exedev
+
+RUN /bin/sh -lc 'set -eu; \
+    test -r /opt/paperclip-runner/provider-pack/provider-pack.json; \
+    /opt/paperclip-runner/provider-pack/node_modules/node/bin/node -e \
+      "JSON.parse(require(\"node:fs\").readFileSync(\"/opt/paperclip-runner/provider-pack/provider-pack.json\", \"utf8\"))"; \
+    for command_name in acpx claude-agent-acp codex-acp; do \
+      command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for exedev user" >&2; exit 1; }; \
+    done; \
+    test "$(acpx --version)" = "0.13.1"; \
+    test "$(claude-agent-acp --version)" = "0.73.0"; \
+    test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'
+
+LABEL io.paperclip.runner.content-id="${PAPERCLIP_RUNNER_CONTENT_ID}" \
+      org.opencontainers.image.revision="${PAPERCLIP_RUNNER_SOURCE_REVISION}"
+
+USER root
+COPY docker/exe-dev-runner/lease.mjs /opt/paperclip-exe/lease.mjs
+RUN printf '{"schema":1,"sourceRevision":"%s","contentId":"%s"}\n' "$PAPERCLIP_RUNNER_SOURCE_REVISION" "$PAPERCLIP_RUNNER_CONTENT_ID" > /opt/paperclip-exe/image.json \
+    && chmod -R a+rX /opt/paperclip-exe
+LABEL exe.dev/login-user="exedev" exe.dev/install-shelley="false" io.paperclip.exe.schema="1"
+CMD ["/sbin/init"]
+LABEL org.opencontainers.image.source="https://github.com/paperclipai/paperclip" \
+      org.opencontainers.image.description="Experimental Paperclip durable exe.dev runner image"

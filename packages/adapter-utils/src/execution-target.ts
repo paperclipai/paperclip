@@ -764,6 +764,10 @@ async function ensureSandboxCommandResolvable(
     throw new Error(`Timed out checking command "${command}" on sandbox target.`);
   }
 
+  if (target.providerKey === "exe-dev") {
+    throw new Error(`Compatible exe.dev image is missing ${command}; runtime installation is disabled.`);
+  }
+
   // If the caller supplied an install command, attempt the install once via
   // the sandbox runner (which the sandbox provider wraps in a login shell)
   // and re-probe before reporting failure. This lets fresh sandbox leases
@@ -1175,6 +1179,10 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
     }
   }
 
+  if (input.target.providerKey === "exe-dev") {
+    throw new Error(`Compatible exe.dev image is missing ${detectCommand ?? "the adapter runtime"}; runtime installation is disabled.`);
+  }
+
   const result = await runAdapterExecutionTargetShellCommand(
     input.runId,
     input.target,
@@ -1484,6 +1492,18 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     };
   }
 
+  // A durable exe.dev workspace is seeded once. The marker is written only
+  // after preparation succeeds, so a failed first upload cannot make the next
+  // legacy run adopt an empty directory. Native runs supply their own verified
+  // checkpoint policy and never enter this branch.
+  const durableLegacyWorkspace = target.providerKey === "exe-dev" && input.workspaceInboundMode === undefined && input.syncWorkspace !== false;
+  const seedMarker = path.posix.join(input.workspaceRemoteDir ?? target.remoteCwd, ".paperclip-runtime", "workspace-seeded-v1");
+  let inboundMode = input.workspaceInboundMode;
+  if (durableLegacyWorkspace) {
+    const marker = await requireSandboxRunner(target).execute({ command: "sh", args: ["-c", `test -f ${shellQuote(seedMarker)}`], timeoutMs: 15000 });
+    if (marker.timedOut || (marker.exitCode !== 0 && marker.exitCode !== 1)) throw new Error("Could not inspect durable workspace seed");
+    inboundMode = marker.exitCode === 0 ? "adopt_remote" : "host_current";
+  }
   const prepared = await prepareCommandManagedRuntime({
     runner: requireSandboxRunner(target),
     spec: {
@@ -1500,7 +1520,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
     syncWorkspace: input.syncWorkspace,
-    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceInboundMode: inboundMode,
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
@@ -1508,12 +1528,16 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
     additionalSources: input.additionalSources,
-    installCommand: input.installCommand,
+    installCommand: target.providerKey === "exe-dev" ? null : input.installCommand,
     detectCommand: input.detectCommand,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
     runtimeSpan: input.runtimeSpan,
   });
+  if (durableLegacyWorkspace) {
+    const marker = await requireSandboxRunner(target).execute({ command: "sh", args: ["-c", `mkdir -p ${shellQuote(path.posix.dirname(seedMarker))} && touch ${shellQuote(seedMarker)}`], timeoutMs: 15000 });
+    if (marker.timedOut || marker.exitCode !== 0) throw new Error("Could not record durable workspace seed");
+  }
   return {
     target,
     workspaceRemoteDir: prepared.workspaceRemoteDir,

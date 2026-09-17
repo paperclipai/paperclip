@@ -201,7 +201,7 @@ jobs:
           build-args: |
             USER_UID=1001
             USER_GID=1001
-            CLOUD_BUNDLED_PLUGINS=daytona
+            CLOUD_BUNDLED_PLUGINS=daytona exe-dev
             CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}

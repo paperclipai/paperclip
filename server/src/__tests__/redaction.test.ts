@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   PRP_V1_EVENT_TYPES,
+  PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
   redactEventPayload,
@@ -10,6 +11,16 @@ import {
 } from "../redaction.js";
 
 describe("redaction", () => {
+  it("preserves only the closed v2 event catalog in matching v2 envelopes", () => {
+    const schema = JSON.parse(readFileSync(new URL("../../../packages/paperclip-runner/protocol/schemas/event-v2.schema.json", import.meta.url), "utf8"));
+    expect([...PRP_V2_EVENT_TYPES].sort()).toEqual([...schema.properties.eventType.enum].sort());
+    for (const eventType of PRP_V2_EVENT_TYPES) {
+      const clean = redactEventPayload({ schema: "paperclip.prp.event.v2", schemaVersion: 2, eventType, apiKey: "sensitive" });
+      expect(clean).toMatchObject({ schema: "paperclip.prp.event.v2", schemaVersion: 2, eventType, apiKey: REDACTED_EVENT_VALUE });
+    }
+    expect(redactEventPayload({ schema: "paperclip.prp.event.v2", schemaVersion: 2, eventType: "unknown.provider.credential" })?.eventType).toBe(REDACTED_EVENT_VALUE);
+    expect(redactEventPayload({ schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "session.goal.updated" })?.eventType).toBe(REDACTED_EVENT_VALUE);
+  });
   it("keeps the discriminator allowlist in exact PRP v1 schema parity", () => {
     const schema = JSON.parse(
       readFileSync(

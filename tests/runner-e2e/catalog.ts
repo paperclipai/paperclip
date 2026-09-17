@@ -26,12 +26,13 @@ import type {
   SecretReference,
 } from "./types.js";
 
-const ENVIRONMENT_IDS = ["local", "daytona"] as const;
+const ENVIRONMENT_IDS = ["local", "daytona", "exe-dev"] as const;
 const SELECTABLE_GROUPS = [
   "legacy",
   "native",
   "local",
   "daytona",
+  "exe-dev",
   "warm",
   "core",
   "breadth",
@@ -389,6 +390,26 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
   },
 ] as const;
 
+export const exeEnvironment: EnvironmentFixture = {
+  id: "exe-dev", label: "Durable exe.dev VM", groups: ["exe-dev"],
+  driver: "sandbox", provider: "exe-dev", credential: "EXE_DEV_SSH_PRIVATE_KEY",
+  lifecycle: { setup: "create_via_api", probe: "run_context_via_api", cleanup: "delete_via_api_and_destroy_leases" },
+  expectedExecutionTarget: { kind: "remote", transport: "sandbox" },
+  buildEnvironment(input) {
+    if (!isImmutableDaytonaImage(input.exeImage)) throw new Error("PAPERCLIP_E2E_EXE_IMAGE must be an immutable image digest");
+    const key = input.secretRefs.EXE_DEV_SSH_PRIVATE_KEY;
+    if (!key) throw new Error("EXE_DEV_SSH_PRIVATE_KEY secret reference required");
+    return {
+      name: `Runner E2E exe.dev ${input.executionId}`, driver: "sandbox",
+      config: { provider: "exe-dev", mode: "create", image: input.exeImage,
+        vmName: `paperclip-e2e-${createHash("sha256").update(input.executionId).digest("hex").slice(0, 20)}`,
+        sshPrivateKey: key.secretId, ...(input.secretRefs.EXE_DEV_REGISTRY_AUTH ? { registryAuth: input.secretRefs.EXE_DEV_REGISTRY_AUTH.secretId } : {}), reuseLease: true, runnerLifecycleMode: "per_turn",
+        cpu: 2, memory: "4GB", disk: "20GB", timeoutMs: 300000 },
+      envVars: {},
+    };
+  },
+};
+
 export const daytonaWarmEnvironment: EnvironmentFixture = {
   id: "daytona",
   configurationKey: "warm-reuse-v1",
@@ -443,7 +464,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     expectedRunCount: 1,
     attemptTimeoutMs: {
       local: 8 * 60_000,
-      daytona: 15 * 60_000,
+      daytona: 15 * 60_000, "exe-dev": 15 * 60_000,
     },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Runner E2E PAPERCLIP_E2E_OK_${nonce}`,
@@ -492,7 +513,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     expectedRunCount: 3,
     attemptTimeoutMs: {
       local: 8 * 60_000,
-      daytona: 12 * 60_000,
+      daytona: 12 * 60_000, "exe-dev": 12 * 60_000,
     },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Runner E2E plan lifecycle ${nonce}`,
@@ -560,7 +581,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     expectedRunCount: 1,
     attemptTimeoutMs: {
       local: 8 * 60_000,
-      daytona: 15 * 60_000,
+      daytona: 15 * 60_000, "exe-dev": 15 * 60_000,
     },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Runner E2E ask mode ${nonce}`,
@@ -633,7 +654,7 @@ const structuredQuestionResumeTask = {
   workMode: "standard",
   flow: "question_resume_completion",
   expectedRunCount: 2,
-  attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+  attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 },
   expectedTerminalState: { issue: "done", run: "succeeded" },
   buildTitle: (nonce) => `Runner E2E structured question ${nonce}`,
   buildVisibleMarker: (nonce) => `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
@@ -703,7 +724,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
     workMode: "standard",
     flow: "single_turn",
     expectedRunCount: 1,
-    attemptTimeoutMs: { local: 8 * 60_000, daytona: 8 * 60_000 },
+    attemptTimeoutMs: { local: 8 * 60_000, daytona: 8 * 60_000, "exe-dev": 8 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `OpenRouter breadth hello ${nonce}`,
     buildVisibleMarker: (nonce) => breadthMarker("H", nonce),
@@ -724,7 +745,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
     workMode: "standard",
     flow: "question_resume_completion",
     expectedRunCount: 2,
-    attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+    attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `OpenRouter breadth question ${nonce}`,
     buildVisibleMarker: (nonce) => breadthMarker("Q_C", nonce),
@@ -751,7 +772,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
     workMode: "planning",
     flow: "plan_approval_completion",
     expectedRunCount: 2,
-    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000 },
+    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000, "exe-dev": 15 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `OpenRouter breadth plan ${nonce}`,
     buildVisibleMarker: (nonce) => breadthMarker("P_OK", nonce),
@@ -777,6 +798,18 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
 const localEnvironment = runnerEnvironments.find(
   (environment) => environment.id === "local",
 )!;
+
+export function warmVisibleResponseMarker(marker: string, generation: RunnerProfileFixture["generation"]): string {
+  return generation === "native" ? `Prepared ${marker} for this response.` : marker;
+}
+
+export function warmPromptForGeneration(prompt: string, generation: RunnerProfileFixture["generation"]): string {
+  const other = generation === "native" ? "legacy" : "native";
+  return [
+    `You are running in a ${generation} runner. Follow the ${generation} completion instructions below.`,
+    ...prompt.split("\n").filter((line) => !line.startsWith(`In a ${other} runner,`)),
+  ].join("\n");
+}
 
 function warmTurnMarker(turn: 1 | 2 | 3, nonce: string) {
   return `PAPERCLIP_E2E_WARM_T${turn}_${nonce}`;
@@ -806,10 +839,10 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
       ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
       : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
     `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
-    `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
+    `In a native runner, after verification compute the exact byte size and SHA-256 of ${file} and call register_deliverable exactly once with filename:"${file}",contentType:"text/plain",byteSize:<computed byte size>,sha256:"<computed SHA-256>",contentRef:"${file}",title:"${marker}", and idempotencyKey:"warm-deliverable-T${turn}-${nonce}". Use the returned attachment ID as deliverable:<attachmentId>. Then call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:["deliverable:<attachmentId>"]}],remainingWork:[]},evidence:[{ref:"deliverable:<attachmentId>"}],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete final response. The registered file supplies the visible issue response; do not post another comment or create a review interaction yourself.`,
     legacyCompletion,
     `In a legacy runner, the PATCH comment is the complete visible response. After its 2xx response, finish silently: do not print, echo, or emit ${marker} again as assistant text.`,
-    `Do not include ${marker} in any other visible response or write. Do not recreate, truncate, reorder, or duplicate prior lines.`,
+    `Use ${marker} only in the writes and response required above. Do not recreate, truncate, reorder, or duplicate prior lines.`,
   ].join("\n");
 }
 
@@ -820,7 +853,7 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   workMode: "standard",
   flow: "warm_three_turn",
   expectedRunCount: 3,
-  attemptTimeoutMs: { local: 30 * 60_000, daytona: 30 * 60_000 },
+  attemptTimeoutMs: { local: 30 * 60_000, daytona: 30 * 60_000, "exe-dev": 30 * 60_000 },
   turnTimeoutMs: 10 * 60_000,
   expectedTerminalState: { issue: "done", run: "succeeded" },
   buildTitle: (nonce) => `Runner E2E warm Daytona continuity ${nonce}`,
@@ -832,7 +865,7 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   ],
   buildMatchers(nonce, execution) {
     const markers = ([1, 2, 3] as const).map((turn) =>
-      warmTurnMarker(turn, nonce),
+      warmVisibleResponseMarker(warmTurnMarker(turn, nonce), execution.profile.generation),
     );
     return [
       { kind: "message_exact", expected: markers[2] },
@@ -851,7 +884,7 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
       { kind: "issue_status", expected: "done" },
       { kind: "run_status", expected: "succeeded" },
       { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
-      { kind: "environment", expected: "daytona" },
+      { kind: "environment", expected: execution.environment.id },
     ];
   },
 };
@@ -859,6 +892,21 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
 const codexContinuityProfiles = runnerProfiles.filter((profile) =>
   ["legacy-codex", "runner-codex"].includes(profile.id),
 );
+
+const exeWarmEnvironment: EnvironmentFixture = {
+  ...exeEnvironment,
+  configurationKey: "warm-reuse-v1",
+  buildEnvironment(input) {
+    const environment = exeEnvironment.buildEnvironment(input);
+    return { ...environment, config: { ...(environment.config as Record<string, unknown>), runnerLifecycleMode: "warm" } };
+  },
+};
+const exeWarmContinuityTask: RunnerTaskFixture = {
+  ...daytonaWarmContinuityTask,
+  buildTitle: (nonce) => `Runner E2E warm exe.dev continuity ${nonce}`,
+  buildPrompt: (nonce) => daytonaWarmContinuityTask.buildPrompt(nonce).replaceAll("Daytona", "exe.dev"),
+  buildFollowupMessages: (nonce) => daytonaWarmContinuityTask.buildFollowupMessages!(nonce).map((message) => message.replaceAll("Daytona", "exe.dev")) as [string, string],
+};
 
 export const connectionReviewSuite: RunnerSuiteFixture = {
   id: "connection-reviews",
@@ -871,7 +919,7 @@ export const connectionReviewSuite: RunnerSuiteFixture = {
   tasks: (["approve", "decline", "always", "restart"] as const).map(decision => ({
     id: `tool-review-${decision}`, label: `Connection review: ${decision}`, groups: [],
     workMode: "standard", flow: "governed_tool_review", toolReviewDecision: decision,
-    expectedRunCount: 2, attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+    expectedRunCount: 2, attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000, "exe-dev": 12 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: nonce => `Runner E2E connection review ${decision} ${nonce}`,
     buildVisibleMarker: nonce => `PAPERCLIP_E2E_REVIEW_DONE_${nonce}`,
@@ -929,6 +977,26 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 1, resetRunsCountedSeparately: true },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
+  {
+    id: "exe-compatibility", label: "Experimental exe.dev Compatibility",
+    description: "Seven legacy/native profiles across three workflows on prebuilt durable VMs.",
+    groups: ["exe-dev", "core"], manualOnly: true,
+    profiles: runnerProfiles.map((profile) => ({ ...profile, supportedEnvironments: [...profile.supportedEnvironments, "exe-dev" as const] })),
+    environments: [exeEnvironment], tasks: runnerTasks, expectedMatrixSize: 21,
+  },
+  {
+    id: "exe-recovery", label: "Experimental exe.dev Recovery",
+    description: "Question/resume and controller restart on durable legacy and native Codex workspaces.",
+    groups: ["exe-dev"], manualOnly: true,
+    profiles: runnerProfiles.filter((profile) => ["legacy-codex", "runner-codex"].includes(profile.id)).map((profile) => ({ ...profile, supportedEnvironments: [...profile.supportedEnvironments, "exe-dev" as const] })),
+    environments: [exeEnvironment], tasks: localIntegrityTasks, expectedMatrixSize: 4,
+  },
+  {
+    id: "exe-warm-continuity", label: "Experimental exe.dev Warm Continuity", manualOnly: true,
+    description: "Three turns on the same durable VM, workspace, and native runner session.",
+    groups: ["exe-dev", "warm"], profiles: codexContinuityProfiles,
+    environments: [exeWarmEnvironment], tasks: [exeWarmContinuityTask], expectedMatrixSize: 2,
+  },
   {
     id: "core-compatibility",
     label: "Core Runner Compatibility",

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   access,
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -1578,7 +1579,47 @@ describe("remote provider checkpoint snapshots", () => {
     expect(syncOut).toHaveBeenCalledOnce();
   });
 
-  it("rejects unsafe relative checkpoint exclusions", async () => {
+  it("persists OpenCode history while omitting generated config, credentials, cache, and executable aliases", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-checkpoint-"));
+    const sourcePath = join(root, "source");
+    const targetPath = join(root, "durable");
+    const sessionDirectory = "session";
+    try {
+      for (const directory of ["data", "config", "cache", "home-first/.npm", "home-second/.npm"]) {
+        await mkdir(join(sourcePath, sessionDirectory, directory), { recursive: true });
+      }
+      await writeFile(join(sourcePath, sessionDirectory, "data", "session.db"), "resume-history");
+      for (const home of ["home-first", "home-second"]) {
+        await writeFile(join(sourcePath, sessionDirectory, home, ".npm", "cache"), Buffer.alloc(34 * 1024 * 1024));
+      }
+      await writeFile(join(sourcePath, sessionDirectory, "config", "opencode.json"), "launch-secret");
+      await symlink("/outside/executable", join(sourcePath, sessionDirectory, "config", "npm-bin"));
+      await symlink("/outside/cache", join(sourcePath, sessionDirectory, "cache", "bin"));
+      const profile = resolveNativeHarnessPersistenceProfile({
+        provider: { kind: "opencode" },
+        session: { normalizedSessionId: "session", driverKind: "opencode_server" },
+      } as NativeExecutionInputV1);
+      const directory = profile.directories.find((entry) => entry.name === "opencode")!;
+      const execute = vi.fn(async ({ command, args }: { command: string; args: string[] }) => ({
+        exitCode: 0, timedOut: false, stderr: "",
+        stdout: execFileSync(command, args, { encoding: "utf8" }),
+      }));
+      await syncRemoteRunnerDirectoryOut({ runner: { execute } as never,
+        sourcePath, targetPath, mode: 0o700, excludeEntries: directory.excludeEntries });
+      expect(await readFile(join(targetPath, sessionDirectory, "data", "session.db"), "utf8")).toBe("resume-history");
+      await expect(access(join(targetPath, sessionDirectory, "config"))).rejects.toThrow();
+      await expect(access(join(targetPath, sessionDirectory, "cache"))).rejects.toThrow();
+      expect(await readFile(join(sourcePath, sessionDirectory, "config", "opencode.json"), "utf8")).toBe("launch-secret");
+      for (const home of ["home-first", "home-second"]) {
+        await expect(access(join(targetPath, sessionDirectory, home))).rejects.toThrow();
+        await expect(access(join(sourcePath, sessionDirectory, home, ".npm", "cache"))).resolves.toBeUndefined();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["../outside", "*", "session/*", "session/home-*/../data", "session/home-;rm", "session/home-?", "session/home-[ab]"])("rejects unsafe relative checkpoint exclusion %s", async (exclusion) => {
     const execute = vi.fn().mockResolvedValue({
       exitCode: 0,
       timedOut: false,
@@ -1591,7 +1632,7 @@ describe("remote provider checkpoint snapshots", () => {
         sourcePath: "/remote/codex-home",
         targetPath: "/tmp/paperclip-checkpoint-invalid-codex-home",
         mode: 0o700,
-        excludeEntries: ["../outside"],
+        excludeEntries: [exclusion],
       }),
     ).rejects.toThrow("runner_remote_checkpoint_exclusion_invalid");
   });
@@ -1643,6 +1684,42 @@ describe("remote provider checkpoint snapshots", () => {
 });
 
 describe("remote provider checkpoint restores", () => {
+  it("replaces read-only runtime instructions on a reused VM without writing through file aliases", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-readonly-restage-"));
+    const sourcePath = join(root, "source");
+    const targetPath = join(root, "remote");
+    const outside = join(root, "outside.txt");
+    try {
+      await mkdir(join(sourcePath, "nested"), { recursive: true });
+      await writeFile(join(sourcePath, "nested", "AGENTS.md"), "first");
+      await chmod(join(sourcePath, "nested", "AGENTS.md"), 0o444);
+      await chmod(join(sourcePath, "nested"), 0o555);
+      const execute = vi.fn(async ({ command, args, stdin }: { command: string; args: string[]; stdin?: string }) => ({
+        exitCode: 0, timedOut: false, stderr: "",
+        stdout: execFileSync(command, args, { input: stdin, encoding: "utf8" }),
+      }));
+      const input = { target: {} as never, runner: { execute } as never, sourcePath, targetPath, mode: 0o555 };
+      await stageRemoteRunnerDirectory(input);
+      await chmod(join(sourcePath, "nested", "AGENTS.md"), 0o644);
+      await writeFile(join(sourcePath, "nested", "AGENTS.md"), "revised");
+      await chmod(join(sourcePath, "nested", "AGENTS.md"), 0o444);
+      await stageRemoteRunnerDirectory(input);
+      expect(await readFile(join(targetPath, "nested", "AGENTS.md"), "utf8")).toBe("revised");
+      expect((await lstat(targetPath)).mode & 0o777).toBe(0o555);
+      await writeFile(outside, "untouched");
+      await chmod(join(targetPath, "nested"), 0o755);
+      await rm(join(targetPath, "nested", "AGENTS.md"));
+      await symlink(outside, join(targetPath, "nested", "AGENTS.md"));
+      await chmod(join(targetPath, "nested"), 0o555);
+      await stageRemoteRunnerDirectory(input);
+      expect(await readFile(outside, "utf8")).toBe("untouched");
+      expect((await lstat(join(targetPath, "nested", "AGENTS.md"))).isSymbolicLink()).toBe(false);
+    } finally {
+      execFileSync("chmod", ["-R", "u+w", root]);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not upload excluded Codex scratch trees or credentials", async () => {
     const sourcePath = await mkdtemp(
       join(tmpdir(), "paperclip-codex-restore-source-"),

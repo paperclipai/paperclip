@@ -70,6 +70,7 @@ const PAPERCLIP_RUNNER_TOGGLE_SELECTOR =
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
+    enableExeEnvironments: false,
     enableNativeRunner: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
@@ -660,6 +661,13 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(
       container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR)?.getAttribute("aria-checked"),
     ).toBe("true");
+  });
+  it("enables environment management with the exe.dev experiment", async () => {
+    await renderPage();
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle exe.dev environments experimental setting"]');
+    await act(async () => { toggle?.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableExeEnvironments: true, enableEnvironments: true });
   });
 
   it("disables Status Cards when disabling Summaries", async () => {

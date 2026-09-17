@@ -67,7 +67,7 @@ export const continuationTasks: readonly RunnerTaskFixture[] =
             ].includes(id)
           ? 3
           : 2,
-    attemptTimeoutMs: { local: 10 * 60_000, daytona: 10 * 60_000 },
+    attemptTimeoutMs: { local: 10 * 60_000, daytona: 10 * 60_000, "exe-dev": 10 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Continuation ${id} ${nonce}`,
     buildPrompt: (nonce) => continuationScenario(id, nonce).prompt,

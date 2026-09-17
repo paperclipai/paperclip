@@ -1,3 +1,4 @@
+import { assertExeEnvironmentEnabled } from "./exe-environment-gate.js";
 import type { Environment, EnvironmentProbeResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
@@ -23,6 +24,7 @@ export async function probeEnvironment(
     acquireSandboxRuntimeLease?: boolean;
   } = {},
 ): Promise<EnvironmentProbeResult> {
+  await assertExeEnvironmentEnabled(db, environment);
   const resolvedCompanyId = options.companyId ?? null;
   const parsed = options.resolvedConfig ?? (
     options.acquireSandboxRuntimeLease === true
@@ -47,7 +49,7 @@ export async function probeEnvironment(
   }
 
   if (parsed.driver === "sandbox") {
-    if (options.acquireSandboxRuntimeLease) {
+    if (options.acquireSandboxRuntimeLease && parsed.config.provider !== "exe-dev") {
       if (!resolvedCompanyId) {
         return {
           ok: false,

@@ -1,966 +1,287 @@
-import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { spawn } from "node:child_process";
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { StringDecoder } from "node:string_decoder";
+import { createHash, randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
+import { definePlugin, decodeChannelBytes } from "@paperclipai/plugin-sdk";
 import type {
-  PluginEnvironmentAcquireLeaseParams,
-  PluginEnvironmentDestroyLeaseParams,
-  PluginEnvironmentExecuteParams,
-  PluginEnvironmentExecuteResult,
-  PluginEnvironmentLease,
-  PluginEnvironmentProbeParams,
-  PluginEnvironmentProbeResult,
-  PluginEnvironmentRealizeWorkspaceParams,
-  PluginEnvironmentRealizeWorkspaceResult,
-  PluginEnvironmentReleaseLeaseParams,
-  PluginEnvironmentResumeLeaseParams,
-  PluginEnvironmentValidateConfigParams,
-  PluginEnvironmentValidationResult,
+  PluginContext, PluginEnvironmentAcquireLeaseParams, PluginEnvironmentDriverBaseParams,
+  PluginEnvironmentLease, PluginEnvironmentResumeLeaseParams, PluginEnvironmentExecuteResult,
+  PluginEnvironmentReleaseLeaseParams, PluginEnvironmentTerminationReceipt,
 } from "@paperclipai/plugin-sdk";
+import { openSsh, ssh, quote, type SshConfig } from "./transport.js";
+import { validateSshPrivateKey } from "./ssh-key.js";
+export { validateSshPrivateKey } from "./ssh-key.js";
 
-interface ExeDevDriverConfig {
-  apiKey: string | null;
-  apiUrl: string;
-  namePrefix: string;
-  image: string | null;
-  command: string | null;
-  cpu: number | null;
-  memory: string | null;
-  disk: string | null;
-  comment: string | null;
-  env: Record<string, string>;
-  integrations: string[];
-  tags: string[];
-  setupScript: string | null;
-  prompt: string | null;
-  timeoutMs: number;
-  reuseLease: boolean;
-  sshUser: string | null;
-  sshPrivateKey: string | null;
-  sshIdentityFile: string | null;
-  sshPort: number;
-  strictHostKeyChecking: string;
+const SUPERVISOR = "/opt/paperclip-exe/lease.mjs";
+const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+interface Config extends SshConfig {
+  vmName?: string;
+  mode: "create" | "attach";
+  image?: string;
+  registryAuth?: string;
+  cpu: number;
+  memory: string;
+  disk: string;
 }
-
-interface ExeDevVmRecord {
-  name: string;
-  sshDest: string;
-  httpsUrl: string | null;
-  status: string | null;
-  region: string | null;
-  regionDisplay: string | null;
-}
-
-interface SshExecutionResult {
-  exitCode: number | null;
-  signal: string | null;
-  timedOut: boolean;
-  stdout: string;
-  stderr: string;
-}
-
-const DEFAULT_API_URL = "https://exe.dev/exec";
-const DEFAULT_TIMEOUT_MS = 300_000;
-const EXE_DEV_API_MAX_TIMEOUT_MS = 29_000;
-const SSH_SIGKILL_GRACE_MS = 250;
-const MAX_VM_RECORD_DEPTH = 4;
-const EXE_DEV_SSH_ONBOARDING_MARKER = "Please complete registration by running: ssh exe.dev";
-const EXE_DEV_SSH_EMAIL_PROMPT = "Please enter your email address:";
-const EXE_DEV_SSH_INVALID_KEY_FORMAT = /Load key [^\n]*invalid format/i;
-const UUID_SECRET_REF_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// exe.dev's `--setup-script` runs at VM init as the unprivileged `exedev` user, which
-// has passwordless sudo. The Paperclip sandbox callback bridge is a Node script, so
-// every Paperclip workload on this provider needs node on PATH before the bridge can
-// start. When the operator hasn't supplied their own setup script, install Node 24 via
-// nodesource so the VM comes up ready for Paperclip out of the box.
-const DEFAULT_SETUP_SCRIPT =
-  "(command -v node >/dev/null 2>&1 && " +
-  "node -e 'const v=process.versions.node.split(\".\").map(Number);" +
-  "process.exit(v[0]>24||(v[0]===24&&v[1]>=11)?0:1)' >/dev/null 2>&1) || " +
-  "(curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && " +
-  "sudo apt-get install -y nodejs)";
-
-class ExeDevApiError extends Error {
-  readonly status: number;
-  readonly body: string;
-
-  constructor(message: string, status: number, body: string) {
-    super(message);
-    this.name = "ExeDevApiError";
-    this.status = status;
-    this.body = body;
-  }
-}
-
-function parseOptionalString(value: unknown): string | null {
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function parseOptionalInteger(value: unknown): number | null {
-  if (value == null || value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-}
-
-function parseStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value
-      .map((entry) => parseOptionalString(entry))
-      .filter((entry): entry is string => entry != null);
-  }
-  if (typeof value === "string") {
-    return value
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
-  }
-  return [];
-}
-
-function parseEnvMap(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const env: Record<string, string> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    const normalizedKey = key.trim();
-    const normalizedValue = parseOptionalString(raw);
-    if (normalizedKey.length > 0 && normalizedValue != null) {
-      env[normalizedKey] = normalizedValue;
-    }
-  }
-  return env;
-}
-
-function isValidUrl(value: string): boolean {
-  try {
-    new URL(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isSecretRef(value: string): boolean {
-  return UUID_SECRET_REF_RE.test(value);
-}
-
-// Catch the SSH-key paste failure modes we've seen in the wild (wrong file,
-// PPK export, truncated paste) before the user pays the cost of provisioning a
-// VM and getting a cryptic SSH error. Inline parse — no `ssh-keygen` dependency
-// — so this also works on hosts where openssh-client isn't installed.
-export function validateSshPrivateKey(rawKey: string): string | null {
-  const trimmed = rawKey.trim();
-  if (!trimmed) return null;
-
-  if (/^PuTTY-User-Key-File-\d/m.test(trimmed)) {
-    return "sshPrivateKey looks like a PuTTY .ppk file. Convert it to OpenSSH format (PuTTYgen → Conversions → Export OpenSSH key) and paste the resulting PEM.";
-  }
-
-  if (
-    /^(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-[a-z0-9-]+|sk-(?:ssh-ed25519|ecdsa-sha2-[a-z0-9-]+)@openssh\.com)\s+\S/.test(
-      trimmed,
-    )
-  ) {
-    return "sshPrivateKey looks like a PUBLIC key. Paste the matching private key (the file without the .pub extension).";
-  }
-
-  const headerMatch = trimmed.match(/^-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----/m);
-  if (!headerMatch) {
-    return "sshPrivateKey must be a PEM-encoded private key starting with a line like '-----BEGIN OPENSSH PRIVATE KEY-----'.";
-  }
-
-  const footerMatch = trimmed.match(/^-----END ([A-Z0-9 ]*)PRIVATE KEY-----\s*$/m);
-  if (!footerMatch) {
-    return "sshPrivateKey is missing its '-----END … PRIVATE KEY-----' footer. Make sure you copied the whole file, including the final line.";
-  }
-
-  const headerLabel = headerMatch[1].trim();
-  const footerLabel = footerMatch[1].trim();
-  if (headerLabel !== footerLabel) {
-    return `sshPrivateKey header/footer mismatch (BEGIN ${headerLabel || "(none)"} vs END ${footerLabel || "(none)"}). The file is likely truncated or two keys are concatenated.`;
-  }
-
-  const headerLineEnd = trimmed.indexOf("\n", headerMatch.index ?? 0);
-  const footerStart = trimmed.lastIndexOf(footerMatch[0]);
-  if (headerLineEnd < 0 || footerStart <= headerLineEnd) {
-    return "sshPrivateKey appears to be empty between its BEGIN and END markers.";
-  }
-
-  const bodyLines = trimmed
-    .slice(headerLineEnd + 1, footerStart)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (bodyLines.length === 0) {
-    return "sshPrivateKey appears to be empty between its BEGIN and END markers.";
-  }
-
-  // PEM bodies are base64 lines, optionally preceded by `Header: value` lines
-  // on encrypted PKCS#1 keys (`Proc-Type:`, `DEK-Info:`).
-  const base64Line = /^[A-Za-z0-9+/=]+$/;
-  const pemHeaderLine = /^[A-Za-z][A-Za-z0-9-]*:\s.+$/;
-  for (const line of bodyLines) {
-    if (!base64Line.test(line) && !pemHeaderLine.test(line)) {
-      return "sshPrivateKey body contains non-base64 characters. The key may have been corrupted by line-wrapping or copy-paste.";
-    }
-  }
-
-  return null;
-}
-
-function normalizeApiUrl(value: string | null): string {
-  if (!value) return DEFAULT_API_URL;
-  const trimmed = value.trim();
-  if (!trimmed) return DEFAULT_API_URL;
-  try {
-    const parsed = new URL(trimmed);
-    const normalizedPath = parsed.pathname.replace(/\/+$/, "") || "/";
-    if (normalizedPath === "/exec") {
-      parsed.pathname = "/exec";
-      return parsed.toString();
-    }
-    parsed.pathname = `${normalizedPath === "/" ? "" : normalizedPath}/exec`.replace(/\/{2,}/g, "/");
-    return parsed.toString();
-  } catch {
-    return trimmed;
-  }
-}
-
-function normalizeNamePrefix(value: string | null): string {
-  const normalized = (value ?? "paperclip")
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-");
-  return normalized.length > 0 ? normalized.slice(0, 24) : "paperclip";
-}
-
-function parseDriverConfig(raw: Record<string, unknown>): ExeDevDriverConfig {
-  const timeoutMs = Number(raw.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const sshPort = Number(raw.sshPort ?? 22);
-
-  return {
-    apiKey: parseOptionalString(raw.apiKey),
-    apiUrl: normalizeApiUrl(parseOptionalString(raw.apiUrl)),
-    namePrefix: normalizeNamePrefix(parseOptionalString(raw.namePrefix)),
-    image: parseOptionalString(raw.image),
-    command: parseOptionalString(raw.command),
-    cpu: parseOptionalInteger(raw.cpu),
-    memory: parseOptionalString(raw.memory),
-    disk: parseOptionalString(raw.disk),
-    comment: parseOptionalString(raw.comment),
-    env: parseEnvMap(raw.env),
-    integrations: parseStringArray(raw.integrations),
-    tags: parseStringArray(raw.tags),
-    setupScript: parseOptionalString(raw.setupScript),
-    prompt: parseOptionalString(raw.prompt),
-    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : DEFAULT_TIMEOUT_MS,
-    reuseLease: raw.reuseLease === true,
-    sshUser: parseOptionalString(raw.sshUser),
-    sshPrivateKey: parseOptionalString(raw.sshPrivateKey),
-    sshIdentityFile: parseOptionalString(raw.sshIdentityFile),
-    sshPort: Number.isFinite(sshPort) ? Math.trunc(sshPort) : 22,
-    strictHostKeyChecking: parseOptionalString(raw.strictHostKeyChecking) ?? "accept-new",
+export function parseConfig(raw: Record<string, unknown>): Config {
+  const str = (key: string) => typeof raw[key] === "string" && String(raw[key]).trim() ? String(raw[key]).trim() : undefined;
+  const mode = raw.mode ?? "attach";
+  const config: Config = {
+    mode: mode as Config["mode"], vmName: str("vmName"), image: str("image"),
+    registryAuth: str("registryAuth") ?? process.env.EXE_DEV_REGISTRY_AUTH,
+    sshPrivateKey: str("sshPrivateKey") ?? process.env.EXE_DEV_SSH_PRIVATE_KEY,
+    sshIdentityFile: str("sshIdentityFile") ?? process.env.EXE_DEV_SSH_KEY_FILE,
+    knownHosts: str("knownHosts"), strictHostKeyChecking: (str("strictHostKeyChecking") ?? "accept-new") as Config["strictHostKeyChecking"],
+    timeoutMs: Number(raw.timeoutMs ?? 300000), cpu: Number(raw.cpu ?? 2),
+    memory: str("memory") ?? "4GB", disk: str("disk") ?? "20GB",
   };
-}
-
-function resolveApiKey(config: ExeDevDriverConfig): string {
-  if (config.apiKey) return config.apiKey;
-  const envApiKey = process.env.EXE_API_KEY?.trim() ?? "";
-  if (!envApiKey) {
-    throw new Error("exe.dev environments require an API key in config or EXE_API_KEY.");
+  if (mode !== "create" && mode !== "attach") throw new Error("mode must be create or attach");
+  if (config.vmName && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(config.vmName)) throw new Error("Invalid VM name");
+  if (mode === "attach" && !config.vmName) throw new Error("Attaching requires a named compatible VM; existing per-run configurations must be migrated explicitly");
+  if (mode === "create" && !config.image?.match(/^[-a-zA-Z0-9./_:]+@sha256:[a-f0-9]{64}$/)) throw new Error("Creating requires a compatible image pinned by sha256 digest");
+  if (!["yes", "accept-new"].includes(config.strictHostKeyChecking)) throw new Error("SSH host key checking cannot be disabled");
+  if (!config.sshPrivateKey && !config.sshIdentityFile) throw new Error("Register an SSH key with exe.dev and configure sshPrivateKey or sshIdentityFile");
+  if (config.sshPrivateKey && !/^[a-f0-9-]{36}$/i.test(config.sshPrivateKey)) {
+    const error = validateSshPrivateKey(config.sshPrivateKey); if (error) throw new Error(error);
   }
-  return envApiKey;
-}
-
-function isValidShellEnvKey(value: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
-function formatErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function buildVmName(config: ExeDevDriverConfig, params: PluginEnvironmentAcquireLeaseParams): string {
-  const envPart = params.environmentId.replace(/[^a-z0-9]+/gi, "").slice(0, 8).toLowerCase() || "env";
-  const runPart = params.runId.replace(/[^a-z0-9]+/gi, "").slice(0, 8).toLowerCase() || randomUUID().slice(0, 8);
-  return `${config.namePrefix}-${envPart}-${runPart}`.slice(0, 63);
-}
-
-function buildFlag(name: string, value: string | number | null | undefined): string[] {
-  if (value == null) return [];
-  return [`--${name}=${shellQuote(String(value))}`];
-}
-
-function buildRepeatedFlag(name: string, values: string[]): string[] {
-  return values.flatMap((value) => buildFlag(name, value));
-}
-
-function buildEnvFlags(env: Record<string, string>): string[] {
-  return Object.entries(env).flatMap(([key, value]) => buildFlag("env", `${key}=${value}`));
-}
-
-function resolveSetupScript(config: ExeDevDriverConfig): string | null {
-  if (config.setupScript === null) return DEFAULT_SETUP_SCRIPT;
-  const trimmed = config.setupScript.trim();
-  return trimmed.length > 0 ? config.setupScript : null;
-}
-
-function buildCreateCommand(
-  config: ExeDevDriverConfig,
-  vmName: string,
-): string {
-  return [
-    "new",
-    "--json",
-    "--no-email",
-    ...buildFlag("name", vmName),
-    ...buildFlag("image", config.image),
-    ...buildFlag("command", config.command),
-    ...buildFlag("cpu", config.cpu),
-    ...buildFlag("memory", config.memory),
-    ...buildFlag("disk", config.disk),
-    ...buildFlag("comment", config.comment),
-    ...buildEnvFlags(config.env),
-    ...buildRepeatedFlag("integration", config.integrations),
-    ...buildRepeatedFlag("tag", config.tags),
-    ...buildFlag("setup-script", resolveSetupScript(config)),
-    ...buildFlag("prompt", config.prompt),
-  ].join(" ");
-}
-
-function replaceLiteralAll(input: string, search: string, replacement: string): string {
-  return search.length === 0 ? input : input.split(search).join(replacement);
-}
-
-function redactCreateCommand(command: string, config: ExeDevDriverConfig): string {
-  let redacted = command;
-
-  for (const [key, value] of Object.entries(config.env)) {
-    redacted = replaceLiteralAll(
-      redacted,
-      `--env=${shellQuote(`${key}=${value}`)}`,
-      `--env=${shellQuote(`${key}=[REDACTED]`)}`,
-    );
+  if (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 86400000) throw new Error("timeoutMs must be 1000–86400000");
+  if (!Number.isInteger(config.cpu) || config.cpu < 1 || config.cpu > 64) throw new Error("Invalid CPU count");
+  for (const size of [config.memory, config.disk]) if (!/^\d+(?:GB|G)?$/.test(size)) throw new Error("Invalid resource size");
+  for (const obsolete of ["setupScript", "prompt", "command", "sshUser", "apiUrl"]) {
+    if (raw[obsolete]) throw new Error(`${obsolete} is not supported by durable exe.dev environments`);
   }
-
-  if (config.prompt) {
-    redacted = replaceLiteralAll(
-      redacted,
-      `--prompt=${shellQuote(config.prompt)}`,
-      `--prompt=${shellQuote("[REDACTED]")}`,
-    );
-  }
-
-  const resolvedSetupScript = resolveSetupScript(config);
-  if (resolvedSetupScript && resolvedSetupScript !== DEFAULT_SETUP_SCRIPT) {
-    redacted = replaceLiteralAll(
-      redacted,
-      `--setup-script=${shellQuote(resolvedSetupScript)}`,
-      `--setup-script=${shellQuote("[REDACTED]")}`,
-    );
-  }
-
-  return redacted;
+  return config;
 }
-
-async function runLifecycleCommand(
-  config: ExeDevDriverConfig,
-  command: string,
-  logCommand = command,
-): Promise<unknown> {
-  const response = await fetch(config.apiUrl, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${resolveApiKey(config)}`,
-      "Content-Type": "text/plain; charset=utf-8",
-    },
-    body: command,
-    signal: AbortSignal.timeout(Math.min(config.timeoutMs, EXE_DEV_API_MAX_TIMEOUT_MS)),
-  });
-  const body = await response.text();
-  if (!response.ok) {
-    throw new ExeDevApiError(
-      `exe.dev API command failed (${response.status}) for: ${logCommand}`,
-      response.status,
-      body,
-    );
-  }
-
-  const trimmed = body.trim();
-  if (!trimmed) return null;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return body;
-  }
+interface Scope { companyId: string; environmentId: string; }
+interface Binding {
+  config: Config; scope: string; companyId: string; vm: string; root: string; unit: string;
+  leaseId: string; bindingId: string; image: Record<string, unknown>;
 }
+const bindings = new Map<string, Binding>();
+const scopeId = (p: Scope) => hash(`${p.companyId}\0${p.environmentId}`);
+const scopedKey = (p: Scope, leaseId: string) => `${scopeId(p)}:${leaseId}`;
+const vmHost = (vm: string) => `${vm}.exe.xyz`;
+let context: PluginContext | undefined;
 
-function parseVmRecord(value: unknown, depth = 0): ExeDevVmRecord | null {
-  if (depth > MAX_VM_RECORD_DEPTH) return null;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const nested = parseVmRecord(record.vm, depth + 1) ?? parseVmRecord(record.data, depth + 1);
-  if (nested) return nested;
-
-  const name = parseOptionalString(record.vm_name ?? record.name ?? record.vmName);
-  const sshDest = parseOptionalString(record.ssh_dest ?? record.sshDest)
-    ?? (name ? `${name}.exe.xyz` : null);
-
-  if (!name || !sshDest) return null;
-
-  return {
-    name,
-    sshDest,
-    httpsUrl: parseOptionalString(record.https_url ?? record.httpsUrl),
-    status: parseOptionalString(record.status),
-    region: parseOptionalString(record.region),
-    regionDisplay: parseOptionalString(record.region_display ?? record.regionDisplay),
-  };
+async function management(config: Config, command: string): Promise<Record<string, unknown>> {
+  let output: string;
+  try { output = await ssh(config, "exe.dev", command, undefined, Boolean(config.registryAuth)); }
+  catch (error) { throw new Error(config.registryAuth ? String((error as Error).message).split(config.registryAuth).join("[REDACTED]") : (error as Error).message); }
+  const result = JSON.parse(output);
+  if (result.error) throw new Error(`exe.dev: ${config.registryAuth ? String(result.error).split(config.registryAuth).join("[REDACTED]") : String(result.error)}`);
+  return result;
 }
-
-async function lookupVm(config: ExeDevDriverConfig, vmName: string): Promise<ExeDevVmRecord | null> {
-  const response = await runLifecycleCommand(config, `ls --json ${shellQuote(vmName)}`);
-  const list = Array.isArray((response as { vms?: unknown[] } | null)?.vms)
-    ? (response as { vms: unknown[] }).vms
-    : Array.isArray(response)
-      ? response
-      : response
-        ? [response]
-        : [];
-  for (const candidate of list) {
-    const parsed = parseVmRecord(candidate);
-    if (parsed?.name === vmName || parsed?.sshDest === vmName) {
-      return parsed;
+async function findVm(config: Config, name: string): Promise<Record<string, unknown> | undefined> {
+  const result = await management(config, "ls -l --json");
+  return (result.vms as Record<string, unknown>[]).find((vm) => vm.vm_name === name);
+}
+class MissingVmError extends Error {}
+async function resolveVm(config: Config, params: Scope & { resourceBinding?: { resourceId: string; identity: string; companyId: string } }, provision: boolean): Promise<string> {
+  const name = config.vmName ?? `paperclip-${scopeId(params).slice(0, 20)}`;
+  if (params.resourceBinding && (params.resourceBinding.resourceId !== name || params.resourceBinding.companyId !== params.companyId)) throw new Error("Durable resource binding does not match this environment");
+  let vm = await findVm(config, name);
+  if (!vm && provision && config.mode === "create" && !params.resourceBinding) {
+    // Name is stable across retries and competing workers. An uncertain create
+    // is reconciled by lookup; never issue a randomly named second VM.
+    try {
+      await management(config, `new --json --no-email --tag=${quote("paperclip-" + scopeId(params))} --name=${quote(name)} --image=${quote(config.image!)} ${config.registryAuth ? `--registry-auth=${quote(config.registryAuth)}` : ""} --cpu=${config.cpu} --memory=${quote(config.memory)} --disk=${quote(config.disk)}`);
+    } catch (error) {
+      vm = await findVm(config, name);
+      if (!vm) throw error;
     }
+    vm ??= await findVm(config, name);
   }
-  return null;
+  if (!vm) throw new MissingVmError(`exe.dev VM ${name} is missing; no automatic replacement is performed`);
+  if (vm.proxy_share !== "private") throw new Error("exe.dev VM must use private HTTP sharing");
+  return name;
+}
+async function inspect(config: Config, vm: string): Promise<Record<string, unknown>> {
+  const output = await ssh(config, vmHost(vm), "test -r /opt/paperclip-exe/lease.mjs && command -v node >/dev/null && command -v paperclip-runnerd >/dev/null && test -r /opt/paperclip-runner/provider-pack/provider-pack.json && sudo -n true && cat /opt/paperclip-exe/image.json");
+  const image = JSON.parse(output);
+  if (image.schema !== 1 || !image.sourceRevision || !image.contentId) throw new Error("Incompatible exe.dev image; recreate explicitly from a published Paperclip image");
+  return image;
+}
+async function claim(config: Config, vm: string, scope: string): Promise<string> {
+  // Serialized across controller processes, not merely a worker-local mutex.
+  const script = `const fs=require('fs'); const p='/var/lib/paperclip-exe/binding.json'; fs.mkdirSync('/var/lib/paperclip-exe',{recursive:true}); let b; try { b=JSON.parse(fs.readFileSync(p,'utf8')); } catch(e) { if(e.code!=='ENOENT') throw e; b={scope:${JSON.stringify(scope)},id:require('crypto').randomUUID()}; fs.writeFileSync(p,JSON.stringify(b),{flag:'wx',mode:384}); } if(b.scope!==${JSON.stringify(scope)}) throw Error('VM belongs to another Paperclip company/environment'); process.stdout.write(b.id);`;
+  return (await ssh(config, vmHost(vm), `sudo -n flock /var/lock/paperclip-exe-claim.lock node -e ${quote(script)}`)).trim();
+}
+function decodeBinding(params: PluginEnvironmentDriverBaseParams, lease: PluginEnvironmentLease): Binding {
+  const config = parseConfig(params.config);
+  const scope = scopeId(params);
+  const match = lease.providerLeaseId?.match(/^([a-z0-9][a-z0-9-]{0,62}):([a-f0-9]{32}):([a-f0-9]{32})$/);
+  if (!match || match[2] !== scope || (config.vmName && config.vmName !== match[1])) throw new Error("Lease does not belong to this exe.dev environment");
+  const bindingId = lease.metadata?.bindingId;
+  if (typeof bindingId !== "string" || !/^[a-f0-9-]{36}$/.test(bindingId)) throw new Error("Missing durable VM identity");
+  return { config, scope, companyId: params.companyId, vm: match[1], root: `/var/lib/paperclip-exe/${scope}/${match[3]}`,
+    unit: `paperclip-lease-${match[3]}.service`, leaseId: lease.providerLeaseId!, bindingId,
+    image: (lease.metadata?.exeImageProvenance ?? {}) as Record<string, unknown> };
+}
+async function assertIdentity(binding: Binding) {
+  const actual = JSON.parse(await ssh(binding.config, vmHost(binding.vm), "sudo -n cat /var/lib/paperclip-exe/binding.json"));
+  if (actual.scope !== binding.scope || actual.id !== binding.bindingId) throw new Error("Durable VM identity changed; explicit recovery is required");
+}
+async function start(binding: Binding, expiresAt?: string | null) {
+  const remaining = expiresAt ? Math.floor((Date.parse(expiresAt) - Date.now()) / 1000) : null;
+  if (remaining != null && (!Number.isFinite(remaining) || remaining < 1)) throw new Error("Lease deadline has expired");
+  const script = [
+    `mkdir -p ${quote(binding.root + "/workspace")} ${quote(binding.root + "/home")}`,
+    `chown exedev:exedev ${quote(binding.root)} ${quote(binding.root + "/home")} ${quote(binding.root + "/workspace")}`,
+    `if systemctl is-active --quiet ${quote(binding.unit)}; then :; else rm -f ${quote(binding.root + "/control.sock")}; systemd-run --quiet --collect --unit=${quote(binding.unit)} --uid=exedev --property=KillMode=control-group --property=TimeoutStopSec=10 ${remaining == null ? "" : `--property=RuntimeMaxSec=${remaining}`} /usr/bin/env HOME=${quote(binding.root + "/home")} PATH=/opt/paperclip-runner/provider-pack/node_modules/.bin:/usr/local/bin:/usr/bin:/bin PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=/opt/paperclip-runner/provider-pack node ${SUPERVISOR} serve ${quote(binding.root)}; fi`,
+    `for i in $(seq 1 100); do test -S ${quote(binding.root + "/control.sock")} && exit 0; sleep .1; done; exit 1`,
+  ].join(" && ");
+  await ssh(binding.config, vmHost(binding.vm), `sudo -n flock ${quote("/var/lock/" + binding.unit + ".lock")} sh -c ${quote(script)}`);
+}
+function leaseOf(binding: Binding, resumed: boolean, expiresAt?: string | null): PluginEnvironmentLease {
+  return { providerLeaseId: binding.leaseId, expiresAt: expiresAt ?? null, metadata: {
+    provider: "exe-dev", vmName: binding.vm, bindingId: binding.bindingId,
+    resourceLifetime: "environment", environmentResourceBinding: { provider: "exe-dev", companyId: binding.companyId, resourceId: binding.vm, identity: binding.bindingId }, remoteCwd: binding.root + "/workspace", remoteHome: binding.root + "/home",
+    httpsUrl: `https://${vmHost(binding.vm)}`, shellCommand: "bash", reuseLease: true,
+    resumedLease: resumed, exeImageProvenance: binding.image, leaseDeadline: expiresAt ?? null,
+  } };
+}
+async function acquire(params: PluginEnvironmentAcquireLeaseParams) {
+  const config = parseConfig(params.config);
+  const vm = await resolveVm(config, params, true);
+  const image = await inspect(config, vm);
+  const scope = scopeId(params);
+  const bindingId = await claim(config, vm, scope);
+  if (params.resourceBinding && bindingId !== params.resourceBinding.identity) throw new Error("Durable VM identity changed; explicit recovery is required");
+  const id = randomUUID().replaceAll("-", "");
+  const binding: Binding = { config, vm, image, scope, companyId: params.companyId, bindingId,
+    root: `/var/lib/paperclip-exe/${scope}/${id}`, unit: `paperclip-lease-${id}.service`, leaseId: `${vm}:${scope}:${id}` };
+  await start(binding, params.requestedExpiresAt);
+  bindings.set(scopedKey(params, binding.leaseId), binding);
+  return leaseOf(binding, false, params.requestedExpiresAt);
+}
+async function resume(params: PluginEnvironmentResumeLeaseParams) {
+  const binding = decodeBinding(params, { providerLeaseId: params.providerLeaseId, metadata: params.leaseMetadata });
+  await resolveVm(binding.config, params, false);
+  await assertIdentity(binding);
+  binding.image = await inspect(binding.config, binding.vm);
+  await start(binding, params.leaseMetadata?.leaseDeadline as string | undefined);
+  bindings.set(scopedKey(params, binding.leaseId), binding);
+  return leaseOf(binding, true, params.leaseMetadata?.leaseDeadline as string | undefined);
+}
+async function stop(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void> {
+  if (!params.providerLeaseId) return;
+  const binding = decodeBinding(params, { providerLeaseId: params.providerLeaseId, metadata: params.leaseMetadata });
+  await assertIdentity(binding);
+  // systemctl stop waits for the cgroup to empty. A lost SSH response does not
+  // produce a receipt. Repeat stop safely after reconnection to confirm it.
+  const script = `load=$(systemctl show -p LoadState --value ${quote(binding.unit)}); if test "$load" != not-found; then systemctl stop ${quote(binding.unit)} || exit $?; fi; state=$(systemctl show -p ActiveState --value ${quote(binding.unit)}); test "$state" = inactive -o "$state" = failed`;
+  await ssh(binding.config, vmHost(binding.vm), `sudo -n flock ${quote("/var/lock/" + binding.unit + ".lock")} sh -c ${quote(script)}`);
+  bindings.delete(scopedKey(params, binding.leaseId));
+  return { providerLeaseId: binding.leaseId, state: "stopped" };
 }
 
-async function createVm(
-  config: ExeDevDriverConfig,
-  params: PluginEnvironmentAcquireLeaseParams | PluginEnvironmentProbeParams,
-): Promise<ExeDevVmRecord> {
-  const vmName = "runId" in params
-    ? buildVmName(config, params)
-    : `${config.namePrefix}-probe-${randomUUID().slice(0, 8)}`.slice(0, 63);
-  const command = buildCreateCommand(config, vmName);
-  const response = await runLifecycleCommand(config, command, redactCreateCommand(command, config));
-  const created = parseVmRecord(response) ?? await lookupVm(config, vmName);
-  if (!created) {
-    throw new Error(`exe.dev did not return VM metadata for ${vmName}.`);
-  }
-  return created;
-}
-
-async function deleteVm(config: ExeDevDriverConfig, vmName: string): Promise<void> {
-  await runLifecycleCommand(config, `rm --json ${shellQuote(vmName)}`);
-}
-
-function buildSshDestination(config: ExeDevDriverConfig, vm: ExeDevVmRecord): string {
-  return config.sshUser ? `${config.sshUser}@${vm.sshDest}` : vm.sshDest;
-}
-
-function buildSshArgs(
-  config: ExeDevDriverConfig,
-  vm: ExeDevVmRecord,
-  remoteCommand: string,
-  sshIdentityFile: string | null,
-): string[] {
-  const args = [
-    "-T",
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    `StrictHostKeyChecking=${config.strictHostKeyChecking}`,
-    "-o",
-    "ConnectTimeout=15",
-    "-p",
-    String(config.sshPort),
-  ];
-  if (sshIdentityFile) {
-    args.push("-i", sshIdentityFile, "-o", "IdentitiesOnly=yes");
-  }
-  args.push(buildSshDestination(config, vm), remoteCommand);
-  return args;
-}
-
-async function prepareSshIdentity(config: ExeDevDriverConfig): Promise<{
-  sshIdentityFile: string | null;
-  cleanup: () => Promise<void>;
-}> {
-  if (!config.sshPrivateKey) {
-    return {
-      sshIdentityFile: config.sshIdentityFile,
-      cleanup: async () => {},
-    };
-  }
-
-  const tempDir = await mkdtemp(path.join(tmpdir(), "paperclip-exe-dev-ssh-"));
-  const sshIdentityFile = path.join(tempDir, "id_ed25519");
-  const privateKey = config.sshPrivateKey.endsWith("\n")
-    ? config.sshPrivateKey
-    : `${config.sshPrivateKey}\n`;
-
-  await writeFile(sshIdentityFile, privateKey, { mode: 0o600 });
-  await chmod(sshIdentityFile, 0o600);
-
-  return {
-    sshIdentityFile,
-    cleanup: async () => {
-      await rm(tempDir, { recursive: true, force: true });
-    },
-  };
-}
-
-function buildLoginShellScript(input: {
-  command: string;
-  args: string[];
-  cwd?: string;
-  env?: Record<string, string>;
-}): string {
-  const env = input.env ?? {};
-  for (const key of Object.keys(env)) {
-    if (!isValidShellEnvKey(key)) {
-      throw new Error(`Invalid exe.dev environment variable key: ${key}`);
-    }
-  }
-  const envArgs = Object.entries(env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
-  const commandParts = [shellQuote(input.command), ...input.args.map(shellQuote)].join(" ");
-  const finalLine = envArgs.length > 0
-    ? `exec env ${envArgs.join(" ")} ${commandParts}`
-    : `exec ${commandParts}`;
-  // Source the common login profiles before exec so the command runs with the
-  // interactive-shell PATH. The wrapper sources no `nvm.sh`; the sandbox image
-  // supplies node on the PATH.
-  const lines = [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-  ];
-  if (input.cwd) {
-    lines.push(`cd ${shellQuote(input.cwd)}`);
-  }
-  lines.push(finalLine);
-  return lines.join(" && ");
-}
-
-function formatSshFailure(
-  action: string,
-  vmName: string,
-  result: Pick<SshExecutionResult, "stdout" | "stderr">,
-): string {
-  const combinedOutput = `${result.stderr}\n${result.stdout}`;
-  if (
-    combinedOutput.includes(EXE_DEV_SSH_ONBOARDING_MARKER)
-    || combinedOutput.includes(EXE_DEV_SSH_EMAIL_PROMPT)
-  ) {
-    return [
-      `Failed to ${action} exe.dev VM ${vmName}: the Paperclip host SSH key is not registered with exe.dev.`,
-      "Complete exe.dev's one-time SSH onboarding on this host by running `ssh exe.dev` and following the email verification prompt, then retry.",
-    ].join(" ");
-  }
-
-  if (EXE_DEV_SSH_INVALID_KEY_FORMAT.test(combinedOutput)) {
-    return [
-      `Failed to ${action} exe.dev VM ${vmName}: the configured SSH private key isn't an OpenSSH-format private key.`,
-      "Confirm the secret starts with `-----BEGIN … PRIVATE KEY-----` and isn't the `.pub` file or a PuTTY `.ppk` export.",
-    ].join(" ");
-  }
-
-  return `Failed to ${action} exe.dev VM ${vmName}: ${result.stderr.trim() || result.stdout.trim() || "unknown error"}`;
-}
-
-async function runSshCommand(
-  config: ExeDevDriverConfig,
-  vm: ExeDevVmRecord,
-  remoteCommand: string,
-  options: { stdin?: string; timeoutMs?: number } = {},
-): Promise<SshExecutionResult> {
-  const timeoutMs = options.timeoutMs ?? config.timeoutMs;
-  const identity = await prepareSshIdentity(config);
-
-  try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn("ssh", buildSshArgs(config, vm, remoteCommand, identity.sshIdentityFile), {
-        stdio: [options.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      let killTimer: NodeJS.Timeout | null = null;
-      const timer = timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            child.kill("SIGTERM");
-            killTimer = setTimeout(() => {
-              child.kill("SIGKILL");
-            }, SSH_SIGKILL_GRACE_MS);
-          }, timeoutMs)
-        : null;
-
-      child.stdout?.on("data", (chunk) => {
-        stdout += String(chunk);
-      });
-      child.stderr?.on("data", (chunk) => {
-        stderr += String(chunk);
-      });
-      child.on("error", (error) => {
-        if (timer) clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        reject(error);
-      });
-      child.on("close", (code, signal) => {
-        if (timer) clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        resolve({
-          exitCode: timedOut ? null : code,
-          signal,
-          timedOut,
-          stdout,
-          stderr,
-        });
-      });
-
-      if (options.stdin != null && child.stdin) {
-        child.stdin.write(options.stdin);
+interface Command { command: string; args?: readonly string[]; cwd?: string; env?: Record<string, string>; timeoutMs?: number; }
+async function channel(binding: Binding, command: Command, onData: (stream: "stdout" | "stderr", data: Buffer) => void) {
+  const { child } = await openSsh(binding.config, vmHost(binding.vm), `node ${SUPERVISOR} call ${quote(binding.root)}`);
+  let settled = false;
+  let stderr = "";
+  let resolve!: (result: PluginEnvironmentExecuteResult) => void;
+  let reject!: (error: Error) => void;
+  const result = new Promise<PluginEnvironmentExecuteResult>((yes, no) => { resolve = yes; reject = no; });
+  const lines = createInterface({ input: child.stdout });
+  const timer = setTimeout(() => { child.kill("SIGKILL"); }, (command.timeoutMs ?? binding.config.timeoutMs) + 20000);
+  child.stderr.on("data", (data) => { stderr = (stderr + String(data)).slice(-8192); });
+  lines.on("line", (line) => {
+    try {
+      const frame = JSON.parse(line);
+      if (frame.type === "stdout" || frame.type === "stderr") onData(frame.type, Buffer.from(frame.data, "base64"));
+      else if (frame.type === "exit") {
+        settled = true; clearTimeout(timer);
+        if (frame.error) reject(new Error(frame.error));
+        else resolve({ exitCode: frame.code, signal: frame.signal, timedOut: frame.timedOut, stdout: "", stderr: "" });
         child.stdin.end();
       }
-    });
-  } finally {
-    await identity.cleanup();
-  }
+    } catch { child.kill("SIGKILL"); }
+  });
+  child.once("error", (error) => { clearTimeout(timer); reject(error); });
+  child.once("close", () => { clearTimeout(timer); if (!settled) reject(new Error(`exe.dev command transport closed without an exit receipt: ${stderr}`)); });
+  const send = (frame: unknown) => child.stdin.write(JSON.stringify(frame) + "\n");
+  send({ type: "start", command: command.command, cwd: command.cwd, env: command.env, args: command.args ?? [], timeoutMs: command.timeoutMs ?? binding.config.timeoutMs });
+  return { result, send, close: () => child.kill("SIGTERM") };
 }
-
-async function detectRemoteContext(
-  config: ExeDevDriverConfig,
-  vm: ExeDevVmRecord,
-): Promise<{ homeDir: string; shellCommand: "bash" | "sh" }> {
-  const result = await runSshCommand(
-    config,
-    vm,
-    `sh -lc ${shellQuote(
-      'home="${HOME:-}"; if [ -z "$home" ]; then home="$(pwd)"; fi; if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; printf "%s\\n%s\\n" "$home" "$shell"',
-    )}`,
-  );
-  if (result.timedOut || result.exitCode !== 0) {
-    throw new Error(formatSshFailure("inspect", vm.name, result));
-  }
-
-  const [homeDirRaw, shellRaw] = result.stdout.split(/\r?\n/);
-  const homeDir = homeDirRaw?.trim() || "/tmp";
-  return {
-    homeDir,
-    shellCommand: shellRaw?.trim() === "bash" ? "bash" : "sh",
-  };
-}
-
-async function ensureRemoteWorkspace(
-  config: ExeDevDriverConfig,
-  vm: ExeDevVmRecord,
-  remoteCwd: string,
-): Promise<void> {
-  const result = await runSshCommand(
-    config,
-    vm,
-    `sh -lc ${shellQuote(`mkdir -p ${shellQuote(remoteCwd)}`)}`,
-  );
-  if (result.timedOut || result.exitCode !== 0) {
-    throw new Error(formatSshFailure("create workspace for", vm.name, result));
-  }
-}
-
-async function buildLease(
-  config: ExeDevDriverConfig,
-  vm: ExeDevVmRecord,
-  requestedCwd: string | undefined,
-  resumedLease: boolean,
-): Promise<PluginEnvironmentLease> {
-  const remote = await detectRemoteContext(config, vm);
-  const remoteCwd = requestedCwd?.trim() || path.posix.join(remote.homeDir, "paperclip-workspace");
-  await ensureRemoteWorkspace(config, vm, remoteCwd);
-
-  return {
-    providerLeaseId: vm.name,
-    metadata: {
-      provider: "exe-dev",
-      vmName: vm.name,
-      sshDest: vm.sshDest,
-      httpsUrl: vm.httpsUrl,
-      region: vm.region,
-      regionDisplay: vm.regionDisplay,
-      shellCommand: remote.shellCommand,
-      remoteCwd,
-      timeoutMs: config.timeoutMs,
-      reuseLease: config.reuseLease,
-      resumedLease,
-    },
-  };
-}
-
-function metadataVmRecord(params: {
-  providerLeaseId: string | null;
-  leaseMetadata?: Record<string, unknown> | null;
-}): ExeDevVmRecord | null {
-  if (!params.providerLeaseId) return null;
-  const sshDest = parseOptionalString(params.leaseMetadata?.sshDest) ?? `${params.providerLeaseId}.exe.xyz`;
-  return {
-    name: params.providerLeaseId,
-    sshDest,
-    httpsUrl: parseOptionalString(params.leaseMetadata?.httpsUrl),
-    status: parseOptionalString(params.leaseMetadata?.status),
-    region: parseOptionalString(params.leaseMetadata?.region),
-    regionDisplay: parseOptionalString(params.leaseMetadata?.regionDisplay),
-  };
-}
+type Channel = Awaited<ReturnType<typeof channel>>;
+const channels = new Map<string, { id: string; channel: Channel }>();
 
 const plugin = definePlugin({
-  async setup(ctx) {
-    ctx.logger.info("exe.dev sandbox provider plugin ready");
+  async setup(ctx) { context = ctx; },
+  async onHealth() { return { status: "ok", message: "exe.dev durable environment provider ready" }; },
+  async onEnvironmentValidateConfig(params) {
+    try { parseConfig(params.config); return { ok: true }; }
+    catch (error) { return { ok: false, errors: [String((error as Error).message)] }; }
   },
-
-  async onHealth() {
-    return { status: "ok", message: "exe.dev sandbox provider plugin healthy" };
+  async onEnvironmentProbe(params) {
+    try {
+      const config = parseConfig(params.config);
+      const vm = await resolveVm(config, params, false);
+      const image = await inspect(config, vm);
+      return { ok: true, summary: `Compatible durable VM ${vm}; probe does not modify or delete it.`, metadata: { vmName: vm, image } };
+    } catch (error) {
+      if (error instanceof MissingVmError && params.config.mode === "create") {
+        return { ok: true, summary: "SSH account verified. The pinned image will be checked when the first run creates the durable VM." };
+      }
+      return { ok: false, summary: (error as Error).message };
+    }
   },
-
-  async onEnvironmentValidateConfig(
-    params: PluginEnvironmentValidateConfigParams,
-  ): Promise<PluginEnvironmentValidationResult> {
-    const config = parseDriverConfig(params.config);
-    const errors: string[] = [];
-    const warnings: string[] = [];
-
-    if (config.apiUrl && !isValidUrl(config.apiUrl)) {
-      errors.push("apiUrl must be a valid URL.");
-    }
-    if (config.timeoutMs < 1 || config.timeoutMs > 86_400_000) {
-      errors.push("timeoutMs must be between 1 and 86400000.");
-    }
-    if (config.cpu != null && config.cpu <= 0) {
-      errors.push("cpu must be greater than 0 when provided.");
-    }
-    if (config.sshPort < 1 || config.sshPort > 65_535) {
-      errors.push("sshPort must be between 1 and 65535.");
-    }
-    if (!config.apiKey && !(process.env.EXE_API_KEY?.trim())) {
-      errors.push("exe.dev environments require an API key in config or EXE_API_KEY.");
-    }
-    for (const key of Object.keys(config.env)) {
-      if (!isValidShellEnvKey(key)) {
-        errors.push(`env contains an invalid key: ${key}`);
+  onEnvironmentAcquireLease: acquire,
+  onEnvironmentResumeLease: resume,
+  async onEnvironmentReleaseLease(params) { if (params.cancelActiveWork || params.config.reuseLease !== true) return await stop(params); },
+  onEnvironmentDestroyLease: stop,
+  async onEnvironmentRealizeWorkspace(params) {
+    const binding = decodeBinding(params, params.lease);
+    return { cwd: binding.root + "/workspace", metadata: { provider: "exe-dev", resourceLifetime: "environment" } };
+  },
+  async onEnvironmentExecute(params) {
+    const binding = decodeBinding(params, params.lease);
+    bindings.set(scopedKey(params, binding.leaseId), binding);
+    let stdout = ""; let stderr = "";
+    const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+    const active = await channel(binding, params, (stream, data) => {
+      const text = decoders[stream].write(data);
+      if (stream === "stdout") stdout += text; else stderr += text;
+      context?.execution.log(stream, text);
+    });
+    if (params.stdin) {
+      const bytes = Buffer.from(params.stdin);
+      for (let offset = 0; offset < bytes.length; offset += 65536) {
+        active.send({ type: "stdin", data: bytes.subarray(offset, offset + 65536).toString("base64") });
       }
     }
-    if (
-      typeof params.config.strictHostKeyChecking === "string" &&
-      params.config.strictHostKeyChecking.trim().length === 0
-    ) {
-      errors.push("strictHostKeyChecking cannot be empty.");
-    }
-    if (config.sshPrivateKey && !isSecretRef(config.sshPrivateKey)) {
-      const sshKeyError = validateSshPrivateKey(config.sshPrivateKey);
-      if (sshKeyError) errors.push(sshKeyError);
-    }
-
-    warnings.push(
-      "The Paperclip host must have SSH access to the created exe.dev VM, and its SSH key must be registered with exe.dev. The API token only covers provisioning.",
+    active.send({ type: "end" });
+    const result = await active.result;
+    return { ...result, stdout: stdout + decoders.stdout.end(), stderr: stderr + decoders.stderr.end() };
+  },
+  async onDuplexChannelOpen(params) {
+    if (channels.has(params.hostRouteId)) throw new Error("Duplicate duplex route");
+    const binding = bindings.get(scopedKey(params, params.providerLeaseId));
+    if (!binding || params.driverKey !== "exe-dev") throw new Error("Unknown scoped exe.dev lease");
+    const id = randomUUID();
+    const active = await channel(binding, { command: params.command[0], args: params.command.slice(1), timeoutMs: 86400000 }, (stream, data) => {
+      if (stream === "stdout") context?.duplexChannel.data(params.hostRouteId, id, data);
+    });
+    channels.set(params.hostRouteId, { id, channel: active });
+    void active.result.then(
+      (result) => context?.duplexChannel.exit(params.hostRouteId, id, result.exitCode),
+      () => context?.duplexChannel.exit(params.hostRouteId, id, null, true),
     );
-    if (config.reuseLease) {
-      warnings.push("reuseLease keeps the VM alive between runs; this provider does not suspend retained VMs.");
-    }
-
-    if (errors.length > 0) {
-      return { ok: false, errors, warnings };
-    }
-
-    return {
-      ok: true,
-      warnings,
-      normalizedConfig: { ...config },
-    };
+    return { hostRouteId: params.hostRouteId, workerSessionId: id };
   },
-
-  async onEnvironmentProbe(
-    params: PluginEnvironmentProbeParams,
-  ): Promise<PluginEnvironmentProbeResult> {
-    const config = parseDriverConfig(params.config);
-    let vm: ExeDevVmRecord | null = null;
-
-    try {
-      vm = await createVm(config, params);
-      const lease = await buildLease(config, vm, undefined, false);
-      return {
-        ok: true,
-        summary: `Connected to exe.dev VM ${vm.name}.`,
-        metadata: {
-          provider: "exe-dev",
-          vmName: vm.name,
-          sshDest: vm.sshDest,
-          timeoutMs: config.timeoutMs,
-          reuseLease: config.reuseLease,
-          remoteCwd: lease.metadata?.remoteCwd,
-          shellCommand: lease.metadata?.shellCommand,
-        },
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        summary: "exe.dev environment probe failed.",
-        metadata: {
-          provider: "exe-dev",
-          timeoutMs: config.timeoutMs,
-          reuseLease: config.reuseLease,
-          error: formatErrorMessage(error),
-        },
-      };
-    } finally {
-      if (vm) {
-        await deleteVm(config, vm.name).catch(() => undefined);
-      }
-    }
+  async onDuplexChannelWrite(params) {
+    const entry = channels.get(params.hostRouteId); const data = decodeChannelBytes(params.data);
+    if (entry?.id === params.workerSessionId && data) entry.channel.send({ type: "stdin", data: Buffer.from(data).toString("base64") });
   },
-
-  async onEnvironmentAcquireLease(
-    params: PluginEnvironmentAcquireLeaseParams,
-  ): Promise<PluginEnvironmentLease> {
-    const config = parseDriverConfig(params.config);
-    const vm = await createVm(config, params);
-    try {
-      return await buildLease(config, vm, params.requestedCwd, false);
-    } catch (error) {
-      await deleteVm(config, vm.name).catch(() => undefined);
-      throw error;
-    }
+  async onDuplexChannelStop(params) {
+    const entry = channels.get(params.hostRouteId);
+    if (entry?.id === params.workerSessionId) entry.channel.send({ type: "cancel" });
   },
-
-  async onEnvironmentResumeLease(
-    params: PluginEnvironmentResumeLeaseParams,
-  ): Promise<PluginEnvironmentLease> {
-    const config = parseDriverConfig(params.config);
-    const vm = await lookupVm(config, params.providerLeaseId);
-    if (!vm) {
-      return { providerLeaseId: null, metadata: { expired: true } };
-    }
-    const requestedCwd = parseOptionalString(params.leaseMetadata?.remoteCwd);
-    return await buildLease(config, vm, requestedCwd ?? undefined, true);
+  async onDuplexChannelClose(params) {
+    const entry = channels.get(params.hostRouteId);
+    if (entry) { entry.channel.send({ type: "cancel" }); entry.channel.close(); channels.delete(params.hostRouteId); }
+    return { hostRouteId: params.hostRouteId, ...(entry ? { workerSessionId: entry.id } : {}) };
   },
-
-  async onEnvironmentReleaseLease(
-    params: PluginEnvironmentReleaseLeaseParams,
-  ): Promise<void> {
-    if (!params.providerLeaseId) return;
-    const config = parseDriverConfig(params.config);
-    if (config.reuseLease) return;
-    await deleteVm(config, params.providerLeaseId);
-  },
-
-  async onEnvironmentDestroyLease(
-    params: PluginEnvironmentDestroyLeaseParams,
-  ): Promise<void> {
-    if (!params.providerLeaseId) return;
-    const config = parseDriverConfig(params.config);
-    await deleteVm(config, params.providerLeaseId);
-  },
-
-  async onEnvironmentRealizeWorkspace(
-    params: PluginEnvironmentRealizeWorkspaceParams,
-  ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
-    const config = parseDriverConfig(params.config);
-    const remoteCwd =
-      parseOptionalString(params.lease.metadata?.remoteCwd)
-      ?? params.workspace.remotePath
-      ?? params.workspace.localPath
-      ?? "/tmp/paperclip-workspace";
-
-    const vm = metadataVmRecord({
-      providerLeaseId: params.lease.providerLeaseId,
-      leaseMetadata: params.lease.metadata,
-    });
-    if (vm) {
-      await ensureRemoteWorkspace(config, vm, remoteCwd);
-    }
-
-    return {
-      cwd: remoteCwd,
-      metadata: {
-        provider: "exe-dev",
-        remoteCwd,
-      },
-    };
-  },
-
-  async onEnvironmentExecute(
-    params: PluginEnvironmentExecuteParams,
-  ): Promise<PluginEnvironmentExecuteResult> {
-    if (!params.lease.providerLeaseId) {
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        stdout: "",
-        stderr: "No provider lease ID available for execution.",
-      };
-    }
-
-    const config = parseDriverConfig(params.config);
-    const vm = metadataVmRecord({
-      providerLeaseId: params.lease.providerLeaseId,
-      leaseMetadata: params.lease.metadata,
-    });
-    if (!vm) {
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        stdout: "",
-        stderr: "No exe.dev VM metadata available for execution.",
-      };
-    }
-
-    const command = buildLoginShellScript({
-      command: params.command,
-      args: params.args ?? [],
-      cwd: params.cwd ?? parseOptionalString(params.lease.metadata?.remoteCwd) ?? undefined,
-      env: params.env,
-    });
-    // `buildLoginShellScript` already explicitly sources `/etc/profile`,
-    // `~/.profile`, `~/.bash_profile`/`~/.bashrc`, and `~/.zprofile`. Wrapping
-    // the result in `sh -lc` (login shell) would source the same files a
-    // second time, which can cause `PATH` duplication or unexpected behavior
-    // on VMs whose profile init isn't idempotent. Use `sh -c` here so the
-    // explicit sourcing inside the script is the single source of truth.
-    const result = await runSshCommand(
-      config,
-      vm,
-      `sh -c ${shellQuote(command)}`,
-      { stdin: params.stdin, timeoutMs: params.timeoutMs ?? config.timeoutMs },
-    );
-
-    return {
-      exitCode: result.exitCode,
-      signal: result.signal,
-      timedOut: result.timedOut,
-      stdout: result.stdout,
-      stderr:
-        !result.timedOut && result.exitCode !== 0
-          ? formatSshFailure("execute commands on", vm.name, result)
-          : result.stderr,
-      metadata: {
-        provider: "exe-dev",
-        vmName: vm.name,
-        sshDest: vm.sshDest,
-      },
-    };
-  },
+  async onShutdown() { for (const entry of channels.values()) entry.channel.close(); channels.clear(); bindings.clear(); },
 });
-
 export default plugin;

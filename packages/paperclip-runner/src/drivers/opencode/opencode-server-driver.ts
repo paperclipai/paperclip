@@ -2476,12 +2476,16 @@ function sessionRoot(
   runtimeDirectory: string,
   normalizedSessionId: string,
 ): string {
+  return join(resolve(runtimeDirectory), opencodeRuntimeSessionDirectoryName(normalizedSessionId));
+}
+
+export function opencodeRuntimeSessionDirectoryName(normalizedSessionId: string): string {
   const safe = normalizedSessionId
     .replace(/[^a-zA-Z0-9._-]/g, "_")
     .slice(0, 120);
   if (!safe || safe === "." || safe === "..")
     throw new Error("Invalid normalized OpenCode session id");
-  return join(resolve(runtimeDirectory), safe);
+  return safe;
 }
 
 function validateWorkspace(value: string): string {

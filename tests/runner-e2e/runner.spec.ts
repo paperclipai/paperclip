@@ -1,5 +1,6 @@
 import { runContinuationFlow } from "./continuation-flow.js";
 import { runEverydayFlow } from "./everyday-flow.js";
+import { verifyExeSharedAgents } from "./exe-shared-agents.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 
 import { runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
@@ -10,7 +11,7 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
-import { runnerExecutionById } from "./catalog.js";
+import { runnerExecutionById, warmPromptForGeneration, warmVisibleResponseMarker } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -393,11 +394,11 @@ function nativeRunEventIntegrityFailures(
     const envelope = record(event.payload?.prpEvent);
     if (Object.keys(envelope).length === 0) continue;
     if (
-      envelope.schema !== "paperclip.prp.event.v1" ||
-      envelope.schemaVersion !== 1 ||
-      event.protocolSchemaVersion !== 1
+      ![1, 2].includes(Number(envelope.schemaVersion)) ||
+      envelope.schema !== `paperclip.prp.event.v${envelope.schemaVersion}` ||
+      event.protocolSchemaVersion !== envelope.schemaVersion
     ) {
-      failures.push(`run ${run.id} exposed a malformed PRP v1 envelope`);
+      failures.push(`run ${run.id} exposed a malformed PRP envelope`);
     }
     if (envelope.runId !== run.id) {
       failures.push(
@@ -522,9 +523,15 @@ for (const execution of executions) {
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
     const nonce = `${randomBytes(6).toString("hex")}-${attempt}`;
-    const marker = execution.task.buildVisibleMarker(nonce);
+    const rawMarker = execution.task.buildVisibleMarker(nonce);
+    const marker = execution.task.flow === "warm_three_turn"
+      ? warmVisibleResponseMarker(rawMarker, execution.profile.generation)
+      : rawMarker;
     const title = execution.task.buildTitle(nonce);
-    const prompt = execution.task.buildPrompt(nonce);
+    const rawPrompt = execution.task.buildPrompt(nonce);
+    const prompt = execution.task.flow === "warm_three_turn"
+      ? warmPromptForGeneration(rawPrompt, execution.profile.generation)
+      : rawPrompt;
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
@@ -585,14 +592,14 @@ for (const execution of executions) {
     };
 
     const captureRuntimeLeases = async () => {
-      if (!fixtures || execution.environment.id !== "daytona") return;
+      if (!fixtures || execution.environment.driver !== "sandbox") return;
       const listed = await api.get<EnvironmentLeaseRecord[]>(
         `/api/environments/${fixtures.environment.id}/leases`,
       );
       const selectedRunIds = new Set(selectedRuns.map((run) => run.id));
       const relevant = listed.filter(
         (lease) =>
-          lease.provider === "daytona" &&
+          lease.provider === execution.environment.provider &&
           (selectedRunIds.size === 0 ||
             (lease.heartbeatRunId &&
               selectedRunIds.has(lease.heartbeatRunId)) ||
@@ -745,6 +752,7 @@ for (const execution of executions) {
         enableNativeRunner: boolean;
       }>("/api/instance/settings/experimental", {
         enableNativeRunner: true,
+        ...(execution.environment.id === "exe-dev" ? { enableExeEnvironments: true, enableEnvironments: true } : {}),
         ...(["warm_three_turn", "everyday_workflow"].includes(execution.task.flow)
           ? { enableIsolatedWorkspaces: true }
           : {}),
@@ -764,6 +772,7 @@ for (const execution of executions) {
         workspacePath,
         credentials,
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
+        exeImage: process.env.PAPERCLIP_E2E_EXE_IMAGE,
       });
 
       await writeSanitizedJson(
@@ -1281,9 +1290,9 @@ for (const execution of executions) {
           })
           .last()
           .check();
-        // Required single-select questions submit as soon as the radio is
-        // checked; waiting for the multi-answer submit control would race the
-        // successful continuation and misreport it as a UI failure.
+        // Selecting an answer only edits the form. Submit it through the same
+        // explicit control a user must use before the agent can continue.
+        await page.getByRole("button", { name: "Submit answers", exact: true }).last().click();
         questionLifecycleEvidence = {
           interaction: questionInteraction,
           answer: expectedAnswer.optionLabel,
@@ -1370,7 +1379,7 @@ for (const execution of executions) {
               (execution.task.turnTimeoutMs ?? 10 * 60_000),
           );
           const waitingState = await pollUntil({
-            label: `warm Daytona turn ${completedTurn} review state for issue ${issue.id}`,
+            label: `warm ${execution.environment.provider} turn ${completedTurn} review state for issue ${issue.id}`,
             deadlineAt: turnDeadlineAt,
             load: loadTaskState,
             accept: ({ currentIssue, taskRuns, interactions }) => {
@@ -1419,7 +1428,7 @@ for (const execution of executions) {
             chronologicalRuns.map((candidate) => candidate.id),
           );
           const retainedTurnLeases = await pollUntil({
-            label: `retained Daytona leases after warm turn ${completedTurn}`,
+            label: `retained ${execution.environment.provider} leases after warm turn ${completedTurn}`,
             deadlineAt: Math.min(turnDeadlineAt, Date.now() + 30_000),
             intervalMs: 500,
             load: () =>
@@ -1458,13 +1467,19 @@ for (const execution of executions) {
                   (lease) =>
                     lease.leasePolicy === "reuse_by_environment" &&
                     typeof lease.providerLeaseId === "string" &&
-                    record(lease.metadata).sandboxState === "started",
+                    (execution.environment.id === "exe-dev"
+                      ? record(lease.metadata).resourceLifetime === "environment" &&
+                        typeof record(lease.metadata).bindingId === "string"
+                      : record(lease.metadata).sandboxState === "started"),
                 ) &&
                 completed
                   .slice(1)
                   .every(
                     (lease) =>
-                      record(lease.metadata).resumedFromState === "started",
+                      execution.environment.id === "exe-dev"
+                        ? record(lease.metadata).bindingId === record(completed[0]?.metadata).bindingId &&
+                          lease.providerLeaseId === completed[0]?.providerLeaseId
+                        : record(lease.metadata).resumedFromState === "started",
                   )
               );
             },
@@ -1508,7 +1523,7 @@ for (const execution of executions) {
             `warm-turn-${completedTurn}.png`,
           );
           turnSubmissionTimesMs.push(
-            await submitTaskRevision(page, followups[completedTurn - 1]),
+            await submitTaskRevision(page, warmPromptForGeneration(followups[completedTurn - 1], execution.profile.generation)),
           );
         }
         warmLifecycleEvidence = { turns: turnEvidence };
@@ -1824,7 +1839,7 @@ for (const execution of executions) {
       const environmentDriver =
         environmentContext.driver ?? persistedEnvironment.driver;
       const observedEnvironment =
-        environmentDriver === "sandbox" ? "daytona" : environmentDriver;
+        environmentDriver === "sandbox" ? execution.environment.provider : environmentDriver;
       const observedRuntimeMode =
         run.runtimeMode ??
         (persistedAgent.adapterType === "paperclip_runner"
@@ -1965,7 +1980,7 @@ for (const execution of executions) {
           )
         ) {
           invariantFailures.push(
-            `expected a persisted Daytona lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
+            `expected a persisted environment lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
           );
         }
         if (
@@ -2013,16 +2028,6 @@ for (const execution of executions) {
               label: "provider session",
               values: selectedRuns.map((candidate) => candidate.sessionIdAfter),
             },
-            {
-              label: "runner pid",
-              values: selectedRuns.map((candidate) => candidate.processPid),
-            },
-            {
-              label: "runner process fingerprint",
-              values: selectedRuns.map(
-                (candidate) => candidate.processStartedAt,
-              ),
-            },
           ];
           for (const { label, values } of stableIdentityFields) {
             if (
@@ -2036,6 +2041,25 @@ for (const execution of executions) {
             ) {
               invariantFailures.push(
                 `expected one stable ${label} across native warm turns; observed ${JSON.stringify(values)}`,
+              );
+            }
+          }
+
+          // Managed GitHub capabilities are run-scoped. The supervisor must
+          // rotate processes while preserving the durable provider session.
+          const managedCredentials = selectedRuns.every(
+            (candidate) => record(candidate.contextSnapshot).githubAuthenticationMode === "managed",
+          );
+          const processIdentities: Array<{ label: string; values: unknown[] }> = [
+            { label: "runner pid", values: selectedRuns.map((candidate) => candidate.processPid) },
+            { label: "runner process fingerprint", values: selectedRuns.map((candidate) => candidate.processStartedAt) },
+          ];
+          for (const { label, values } of processIdentities) {
+            const expectedDistinct = managedCredentials ? selectedRuns.length : 1;
+            if (values.some((value) => value === null || value === undefined || String(value).length === 0)
+              || new Set(values).size !== expectedDistinct) {
+              invariantFailures.push(
+                `expected ${expectedDistinct} distinct ${label} values for ${managedCredentials ? "rotating managed credentials" : "warm process reuse"}; observed ${JSON.stringify(values)}`,
               );
             }
           }
@@ -2058,7 +2082,7 @@ for (const execution of executions) {
           );
         }
         const retainedLeases = await pollUntil({
-          label: `terminal warm Daytona lease history for issue ${issue.id}`,
+          label: `terminal warm ${execution.environment.provider} lease history for issue ${issue.id}`,
           deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
           intervalMs: 500,
           load: () =>
@@ -2087,7 +2111,9 @@ for (const execution of executions) {
                   lease.cleanupStatus === "success" &&
                   lease.leasePolicy === "reuse_by_environment" &&
                   typeof lease.providerLeaseId === "string" &&
-                  record(lease.metadata).sandboxState === "started"
+                  (execution.environment.id === "exe-dev"
+                    ? record(lease.metadata).resourceLifetime === "environment"
+                    : record(lease.metadata).sandboxState === "started")
                 );
               })
             );
@@ -2116,11 +2142,13 @@ for (const execution of executions) {
         if (
           new Set(providerLeaseIds).size !== 1 ||
           typeof providerLeaseIds[0] !== "string" ||
-          JSON.stringify(resumedFromStates) !==
-            JSON.stringify(["started", "started"])
+          (execution.environment.id === "exe-dev"
+            ? warmLeases.some((lease) => typeof record(lease.metadata).bindingId !== "string") ||
+              new Set(warmLeases.map((lease) => record(lease.metadata).bindingId)).size !== 1
+            : JSON.stringify(resumedFromStates) !== JSON.stringify(["started", "started"]))
         ) {
           invariantFailures.push(
-            `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
+            `expected one continuously-running environment resource; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
           );
         }
         warmLifecycleEvidence = {
@@ -2239,7 +2267,7 @@ for (const execution of executions) {
         const expectedTransport =
           execution.environment.id === "daytona"
             ? "provider_ingress"
-            : "local_loopback";
+            : execution.environment.id === "exe-dev" ? "direct_outbound" : "local_loopback";
         if (selectedTransport?.mode !== expectedTransport) {
           invariantFailures.push(
             `Expected native runner transport ${expectedTransport}; observed ${String(selectedTransport?.mode)}`,
@@ -2374,6 +2402,10 @@ for (const execution of executions) {
         throw new Error(
           `Runtime invariant failure: ${invariantFailures.join("; ")}`,
         );
+      }
+      if (execution.id === "exe-compatibility.runner-codex.exe-dev.message-marker") {
+        const sharedAgents = await verifyExeSharedAgents({ api, page, fixtures, nonce, workspacePath });
+        await writeSanitizedJson(snapshotsDir, "exe-shared-agents.json", sharedAgents, secrets);
       }
       }
     } catch (error) {

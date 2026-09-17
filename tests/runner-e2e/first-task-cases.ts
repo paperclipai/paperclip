@@ -76,7 +76,7 @@ export const firstTaskTasks: readonly RunnerTaskFixture[] =
     flow: "first_task",
     workMode: "standard",
     expectedRunCount,
-    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000 },
+    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000, "exe-dev": 15 * 60_000 },
     expectedTerminalState: { issue: "in_review", run: "succeeded" },
     buildTitle: (nonce) => `First task ${id} ${nonce}`,
     buildPrompt: (nonce) => firstTaskScenario(id, nonce).prompt,

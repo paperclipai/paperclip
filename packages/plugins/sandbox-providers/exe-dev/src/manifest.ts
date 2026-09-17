@@ -1,183 +1,39 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-
-const PLUGIN_ID = "paperclip.exe-dev-sandbox-provider";
-const PLUGIN_VERSION = "0.1.2";
-
 const manifest: PaperclipPluginManifestV1 = {
-  id: PLUGIN_ID,
-  apiVersion: 1,
-  version: PLUGIN_VERSION,
-  displayName: "exe.dev Sandbox Provider",
-  description:
-    "Sandbox provider plugin that provisions exe.dev VMs as Paperclip execution environments.",
-  author: "Paperclip",
-  categories: ["automation"],
-  capabilities: ["environment.drivers.register"],
-  entrypoints: {
-    worker: "./dist/worker.js",
-  },
-  environmentDrivers: [
-    {
-      driverKey: "exe-dev",
-      kind: "sandbox_provider",
-      displayName: "exe.dev VM",
-      description:
-        "Provisions exe.dev VMs through the HTTPS API, then runs commands over direct SSH for long-lived Paperclip workloads.",
-      configSchema: {
-        type: "object",
-        properties: {
-          // ---- Essentials (always visible, in this order) ----
-          apiKey: {
-            type: "string",
-            format: "secret-ref",
-            description:
-              "Paste your exe.dev API token, or pick a saved Paperclip secret. Create one at exe.dev → Settings → API tokens with `/exec` scope (`new`, `ls`, `rm`).",
-          },
-          sshPrivateKey: {
-            type: "string",
-            format: "secret-ref",
-            maxLength: 8192,
-            description:
-              "Paste the SSH private key you registered with exe.dev, or pick a saved secret. Leave blank to fall back to an on-host key (see Advanced → SSH access).",
-          },
-          // ---- Advanced: SSH access ----
-          sshUser: {
-            type: "string",
-            description:
-              "Login user on the VM. Leave blank to use the image default, usually `root`.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "SSH access",
-          },
-          sshIdentityFile: {
-            type: "string",
-            description:
-              "Absolute path to a private key on the Paperclip host. Used only when SSH Private Key is empty.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "SSH access",
-          },
-          sshPort: {
-            type: "number",
-            description: "SSH port for direct VM access.",
-            default: 22,
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "SSH access",
-          },
-          strictHostKeyChecking: {
-            type: "string",
-            description:
-              "Host key policy passed to ssh via StrictHostKeyChecking. Typical values are `accept-new`, `yes`, or `no`.",
-            default: "accept-new",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "SSH access",
-          },
-          // ---- Advanced: VM resources ----
-          image: {
-            type: "string",
-            description: "Optional container image to use when creating the VM.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM resources",
-          },
-          cpu: {
-            type: "number",
-            description: "Optional CPU count passed to `exe.dev new --cpu`.",
-            default: 4,
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM resources",
-          },
-          memory: {
-            type: "string",
-            description: "Optional memory size such as `4GB`.",
-            default: "4GB",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM resources",
-          },
-          disk: {
-            type: "string",
-            description: "Optional disk size such as `20GB`.",
-            default: "20GB",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM resources",
-          },
-          // ---- Advanced: VM creation ----
-          command: {
-            type: "string",
-            description: "Optional container command passed to `exe.dev new --command`.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          env: {
-            type: "object",
-            description: "Optional environment variables applied at VM creation time.",
-            additionalProperties: { type: "string" },
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          integrations: {
-            type: "array",
-            description: "Optional exe.dev integrations to attach during VM creation.",
-            items: { type: "string" },
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          tags: {
-            type: "array",
-            description: "Optional tags to apply during VM creation.",
-            items: { type: "string" },
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          setupScript: {
-            type: "string",
-            description: "Optional first-boot setup script passed to `exe.dev new --setup-script`.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          prompt: {
-            type: "string",
-            description: "Optional Shelley prompt passed to `exe.dev new --prompt`.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          comment: {
-            type: "string",
-            description: "Optional short note attached to created VMs.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          namePrefix: {
-            type: "string",
-            description: "Optional prefix used when generating VM names.",
-            default: "paperclip",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "VM creation",
-          },
-          // ---- Advanced: API + runtime ----
-          apiUrl: {
-            type: "string",
-            description:
-              "Optional exe.dev HTTPS API base URL or /exec endpoint. Defaults to https://exe.dev/exec.",
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "API + runtime",
-          },
-          timeoutMs: {
-            type: "number",
-            description: "Timeout for VM lifecycle and SSH operations in milliseconds.",
-            default: 300000,
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "API + runtime",
-          },
-          reuseLease: {
-            type: "boolean",
-            description:
-              "Whether to keep the VM alive between runs instead of deleting it on release.",
-            default: false,
-            "x-paperclip-advanced": true,
-            "x-paperclip-group": "API + runtime",
-          },
-        },
+  id: "paperclip.exe-dev-sandbox-provider", apiVersion: 1, version: "0.2.0",
+  displayName: "exe.dev (experimental)",
+  description: "Durable, private exe.dev VMs shared by a trusted group of agents.",
+  author: "Paperclip", categories: ["automation"], capabilities: ["environment.drivers.register"],
+  entrypoints: { worker: "./dist/worker.js" },
+  environmentDrivers: [{
+    driverKey: "exe-dev", kind: "sandbox_provider", displayName: "exe.dev VM (experimental)",
+    description: "One persistent VM per environment; independent agent homes and workspaces. Disconnecting keeps the VM.",
+    supportsReusableLeases: true,
+    sandboxCapabilities: {
+      reusableLeases: true, persistentProcessSessions: true, independentControlCommands: true,
+      incrementalSessionOutput: true, duplexCommandStream: true,
+      nativeSyncIn: false, nativeSyncOut: false, concurrentSyncOperations: false, runnerWebSocketIngress: false,
+    },
+    configSchema: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["attach", "create"], default: "attach", description: "Attach a compatible VM or create one from a pinned Paperclip image." },
+        vmName: { type: "string", description: "Durable VM name. Required for attach; create derives a stable name when omitted." },
+        sshPrivateKey: { type: "string", format: "secret-ref", maxLength: 8192, description: "Private SSH key registered with exe.dev. Stored as a Paperclip secret." },
+        image: { type: "string", description: "Published Paperclip exe.dev image with @sha256 digest. Required to create; never installed or upgraded at boot." },
+        registryAuth: { type: "string", format: "secret-ref", description: "Optional private registry credential in username:token format, used by exe.dev only while pulling the VM image." },
+        knownHosts: { type: "string", description: "Optional verified OpenSSH known_hosts entries for exe.dev and the VM. Pins host keys with strict checking." },
+        sshIdentityFile: { type: "string", description: "Optional absolute key path on the Paperclip host.", "x-paperclip-advanced": true },
+        strictHostKeyChecking: { type: "string", enum: ["yes", "accept-new"], default: "accept-new", description: "First-use keys are persisted on the controller; changed keys are always rejected.", "x-paperclip-advanced": true },
+        cpu: { type: "integer", minimum: 1, default: 2, "x-paperclip-advanced": true },
+        memory: { type: "string", default: "4GB", "x-paperclip-advanced": true },
+        disk: { type: "string", default: "20GB", "x-paperclip-advanced": true },
+        timeoutMs: { type: "integer", minimum: 1000, default: 300000, "x-paperclip-advanced": true },
+        reuseLease: { type: "boolean", default: true, description: "Reuse each agent workspace between runs. The VM is always retained." },
+        runnerLifecycleMode: { type: "string", enum: ["inherit", "per_turn", "warm"], default: "inherit" },
+        runnerIdleTimeoutMs: { type: "integer", minimum: 1000, maximum: 86400000, default: 300000 },
       },
     },
-  ],
+  }],
 };
-
 export default manifest;

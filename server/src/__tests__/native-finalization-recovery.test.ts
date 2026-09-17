@@ -213,6 +213,17 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
     await temporary.cleanup();
   });
 
+  it("leaves finalization to an active heartbeat instead of racing its copyback", async () => {
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    const isRunActive = vi.fn((candidate: string) => candidate === runId);
+    await expect(reconcileNativeFinalizations(db, [runId], { isRunActive })).resolves.toEqual([]);
+    expect(isRunActive).toHaveBeenCalledWith(runId);
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(after).toEqual(before);
+    // The following recovery tests omit the live owner and must still settle
+    // these persisted runs, as a new controller does after restart.
+  });
+
   it("fails closed into bounded named recovery without consulting the live flag or falling back", async () => {
     await expect(reconcileNativeFinalizations(db, [runId])).resolves.toEqual([
       expect.objectContaining({ phase: "retryable_failure", failureCode: "native_finalization_invalid" }),

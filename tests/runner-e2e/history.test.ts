@@ -564,6 +564,16 @@ describe("historical publication security", () => {
     expect(new Set(manifest.files.map((file) => file.path))).toEqual(declared);
   });
 
+  it("retains exe.dev environment assertions in the campaign history", () => {
+    const execution = runnerMatrix.find((entry) => entry.environment.id === "exe-dev")!;
+    expect(() => buildRunnerCampaign({
+      campaignId: "exe-qualified", generatedAt: "2026-09-17T00:01:00.000Z", expected: [execution.id],
+      results: [{ ...result(execution, "passed"), matcherResults: [{
+        matcher: { kind: "environment", expected: "exe-dev" }, passed: true, detail: "durable exe.dev VM",
+      }] }],
+    })).not.toThrow();
+  });
+
   it("requires trusted-fixture opt-in and rejects unsafe screenshot paths", () => {
     const execution = runnerMatrix[0]!;
     expect(() => buildRunnerCampaign({

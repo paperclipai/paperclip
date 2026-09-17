@@ -42,6 +42,8 @@ export interface InstanceGeneralSettings {
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
+  /** Durable exe.dev environments remain opt-in. */
+  enableExeEnvironments: boolean;
   /**
    * Exposes the experimental Paperclip Runner adapter for new selections.
    * Existing native runs ignore later flag changes so they remain recoverable.

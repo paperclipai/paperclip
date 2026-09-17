@@ -538,6 +538,8 @@ export async function reconcileNativeFinalizations(
   runIds?: string[],
   options: {
     environmentRuntime?: EnvironmentRuntimeService;
+    /** The live heartbeat owns its copyback/status suffix until its finally exits. */
+    isRunActive?: (runId: string) => boolean;
     onWorkspaceSettled?: (input: {
       runId: string;
       companyId: string;
@@ -594,6 +596,10 @@ export async function reconcileNativeFinalizations(
     ));
   const results = [];
   for (const row of rows) {
+    // A provider can persist its result before the heartbeat finishes exporting
+    // files. Concurrent recovery would reuse and remove that same export archive.
+    // Startup has no live owner, so crashed runs still follow durable recovery.
+    if (options.isRunActive?.(row.runId)) continue;
     const pendingEffects = row.decisionId
       ? await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
           eq(statusDecisionEffects.companyId, row.companyId),

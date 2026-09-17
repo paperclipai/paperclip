@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1129,9 +1129,14 @@ export function environmentService(db: Db) {
         values.metadata = withoutManagedEnvironmentArchiveToken(existingMetadata);
       }
 
+      // Client metadata edits cannot remove or overwrite the host's durable VM
+      // identity. Merge from the current row in SQL to avoid a first-acquire race.
+      const metadataUpdate = values.metadata !== undefined
+        ? sql`CASE WHEN ${environments.metadata}->'environmentResourceBinding' IS NOT NULL THEN coalesce(${values.metadata === null ? null : JSON.stringify(values.metadata)}::jsonb, '{}'::jsonb) || jsonb_build_object('environmentResourceBinding', ${environments.metadata}->'environmentResourceBinding') ELSE ${values.metadata === null ? null : JSON.stringify(values.metadata)}::jsonb END`
+        : undefined;
       const row = await writeDb
         .update(environments)
-        .set(values)
+        .set({ ...values, ...(metadataUpdate ? { metadata: metadataUpdate } : {}) })
         .where(eq(environments.id, id))
         .returning()
         .then((rows) => rows[0] ?? null)
@@ -1443,10 +1448,10 @@ export function environmentService(db: Db) {
       };
       if (
         (input.replacesReusableLeaseId || input.reusesReusableLeaseId) &&
-        (!input.executionWorkspaceId || !input.providerLeaseId)
+        ((!input.executionWorkspaceId && !(input.provider === "exe-dev" && input.issueId)) || !input.providerLeaseId)
       ) {
         throw new Error(
-          "A reusable lease handoff requires an execution workspace and provider lease id.",
+          "A reusable lease handoff requires a workspace (or exe.dev task scope) and provider lease id.",
         );
       }
       if (input.reusesReusableLeaseId && !input.heartbeatRunId) {
@@ -1523,10 +1528,14 @@ export function environmentService(db: Db) {
                       eq(environmentLeases.id, input.replacesReusableLeaseId),
                       eq(environmentLeases.companyId, input.companyId),
                       eq(environmentLeases.environmentId, input.environmentId),
-                      eq(
-                        environmentLeases.executionWorkspaceId,
-                        input.executionWorkspaceId!,
-                      ),
+                      input.executionWorkspaceId
+                        ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)
+                        : and(
+                            isNull(environmentLeases.executionWorkspaceId),
+                            eq(environmentLeases.provider, "exe-dev"),
+                            eq(environmentLeases.issueId, input.issueId!),
+                            sql`${environmentLeases.metadata}->>'agentId' = ${String(input.metadata?.agentId ?? "")}`,
+                          ),
                       eq(environmentLeases.leasePolicy, "reuse_by_environment"),
                       eq(
                         environmentLeases.providerLeaseId,
@@ -1563,10 +1572,14 @@ export function environmentService(db: Db) {
                       eq(environmentLeases.id, input.reusesReusableLeaseId),
                       eq(environmentLeases.companyId, input.companyId),
                       eq(environmentLeases.environmentId, input.environmentId),
-                      eq(
-                        environmentLeases.executionWorkspaceId,
-                        input.executionWorkspaceId!,
-                      ),
+                      input.executionWorkspaceId
+                        ? eq(environmentLeases.executionWorkspaceId, input.executionWorkspaceId)
+                        : and(
+                            isNull(environmentLeases.executionWorkspaceId),
+                            eq(environmentLeases.provider, "exe-dev"),
+                            eq(environmentLeases.issueId, input.issueId!),
+                            sql`${environmentLeases.metadata}->>'agentId' = ${String(input.metadata?.agentId ?? "")}`,
+                          ),
                       eq(
                         environmentLeases.heartbeatRunId,
                         input.heartbeatRunId!,

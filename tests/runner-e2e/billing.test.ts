@@ -28,6 +28,11 @@ function result(overrides: Partial<RunnerE2EResult> = {}): RunnerE2EResult {
 }
 
 describe("runner E2E billing summaries", () => {
+  it("does not price shared exe.dev leases as Daytona resources", () => {
+    const usage = buildRuntimeUsage({ environmentId: "exe-dev", runs: [], leases: [] });
+    expect(usage).toMatchObject({ provider: "exe-dev", costStatus: "unavailable", costSource: "provider_cost_unavailable" });
+    expect(usage.estimatedListCostUsd).toBeUndefined();
+  });
   it("summarizes provider-reported token usage and cost", () => {
     const billing = summarizeExecutionBilling(
       result({

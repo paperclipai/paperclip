@@ -226,7 +226,7 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # actually auto-install belongs here — every entry adds its node_modules
 # to the image. Growing the list is a one-line workflow change.
 FROM build AS cloud-plugins
-ARG CLOUD_BUNDLED_PLUGINS="daytona"
+ARG CLOUD_BUNDLED_PLUGINS="daytona exe-dev"
 RUN set -eu; \
   for name in $CLOUD_BUNDLED_PLUGINS; do \
     dir="packages/plugins/sandbox-providers/$name"; \
@@ -292,7 +292,32 @@ RUN set -eu; \
   test -n "$specifiers" || { echo "ERROR: CLOUD_BUNDLED_SERVER_DEPS names no package" >&2; exit 1; }; \
   pnpm add --ignore-workspace --no-lockfile $specifiers
 
+# Remote exe.dev VMs are amd64, including when the control plane runs on arm64.
+# Build a controller-owned Linux provider pack with the same pinned interpreter,
+# lockfile, and source revision as docker/exe-dev-runner/Dockerfile. The native
+# runtime verifies its manifest and either adopts the matching preinstalled pack
+# or stages these build-owned bytes; agents never install provider dependencies.
+FROM --platform=linux/amd64 node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b AS cloud-remote-provider-pack
+WORKDIR /workspace
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+COPY patches ./patches
+COPY scripts/link-plugin-dev-sdk.mjs ./scripts/link-plugin-dev-sdk.mjs
+COPY packages ./packages
+COPY server/package.json ./server/package.json
+COPY ui/package.json ./ui/package.json
+COPY cli/package.json ./cli/package.json
+RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
+ARG PAPERCLIP_BUILD_COMMIT
+RUN test -n "${PAPERCLIP_BUILD_COMMIT}" \
+  && pnpm --filter @paperclipai/paperclip-runner build:typescript \
+  && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" \
+    node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+  && chmod -R a+rX /provider-pack
+
 FROM production AS cloud
+COPY --chown=node:node --from=cloud-remote-provider-pack /provider-pack /opt/paperclip-runner/remote-provider-pack
+ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/remote-provider-pack
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
 # Land the isolated install inside the server's own `node_modules`, the
 # directory Node's module resolution walks up to from `/app/server` for

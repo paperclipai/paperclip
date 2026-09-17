@@ -18,6 +18,7 @@ export {
 } from "./backends/native-backend-factory.js";
 export {
   OpenCodeServerDriver,
+  opencodeRuntimeSessionDirectoryName,
   type OpenCodeServerDriverOptions,
 } from "./drivers/opencode/opencode-server-driver.js";
 export {

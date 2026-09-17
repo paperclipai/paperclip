@@ -1,3 +1,5 @@
+import { readEnvironmentResourceBinding, bindEnvironmentResource } from "./environment-resource-binding.js";
+import { assertExeEnvironmentEnabled } from "./exe-environment-gate.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -950,6 +952,7 @@ async function buildReusableSandboxLeaseFingerprint(input: {
   companyId: string;
   environment: Environment;
   executionWorkspaceId: string | null;
+  issueId?: string | null;
   agentId: string | null;
   adapterType: string | null;
   provider: string;
@@ -974,6 +977,7 @@ async function buildReusableSandboxLeaseFingerprint(input: {
         driver: input.environment.driver,
       },
       executionWorkspaceId: input.executionWorkspaceId,
+      ...(input.provider === "exe-dev" && !input.executionWorkspaceId ? { issueId: input.issueId } : {}),
       agentId: input.agentId,
       adapterType: input.adapterType,
       provider: input.provider,
@@ -989,6 +993,7 @@ function buildReusableSandboxLeaseScope(input: {
   companyId: string;
   environmentId: string;
   executionWorkspaceId: string | null;
+  issueId?: string | null;
   agentId: string | null;
   adapterType: string | null;
   provider: string;
@@ -996,7 +1001,7 @@ function buildReusableSandboxLeaseScope(input: {
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   providerMetadata?: Record<string, unknown> | null;
 }): Record<string, unknown> | null {
-  if (!input.executionWorkspaceId || !input.agentId) return null;
+  if ((!input.executionWorkspaceId && !(input.provider === "exe-dev" && input.issueId)) || !input.agentId) return null;
   const providerMetadata = input.providerMetadata ?? {};
   const adapterType = input.adapterType ?? null;
   const remoteCwd = readString(providerMetadata.remoteCwd);
@@ -1008,6 +1013,7 @@ function buildReusableSandboxLeaseScope(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     executionWorkspaceId: input.executionWorkspaceId,
+    ...(input.provider === "exe-dev" && !input.executionWorkspaceId ? { issueId: input.issueId } : {}),
     agentId: input.agentId,
     adapterType,
     provider: input.provider,
@@ -1029,6 +1035,7 @@ function reusableSandboxLeaseScopeMatches(input: {
   companyId: string;
   environmentId: string;
   executionWorkspaceId: string | null;
+  issueId?: string | null;
   agentId: string | null;
   adapterType: string | null;
   provider: string;
@@ -1036,7 +1043,7 @@ function reusableSandboxLeaseScopeMatches(input: {
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   allowLegacyRuntimeFingerprint?: boolean;
 }): boolean {
-  if (!input.executionWorkspaceId || !input.agentId) return false;
+  if ((!input.executionWorkspaceId && !(input.provider === "exe-dev" && input.issueId)) || !input.agentId) return false;
   const scope = input.lease.metadata?.reusableSandboxLease;
   if (!isRecord(scope)) return false;
   const adapterType = input.adapterType ?? null;
@@ -1044,6 +1051,7 @@ function reusableSandboxLeaseScopeMatches(input: {
     scope.companyId === input.companyId &&
     scope.environmentId === input.environmentId &&
     scope.executionWorkspaceId === input.executionWorkspaceId &&
+    (input.executionWorkspaceId !== null || scope.issueId === input.issueId) &&
     scope.agentId === input.agentId &&
     scope.adapterType === adapterType &&
     scope.provider === input.provider;
@@ -1100,6 +1108,7 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     driver: "local",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -1154,6 +1163,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     driver: "ssh",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
@@ -1752,6 +1762,7 @@ function createSandboxEnvironmentDriver(
     driver: "sandbox",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
       const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.companyId, input.environment, {
         issueId: input.issueId,
@@ -1809,17 +1820,23 @@ function createSandboxEnvironmentDriver(
         );
         const supportsReusableLeases =
           declaredReusableLeases && capabilityIsVerified("reusableLeases", pluginVerifiedMethods);
+        // Tasks without a project still need a stable directory across turns.
+        // Scope this fallback to the task AND agent; never reuse an active lease
+        // owned by another run, or share a workspace between unrelated tasks.
+        const hasReusableWorkspace = input.executionWorkspaceId !== null ||
+          (parsed.config.provider === "exe-dev" && input.issueId !== null);
         const leaseFingerprint =
           supportsReusableLeases &&
           parsed.config.reuseLease &&
           input.heartbeatRunId !== null &&
-          input.executionWorkspaceId !== null &&
+          hasReusableWorkspace &&
           input.agentId !== null
             ? await buildReusableSandboxLeaseFingerprint({
                 db,
                 companyId: input.companyId,
                 environment: input.environment,
                 executionWorkspaceId: input.executionWorkspaceId,
+                issueId: input.issueId,
                 agentId: input.agentId,
                 adapterType: input.adapterType,
                 provider: parsed.config.provider,
@@ -1842,13 +1859,14 @@ function createSandboxEnvironmentDriver(
           supportsReusableLeases &&
           parsed.config.reuseLease &&
           input.heartbeatRunId !== null &&
-          input.executionWorkspaceId !== null &&
+          hasReusableWorkspace &&
           input.agentId !== null
           ? (await environmentsSvc.listLeases(input.environment.id))
               .filter((lease) =>
                 lease.leasePolicy === "reuse_by_environment" &&
                 reusableLeaseCanBeResumed({ lease, heartbeatRunId: input.heartbeatRunId }) &&
                 lease.executionWorkspaceId === input.executionWorkspaceId &&
+                (input.executionWorkspaceId !== null || lease.issueId === input.issueId) &&
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
@@ -1858,6 +1876,7 @@ function createSandboxEnvironmentDriver(
             companyId: input.companyId,
             environmentId: input.environment.id,
             executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issueId,
             agentId: input.agentId,
             adapterType: input.adapterType,
             provider: parsed.config.provider,
@@ -1880,7 +1899,7 @@ function createSandboxEnvironmentDriver(
           supportsReusableLeases &&
           parsed.config.reuseLease &&
           input.heartbeatRunId !== null &&
-          input.executionWorkspaceId !== null &&
+          hasReusableWorkspace &&
           input.agentId !== null
           ? findReusableSandboxLeaseId({ config: storedConfig, leases: reusableExistingLeases })
           : null;
@@ -1996,6 +2015,9 @@ function createSandboxEnvironmentDriver(
             });
           }
         }
+        const resourceBinding = parsed.config.provider === "exe-dev"
+          ? await readEnvironmentResourceBinding(db, input.environment.id, input.companyId)
+          : undefined;
         const acquiredLease = providerLease ?? await pluginWorkerManager.call(
           pluginProvider.resolved.plugin.id,
           "environmentAcquireLease",
@@ -2005,6 +2027,7 @@ function createSandboxEnvironmentDriver(
             environmentId: input.environment.id,
             issueId: input.issueId,
             config: workerConfig,
+            ...(resourceBinding ? { resourceBinding } : {}),
             // Plugin SDK requires a string; ad-hoc test leases use a fresh
             // UUID so providers that validate or persist the runId still see
             // a well-formed identifier.
@@ -2044,6 +2067,7 @@ function createSandboxEnvironmentDriver(
               companyId: input.companyId,
               environmentId: input.environment.id,
               executionWorkspaceId: input.executionWorkspaceId,
+              issueId: input.issueId,
               agentId: input.agentId,
               adapterType: input.adapterType,
               provider: parsed.config.provider,
@@ -2085,6 +2109,9 @@ function createSandboxEnvironmentDriver(
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
         };
         try {
+          if (parsed.config.provider === "exe-dev") {
+            await bindEnvironmentResource(db, input.environment.id, input.companyId, acquiredLease.metadata?.environmentResourceBinding);
+          }
           return await environmentsSvc.acquireLease({
             companyId: input.companyId,
             environmentId: input.environment.id,
@@ -3333,6 +3360,7 @@ function createPluginEnvironmentDriver(
     driver: "plugin",
 
     async acquireRunLease(input) {
+      await assertExeEnvironmentEnabled(db, input.environment);
       const parsed = parseEnvironmentDriverConfig(input.environment);
       if (parsed.driver !== "plugin") {
         throw new Error(`Expected plugin environment config for driver "${input.environment.driver}".`);

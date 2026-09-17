@@ -175,6 +175,7 @@ export type {
   RefreshExternalObjectsResult,
   PluginEnvironmentDiagnostic,
   PluginEnvironmentDriverBaseParams,
+  PluginEnvironmentResourceBinding,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
   PluginEnvironmentProbeParams,

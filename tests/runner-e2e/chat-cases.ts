@@ -26,7 +26,7 @@ export const chatTasks: readonly RunnerTaskFixture[] = CHAT_CASES.map(
     flow: "agent_chat",
     workMode: "standard",
     expectedRunCount, // Provider turns, including cancelled turns and handed-off work; reset runs are separate.
-    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000 },
+    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000, "exe-dev": 15 * 60_000 },
     expectedTerminalState: { issue: "in_review", run: "succeeded" },
     buildTitle: (nonce) => `Chat acceptance ${id} ${nonce}`,
     buildPrompt: (nonce) => `Let's discuss ${nonce}.`,

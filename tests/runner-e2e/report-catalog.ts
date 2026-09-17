@@ -27,7 +27,7 @@ export function parseReportExecutionId(id: string) {
   if (typeof id !== "string")
     throw new Error("Report execution identity must be a string");
   const match =
-    /^([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*)$/.exec(
+    /^([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona|exe-dev)\.([a-z0-9][a-z0-9_-]*)$/.exec(
       id,
     );
   if (!match || id.length > 512)
@@ -37,7 +37,7 @@ export function parseReportExecutionId(id: string) {
   return {
     suiteId: match[1]!,
     profileId: match[2]!,
-    environmentId: match[3]! as "local" | "daytona",
+    environmentId: match[3]! as "local" | "daytona" | "exe-dev",
     caseId: match[4]!,
   };
 }

@@ -41,6 +41,7 @@ export const patchInstanceGeneralSettingsSchema = z
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
+  enableExeEnvironments: z.boolean().default(false),
   enableNativeRunner: z.boolean().default(true),
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),

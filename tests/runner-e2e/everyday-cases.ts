@@ -96,7 +96,7 @@ export const everydayTasks: readonly RunnerTaskFixture[] = definitions.map(
     workMode: "standard",
     flow: "everyday_workflow",
     expectedRunCount,
-    attemptTimeoutMs: { local: 12 * 60_000, daytona: 30 * 60_000 },
+    attemptTimeoutMs: { local: 12 * 60_000, daytona: 30 * 60_000, "exe-dev": 30 * 60_000 },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `${label} ${nonce}`,
     buildPrompt: () => prompt,

@@ -235,7 +235,7 @@ jobs:
           outputs: type=docker,dest=${{ runner.temp }}/preview-image.tar
           tags: ghcr.io/paperclipai/paperclip:sha-${{ inputs.source_ref }}-cloud
           build-args: |
-            CLOUD_BUNDLED_PLUGINS=daytona
+            CLOUD_BUNDLED_PLUGINS=daytona exe-dev
             CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
             PAPERCLIP_BUILD_COMMIT=${{ inputs.source_ref }}
             PAPERCLIP_BUILD_VERSION=0.0.0-preview.g${{ inputs.source_ref }}

@@ -169,6 +169,15 @@ export function buildRuntimeUsage(input: {
   }
 
   const leases = input.leases ?? [];
+  if (input.environmentId === "exe-dev") {
+    // exe.dev bills pooled subscription resources, not these individual leases.
+    // Never apply Daytona's per-second resource prices to a shared durable VM.
+    return {
+      provider: "exe-dev", agentRunDurationMs, leaseCount: leases.length,
+      leaseDurationMs: leases.length ? leases.reduce((sum, lease) => sum + durationBetween(lease.acquiredAt, lease.releasedAt ?? input.fallbackFinishedAt ?? lease.updatedAt ?? null), 0) : null,
+      costStatus: "unavailable", costSource: "provider_cost_unavailable",
+    };
+  }
   let leaseDurationMs = 0;
   let estimatedListCostUsd = 0;
   let resourcesComplete = leases.length > 0;

@@ -1,3 +1,4 @@
+import { assertExeEnvironmentEnabled } from "../services/exe-environment-gate.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -311,6 +312,9 @@ async function assertPlatformProvisionedEnvironmentWritable(
  * Clearing (null/false) is allowed so stale markers can be removed.
  */
 function assertNoClientPlatformProvisionedMarkers(metadata: unknown): void {
+  if (isPlainRecord(metadata) && "environmentResourceBinding" in metadata) {
+    throw unprocessable("metadata.environmentResourceBinding is managed by Paperclip");
+  }
   if (!isCloudManagedInstance() || !isPlainRecord(metadata)) return;
   for (const key of PLATFORM_PROVISIONED_MARKER_KEYS) {
     if (metadata[key] !== undefined && metadata[key] !== null && metadata[key] !== false) {
@@ -723,11 +727,12 @@ export function environmentRoutes(
 
   router.get("/companies/:companyId/environments/capabilities", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
-    const pluginDrivers = await listReadyPluginEnvironmentDrivers({
+    const exeEnabled = (await instanceSettings.getExperimental()).enableExeEnvironments;
+    const pluginDrivers = (await listReadyPluginEnvironmentDrivers({
       db,
       workerManager: options.pluginWorkerManager,
       recoverMissingWorker: options.recoverMissingPluginWorker,
-    });
+    })).filter((driver) => driver.driverKey !== "exe-dev" || exeEnabled);
     res.json(getEnvironmentCapabilities(
       AGENT_ADAPTER_TYPES,
       {
@@ -1015,6 +1020,7 @@ export function environmentRoutes(
     const companyId = req.params.companyId as string;
     assertCanAccessInstanceEnvironments(req);
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
+    await assertExeEnvironmentEnabled(db, req.body);
     if (req.body.driver === "local") {
       const existingLocal = await svc.list({ driver: "local" });
       if (existingLocal.length > 0) {
@@ -1129,6 +1135,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
+    await assertExeEnvironmentEnabled(db, { driver: req.body.driver ?? existing.driver, config: req.body.config ?? existing.config });
     await assertPlatformProvisionedEnvironmentWritable(existing, {
       patchBody: req.body,
       isForcedKubernetesExecution: async () =>

@@ -373,6 +373,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="exe.dev Environments"
+          description="Run agents on durable exe.dev VMs. Agents sharing a VM must trust each other. VMs remain after runs and disconnects."
+          footnote="Enabling this also enables environment management."
+          checked={experimentalQuery.data?.enableExeEnvironments === true}
+          onCheckedChange={(checked) => toggleMutation.mutate(checked ? { enableExeEnvironments: true, ...(managedKeys.enableEnvironments?.managed ? {} : { enableEnvironments: true }) } : { enableExeEnvironments: false })}
+          disabled={toggleMutation.isPending || (managedKeys.enableEnvironments?.managed === true && !enableEnvironments)}
+          settingKey="enableExeEnvironments"
+          managed={managedKeys.enableExeEnvironments}
+          ariaLabel="Toggle exe.dev environments experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Enable External Objects"
           description="Detect external URLs in issues and show resolved status for pull requests, tickets, and other referenced work objects."
           checked={enableExternalObjects}

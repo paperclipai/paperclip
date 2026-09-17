@@ -3,11 +3,13 @@ export const CREDENTIAL_NAMES = [
   "ANTHROPIC_API_KEY",
   "OPENROUTER_API_KEY",
   "DAYTONA_API_KEY",
+  "EXE_DEV_SSH_PRIVATE_KEY",
+  "EXE_DEV_REGISTRY_AUTH",
 ] as const;
 
 export type CredentialName = (typeof CREDENTIAL_NAMES)[number];
 export type RunnerGeneration = "legacy" | "native";
-export type RunnerEnvironmentId = "local" | "daytona";
+export type RunnerEnvironmentId = "local" | "daytona" | "exe-dev";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
   | "everyday_workflow"
@@ -43,6 +45,7 @@ export interface AgentFixtureBuildInput {
 export interface EnvironmentFixtureBuildInput {
   secretRefs: SecretReferenceMap;
   daytonaImage?: string;
+  exeImage?: string;
   executionId: string;
 }
 
@@ -68,7 +71,7 @@ export interface RunnerProfileFixture {
     capturedAt: string;
     sourceUrl: string;
   };
-  credential: Exclude<CredentialName, "DAYTONA_API_KEY">;
+  credential: Exclude<CredentialName, "DAYTONA_API_KEY" | "EXE_DEV_SSH_PRIVATE_KEY" | "EXE_DEV_REGISTRY_AUTH">;
   supportedEnvironments: readonly RunnerEnvironmentId[];
   expectedRuntimeMode: RunnerGeneration;
   expectedRuntimeMetadata: {
@@ -85,8 +88,8 @@ export interface EnvironmentFixture {
   label: string;
   groups: readonly string[];
   driver: "local" | "sandbox";
-  provider: "local" | "daytona";
-  credential?: "DAYTONA_API_KEY";
+  provider: "local" | "daytona" | "exe-dev";
+  credential?: "DAYTONA_API_KEY" | "EXE_DEV_SSH_PRIVATE_KEY";
   lifecycle: {
     setup: "instance_managed" | "create_via_api";
     probe: "run_context_via_api";
@@ -180,7 +183,7 @@ export interface MatrixJob {
   executionId: string;
   suiteId: string;
   profileId: string;
-  credentialName: Exclude<CredentialName, "DAYTONA_API_KEY">;
+  credentialName: Exclude<CredentialName, "DAYTONA_API_KEY" | "EXE_DEV_SSH_PRIVATE_KEY" | "EXE_DEV_REGISTRY_AUTH">;
   environmentId: RunnerEnvironmentId;
   caseId: string;
   timeoutMinutes: number;
