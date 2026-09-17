@@ -19,6 +19,7 @@ import {
   storyParentFinishedAfterChildren,
   artifactGradeModeForPhase,
   storyParentCompletionPrecedesReview,
+  storyAcceptedAgentReview,
   type StoryRun,
 } from "./everyday-observations.js";
 
@@ -48,6 +49,100 @@ describe("everyday workflow grader and review timing", () => {
         false,
       ),
     ).toBe(false);
+  });
+});
+
+describe("multi-round agent review handoff", () => {
+  const child = {
+    id: "child",
+    companyId: "company",
+    title: "child",
+    status: "done",
+    interactions: [
+      {
+        id: "first",
+        issueId: "child",
+        kind: "request_confirmation",
+        status: "rejected",
+        addresseeAgentId: "lead",
+        createdAt: "2026-09-17T19:07:19.277Z",
+        payload: { target: { type: "custom", key: "native_completion_review", revisionId: "decision-1" } },
+        result: { version: 1, outcome: "rejected" },
+      },
+      {
+        id: "second",
+        issueId: "child",
+        kind: "request_confirmation",
+        status: "accepted",
+        addresseeAgentId: "lead",
+        resolvedByAgentId: "lead",
+        resolvedByRunId: "review-run",
+        createdAt: "2026-09-17T19:08:54.510Z",
+        resolvedAt: "2026-09-17T19:09:33.722Z",
+        payload: { target: { type: "custom", key: "native_completion_review", revisionId: "decision-2" } },
+        result: {
+          version: 1,
+          outcome: "accepted",
+        },
+      },
+    ],
+  };
+  const runs = [{
+    id: "review-run",
+    companyId: "company",
+    agentId: "lead",
+    status: "succeeded",
+    contextSnapshot: {
+      nativeReviewInteractionId: "second",
+      nativeReviewDecisionId: "decision-2",
+    },
+  }];
+
+  it("follows a later accepted repair review for the same child and lead", () => {
+    expect(storyAcceptedAgentReview(child, "first", "lead", runs)?.id).toBe("second");
+  });
+
+  it("accepts a single first review when it is already accepted", () => {
+    expect(
+      storyAcceptedAgentReview(
+        { ...child, interactions: [child.interactions[1]] },
+        "second",
+        "lead",
+        runs,
+      )?.id,
+    ).toBe("second");
+  });
+
+  it("does not pass with only a rejected review", () => {
+    expect(
+      storyAcceptedAgentReview(
+        { ...child, interactions: [child.interactions[0]] },
+        "first",
+        "lead",
+        runs,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("rejects accepted cards for another child, agent, or interaction kind", () => {
+    const unrelated = [
+      { ...child.interactions[1], issueId: "other" },
+      { ...child.interactions[1], addresseeAgentId: "other", resolvedByAgentId: "other" },
+      { ...child.interactions[1], payload: { target: { type: "custom", key: "other", revisionId: "decision-2" } } },
+      { ...child.interactions[1], resolvedByRunId: "wrong-run" },
+    ];
+    for (const interaction of unrelated)
+      expect(
+        storyAcceptedAgentReview({ ...child, interactions: [interaction] }, "first", "lead", runs),
+      ).toBeUndefined();
+  });
+
+  it("rejects a review whose decision revision does not match the reviewer run", () => {
+    const bad = {
+      ...child.interactions[1],
+      payload: { target: { type: "custom", key: "native_completion_review", revisionId: "wrong" } },
+    };
+    expect(storyAcceptedAgentReview({ ...child, interactions: [bad] }, "second", "lead", runs)).toBeUndefined();
   });
 });
 

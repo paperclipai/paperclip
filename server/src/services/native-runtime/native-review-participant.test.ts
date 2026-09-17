@@ -16,7 +16,9 @@ function facts(overrides: object = {}): NativeReviewAssignmentFacts {
     issueStatusVersion: 3,
     issueLastStatusDecisionId: ids.nativeReviewDecisionId,
     issueAssigneeAgentId: "worker-1",
+    issueExecutionRunId: "review-run",
     interaction: {
+      id: ids.nativeReviewInteractionId,
       companyId: "11111111-1111-4111-8111-111111111111", issueId: "33333333-3333-4333-8333-333333333333", kind: "request_confirmation" as const, status: "pending" as const,
       sourceRunId: "44444444-4444-4444-8444-444444444444", addresseeAgentId: "55555555-5555-4555-8555-555555555555", effectiveResolverPolicy: "anyone",
       resolverPolicyProvenance: "inherited", addresseeUserId: null, resolvedByAgentId: null, resolvedByRunId: null,
@@ -61,5 +63,32 @@ describe("native review participant", () => {
     const base = facts({ interaction: { ...facts().interaction, status: "accepted", resolvedByAgentId: "55555555-5555-4555-8555-555555555555", resolvedByRunId: "review-run" }, issueStatus: "done" });
     expect(validateNativeReviewAssignmentFacts({ ...base, allowResolvedByRunId: "other-run" })).toBe(false);
     expect(validateNativeReviewAssignmentFacts({ ...base, allowResolvedByRunId: "review-run" })).toBe(true);
+  });
+
+  it.each([
+    ["unrelated run", { id: "other-run" }],
+    ["terminal run", { id: "review-run", status: "succeeded" }],
+    ["wrong review binding", { id: "review-run", contextSnapshot: { ...ids, issueId: "other-issue" } }],
+  ])("rejects %s as the acting reviewer run", (_name, override) => {
+    const base = facts({
+      actingRun: {
+        id: "review-run",
+        companyId: "11111111-1111-4111-8111-111111111111",
+        agentId: "55555555-5555-4555-8555-555555555555",
+        status: "running",
+        nativeIssueId: "33333333-3333-4333-8333-333333333333",
+        contextSnapshot: {
+          issueId: "33333333-3333-4333-8333-333333333333",
+          ...ids,
+          sourceRunId: "44444444-4444-4444-8444-444444444444",
+          revisionId: ids.nativeReviewDecisionId,
+        },
+      },
+    });
+    expect(validateNativeReviewAssignmentFacts({
+      ...base,
+      actingRun: { ...base.actingRun!, ...override },
+    })).toBe(false);
+    expect(validateNativeReviewAssignmentFacts(base)).toBe(true);
   });
 });

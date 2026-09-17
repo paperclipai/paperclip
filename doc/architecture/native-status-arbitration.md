@@ -328,10 +328,22 @@ review role gives access to the child context, history, and documents, plus
 The usual company, invokability, budget, and workspace gates still apply.
 Human-only requests and governed actions do not acquire this review role.
 
+This restriction applies to Paperclip tools. It is not a read-only filesystem
+boundary. The reviewer retains the configured agent and environment permissions,
+including the ability to run tests and create temporary files. An operator who
+needs filesystem isolation must configure it in the execution environment.
+The review role does not raise the provider permission mode or bypass a sandbox.
+
+Admission claims the reviewer run, its wake, and the child execution lock in
+one transaction. If another run holds the lock, the reviewer stays queued.
+The provider does not start without this claim.
+
 `resolve_review` accepts or rejects the one card assigned to the run. Rejection
 requires specific requested changes. The server checks the reviewer, report,
-and current task version again before it accepts a decision. An old or reassigned
-review does not grant access to newer work.
+and current task version again before it accepts a decision. It also checks that
+the acting run is running, holds the execution lock, and names this exact card
+and decision. Another run for the same agent cannot resolve the card. An old or
+reassigned review does not grant access to newer work.
 
 The final required acceptance completes the child through the existing review
 resolution path and makes its blocked dependents eligible to run. Rejection

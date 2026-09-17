@@ -459,6 +459,7 @@ type IssueResolutionContext = {
   id: string;
   companyId: string;
   status: string;
+  executionRunId: string | null;
   workMode: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -487,9 +488,11 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
   assertInteractionResolutionAllowed(interaction, actor);
   if (actor.agentId && isNativeCompletionReview(interaction)) {
     const target = (interaction.payload as { target?: { revisionId?: string } }).target;
-    if (!await getNativeReviewAssignment(tx, {
+    if (!actor.runId || !await getNativeReviewAssignment(tx, {
       companyId: issue.companyId, issueId: issue.id, agentId: actor.agentId,
       contextSnapshot: { nativeReviewInteractionId: interaction.id, nativeReviewDecisionId: target?.revisionId },
+      actingRunId: actor.runId,
+      issueExecutionRunId: issue.executionRunId,
     })) throw conflict("This completion review is no longer current or assigned to this agent.");
   }
   if (!isReviewVerdict) return;
@@ -2111,6 +2114,7 @@ export function issueThreadInteractionService(
           id: issues.id,
           companyId: issues.companyId,
           status: issues.status,
+          executionRunId: issues.executionRunId,
           workMode: issues.workMode,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
@@ -2383,6 +2387,7 @@ export function issueThreadInteractionService(
           id: issues.id,
           companyId: issues.companyId,
           status: issues.status,
+          executionRunId: issues.executionRunId,
           workMode: issues.workMode,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,

@@ -42,6 +42,7 @@ import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { claimNativeReviewExecutionLock, getNativeReviewAssignment } from "./native-review-participant.js";
+import { claimQueuedNativeReviewRun } from "./native-review-dispatch.js";
 import { stageNativeRunnerWakeAttachments } from "./native-runner-file-handoff.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -272,6 +273,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   afterAll(async () => {
     if (temporary) {
       await db.delete(activityLog);
+      await db.update(heartbeatRuns).set({ wakeupRequestId: null });
       await db.delete(agentWakeupRequests);
       await db.delete(statusDecisionEffects);
       await db.delete(nativeRunFinalizations);
@@ -1092,11 +1094,40 @@ describe("PaperclipControlPlanePort conformance", () => {
       nativeReviewInteractionId: agentReview.id,
       nativeReviewDecisionId: (agentReview.payload as { target: { revisionId: string } }).target.revisionId,
     };
-    await db.insert(heartbeatRuns).values({
+    await db.update(agentWakeupRequests).set({ runId: reviewRunId }).where(eq(agentWakeupRequests.id, reviewWakes[0]!.id));
+    const [reviewRun] = await db.insert(heartbeatRuns).values({
       id: reviewRunId, companyId: identity.companyId, agentId: reviewerAgentId,
       status: "queued", runtimeMode: "native", nativeIssueId: issueId,
+      wakeupRequestId: reviewWakes[0]!.id,
       contextSnapshot: { issueId, wakeReason: "native_completion_review", ...nativeReview },
+    }).returning();
+    await expect(createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+      companyId: identity.companyId, runId: reviewRunId, expectedStatus: "queued", now: new Date(),
+    })).resolves.toMatchObject({ outcome: "not_stale" });
+    await db.insert(heartbeatRuns).values({
+      id: "35000000-0000-4000-8000-000000000025", companyId: identity.companyId,
+      agentId: reviewerAgentId, status: "running", runtimeMode: "native", nativeIssueId: issueId,
     });
+    await db.update(issues).set({ executionRunId: "35000000-0000-4000-8000-000000000025" }).where(eq(issues.id, issueId));
+    await expect(claimQueuedNativeReviewRun(db, {
+      run: reviewRun!, agentNameKey: "reviewer", claimedAt: new Date(), claimValues: {},
+    })).resolves.toBeNull();
+    await expect(db.select({ status: heartbeatRuns.status, executionRunId: issues.executionRunId })
+      .from(heartbeatRuns).innerJoin(issues, eq(issues.id, issueId)).where(eq(heartbeatRuns.id, reviewRunId)))
+      .resolves.toMatchObject([{ status: "queued", executionRunId: "35000000-0000-4000-8000-000000000025" }]);
+    await expect(db.select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, reviewWakes[0]!.id)))
+      .resolves.toEqual([{ status: "queued" }]);
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+    await expect(claimQueuedNativeReviewRun(db, {
+      run: reviewRun!, agentNameKey: "reviewer", claimedAt: new Date(), claimValues: {},
+    })).resolves.toMatchObject({ id: reviewRunId, status: "running" });
+    await expect(db.select({ status: agentWakeupRequests.status, executionRunId: issues.executionRunId })
+      .from(agentWakeupRequests).innerJoin(issues, eq(issues.id, issueId)).where(eq(agentWakeupRequests.id, reviewWakes[0]!.id)))
+      .resolves.toMatchObject([{ status: "claimed", executionRunId: reviewRunId }]);
+    await expect(claimQueuedNativeReviewRun(db, {
+      run: reviewRun!, agentNameKey: "reviewer", claimedAt: new Date(), claimValues: {},
+    })).resolves.toBeNull();
     await expect(claimNativeReviewExecutionLock(db, {
       companyId: identity.companyId, issueId, agentId: identity.agentId, runId: reviewRunId,
       contextSnapshot: nativeReview, agentNameKey: "worker", claimedAt: new Date(),
@@ -1126,7 +1157,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     await db.update(issueThreadInteractions).set({ status: "pending" }).where(eq(issueThreadInteractions.id, agentReview.id));
     await expect(createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
       companyId: identity.companyId, runId: reviewRunId, expectedStatus: "queued", now: new Date(),
-    })).resolves.toMatchObject({ outcome: "not_stale" });
+    })).resolves.toMatchObject({ outcome: "lost_race" });
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, reviewRunId));
     const reviewBinding = {
       companyId: identity.companyId, issueId, agentId: reviewerAgentId, runId: reviewRunId,
@@ -1160,6 +1191,26 @@ describe("PaperclipControlPlanePort conformance", () => {
       { agentId: reviewerAgentId, runId: reviewRunId },
     )).rejects.toThrow("no longer current");
     await db.update(issues).set({ statusVersion: 1 }).where(eq(issues.id, issueId));
+
+    const reviewIssue = { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" as const };
+    const rejectUnboundReview = async (runId?: string) => issueThreadInteractionService(db).acceptInteraction(
+      reviewIssue, agentReview.id, {}, { agentId: reviewerAgentId, ...(runId ? { runId } : {}) },
+    );
+    await expect(rejectUnboundReview("35000000-0000-4000-8000-000000000025"))
+      .rejects.toThrow("no longer current");
+    await expect(db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.id, agentReview.id)))
+      .resolves.toEqual([{ status: "pending" }]);
+    await expect(rejectUnboundReview()).rejects.toThrow("valid authenticated agent run");
+    await expect(db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.id, agentReview.id)))
+      .resolves.toEqual([{ status: "pending" }]);
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, reviewRunId));
+    await expect(rejectUnboundReview(reviewRunId)).rejects.toThrow("no longer current");
+    await expect(db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.id, agentReview.id)))
+      .resolves.toEqual([{ status: "pending" }]);
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, reviewRunId));
 
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
       expect.objectContaining({ status: "in_review", statusVersion: 1, assigneeAgentId: identity.agentId }),
@@ -1295,6 +1346,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       reviews[1]!.id, {}, { userId: "reviewer-24" },
     );
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
+    await db.update(heartbeatRuns).set({ wakeupRequestId: null }).where(eq(heartbeatRuns.id, reviewRunId));
 
   });
 

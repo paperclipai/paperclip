@@ -144,6 +144,8 @@ export class PaperclipRunnerToolAuthority {
 
   definitions(): Array<Record<string, unknown>> {
     if (this.binding.nativeReview) {
+      // Scope Paperclip control-plane actions. Provider file and shell access
+      // still follow the configured agent/environment policy, including tests.
       return [
         ...CAPABILITY_SEMANTIC_TOOL_CATALOG
           .filter((tool) => NATIVE_REVIEW_READ_TOOLS.has(tool.operationId))

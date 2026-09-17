@@ -31,6 +31,7 @@ import {
   storyIssueHasUnresolvedDependency,
   storyRunReportsDependencyBlock,
   storyParentFinishedAfterChildren,
+  storyAcceptedAgentReview,
   artifactGradeModeForPhase,
   storyParentCompletionPrecedesReview,
   type StoryCheck,
@@ -1175,8 +1176,11 @@ export async function runEverydayFlow(input: Input) {
       const child = children.find((candidate) =>
         candidate.id === reviewHandoffBoundary?.childId,
       );
-      const interaction = child?.interactions?.find(
-        (candidate) => candidate.id === reviewHandoffBoundary?.interactionId,
+      const interaction = storyAcceptedAgentReview(
+        child,
+        reviewHandoffBoundary?.interactionId,
+        fixtures.agent.id,
+        ev.runs,
       ) as Row | undefined;
       const reviewRun = interaction?.resolvedByRunId
         ? ev.runs.find((run) => run.id === interaction.resolvedByRunId)
@@ -1213,7 +1217,7 @@ export async function runEverydayFlow(input: Input) {
         reviewRun?.status === "succeeded" &&
           reviewRun.agentId === fixtures.agent.id &&
           reviewRun.contextSnapshot?.nativeReviewInteractionId ===
-            reviewHandoffBoundary?.interactionId &&
+            interaction?.id &&
           typeof reviewRun.contextSnapshot?.nativeReviewDecisionId === "string",
         "The lead resolves the review from a successful review-scoped native run.",
       );

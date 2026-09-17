@@ -37,15 +37,66 @@ export interface StoryActivityRecord {
 export interface StoryInteraction {
   id?: string;
   kind?: string;
+  issueId?: string | null;
   status?: string;
   continuationPolicy?: string | null;
   resolverPolicy?: string | null;
   effectiveResolverPolicy?: string | null;
   addresseeAgentId?: string | null;
+  resolvedByAgentId?: string | null;
   resolvedByRunId?: string | null;
   resolvedAt?: string | null;
   result?: Record<string, unknown> | null;
+  payload?: Record<string, unknown> | null;
   createdAt?: string;
+}
+
+/** Select the accepted review card for the same child and lead after the initial handoff boundary. */
+export function storyAcceptedAgentReview(
+  child: StoryIssue | undefined,
+  initialInteractionId: string | undefined,
+  leadId: string,
+  runs: StoryRun[],
+): StoryInteraction | undefined {
+  if (!child?.interactions?.length || !initialInteractionId) return undefined;
+  const initial = child.interactions.find(
+    (candidate) => candidate.id === initialInteractionId,
+  );
+  if (!initial) return undefined;
+  const initialCreatedAt = Date.parse(initial.createdAt ?? "");
+  return child.interactions
+    .filter((candidate) => {
+      const result = candidate.result;
+      const target = candidate.payload?.target as
+        | Record<string, unknown>
+        | undefined;
+      const revisionId = String(target?.revisionId ?? "");
+      const reviewRun = runs.find(
+        (run) => run.id === candidate.resolvedByRunId,
+      );
+      return (
+        candidate.kind === "request_confirmation" &&
+        target?.type === "custom" &&
+        target?.key === "native_completion_review" &&
+        candidate.issueId === child.id &&
+        candidate.addresseeAgentId === leadId &&
+        candidate.resolvedByAgentId === leadId &&
+        candidate.status === "accepted" &&
+        Number.isFinite(initialCreatedAt) &&
+        Number.isFinite(Date.parse(candidate.createdAt ?? "")) &&
+        Date.parse(candidate.createdAt ?? "") >= initialCreatedAt &&
+        result?.version === 1 &&
+        result?.outcome === "accepted" &&
+        reviewRun?.status === "succeeded" &&
+        reviewRun.agentId === leadId &&
+        reviewRun.contextSnapshot?.nativeReviewInteractionId === candidate.id &&
+        reviewRun.contextSnapshot?.nativeReviewDecisionId === revisionId &&
+        revisionId.length > 0
+      );
+    })
+    .sort((a, b) =>
+      Date.parse(a.resolvedAt ?? "") - Date.parse(b.resolvedAt ?? ""),
+    )[0];
 }
 export interface StoryWakeDiagnosticEvent {
   kind?: string;

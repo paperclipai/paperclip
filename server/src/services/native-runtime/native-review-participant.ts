@@ -23,7 +23,7 @@ type ReviewPayload = {
   secretProposal?: unknown;
 };
 type InteractionFacts = Pick<typeof issueThreadInteractions.$inferSelect,
-  "companyId" | "issueId" | "kind" | "status" | "sourceRunId" | "addresseeAgentId" |
+  "id" | "companyId" | "issueId" | "kind" | "status" | "sourceRunId" | "addresseeAgentId" |
   "addresseeUserId" | "effectiveResolverPolicy" | "resolverPolicyProvenance" |
   "resolvedByAgentId" | "resolvedByRunId"> & { payload: ReviewPayload };
 type DecisionFacts = Pick<typeof statusDecisions.$inferSelect,
@@ -39,10 +39,19 @@ export type NativeReviewAssignmentFacts = {
   issueStatusVersion: number;
   issueLastStatusDecisionId: string | null;
   issueAssigneeAgentId: string | null;
+  issueExecutionRunId?: string | null;
   interaction: InteractionFacts;
   decision: DecisionFacts;
   sourceRun: SourceRunFacts;
   agentInvokable: boolean;
+  actingRun?: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    status: string;
+    nativeIssueId: string | null;
+    contextSnapshot: Record<string, unknown> | null;
+  };
   allowResolvedByRunId?: string;
 };
 
@@ -88,6 +97,31 @@ export function validateNativeReviewAssignmentFacts(input: NativeReviewAssignmen
   if (interaction.payload?.toolAction || interaction.payload?.secretProposal) return false;
   if (!isNativeCompletionReview(interaction, decision.id)) return false;
 
+  if (input.actingRun) {
+    const actingContext = readNativeReviewAssignmentContext(
+      input.actingRun.contextSnapshot,
+    );
+    if (
+      input.actingRun.id.length === 0 ||
+      input.actingRun.companyId !== input.companyId ||
+      input.actingRun.agentId !== input.agentId ||
+      input.actingRun.status !== "running" ||
+      input.actingRun.nativeIssueId !== input.issueId ||
+      (input.issueExecutionRunId !== undefined &&
+        input.issueExecutionRunId !== input.actingRun.id) ||
+      !actingContext ||
+      actingContext.nativeReviewInteractionId !== interaction.id ||
+      actingContext.nativeReviewDecisionId !== decision.id
+    ) return false;
+    const context = input.actingRun.contextSnapshot ?? {};
+    if (context.issueId !== undefined && context.issueId !== input.issueId)
+      return false;
+    if (context.sourceRunId !== undefined && context.sourceRunId !== sourceRun.id)
+      return false;
+    if (context.revisionId !== undefined && context.revisionId !== decision.id)
+      return false;
+  }
+
   const policy = canonicalizeStoredResolverPolicy(
     interaction.effectiveResolverPolicy,
     interaction.resolverPolicyProvenance,
@@ -112,6 +146,8 @@ export async function getNativeReviewAssignment(
     issueId: string;
     agentId: string;
     contextSnapshot: unknown;
+    actingRunId?: string;
+    issueExecutionRunId?: string | null;
     allowResolvedByRunId?: string;
   },
 ): Promise<NativeReviewAssignment | null> {
@@ -142,6 +178,14 @@ export async function getNativeReviewAssignment(
     eq(heartbeatRuns.nativeIssueId, input.issueId),
   )).limit(1).then((rows) => rows[0] ?? null);
   if (!sourceRun) return null;
+  const actingRun = input.actingRunId
+    ? await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.actingRunId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      )).limit(1).then((rows) => rows[0] ?? null)
+    : undefined;
+  if (input.actingRunId && !actingRun) return null;
   const invokability = await evaluateAgentInvokabilityFromDb(db, agent);
   const valid = validateNativeReviewAssignmentFacts({
     companyId: input.companyId,
@@ -155,6 +199,17 @@ export async function getNativeReviewAssignment(
     decision,
     sourceRun,
     agentInvokable: invokability.invokable,
+    actingRun: actingRun
+      ? {
+          id: actingRun.id,
+          companyId: actingRun.companyId,
+          agentId: actingRun.agentId,
+          status: actingRun.status,
+          nativeIssueId: actingRun.nativeIssueId,
+          contextSnapshot: actingRun.contextSnapshot,
+        }
+      : undefined,
+    issueExecutionRunId: input.issueExecutionRunId,
     allowResolvedByRunId: input.allowResolvedByRunId,
   });
   return valid ? { interaction, sourceDecision: decision, sourceRun } : null;
