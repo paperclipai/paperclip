@@ -2,7 +2,11 @@ import { toolConnections, toolInvocations, type Db } from "@paperclipai/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const track = vi.fn();
-let telemetryClient: { track: typeof track } | null = { track };
+const isRegisteredEventName = vi.fn(() => true);
+let telemetryClient: {
+  track: typeof track;
+  isRegisteredEventName: typeof isRegisteredEventName;
+} | null = { track, isRegisteredEventName };
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => telemetryClient,
@@ -50,28 +54,35 @@ function invocationRow(overrides: Record<string, unknown> = {}): ToolInvocationR
 function fakeDb(
   invocation: ToolInvocationRow | null,
   connection: ToolConnectionRow | null,
-): Db {
+): Db & { selectCalls: () => number } {
+  let selectCalls = 0;
   return {
-    select: () => ({
-      from: (table: unknown) => ({
-        where: () =>
-          Promise.resolve(
-            table === toolInvocations
-              ? invocation
-                ? [invocation]
-                : []
-              : connection
-                ? [connection]
-                : [],
-          ),
-      }),
-    }),
-  } as unknown as Db;
+    selectCalls: () => selectCalls,
+    select: () => {
+      selectCalls += 1;
+      return {
+        from: () => ({
+          innerJoin: () => ({
+            where: () =>
+              Promise.resolve(
+                // Mirror the emitter's single joined read: an invocation with
+                // no (or a deleted) connection joins to zero rows.
+                invocation && connection && invocation.connectionId
+                  ? [{ invocation, connection }]
+                  : [],
+              ),
+          }),
+        }),
+      };
+    },
+  } as unknown as Db & { selectCalls: () => number };
 }
 
 beforeEach(() => {
   track.mockReset();
-  telemetryClient = { track };
+  isRegisteredEventName.mockReset();
+  isRegisteredEventName.mockReturnValue(true);
+  telemetryClient = { track, isRegisteredEventName };
 });
 
 describe("connectorKeyForConnection", () => {
@@ -236,5 +247,23 @@ describe("emitConnectorInvocationCompleted", () => {
       emitConnectorInvocationCompleted(fakeDb(null, null), "inv-missing"),
     ).resolves.toBeUndefined();
     expect(track).not.toHaveBeenCalled();
+  });
+
+  it("reads nothing from the database while the event name is unregistered", async () => {
+    isRegisteredEventName.mockReturnValue(false);
+    const db = fakeDb(invocationRow(), connectionRow());
+    await emitConnectorInvocationCompleted(db, "inv-1");
+    expect(db.selectCalls()).toBe(0);
+    expect(track).not.toHaveBeenCalled();
+    expect(isRegisteredEventName).toHaveBeenCalledWith(
+      "connector.invocation_completed",
+    );
+  });
+
+  it("loads the invocation and connection with a single read once registered", async () => {
+    const db = fakeDb(invocationRow(), connectionRow());
+    await emitConnectorInvocationCompleted(db, "inv-1");
+    expect(db.selectCalls()).toBe(1);
+    expect(track).toHaveBeenCalledTimes(1);
   });
 });

@@ -23,9 +23,12 @@ export type ConnectorChangeSource =
   | "composio_sync";
 
 /**
- * Terminal `tool_invocations.status` values actually written by the gateway
- * and approval-review paths. `pending`, `authorized`, `awaiting_approval`, and
- * `executing` are in-flight and never emit: pending approval is not a failure.
+ * Terminal `tool_invocations.status` values. `pending`, `authorized`,
+ * `awaiting_approval`, and `executing` are in-flight and never emit: pending
+ * approval is not a failure. `cancelled` is declared in the schema enum but no
+ * current code path writes it to an invocation (signing-path cancellations
+ * land on the action request and fail the invocation); it stays here so a
+ * future writer is counted without a telemetry change.
  */
 const TERMINAL_INVOCATION_STATUSES: ReadonlySet<string> = new Set([
   "succeeded",
@@ -147,16 +150,30 @@ export function emitConnectorConnectionUpdated(
 
 /**
  * Emits one proposed `connector.invocation_completed` event for an invocation
- * a caller already wrote to a terminal status. Loads the committed row, so
- * call it beside each terminal status write with
- * `void emitConnectorInvocationCompleted(db, invocationId)` and never await
- * it: like `agent.task_run`, this is best-effort background work and must not
- * delay the caller's own response or lifecycle writes.
+ * a caller already wrote to a terminal status. Never await it: like
+ * `agent.task_run`, this is best-effort background work and must not delay
+ * the caller's own response or lifecycle writes.
+ *
+ * Call placement inside the gateway is deliberate and asymmetric. Failure
+ * paths call it right after their terminal save. Success paths call it only
+ * after the post-save bookkeeping (action-request settlement, tool-call
+ * event, audit) has completed, because a bookkeeping failure lands in a catch
+ * that overwrites the row to `failed` and emits there — emitting the success
+ * beforehand would let one execution report both outcomes.
  *
  * Self-guards, so callers do not have to re-check anything: non-terminal
- * statuses, invocations without a connection, and non-tool-purpose
- * connections all return without emitting. Emission is per terminal write,
- * not exactly-once — a replayed terminal write on the same row emits again.
+ * statuses, invocations without a tool-purpose connection, and an
+ * unregistered (still-proposed) event name all return without emitting. The
+ * registration gate keeps the completion path free of telemetry reads until
+ * schema adoption: the runtime client drops unregistered names in `track`,
+ * so there is no point loading rows for an event that cannot be queued.
+ *
+ * Delivery is best-effort per execution, not exactly-once. Known residual
+ * duplications, accepted for the proposal stage: an outer safety-net catch
+ * can re-save `failed` and emit again when a failure path's own bookkeeping
+ * throws after its emit (test-invocation approval flow), and a crash-side
+ * replay that re-writes a terminal status emits again. Deduplication state
+ * is out of scope for this proposal.
  */
 export async function emitConnectorInvocationCompleted(
   db: Db,
@@ -165,22 +182,21 @@ export async function emitConnectorInvocationCompleted(
   try {
     const client = getTelemetryClient();
     if (!client) return;
+    if (!client.isRegisteredEventName("connector.invocation_completed")) return;
 
-    const invocation = await db
-      .select()
+    const joined = await db
+      .select({ invocation: toolInvocations, connection: toolConnections })
       .from(toolInvocations)
+      .innerJoin(
+        toolConnections,
+        eq(toolInvocations.connectionId, toolConnections.id),
+      )
       .where(eq(toolInvocations.id, invocationId))
       .then((rows) => rows[0] ?? null);
-    if (!invocation) return;
+    if (!joined) return;
+    const { invocation, connection } = joined;
     if (!TERMINAL_INVOCATION_STATUSES.has(invocation.status)) return;
-    if (!invocation.connectionId) return;
-
-    const connection = await db
-      .select()
-      .from(toolConnections)
-      .where(eq(toolConnections.id, invocation.connectionId))
-      .then((rows) => rows[0] ?? null);
-    if (!connection || !isToolPurpose(connection)) return;
+    if (!isToolPurpose(connection)) return;
 
     const startedAtMs = invocation.startedAt
       ? new Date(invocation.startedAt).getTime()
