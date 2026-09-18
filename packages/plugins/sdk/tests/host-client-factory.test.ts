@@ -418,3 +418,112 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
     expect(list).not.toHaveBeenCalled();
   });
 });
+
+describe("createHostClientHandlers attention and decision triage capabilities", () => {
+  const context = { invocationScope: { companyId: "company-a" } };
+  const source = { companyId: "company-a", sourceKind: "approval" as const, sourceId: "ap-1", actorUserId: "user-a" };
+
+  function servicesWithSpies() {
+    const spies = {
+      attentionList: vi.fn(async () => ({ items: [] })),
+      listQueues: vi.fn(async () => []),
+      listQueueItems: vi.fn(async () => []),
+      getTriage: vi.fn(async () => null),
+      updateTriage: vi.fn(async () => ({ id: "t" })),
+      setRetentionKeep: vi.fn(async () => ({ id: "r" })),
+      archive: vi.fn(async () => ({ id: "r" })),
+      revive: vi.fn(async () => ({ id: "r" })),
+    };
+    const services = {
+      attention: { list: spies.attentionList },
+      decisions: {
+        listQueues: spies.listQueues,
+        listQueueItems: spies.listQueueItems,
+        getTriage: spies.getTriage,
+        updateTriage: spies.updateTriage,
+        setRetentionKeep: spies.setRetentionKeep,
+        archive: spies.archive,
+        revive: spies.revive,
+      },
+    } as unknown as HostServices;
+    return { spies, services };
+  }
+
+  it("denies every attention and decision method without a capability", async () => {
+    const { spies, services } = servicesWithSpies();
+    const handlers = createHostClientHandlers({ pluginId: "paperclip.test", capabilities: [], services });
+    await expect(
+      handlers["attention.list"]({ companyId: "company-a", actorUserId: "user-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["decisions.queues.list"]({ companyId: "company-a", actorUserId: "user-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["decisions.queues.listItems"]({ companyId: "company-a", key: "prs", actorUserId: "user-a" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(handlers["decisions.triage.get"](source, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["decisions.triage.update"]({ ...source, decideBy: "today" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["decisions.retention.setKeep"]({ ...source, keep: true }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(handlers["decisions.retention.archive"](source, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(handlers["decisions.retention.revive"](source, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    for (const spy of Object.values(spies)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("does not let decision.queues.read write triage or retention", async () => {
+    const { spies, services } = servicesWithSpies();
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["attention.read", "decision.queues.read"],
+      services,
+    });
+    await expect(handlers["attention.list"]({ companyId: "company-a", actorUserId: "user-a" }, context))
+      .resolves.toEqual({ items: [] });
+    await expect(handlers["decisions.triage.get"](source, context)).resolves.toBeNull();
+    await expect(
+      handlers["decisions.triage.update"]({ ...source, decideBy: "today" }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(handlers["decisions.retention.archive"](source, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(spies.updateTriage).not.toHaveBeenCalled();
+    expect(spies.archive).not.toHaveBeenCalled();
+  });
+
+  it("routes triage and retention writes with decision.triage.manage", async () => {
+    const { spies, services } = servicesWithSpies();
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["decision.triage.manage"],
+      services,
+    });
+    await expect(handlers["decisions.triage.update"]({ ...source, snoozedUntil: null }, context))
+      .resolves.toEqual({ id: "t" });
+    await expect(handlers["decisions.retention.setKeep"]({ ...source, keep: true }, context))
+      .resolves.toEqual({ id: "r" });
+    await expect(handlers["decisions.retention.archive"](source, context)).resolves.toEqual({ id: "r" });
+    await expect(handlers["decisions.retention.revive"](source, context)).resolves.toEqual({ id: "r" });
+    expect(spies.updateTriage).toHaveBeenCalledWith({ ...source, snoozedUntil: null });
+    expect(spies.setRetentionKeep).toHaveBeenCalledOnce();
+    expect(spies.archive).toHaveBeenCalledOnce();
+    expect(spies.revive).toHaveBeenCalledOnce();
+  });
+
+  it("enforces invocation company scope on attention and decision methods", async () => {
+    const { spies, services } = servicesWithSpies();
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["attention.read", "decision.queues.read", "decision.triage.manage"],
+      services,
+    });
+    await expect(
+      handlers["attention.list"]({ companyId: "company-b", actorUserId: "user-a" }, context),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    await expect(
+      handlers["decisions.triage.update"]({ ...source, companyId: "company-b", decideBy: "today" }, context),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(spies.attentionList).not.toHaveBeenCalled();
+    expect(spies.updateTriage).not.toHaveBeenCalled();
+  });
+});
