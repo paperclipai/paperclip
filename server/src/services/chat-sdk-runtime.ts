@@ -2483,6 +2483,62 @@ export class ChatSdkEndpointRuntime {
     return this.chat.thread(threadId);
   }
 
+  /**
+   * Create or recover the provider thread rooted at one message the bot already
+   * posted into a channel. Only providers with a real create-thread contract
+   * are supported; every other provider fails closed. Slack and Teams threads
+   * are derived from the root message, so their thread id is computed without
+   * an extra provider call.
+   */
+  async ensureThreadFromMessage(input: {
+    provider: ChatSdkProvider;
+    channelThreadId: string;
+    messageId: string;
+    name: string;
+  }): Promise<{ threadId: string; providerUrl?: string | null }> {
+    if (input.provider === "discord") {
+      const decode = (
+        this.adapter as unknown as {
+          decodeThreadId?: (threadId: string) => {
+            guildId: string;
+            channelId: string;
+            threadId?: string;
+          };
+        }
+      ).decodeThreadId;
+      if (typeof decode !== "function") {
+        throw new DiscordAdapterCompatibilityError(
+          "decodeThreadId is unavailable",
+        );
+      }
+      const channel = decode.call(this.adapter, input.channelThreadId);
+      await this.ensureDiscordRootThread({
+        channelId: channel.channelId,
+        content: input.name,
+        messageId: input.messageId,
+      });
+      // Discord assigns a message-started public thread the source message id.
+      return {
+        threadId: `${input.channelThreadId}:${input.messageId}`,
+      };
+    }
+    if (input.provider === "slack") {
+      // Slack threads are keyed by the root message timestamp, which the
+      // channel post returns as its message id.
+      const channelId = input.channelThreadId.replace(/^slack:/, "");
+      return { threadId: `slack:${channelId}:${input.messageId}` };
+    }
+    if (input.provider === "microsoft-teams") {
+      const base = input.channelThreadId.replace(/^teams:/, "");
+      return {
+        threadId: `teams:${Buffer.from(
+          `${base};messageid=${input.messageId}`,
+        ).toString("base64url")}`,
+      };
+    }
+    throw new Error("Provider does not support agent-created threads");
+  }
+
   async streamTelegramDraft(
     threadId: string,
     textStream: AsyncIterable<string>,

@@ -247,6 +247,12 @@ class FakeEndpointRuntime {
     content: string;
     messageId: string;
   }> = [];
+  readonly ensuredThreads: Array<{
+    provider: string;
+    channelThreadId: string;
+    messageId: string;
+    name: string;
+  }> = [];
   readonly recordedMicrosoftTeamsRoutes: Array<{
     threadId: string;
     serviceUrl: unknown;
@@ -284,6 +290,33 @@ class FakeEndpointRuntime {
     messageId: string;
   }) {
     this.ensuredDiscordRootThreads.push(input);
+  }
+
+  async openDirectMessage(userId: string) {
+    const provider = this.options.providerConfig.provider;
+    return {
+      id:
+        provider === "discord"
+          ? `discord:@me:DM-${userId}`
+          : `slack:DM-${userId}:`,
+    };
+  }
+
+  async ensureThreadFromMessage(input: {
+    provider: string;
+    channelThreadId: string;
+    messageId: string;
+    name: string;
+  }) {
+    this.ensuredThreads.push(input);
+    if (input.provider === "discord") {
+      return { threadId: `${input.channelThreadId}:${input.messageId}` };
+    }
+    if (input.provider === "slack") {
+      const channelId = input.channelThreadId.replace(/^slack:/, "");
+      return { threadId: `slack:${channelId}:${input.messageId}` };
+    }
+    return { threadId: `${input.channelThreadId}:${input.messageId}` };
   }
 
   async recordMicrosoftTeamsRoute(threadId: string, serviceUrl: unknown) {
@@ -31321,9 +31354,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(
             and(
               eq(chatPublications.endpointId, endpoint.id),
-              eq(
+              like(
                 chatPublications.idempotencyKey,
-                `interaction-resolution:${interaction.id}:${endpoint.id}`,
+                `interaction-resolution:${interaction.id}:${endpoint.id}` + ":%",
               ),
             ),
           )
@@ -34399,9 +34432,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(
             and(
               eq(chatPublications.endpointId, endpoint.id),
-              eq(
+              like(
                 chatPublications.idempotencyKey,
-                `interaction-resolution:${interaction.id}:${endpoint.id}`,
+                `interaction-resolution:${interaction.id}:${endpoint.id}` + ":%",
               ),
             ),
           ),
@@ -34413,10 +34446,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(
         and(
           eq(chatPublications.endpointId, endpoint.id),
-          eq(
-            chatPublications.idempotencyKey,
-            `interaction-resolution:${interaction.id}:${endpoint.id}`,
-          ),
+          like(
+                chatPublications.idempotencyKey,
+                `interaction-resolution:${interaction.id}:${endpoint.id}` + ":%",
+              ),
         ),
       )
       .then((rows) => rows[0]);
@@ -37816,10 +37849,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select({ state: chatPublications.state })
       .from(chatPublications)
       .where(
-        eq(
-          chatPublications.idempotencyKey,
-          `interaction-resolution:${interaction.id}:${endpoint.id}`,
-        ),
+        like(
+                chatPublications.idempotencyKey,
+                `interaction-resolution:${interaction.id}:${endpoint.id}` + ":%",
+              ),
       )
       .then((rows) => rows[0]);
     expect(crashWindowPublication).toBeDefined();
@@ -37852,9 +37885,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(
             and(
               eq(chatPublications.endpointId, endpoint.id),
-              eq(
+              like(
                 chatPublications.idempotencyKey,
-                `interaction-resolution:${interaction.id}:${endpoint.id}`,
+                `interaction-resolution:${interaction.id}:${endpoint.id}` + ":%",
               ),
             ),
           ),
@@ -37866,10 +37899,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(
         and(
           eq(chatPublications.endpointId, endpoint.id),
-          eq(
-            chatPublications.idempotencyKey,
-            `interaction-resolution:${interaction.id}:${endpoint.id}`,
-          ),
+          like(
+                chatPublications.idempotencyKey,
+                `interaction-resolution:${interaction.id}:${endpoint.id}` + ":%",
+              ),
         ),
       )
       .then((rows) => rows[0]);
@@ -38138,10 +38171,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         })
         .from(chatPublications)
         .where(
-          eq(
-            chatPublications.idempotencyKey,
-            `interaction-resolution:${boardRace.id}:${endpoint.id}`,
-          ),
+          like(
+                chatPublications.idempotencyKey,
+                `interaction-resolution:${boardRace.id}:${endpoint.id}` + ":%",
+              ),
         ),
     ).resolves.toEqual([
       expect.objectContaining({
@@ -70104,5 +70137,176 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       },
     );
+  });
+
+  describe("agent-authorized outbound sends", () => {
+    async function agentSendFixture() {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredDiscordEndpoint(fixture);
+      const resources = await service.listResources(endpoint.id);
+      const channel = resources.find(
+        (resource) => resource.type === "channel",
+      );
+      if (!channel) throw new Error("Expected a Discord channel resource");
+      await service.replaceResources(endpoint.id, [
+        { id: channel.id, enabled: true },
+      ]);
+      const issue = await issueService(db).create(fixture.companyId, {
+        title: "Agent send task",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: fixture.assignedAgentId,
+      });
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "running",
+        nativeIssueId: issue.id,
+        contextSnapshot: { issueId: issue.id, taskId: issue.id },
+      });
+      return { fixture, endpoint, runtime, service, callbacks, channel, issue, runId };
+    }
+
+    it("posts an agent message into an enabled channel destination", async () => {
+      const f = await agentSendFixture();
+      const publication = await f.service.publishAgentMessage(
+        f.endpoint.id,
+        {
+          body: "Radahn reporting in #general",
+          idempotencyKey: "agent-channel-send-0001",
+          resourceId: f.channel.id,
+        },
+        {
+          agentId: f.fixture.assignedAgentId,
+          runId: f.runId,
+          companyId: f.fixture.companyId,
+        },
+      );
+      expect(publication).toMatchObject({ state: "published" });
+      expect(publication.idempotencyKey).toContain("explicit:agent:");
+
+      const providerRuntime = f.runtime.endpoints.get(f.endpoint.id);
+      expect(
+        providerRuntime?.posts.some((post) =>
+          post.text.includes("Radahn reporting in #general"),
+        ),
+      ).toBe(true);
+
+      const conversation = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.id, publication.conversationId));
+      expect(conversation[0]).toMatchObject({
+        issueId: f.issue.id,
+        externalThreadId: "discord:1457808928258658549:333333333333333333",
+      });
+
+      await f.service.shutdown();
+    });
+
+    it("is idempotent for a repeated send identity", async () => {
+      const f = await agentSendFixture();
+      const input = {
+        body: "Repeated send",
+        idempotencyKey: "agent-channel-send-0002",
+        resourceId: f.channel.id,
+      };
+      const actor = {
+        agentId: f.fixture.assignedAgentId,
+        runId: f.runId,
+        companyId: f.fixture.companyId,
+      };
+      const first = await f.service.publishAgentMessage(
+        f.endpoint.id,
+        input,
+        actor,
+      );
+      const second = await f.service.publishAgentMessage(
+        f.endpoint.id,
+        input,
+        actor,
+      );
+      expect(second.id).toBe(first.id);
+      const posts =
+        f.runtime.endpoints
+          .get(f.endpoint.id)
+          ?.posts.filter((post) => post.text.includes("Repeated send")) ?? [];
+      expect(posts).toHaveLength(1);
+      await f.service.shutdown();
+    });
+
+    it("rejects a non-assigned agent and a disabled destination", async () => {
+      const f = await agentSendFixture();
+      await expect(
+        f.service.publishAgentMessage(
+          f.endpoint.id,
+          {
+            body: "Not my endpoint",
+            idempotencyKey: "agent-channel-send-0003",
+            resourceId: f.channel.id,
+          },
+          {
+            agentId: f.fixture.replacementAgentId,
+            runId: f.runId,
+            companyId: f.fixture.companyId,
+          },
+        ),
+      ).rejects.toMatchObject({ status: 404 });
+
+      await f.service.replaceResources(f.endpoint.id, [
+        { id: f.channel.id, enabled: false },
+      ]);
+      await expect(
+        f.service.publishAgentMessage(
+          f.endpoint.id,
+          {
+            body: "Disabled destination",
+            idempotencyKey: "agent-channel-send-0004",
+            resourceId: f.channel.id,
+          },
+          {
+            agentId: f.fixture.assignedAgentId,
+            runId: f.runId,
+            companyId: f.fixture.companyId,
+          },
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      await f.service.shutdown();
+    });
+
+    it("creates a thread and binds later sends to it", async () => {
+      const f = await agentSendFixture();
+      const created = await f.service.createAgentThread(
+        f.endpoint.id,
+        {
+          resourceId: f.channel.id,
+          body: "Thread root message",
+          idempotencyKey: "agent-thread-send-0001",
+        },
+        {
+          agentId: f.fixture.assignedAgentId,
+          runId: f.runId,
+          companyId: f.fixture.companyId,
+        },
+      );
+      expect(created.threadId).toContain(f.channel.providerResourceId);
+      const providerRuntime = f.runtime.endpoints.get(f.endpoint.id);
+      expect(providerRuntime?.ensuredThreads).toHaveLength(1);
+      expect(providerRuntime?.posts.some((p) => p.text.includes("Thread root message"))).toBe(true);
+
+      const conversation = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.id, created.conversationId));
+      expect(conversation[0]).toMatchObject({
+        issueId: f.issue.id,
+        externalThreadId: created.threadId,
+        state: "active",
+      });
+      await f.service.shutdown();
+    });
   });
 });

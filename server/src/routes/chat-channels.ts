@@ -9,9 +9,11 @@ import {
   configureChatEndpointSchema,
   inspectPhotonProjectSchema,
   confirmChatIdentityLinkSchema,
+  createAgentChatThreadSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
   isUuidLike,
+  publishAgentChatMessageSchema,
   publishChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   resolveChatActionSchema,
@@ -431,6 +433,52 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
           req.params.publicationId as string,
         ),
       );
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/agent-messages",
+    validate(publishAgentChatMessageSchema),
+    async (req, res) => {
+      const { runId } = getActorInfo(req);
+      const agentId = req.actor.agentId;
+      const companyId = req.actor.companyId;
+      if (!runId || !agentId || !companyId) {
+        throw forbidden("An agent run is required to send a chat message");
+      }
+      assertCompanyAccess(req, companyId);
+      res
+        .status(201)
+        .json(
+          await service.publishAgentMessage(
+            endpointId(req),
+            req.body,
+            { agentId, runId, companyId },
+          ),
+        );
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/agent-threads",
+    validate(createAgentChatThreadSchema),
+    async (req, res) => {
+      const { runId } = getActorInfo(req);
+      const agentId = req.actor.agentId;
+      const companyId = req.actor.companyId;
+      if (!runId || !agentId || !companyId) {
+        throw forbidden("An agent run is required to create a chat thread");
+      }
+      assertCompanyAccess(req, companyId);
+      res
+        .status(201)
+        .json(
+          await service.createAgentThread(
+            endpointId(req),
+            req.body,
+            { agentId, runId, companyId },
+          ),
+        );
     },
   );
 

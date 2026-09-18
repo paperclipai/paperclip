@@ -60,6 +60,7 @@ const SLACK_BROADCAST_RE = /<!(channel|here|everyone|group)>/gi;
 const PUBLICATION_SOURCES = new Set<ExternalChatPublicationSource>([
   "agent_comment",
   "explicit_board_send",
+  "agent_send",
   "safe_milestone",
   "issue_interaction",
   "task_control",
@@ -88,6 +89,7 @@ const PROGRESS_STATES = new Set<
 export type ExternalChatPublicationSource =
   | "agent_comment"
   | "explicit_board_send"
+  | "agent_send"
   | "safe_milestone"
   | "issue_interaction"
   | "task_control";

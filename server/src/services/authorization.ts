@@ -376,6 +376,20 @@ async function isAgentInSubtree(
   );
 }
 
+/**
+ * Whether `managerAgentId` is anywhere in `targetAgentId`'s chain of command
+ * (including the target itself). Callers that need the strict manager-of-report
+ * relationship must exclude the self case themselves.
+ */
+export async function agentIsManagerOf(
+  db: Db | DbTransaction,
+  companyId: string,
+  managerAgentId: string,
+  targetAgentId: string,
+) {
+  return isAgentInSubtree(db, companyId, managerAgentId, targetAgentId);
+}
+
 async function scopeAllows(
   db: Db | DbTransaction,
   companyId: string,

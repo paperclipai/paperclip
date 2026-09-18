@@ -269,11 +269,13 @@ import {
   chatResourceAvailabilitySchema,
   configureChatEndpointSchema,
   confirmChatIdentityLinkSchema,
+  createAgentChatThreadSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
   inspectPhotonProjectSchema,
   photonProjectIdSchema,
   photonLineIdSchema,
+  publishAgentChatMessageSchema,
   publishChatPublicationSchema,
   resolveChatActionSchema,
   resolveChatPublicationSchema,
@@ -1567,6 +1569,8 @@ const CREATED_OPERATIONS = new Set([
 
 const ACCEPTED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/email/send",
+  "POST /api/chat-endpoints/{endpointId}/agent-messages",
+  "POST /api/chat-endpoints/{endpointId}/agent-threads",
   "POST /api/companies/import",
   "POST /api/health/dev-server/restart",
   "POST /api/invites/{token}/accept",
@@ -1591,13 +1595,19 @@ function isBoardOnlyOperation(method: string, path: string) {
   return BOARD_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
+const AGENT_RUN_OPERATIONS = new Set([
+  "POST /api/mcp/project-tools",
+  "POST /api/chat-endpoints/{endpointId}/agent-messages",
+  "POST /api/chat-endpoints/{endpointId}/agent-threads",
+]);
+
 function resolveOperationAuthLevel(
   method: string,
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
-  if (key === "POST /api/mcp/project-tools") return "agent_run";
+  if (AGENT_RUN_OPERATIONS.has(key)) return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (
@@ -2546,6 +2556,59 @@ registry.registerPath({
   },
   responses: {
     201: r.ok(chatPublicationResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/agent-messages",
+  tags: ["chat-channels"],
+  summary: "Send an agent-authored message into a chat destination",
+  description:
+    "Run-scoped, agent-authenticated send. Only the endpoint's assigned agent may publish through it, and the agent must be the live run's owner. Exactly one target is required: `resourceId` posts to an enabled channel/thread destination (for example `#general`), `conversationId` replies into an existing thread or DM, and `principalId` opens a DM to a known external participant. Text passes the same external-safe projection as board sends, and the send is durable, idempotent, audited, and retried by the normal publication pipeline. Disabled destinations and unassigned agents are rejected.",
+  request: {
+    params: z.object({ endpointId: z.string().uuid() }),
+    body: jsonBody(publishAgentChatMessageSchema),
+  },
+  responses: {
+    201: r.ok(chatPublicationResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/agent-threads",
+  tags: ["chat-channels"],
+  summary: "Create a chat thread from an agent-authored root message",
+  description:
+    "Run-scoped, agent-authenticated thread creation. The agent posts a root message into an enabled channel destination and Paperclip creates the provider thread from it, binding a conversation so later sends share the thread. Providers without a real create-thread contract are rejected. Requires the endpoint's `threads` capability and the same assigned-agent authority as `agent-messages`.",
+  request: {
+    params: z.object({ endpointId: z.string().uuid() }),
+    body: jsonBody(createAgentChatThreadSchema),
+  },
+  responses: {
+    201: r.ok(
+      z
+        .object({
+          publicationId: z.string().uuid(),
+          conversationId: z.string().uuid(),
+          threadId: z.string(),
+          providerMessageId: z.string(),
+        })
+        .strict(),
+    ),
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,

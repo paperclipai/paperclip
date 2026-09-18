@@ -1120,6 +1120,76 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+// A provider admission failure means the saved session body itself is the
+// problem (an oversized/poisoned conversation history the provider rejects
+// before reading, an over-limit image count, or an argv/env overflow on the
+// resumed session). Retrying the identical saved session reproduces the same
+// failure and burns the bounded retry budget, so the retry must start on a
+// fresh session. The opencode-local adapter also self-heals this in-place;
+// this server-side classification keeps the automatic retry path consistent
+// for any adapter that surfaces a structured provider error record.
+//
+// Only the adapter's structured error envelope is inspected. Scanning the whole
+// stdout stream would match these phrases when an unrelated run merely quotes
+// them in assistant text or tool output, forcing a needless fresh session.
+function readStructuredProviderErrorMessages(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "resultJson">,
+): string[] {
+  const messages: string[] = [];
+  const push = (value: unknown) => {
+    const message = readNonEmptyString(value);
+    if (message) messages.push(message);
+  };
+  const resultJson = parseObject(run.resultJson);
+  push(run.error);
+  push(resultJson.errorMessage);
+  const considerRecord = (record: unknown) => {
+    if (!record || typeof record !== "object") return;
+    const value = record as Record<string, unknown>;
+    if (value.type !== "error") return;
+    const error = value.error;
+    if (!error || typeof error !== "object") return;
+    const errorValue = error as Record<string, unknown>;
+    const data = errorValue.data;
+    if (data && typeof data === "object") {
+      push((data as Record<string, unknown>).message);
+    }
+    push(errorValue.message);
+  };
+  const stdout = readNonEmptyString(resultJson.stdout);
+  if (stdout) {
+    const trimmed = stdout.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        considerRecord(JSON.parse(trimmed));
+      } catch {
+        // Not a single structured record; scan it as JSONL below.
+      }
+    }
+    for (const line of stdout.split(/\r?\n/)) {
+      const candidate = line.trim();
+      if (!candidate.startsWith("{")) continue;
+      try {
+        considerRecord(JSON.parse(candidate));
+      } catch {
+        // Ordinary assistant/tool output, not a structured adapter error.
+      }
+    }
+  }
+  return messages;
+}
+
+function isProviderAdmissionFailureRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "resultJson">,
+) {
+  return readStructuredProviderErrorMessages(run).some(
+    (message) =>
+      /failed to read request body/i.test(message) ||
+      /too many images were provided/i.test(message) ||
+      /\bspawn\s+E2BIG\b/i.test(message),
+  );
+}
+
 // A sandbox provider plugin's worker can be briefly down during its own
 // restart window (e.g. a rolling deploy of the plugin worker process). Lease
 // acquisition fails immediately in that window, but the condition is
@@ -15391,6 +15461,9 @@ export function heartbeatService(
             }
           : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+        ...(isProviderAdmissionFailureRun(run)
+          ? { forceFreshSession: true, providerSessionRotated: true }
+          : {}),
       },
       "normal_model",
     );
@@ -15731,6 +15804,9 @@ export function heartbeatService(
                   : {}),
                 ...(codexTransientFallbackMode
                   ? { codexTransientFallbackMode }
+                  : {}),
+                ...(isProviderAdmissionFailureRun(run)
+                  ? { forceFreshSession: true, providerSessionRotated: true }
                   : {}),
               },
               "normal_model",

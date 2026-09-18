@@ -27,6 +27,7 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -36,6 +37,7 @@ import {
   createDurableChatWakeupRequest,
   FailedChatRunRetryAuthorizationError,
   registerFailedChatRunRetryAuthority,
+  unadmittedChatWakeupCondition,
 } from "../services/durable-chat-wakeup.js";
 import { conflict } from "../errors.js";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -46,8 +48,16 @@ import {
   unregisterServerAdapter,
 } from "../adapters/index.js";
 
+// External databases are opt-in and must name a dedicated test database. This
+// suite performs destructive mutations, so `resolveExternalTestDatabaseUrl`
+// refuses a non-test target and otherwise falls back to embedded Postgres.
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl();
+const useExternalTestDatabase = externalTestDatabaseUrl !== null;
+
 describe("durable inbound chat scheduler receipts", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary:
+    | Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>
+    | undefined;
   let db: ReturnType<typeof createDb>;
   const liveRunIds = new Set<string>();
   const unregisterAuthorities: Array<() => void> = [];
@@ -72,10 +82,14 @@ describe("durable inbound chat scheduler receipts", () => {
     };
   });
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
-      "chat-wakeup-receipts-",
-    );
-    db = createDb(temporary.connectionString);
+    if (useExternalTestDatabase) {
+      db = createDb(externalTestDatabaseUrl!);
+    } else {
+      temporary = await startEmbeddedPostgresTestDatabase(
+        "chat-wakeup-receipts-",
+      );
+      db = createDb(temporary.connectionString);
+    }
     registerServerAdapter({
       type: "durable_chat_retry_test",
       execute,
@@ -95,7 +109,7 @@ describe("durable inbound chat scheduler receipts", () => {
   });
   afterAll(async () => {
     unregisterServerAdapter("durable_chat_retry_test");
-    await temporary.cleanup();
+    await temporary?.cleanup();
   });
 
   async function fixture(deferred = false) {
@@ -1312,6 +1326,117 @@ describe("durable inbound chat scheduler receipts", () => {
       expect(f.authorize).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("does not let a rejected bridge-agent wake hold the assignee's task", async () => {
+    const f = await fixture();
+    const bridgeAgentId = randomUUID();
+    const applicationId = randomUUID();
+    const connectionId = randomUUID();
+    const endpointId = randomUUID();
+    const conversationId = randomUUID();
+    await db.insert(agents).values({
+      id: bridgeAgentId,
+      companyId: f.companyId,
+      name: "Bridging manager",
+      role: "ceo",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(toolApplications).values({
+      id: applicationId,
+      companyId: f.companyId,
+      name: "Bridge chat",
+      type: "chat",
+    });
+    await db.insert(toolConnections).values({
+      id: connectionId,
+      companyId: f.companyId,
+      applicationId,
+      name: "Bridge",
+      uid: `bridge-${connectionId}`,
+      connectionPurpose: "channel",
+      transport: "chat_sdk",
+      status: "active",
+    });
+    await db.insert(chatEndpoints).values({
+      id: endpointId,
+      companyId: f.companyId,
+      connectionId,
+      provider: "discord",
+      publicId: randomUUID(),
+      assignedAgentId: bridgeAgentId,
+      status: "active",
+    });
+    await db.insert(chatConversations).values({
+      id: conversationId,
+      companyId: f.companyId,
+      endpointId,
+      issueId: f.issueId,
+      externalConversationId: "discord-bridge-thread",
+      externalThreadId: "discord:bridge:thread",
+      externalLabel: "bridge thread",
+      sessionGeneration: 1,
+      state: "active",
+    });
+    const heldIssues = () =>
+      db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, f.companyId),
+            unadmittedChatWakeupCondition(issues.id, issues.companyId),
+          ),
+        );
+    // The courier path: a card carried into the bridging agent's thread and
+    // answered by the board leaves an `inbound_wakeup` bound to that bridge
+    // agent against the report's task. Admission can never accept it
+    // (assignee mismatch), so it must not hold the task's later wakes.
+    await db.insert(chatActions).values({
+      id: randomUUID(),
+      companyId: f.companyId,
+      endpointId,
+      conversationId,
+      kind: "inbound_wakeup",
+      providerActionId: "inbound_wakeup:bridge-rejected",
+      status: "failed",
+      result: { code: "inbound_wakeup_delivery_rejected" },
+      payload: {
+        version: 1,
+        issueId: f.issueId,
+        agentId: bridgeAgentId,
+        commentId: randomUUID(),
+        sessionGeneration: 1,
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+      },
+    });
+    expect(await heldIssues()).toEqual([]);
+    // The guard is precise, not disabled: the same failed row bound to the
+    // task's own assignee is still live pending input and must hold.
+    await db.insert(chatActions).values({
+      id: randomUUID(),
+      companyId: f.companyId,
+      endpointId,
+      conversationId,
+      kind: "inbound_wakeup",
+      providerActionId: "inbound_wakeup:assignee-rejected",
+      status: "failed",
+      result: { code: "inbound_wakeup_delivery_rejected" },
+      payload: {
+        version: 1,
+        issueId: f.issueId,
+        agentId: f.agentId,
+        commentId: randomUUID(),
+        sessionGeneration: 1,
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+      },
+    });
+    expect(await heldIssues()).toHaveLength(1);
+  });
 
   it("preserves ordinary non-chat manual retry admission", async () => {
     const f = await fixture();
