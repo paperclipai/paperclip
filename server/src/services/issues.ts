@@ -1869,6 +1869,9 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 }
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type IssueCreateActivityContext = {
+  watchdogId: string | null;
+};
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   initialPlan?: string | null;
   labelIds?: string[];
@@ -1886,6 +1889,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   activityInputFactory?: (
     issue: typeof issues.$inferSelect,
     dbOrTx: Db,
+    context: IssueCreateActivityContext,
   ) => LogActivityInput[] | Promise<LogActivityInput[]>;
   postCommitActivityPublications?: ActivityPublication[];
 };
@@ -10084,16 +10088,23 @@ export function issueService(db: Db) {
             issueId: issue.id,
           });
         }
+        let watchdogId: string | null = null;
         if (watchdog) {
-          await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
-            agentId: watchdog.agentId,
-            instructions: watchdog.instructions,
-            actor: {
-              agentId: issueData.createdByAgentId ?? null,
-              userId: issueData.createdByUserId ?? null,
-              runId: watchdogActorRunId ?? null,
+          const persistedWatchdog = await upsertIssueWatchdogForIssue(
+            tx,
+            companyId,
+            issue.id,
+            {
+              agentId: watchdog.agentId,
+              instructions: watchdog.instructions,
+              actor: {
+                agentId: issueData.createdByAgentId ?? null,
+                userId: issueData.createdByUserId ?? null,
+                runId: watchdogActorRunId ?? null,
+              },
             },
-          });
+          );
+          watchdogId = persistedWatchdog.watchdog.id;
         }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
@@ -10127,6 +10138,7 @@ export function issueService(db: Db) {
           (await activityInputFactory?.(
             withRelations,
             tx as unknown as Db,
+            { watchdogId },
           )) ?? []) {
           const { publication } = await persistActivity(
             tx as unknown as Db,

@@ -11881,6 +11881,7 @@ export function issueRoutes(
         activityInputFactory: async (
           createdIssue: typeof issueRows.$inferSelect,
           dbOrTx: Db,
+          createContext: { watchdogId: string | null },
         ) => {
           await issueReferencesSvc.syncIssue(createdIssue.id, dbOrTx);
           referenceSummary =
@@ -11969,6 +11970,11 @@ export function issueRoutes(
             });
           }
           if (createBody.watchdog) {
+            if (!createContext.watchdogId) {
+              throw new Error(
+                "Created issue watchdog is missing its durable identity",
+              );
+            }
             activityInputs.push({
               companyId,
               actorType: actor.actorType,
@@ -11981,6 +11987,7 @@ export function issueRoutes(
               entityId: createdIssue.id,
               details: {
                 identifier: createdIssue.identifier,
+                watchdogId: createContext.watchdogId,
                 watchdogAgentId: createBody.watchdog.agentId,
                 source: "issue.create",
               },
@@ -12262,6 +12269,8 @@ export function issueRoutes(
         watchdogActorRunId: actor.runId,
         activityInputFactory: (
           createdIssue: typeof issueRows.$inferSelect,
+          _dbOrTx: Db,
+          createContext: { watchdogId: string | null },
         ) => {
           const activityInputs: Parameters<typeof logActivity>[1][] = [
             {
@@ -12321,6 +12330,11 @@ export function issueRoutes(
             });
           }
           if (createBody.watchdog) {
+            if (!createContext.watchdogId) {
+              throw new Error(
+                "Created issue watchdog is missing its durable identity",
+              );
+            }
             activityInputs.push({
               companyId: parent.companyId,
               actorType: actor.actorType,
@@ -12333,6 +12347,7 @@ export function issueRoutes(
               entityId: createdIssue.id,
               details: {
                 identifier: createdIssue.identifier,
+                watchdogId: createContext.watchdogId,
                 watchdogAgentId: createBody.watchdog.agentId,
                 source: "issue.child_create",
                 parentId: parent.id,
