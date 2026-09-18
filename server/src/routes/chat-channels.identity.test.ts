@@ -54,7 +54,7 @@ describe("chat identity-link preview authority", () => {
       .query({ token });
     expect(response.status).toBe(200);
     expect(response.body).toEqual(preview);
-    expect(previewIdentityLink).toHaveBeenCalledExactlyOnceWith(token);
+    expect(previewIdentityLink).toHaveBeenCalledExactlyOnceWith(token, "viewer");
   });
 
   it.each([false, true])(
