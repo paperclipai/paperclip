@@ -33,7 +33,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "people.read",
       "capabilityProfile": {
         "key": "read",
@@ -41,7 +41,8 @@
         "description": "Search contacts, directory people, and your profile."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -72,7 +73,8 @@
         "description": "Search contacts, directory people, and your profile."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

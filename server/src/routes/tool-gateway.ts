@@ -81,8 +81,12 @@ async function handleMcpGatewayProtocol(
         id,
         result: {
           protocolVersion: "2025-03-26",
-          capabilities: { tools: {} },
+          capabilities: { tools: {}, resources: {}, prompts: {} },
           serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
+          _meta: {
+            "paperclip/mcp-app-ui": "unsupported",
+            "paperclip/mcp-app-ui-detail": "Interactive ui:// iframe hosting is not available in Paperclip Runner.",
+          },
         },
       });
       return;
@@ -101,12 +105,34 @@ async function handleMcpGatewayProtocol(
         jsonrpc: "2.0",
         id,
         result: {
-          tools: tools.map((tool) => ({
+          tools: [
+            ...tools.map((tool) => ({
             name: tool.name,
             title: tool.displayName,
             description: tool.description,
             inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },
-          })),
+            })),
+            {
+              name: "paperclip_list_resources",
+              description: "List resources from fully assigned MCP connections.",
+              inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            },
+            {
+              name: "paperclip_read_resource",
+              description: "Read a resource URI returned by paperclip_list_resources.",
+              inputSchema: { type: "object", required: ["uri"], properties: { uri: { type: "string" } }, additionalProperties: false },
+            },
+            {
+              name: "paperclip_list_prompts",
+              description: "List prompts from fully assigned MCP connections.",
+              inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            },
+            {
+              name: "paperclip_get_prompt",
+              description: "Get a prompt returned by paperclip_list_prompts.",
+              inputSchema: { type: "object", required: ["name"], properties: { name: { type: "string" }, arguments: { type: "object" } }, additionalProperties: false },
+            },
+          ],
         },
       });
       return;
@@ -116,6 +142,26 @@ async function handleMcpGatewayProtocol(
       const name = typeof params.name === "string" ? params.name : "";
       if (!name) {
         res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } });
+        return;
+      }
+      const contextMethods = {
+        paperclip_list_resources: "resources/list",
+        paperclip_read_resource: "resources/read",
+        paperclip_list_prompts: "prompts/list",
+        paperclip_get_prompt: "prompts/get",
+      } as const;
+      const contextMethod = contextMethods[name as keyof typeof contextMethods];
+      if (contextMethod) {
+        const result = await toolGateway.executeContextForNamedGateway({
+          ...locator,
+          bearerToken: token,
+          method: contextMethod,
+          params: (params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments))
+            ? params.arguments as Record<string, unknown>
+            : {},
+          callerHeaders: headers,
+        });
+        res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
       const result = await toolGateway.executeTool({
@@ -141,6 +187,17 @@ async function handleMcpGatewayProtocol(
           isError: false,
         },
       });
+      return;
+    }
+    if (["resources/list", "resources/read", "prompts/list", "prompts/get"].includes(body.method ?? "")) {
+      const result = await toolGateway.executeContextForNamedGateway({
+        ...locator,
+        bearerToken: token,
+        method: body.method as "resources/list" | "resources/read" | "prompts/list" | "prompts/get",
+        params: body.params ?? {},
+        callerHeaders: headers,
+      });
+      res.json({ jsonrpc: "2.0", id, result });
       return;
     }
     res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
@@ -528,7 +585,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   router.post("/tool-gateway/action-requests/:id/approve", async (req, res) => {
     try {
       assertBoard(req);
-      const body = (req.body ?? {}) as { companyId?: string };
+      const body = (req.body ?? {}) as { companyId?: string; rememberAction?: boolean };
+      if (body.rememberAction !== undefined && typeof body.rememberAction !== "boolean") { res.status(400).json({ error: "rememberAction must be a boolean" }); return; }
       const companyId = body.companyId ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -539,6 +597,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actionRequest = await toolGateway.approveActionRequest({
         companyId,
         actionRequestId: req.params.id,
+        rememberAction: body.rememberAction,
         actor: {
           agentId: actor.agentId,
           userId: req.actor.type === "board" ? req.actor.userId : null,
@@ -553,17 +612,19 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   router.post("/tool-gateway/action-requests/:id/decline", async (req, res) => {
     try {
       assertBoard(req);
-      const body = (req.body ?? {}) as { companyId?: string };
+      const body = (req.body ?? {}) as { companyId?: string; reason?: string };
       const companyId = body.companyId ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
+      if (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 4000)) { res.status(400).json({ error: "reason must be a string up to 4000 characters" }); return; }
       assertBoardMutationAccess(req, companyId);
       const actor = getActorInfo(req);
       const actionRequest = await toolGateway.declineActionRequest({
         companyId,
         actionRequestId: req.params.id,
+        reason: body.reason,
         actor: {
           agentId: actor.agentId,
           userId: req.actor.type === "board" ? req.actor.userId : null,

@@ -6116,6 +6116,19 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     ...sanitizeRuntimeServiceBaseEnv(process.env),
     ...runtimeEnvOverrides,
   } as Record<string, string>;
+  // Managed Paperclip worktrees are development environments, so their UI
+  // should track source edits without each project repeating this setting.
+  // An HTTPS profile must publish the companion HMR listener before it can use
+  // this default. Otherwise, leave the value unset so dev-runner keeps its
+  // built-UI safeguard. Keep every explicit service/adapter value.
+  const uiDevMiddlewareHasTransport =
+    !exposureConfig || exposureConfig.includePaperclipViteHmr;
+  if (
+    uiDevMiddlewareHasTransport
+    && isPaperclipDevRuntimeService({ serviceName, command })
+  ) {
+    env.PAPERCLIP_UI_DEV_MIDDLEWARE ??= "true";
+  }
   if (port) {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);

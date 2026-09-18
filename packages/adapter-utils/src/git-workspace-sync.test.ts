@@ -105,6 +105,35 @@ describe("git workspace sync", () => {
     expect(snapshot?.ignoredPaths).toContain(ignoredName);
   });
 
+  it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled", "workspace_git_scan_failed"])("preserves %s instead of reporting a non-Git folder", async (code) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scan-failure-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const failure = Object.assign(new Error("Git enumeration failed"), { code });
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") throw failure;
+      return runLocalGit(input.localDir, [...input.args]);
+    });
+    await expect(readGitWorkspaceSnapshot(repo, false)).rejects.toBe(failure);
+  });
+
+  it("lists ignored paths without traversing ignored directory contents", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-ignored-scan-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, ".gitignore"), "dependencies/\n*.secret\n");
+    await mkdir(path.join(repo, "dependencies", "nested"), { recursive: true });
+    await writeFile(path.join(repo, "dependencies", "nested", "private"), "private");
+    await writeFile(path.join(repo, "token.secret"), "private");
+    let ignoredArgs: readonly string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") ignoredArgs = input.args;
+      return runLocalGit(input.localDir, [...input.args]);
+    });
+    expect((await readGitWorkspaceSnapshot(repo))?.ignoredPaths).toEqual(["dependencies", "token.secret"]);
+    expect(ignoredArgs).toEqual(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
+  });
+
   async function createRepo(rootDir: string): Promise<string> {
     const repo = path.join(rootDir, "repo");
     await mkdir(repo, { recursive: true });
@@ -117,6 +146,19 @@ describe("git workspace sync", () => {
     await git(repo, ["commit", "-m", "base"]);
     return repo;
   }
+
+  it("does not classify a selected repository subfolder as a cloneable repository root", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-selected-folder-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const selectedDir = path.join(repo, "project");
+    await mkdir(selectedDir);
+    await writeFile(path.join(selectedDir, "draft.md"), "selected work\n");
+
+    expect(await git(selectedDir, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
+    expect(await readGitWorkspaceSnapshot(selectedDir)).toBeNull();
+    expect((await readGitWorkspaceSnapshot(repo))?.headCommit).toBe(await git(repo, ["rev-parse", "HEAD"]));
+  });
 
   it("creates a shallow standalone clone from the local HEAD snapshot", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-sync-"));
@@ -586,6 +628,27 @@ describe("git workspace sync", () => {
       await writeFile(path.join(plainDir, "file.txt"), "body\n", "utf8");
 
       await expect(readReferencedSourceGitIgnoredPaths(plainDir)).resolves.toBeNull();
+    });
+
+    it.each([
+      { code: "workspace_git_scan_failed", exitCode: 128, signal: null, nonGit: true },
+      { code: "workspace_git_scan_timeout", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_cancelled", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_output_limit", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_failed", exitCode: null, signal: "SIGTERM", nonGit: false },
+    ])("classifies scheduled non-repository failures without swallowing $code/$signal", async ({ code, exitCode, signal, nonGit }) => {
+      const error = Object.assign(new Error("Workspace Git scan failed"), {
+        code,
+        details: { exitCode, signal, stderr: "fatal: not a git repository (or any of the parent directories): .git" },
+      });
+      setExpensiveWorkspaceGitExecutor(async () => { throw error; });
+      try {
+        const result = readReferencedSourceGitIgnoredPaths("/plain-workspace");
+        if (nonGit) await expect(result).resolves.toBeNull();
+        else await expect(result).rejects.toBe(error);
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
     });
 
     it("reads the repository top level and the ignored paths of a Git work tree", async () => {

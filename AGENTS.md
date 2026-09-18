@@ -74,6 +74,11 @@ pnpm dev
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
 
+Explicit exception: announcement dismissals are instance-wide user preferences,
+keyed by user and announcement so they persist across companies. Their audit
+context must still validate company membership. The announcement publication-ID
+registry is instance-level feed metadata; it contains no company or user data.
+
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
 - `packages/db` schema and exports

@@ -106,6 +106,14 @@ const instanceSettingsSvc = {
   getExperimental: vi.fn(async () => ({ enableNativeRunner: false })),
 };
 
+const managedAgentProfileSvc = {
+  requireQualified: vi.fn(),
+};
+
+const remoteAgentProfileSvc = {
+  requireQualified: vi.fn(),
+};
+
 vi.mock("../services/companies.js", () => ({
   companyService: () => companySvc,
 }));
@@ -156,10 +164,22 @@ vi.mock("../services/secrets.js", () => ({
 
 vi.mock("../services/agent-instructions.js", () => ({
   agentInstructionsService: () => agentInstructionsSvc,
+  agentInstructionsBundleMode: (agent: { adapterConfig?: unknown }) => {
+    const config = agent.adapterConfig as Record<string, unknown> | undefined;
+    return config?.instructionsBundleMode === "external" ? "external" : "managed";
+  },
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => instanceSettingsSvc,
+}));
+
+vi.mock("../services/managed-agent-profiles.js", () => ({
+  managedAgentProfileService: () => managedAgentProfileSvc,
+}));
+
+vi.mock("../services/remote-agent-profiles.js", () => ({
+  remoteAgentProfileService: () => remoteAgentProfileSvc,
 }));
 
 vi.mock("../routes/org-chart-svg.js", () => ({
@@ -180,6 +200,16 @@ describe("company portability", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    managedAgentProfileSvc.requireQualified.mockResolvedValue({
+      id: "managed-primary",
+      companyId: "company-1",
+      enabled: true,
+    });
+    remoteAgentProfileSvc.requireQualified.mockResolvedValue({
+      id: "agentcore-primary",
+      companyId: "company-1",
+      enabled: true,
+    });
     secretSvc.create.mockResolvedValue({ id: "secret-created" });
     secretSvc.remove.mockResolvedValue(true);
     secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
@@ -584,6 +614,51 @@ describe("company portability", () => {
     expect(asTextFile(exported.files["agents/claudecoder/AGENTS.md"])).toContain(`- "${paperclipKey}"`);
   });
 
+  it("refuses to read external instruction roots without an instance-admin export grant", async () => {
+    agentSvc.list.mockResolvedValue([{
+      id: "external-agent",
+      companyId: "company-1",
+      name: "ExternalAgent",
+      status: "idle",
+      role: "engineer",
+      title: null,
+      icon: null,
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "codex_local",
+      adapterConfig: {
+        instructionsBundleMode: "external",
+        instructionsRootPath: "/private/host/instructions",
+      },
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      permissions: { canCreateAgents: false },
+      metadata: null,
+    }]);
+
+    await expect(companyPortabilityService({} as any).exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    })).rejects.toMatchObject({ status: 403 });
+    expect(agentInstructionsSvc.exportFiles).not.toHaveBeenCalled();
+
+    await expect(companyPortabilityService({} as any).exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    }, { allowExternalInstructions: true })).resolves.toMatchObject({
+      manifest: { agents: [expect.objectContaining({ slug: "externalagent" })] },
+    });
+    expect(agentInstructionsSvc.exportFiles).toHaveBeenCalledTimes(1);
+  });
+
   it("exports agent permission grants through the Paperclip extension and manifest", async () => {
     const db = {
       select: vi.fn((selection: Record<string, unknown>) => ({
@@ -674,6 +749,14 @@ describe("company portability", () => {
         adapterConfig: {
           env: {
             OPENAI_API_KEY: "sk-inline-secret-value",
+            OPENAI_KEY: {
+              type: "plain",
+              value: "sk-short-key-secret-value",
+            },
+            MONKEY: {
+              type: "plain",
+              value: "banana",
+            },
             NODE_ENV: {
               type: "plain",
               value: "development",
@@ -700,6 +783,7 @@ describe("company portability", () => {
 
     const serialized = JSON.stringify(exported);
     expect(serialized).not.toContain("sk-inline-secret-value");
+    expect(serialized).not.toContain("sk-short-key-secret-value");
     expect(exported.manifest.envInputs).toContainEqual({
       key: "OPENAI_API_KEY",
       description: "Optional default for OPENAI_API_KEY on agent inlinesecretagent",
@@ -708,6 +792,26 @@ describe("company portability", () => {
       kind: "secret",
       requirement: "optional",
       defaultValue: "",
+      portability: "portable",
+    });
+    expect(exported.manifest.envInputs).toContainEqual({
+      key: "OPENAI_KEY",
+      description: "Optional default for OPENAI_KEY on agent inlinesecretagent",
+      agentSlug: "inlinesecretagent",
+      projectSlug: null,
+      kind: "secret",
+      requirement: "optional",
+      defaultValue: "",
+      portability: "portable",
+    });
+    expect(exported.manifest.envInputs).toContainEqual({
+      key: "MONKEY",
+      description: "Optional default for MONKEY on agent inlinesecretagent",
+      agentSlug: "inlinesecretagent",
+      projectSlug: null,
+      kind: "plain",
+      requirement: "optional",
+      defaultValue: "banana",
       portability: "portable",
     });
     expect(exported.manifest.envInputs).toContainEqual({
@@ -3409,7 +3513,7 @@ describe("company portability", () => {
     });
   });
 
-  it("disables timer heartbeats on imported agents", async () => {
+  it("disables timer heartbeats and strips raw provider tracing on created imports", async () => {
     const portability = companyPortabilityService({} as any);
 
     companySvc.create.mockResolvedValue({
@@ -3422,6 +3526,16 @@ describe("company portability", () => {
       adapterConfig: input.adapterConfig,
       runtimeConfig: input.runtimeConfig,
     }));
+
+    const sourceAgents = (await agentSvc.list()) as Array<Record<string, unknown>>;
+    agentSvc.list.mockResolvedValue(sourceAgents.map((agent) => ({
+      ...agent,
+      runtimeConfig: {
+        ...((agent.runtimeConfig ?? {}) as Record<string, unknown>),
+        debug: { providerTrace: "raw", retainedDebugSetting: true },
+      },
+    })));
+    agentSvc.list.mockClear();
 
     const exported = await portability.exportBundle("company-1", {
       include: {
@@ -3457,12 +3571,19 @@ describe("company portability", () => {
     const createdClaude = agentSvc.create.mock.calls.find(([, input]) => input.name === "ClaudeCoder");
     expect(createdClaude?.[1]).toMatchObject({
       runtimeConfig: {
+        debug: {
+          retainedDebugSetting: true,
+        },
         heartbeat: {
           enabled: false,
           maxConcurrentRuns: 20,
         },
       },
     });
+    const createdRuntimeConfig = createdClaude?.[1].runtimeConfig as
+      | Record<string, unknown>
+      | undefined;
+    expect(createdRuntimeConfig?.debug).not.toHaveProperty("providerTrace");
   });
 
   it("imports only selected files and leaves unchecked company metadata alone", async () => {
@@ -5656,6 +5777,15 @@ describe("company portability", () => {
 
   it("normalizes adapter config on replace imports before updating existing agents", async () => {
     const portability = companyPortabilityService({} as any);
+    const sourceAgents = (await agentSvc.list()) as Array<Record<string, unknown>>;
+    agentSvc.list.mockResolvedValue(sourceAgents.map((agent) => ({
+      ...agent,
+      runtimeConfig: {
+        ...((agent.runtimeConfig ?? {}) as Record<string, unknown>),
+        debug: { providerTrace: "raw", retainedDebugSetting: true },
+      },
+    })));
+    agentSvc.list.mockClear();
     const exported = await portability.exportBundle("company-1", {
       include: {
         company: true,
@@ -5716,7 +5846,20 @@ describe("company portability", () => {
       adapterConfig: {
         normalized: "updated",
       },
+      runtimeConfig: {
+        debug: {
+          retainedDebugSetting: true,
+        },
+        heartbeat: {
+          enabled: false,
+          maxConcurrentRuns: 20,
+        },
+      },
     }));
+    const runtimeUpdate = agentSvc.update.mock.calls.find(
+      ([, patch]) => patch.runtimeConfig !== undefined,
+    )?.[1].runtimeConfig as Record<string, unknown> | undefined;
+    expect(runtimeUpdate?.debug).not.toHaveProperty("providerTrace");
   });
 
   it("nameOverrides applied after collision detection do not re-validate uniqueness", async () => {
@@ -5906,11 +6049,70 @@ describe("company portability", () => {
     expect(agentSvc.create).not.toHaveBeenCalled();
 
     instanceSettingsSvc.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    await portability.importBundle({
+      ...request,
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "paperclip_runner",
+          adapterConfig: {
+            provider: "opencode",
+            model: "openrouter/deepseek/deepseek-v4-flash-0731",
+          },
+        },
+      },
+    }, "user-1");
+    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterType: "paperclip_runner",
+      adapterConfig: expect.objectContaining({ provider: "opencode" }),
+    }));
+
     await portability.importBundle(request, "user-1");
     expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterType: "paperclip_runner",
       adapterConfig: expect.objectContaining({ provider: "codex" }),
     }));
+
+    await portability.importBundle({
+      ...request,
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "paperclip_runner",
+          adapterConfig: {
+            provider: "claude_managed",
+            managedProfileId: "managed-primary",
+            managedAgentsRetentionAcknowledged: true,
+          },
+        },
+      },
+    }, "user-1");
+    expect(managedAgentProfileSvc.requireQualified).toHaveBeenCalledWith(
+      "company-1",
+      "managed-primary",
+    );
+
+    const createCallsBeforeInvalidProfile = agentSvc.create.mock.calls.length;
+    const { notFound } = await import("../errors.js");
+    managedAgentProfileSvc.requireQualified.mockRejectedValueOnce(
+      notFound("Managed Agent profile not found"),
+    );
+    await expect(portability.importBundle({
+      ...request,
+      adapterOverrides: {
+        claudecoder: {
+          adapterType: "paperclip_runner",
+          adapterConfig: {
+            provider: "claude_managed",
+            managedProfileId: "managed-other-company",
+            managedAgentsRetentionAcknowledged: true,
+          },
+        },
+      },
+    }, "user-1")).rejects.toMatchObject({ status: 404 });
+    expect(managedAgentProfileSvc.requireQualified).toHaveBeenLastCalledWith(
+      "company-1",
+      "managed-other-company",
+    );
+    expect(agentSvc.create).toHaveBeenCalledTimes(createCallsBeforeInvalidProfile);
   });
 });
 

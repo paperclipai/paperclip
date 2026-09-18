@@ -4,6 +4,7 @@ import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
+  type SandboxLeaseAcquisition,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
 import {
@@ -69,6 +70,40 @@ function toFiniteNumber(value: unknown): number | undefined {
  * omits or mistypes it yields no attribute — never a misleading `false`. */
 function toBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function sandboxLeaseAcquisitionFromMetadata(
+  value: unknown,
+  providerLeaseId: string | null | undefined,
+): SandboxLeaseAcquisition | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.outcome !== "created" &&
+    candidate.outcome !== "resumed" &&
+    candidate.outcome !== "replacement"
+  ) return null;
+  const resolvedProviderLeaseId =
+    typeof candidate.providerLeaseId === "string" && candidate.providerLeaseId
+      ? candidate.providerLeaseId
+      : providerLeaseId;
+  if (!resolvedProviderLeaseId) return null;
+  const reason = candidate.reason;
+  if (
+    reason !== undefined &&
+    reason !== "not_found" &&
+    reason !== "expired" &&
+    reason !== "identity_mismatch" &&
+    reason !== "resume_failed"
+  ) return null;
+  return {
+    outcome: candidate.outcome,
+    providerLeaseId: resolvedProviderLeaseId,
+    ...(typeof candidate.previousProviderLeaseId === "string"
+      ? { previousProviderLeaseId: candidate.previousProviderLeaseId }
+      : {}),
+    ...(reason ? { reason } : {}),
+  };
 }
 
 /**
@@ -331,11 +366,39 @@ export async function resolveEnvironmentExecutionTarget(input: {
       shellCommand,
       remoteCwd,
       enableSandboxDuplexBridge,
+      runnerLifecyclePolicy:
+        parsed.config.runnerLifecycleMode === "warm"
+          ? {
+              mode: "warm",
+              idleTimeoutMs:
+                typeof parsed.config.runnerIdleTimeoutMs === "number"
+                  ? parsed.config.runnerIdleTimeoutMs
+                  : 300_000,
+            }
+          : parsed.config.runnerLifecycleMode === "per_turn"
+            ? { mode: "per_turn", idleTimeoutMs: null }
+            : null,
+      reusableLeaseConfigured: parsed.config.reuseLease === true,
+      sandboxLeaseAcquisition: sandboxLeaseAcquisitionFromMetadata(
+        input.lease?.metadata?.sandboxLeaseAcquisition,
+        input.lease?.providerLeaseId,
+      ),
       // Attach the host duplex observability recorder next to the runner. The bridge
       // binds it to the fixed observability surface. Absent keeps the no-op
       // default, so the surface stays inert on a run with no injected recorder.
       duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
+      ...(input.environmentRuntime?.getRunnerIngressEndpoint && input.lease
+        ? {
+            getRunnerIngressEndpoint: ({ port, path }) =>
+              input.environmentRuntime!.getRunnerIngressEndpoint({
+                environment: input.environment as Environment,
+                lease: input.lease!,
+                port,
+                path,
+              }),
+          }
+        : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,

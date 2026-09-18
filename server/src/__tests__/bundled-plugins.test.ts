@@ -31,6 +31,18 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 describe("resolveBundledPluginInstalls", () => {
+  it("resolves the optional CreateOS sandbox provider without making it a self-hosted default", () => {
+    expect(resolveBundledPluginInstalls(["createos"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    })).toEqual([{
+      key: "createos",
+      pluginKey: "paperclip.createos-sandbox-provider",
+      localPath: path.join(CATALOG_ROOT, "sandbox-providers/createos"),
+    }]);
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("createos");
+  });
   it("resolves known keys to paths inside the catalog root", () => {
     const resolved = resolveBundledPluginInstalls(["kubernetes", "daytona"], {
       catalogRoot: CATALOG_ROOT,
@@ -202,6 +214,7 @@ type LooseRow = {
   status: string;
   version?: string;
   manifestJson?: Record<string, unknown>;
+  lastError?: string | null;
 };
 
 // Build a minimal manifest for a persisted row or a shipped bundle. The reconcile
@@ -240,6 +253,7 @@ function makeDeps(overrides?: {
     return { manifest: { id: pluginKey } };
   });
   const update = vi.fn(async () => undefined);
+  const updateStatus = vi.fn(async () => undefined);
   const loadManifest = vi.fn(async (localPath: string) => {
     const entry = BUNDLED_PLUGIN_CATALOG.find((candidate) =>
       localPath.endsWith(candidate.relativePath),
@@ -255,13 +269,14 @@ function makeDeps(overrides?: {
     registry: {
       getByKey: vi.fn(async (pluginKey: string) => installedRows.get(pluginKey) ?? null),
       update,
+      updateStatus,
     } as unknown as BundledPluginProvisionerDeps["registry"],
     loader: { installPlugin, loadManifest } as unknown as BundledPluginProvisionerDeps["loader"],
     lifecycle: { load: vi.fn(async () => undefined) },
-    logger: { info: vi.fn(), error: vi.fn() },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     bundleManifestExists: overrides?.bundleManifestExists ?? (() => true),
   };
-  return { deps, installPlugin, update, loadManifest };
+  return { deps, installPlugin, update, updateStatus, loadManifest };
 }
 
 const K8S: ResolvedBundledPlugin = {
@@ -286,7 +301,7 @@ describe("ensureBundledPlugins", () => {
   });
 
   it("skips a plugin present in any non-uninstalled state (disabled is not re-enabled)", async () => {
-    for (const status of ["installed", "ready", "disabled", "error"]) {
+    for (const status of ["installed", "ready", "disabled", "upgrade_pending"]) {
       const { deps, installPlugin } = makeDeps({
         rows: {
           [K8S.pluginKey]: { id: "row-1", pluginKey: K8S.pluginKey, status },
@@ -295,7 +310,57 @@ describe("ensureBundledPlugins", () => {
       await ensureBundledPlugins([K8S], deps, { reinstallUninstalled: true });
       expect(installPlugin).not.toHaveBeenCalled();
       expect(deps.lifecycle.load).not.toHaveBeenCalled();
+      expect(deps.registry.updateStatus).not.toHaveBeenCalled();
     }
+  });
+
+  it("resets a bundled plugin that a previous activation left in error back to ready, without reinstalling it", async () => {
+    const { deps, installPlugin, updateStatus } = makeDeps({
+      rows: {
+        [K8S.pluginKey]: {
+          id: "row-1",
+          pluginKey: K8S.pluginKey,
+          status: "error",
+          lastError: 'RPC call "initialize" timed out after 15000ms',
+        },
+      },
+    });
+    await ensureBundledPlugins([K8S], deps, { reinstallUninstalled: false });
+    expect(installPlugin).not.toHaveBeenCalled();
+    // No lifecycle call: the row goes straight back to `ready` with its error
+    // cleared, and the startup loadAll() does the activation (and emits the
+    // lifecycle events only once the worker actually started).
+    expect(deps.lifecycle.load).not.toHaveBeenCalled();
+    expect(updateStatus).toHaveBeenCalledTimes(1);
+    expect(updateStatus).toHaveBeenCalledWith("row-1", { status: "ready", lastError: null });
+    // The prior failure is surfaced at warn level with its recorded cause, so
+    // an operator reading boot logs sees why the plugin needed a retry.
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginKey: K8S.pluginKey,
+        lastError: 'RPC call "initialize" timed out after 15000ms',
+      }),
+      expect.stringContaining("re-enabling"),
+    );
+    expect(deps.logger.error).not.toHaveBeenCalled();
+  });
+
+  it("continues boot when resetting an errored bundled plugin fails", async () => {
+    const { deps, installPlugin, updateStatus } = makeDeps({
+      rows: {
+        [K8S.pluginKey]: { id: "row-1", pluginKey: K8S.pluginKey, status: "error" },
+      },
+    });
+    updateStatus.mockRejectedValueOnce(new Error("db down"));
+    await expect(
+      ensureBundledPlugins([K8S, DAYTONA], deps, { reinstallUninstalled: true }),
+    ).resolves.toBeUndefined();
+    expect(deps.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginKey: K8S.pluginKey }),
+      expect.stringContaining("continuing boot"),
+    );
+    // The later entry is still provisioned.
+    expect(installPlugin).toHaveBeenCalledWith({ localPath: DAYTONA.localPath });
   });
 
   it("reconciles the persisted manifest of a present plugin when the bundle version changed", async () => {

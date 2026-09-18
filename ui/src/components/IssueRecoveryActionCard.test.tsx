@@ -168,6 +168,64 @@ describe("IssueRecoveryActionCard", () => {
     );
   });
 
+  it.each(["active", "escalated", "resolved"] as const)("keeps %s runner recovery in the run log without a card", status => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "uncertain_external_action", status, ownerType: "board",
+    })} />);
+    expect(node.textContent).toBe("");
+    expect(node.querySelector("section")).toBeNull();
+  });
+
+  it.each(["active", "escalated"] as const)(
+    "describes a %s board-owned watchdog as a human decision, not a live run",
+    (status) => {
+      const node = render(
+        <IssueRecoveryActionCard
+          action={buildAction({
+            kind: "active_run_watchdog",
+            status,
+            ownerType: "board",
+            ownerAgentId: null,
+            wakePolicy: null,
+          })}
+        />,
+      );
+      expect(node.textContent).toContain(
+        "This recovery needs a human decision. Review the recorded failure and choose the next step.",
+      );
+      expect(node.textContent).not.toContain("The active run has been silent");
+      expect(node.textContent).not.toContain("observing without interrupting");
+      expect(
+        node.querySelector("[data-testid='recovery-action-resolve-trigger']"),
+      ).toBeNull();
+    },
+  );
+
+  it("retains the existing authorized controls for a board-owned watchdog", () => {
+    const onResolve = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "active_run_watchdog",
+          ownerType: "board",
+          ownerAgentId: null,
+          wakePolicy: null,
+        })}
+        onResolve={onResolve}
+      />,
+    );
+    click(
+      node.querySelector("[data-testid='recovery-action-resolve-trigger']"),
+    );
+    expect(document.body.textContent).not.toContain("False positive");
+    click(
+      [...document.body.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("Try again"),
+      ) ?? null,
+    );
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith("todo");
+  });
+
   it("explains issue_graph_liveness in plain language", () => {
     const node = render(
       <IssueRecoveryActionCard

@@ -48,11 +48,9 @@ export {
   managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
   type PatchInstanceSettings,
-  type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 
 export {
@@ -460,6 +458,7 @@ export {
   suggestTasksResultSchema,
   askUserQuestionsQuestionOptionSchema,
   askUserQuestionsQuestionSchema,
+  paperclipQuestionSetPayloadSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
@@ -483,6 +482,7 @@ export {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
+  skipIssueThreadInteractionSchema,
   withdrawIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
@@ -508,6 +508,7 @@ export {
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,
+  type SkipIssueThreadInteraction,
   type WithdrawIssueThreadInteraction,
   type RespondIssueThreadInteraction,
   type SubmitIssueThreadInteractionVerdicts,
@@ -843,6 +844,7 @@ export {
   toolConnectionHealthStatusSchema,
   toolConnectionKindSchema,
   toolConnectionStatusSchema,
+  toolConnectionPurposeSchema,
   toolConnectionTransportSchema,
   toolCredentialSecretRefSchema,
   toolCredentialPlacementSchema,
@@ -972,4 +974,8 @@ export {
   type RevokeToolTrustRule,
 } from "./tool-access.js";
 export * from "./skill-policy.js";
+export * from "./provider-trace.js";
 export * from "./app-definition.js";
+export * from "./chat-channels.js";
+
+export * from "./email.js";

@@ -6,10 +6,18 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
+import {
+  paperclipRunnerBinaryNeedsBuild,
+  resolveNativeRunnerRequirement,
+} from "./dev-runner-native-binary.mjs";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
+import {
+  readDevServerRestartRequest,
+  removeDevServerRestartRequest,
+} from "../server/src/dev-server-status.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -327,10 +335,9 @@ function clearDevServerStatus() {
   rmSync(devServerRestartRequestFilePath, { force: true });
 }
 
-function consumeDevServerRestartRequest() {
-  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
-  rmSync(devServerRestartRequestFilePath, { force: true });
-  return true;
+function getDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return null;
+  return readDevServerRestartRequest(env);
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -522,6 +529,75 @@ async function buildPluginSdk() {
   }
 }
 
+async function getNativeRunnerRequired(): Promise<boolean> {
+  const status = await runPnpm(
+    [
+      "--silent",
+      "--filter",
+      "@paperclipai/server",
+      "exec",
+      "tsx",
+      "src/dev-native-runner-status.ts",
+    ],
+    { env },
+  );
+  if (status.signal) {
+    exitForSignal(status.signal);
+    return true;
+  }
+  const requirement = resolveNativeRunnerRequirement({
+    exitCode: status.code,
+    stdout: status.stdout,
+  });
+  if (!requirement.valid) {
+    const detail = status.stderr || status.stdout;
+    process.stderr.write(
+      `[paperclip] unable to determine the native runner requirement; conservatively preparing the native runner${detail ? `\n${detail}` : "\n"}`,
+    );
+  }
+  return requirement.nativeRunnerRequired;
+}
+
+async function buildPaperclipRunner() {
+  console.log("[paperclip] building paperclip runner...");
+  const typescriptResult = await runPnpm(
+    ["--filter", "@paperclipai/paperclip-runner", "build:typescript"],
+    { stdio: "inherit" },
+  );
+  if (typescriptResult.signal) {
+    exitForSignal(typescriptResult.signal);
+    return;
+  }
+  if (typescriptResult.code !== 0) {
+    console.error("[paperclip] paperclip runner build failed");
+    process.exit(typescriptResult.code);
+  }
+
+  if (
+    !paperclipRunnerBinaryNeedsBuild({
+      repoRoot,
+      nativeRunnerRequired: await getNativeRunnerRequired(),
+      configuredBinary: env.PAPERCLIP_RUNNER_BINARY,
+    })
+  ) {
+    return;
+  }
+
+  console.log("[paperclip] building paperclip runner native binary...");
+  const binaryResult = await runPnpm(
+    ["--filter", "@paperclipai/paperclip-runner", "build:binary"],
+    { stdio: "inherit" },
+  );
+  if (binaryResult.signal) {
+    exitForSignal(binaryResult.signal);
+    return;
+  }
+  if (binaryResult.code !== 0) {
+    console.error("[paperclip] paperclip runner native binary build failed");
+    process.exit(binaryResult.code);
+  }
+}
+
 function newestMtimeMs(target: string): number {
   const stat = statSync(target, { throwIfNoEntry: false });
   if (!stat) return 0;
@@ -631,6 +707,7 @@ async function stopChildForRestart() {
 }
 
 async function startServerChild() {
+  await buildPaperclipRunner();
   await buildPluginSdk();
 
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
@@ -673,8 +750,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  const manualRestartRequested = consumeDevServerRestartRequest();
-  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequest = getDevServerRestartRequest();
+  if (!manualRestartRequest && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -690,11 +767,30 @@ async function maybeAutoRestartChild() {
     restartInFlight = false;
     return;
   }
-  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+  const observedServerIdentity =
+    typeof (health as { serverInfo?: { processStartedAt?: unknown } })
+      .serverInfo?.processStartedAt === "string"
+      ? (health as { serverInfo: { processStartedAt: string } }).serverInfo
+          .processStartedAt
+      : null;
+  if (
+    manualRestartRequest?.previousServerIdentity &&
+    observedServerIdentity !== manualRestartRequest.previousServerIdentity
+  ) {
+    removeDevServerRestartRequest(
+      manualRestartRequest.requestId
+        ? { requestId: manualRestartRequest.requestId }
+        : undefined,
+      env,
+    );
     restartInFlight = false;
     return;
   }
-  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequest && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequest && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }
@@ -706,7 +802,26 @@ async function maybeAutoRestartChild() {
       exitOnDecline: false,
     });
     await stopChildForRestart();
+    const restartRequestConsumed = manualRestartRequest
+      ? removeDevServerRestartRequest(
+        manualRestartRequest.requestId
+          ? { requestId: manualRestartRequest.requestId }
+          : undefined,
+        env,
+      )
+      : true;
     await startServerChild();
+    if (manualRestartRequest && !restartRequestConsumed) {
+      // A live writer may briefly hold the request lock. Starting the child is
+      // still correct because the requested restart already happened; retry
+      // correlated cleanup afterward without terminating the supervisor.
+      removeDevServerRestartRequest(
+        manualRestartRequest.requestId
+          ? { requestId: manualRestartRequest.requestId }
+          : undefined,
+        env,
+      );
+    }
   } catch (error) {
     const err = toError(error, "Auto-restart failed");
     process.stderr.write(`${err.stack ?? err.message}\n`);

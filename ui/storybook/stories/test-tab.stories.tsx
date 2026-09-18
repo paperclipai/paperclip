@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   ToolCatalogEntry,
+  ToolConnectionAccessSummary,
   ToolConnectionTestAgent,
   ToolConnectionTestCallResult,
   ToolConnectionTestDecision,
@@ -11,6 +12,10 @@ import { queryKeys } from "@/lib/queryKeys";
 import { TestPanel } from "@/pages/apps/app-detail/TestPanel";
 
 const CONNECTION = "conn-sheets";
+
+type StoryAgent = ToolConnectionTestAgent & {
+  effectiveAccess: ToolConnectionAccessSummary;
+};
 
 // ---------------------------------------------------------------------------
 // Catalog (12 actions: 7 read, 5 write) — mirrors the PAP-11348 wireframes.
@@ -133,7 +138,7 @@ function buildAgent(
   name: string,
   decisions: Record<string, ToolConnectionTestDecision>,
   orgDepth = 1,
-): ToolConnectionTestAgent {
+): StoryAgent {
   const tools = CATALOG.map((entry) => decisionTool(entry, decisions[entry.toolName]));
   return {
     id,
@@ -156,7 +161,7 @@ function buildAgent(
   };
 }
 
-const AGENTS: ToolConnectionTestAgent[] = [
+const AGENTS: StoryAgent[] = [
   buildAgent("agent-claude", "ClaudeCoder", DECISIONS, 0),
   buildAgent("agent-codex", "CodexCoder", {
     ...DECISIONS,
@@ -221,11 +226,18 @@ function runScript(steps: Step[]) {
   tick(0);
 }
 
-function seededClient(agents: ToolConnectionTestAgent[]): QueryClient {
+function seededClient(agents: StoryAgent[]): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity, retry: false, refetchOnMount: false } },
   });
-  client.setQueryData(queryKeys.tools.testAgents(CONNECTION), { agents });
+  client.setQueryData(queryKeys.tools.testAgents(CONNECTION), {
+    agents: agents.map(({ effectiveAccess: _effectiveAccess, ...agent }) => agent),
+  });
+  for (const agent of agents) {
+    client.setQueryData(queryKeys.tools.testAgentAccess(CONNECTION, agent.id), {
+      access: agent.effectiveAccess,
+    });
+  }
   return client;
 }
 
@@ -239,7 +251,7 @@ function TestHost({
   script?: Step[];
   runResult?: ToolConnectionTestCallResult;
   runDelayMs?: number;
-  agents?: ToolConnectionTestAgent[];
+  agents?: StoryAgent[];
   quarantined?: ToolCatalogEntry[];
 }) {
   const client = useMemo(() => seededClient(agents), [agents]);
@@ -368,7 +380,7 @@ export const OffAction: Story = {
 
 // PAP-11404 — Off side panel polish: audit hint + quarantined variant.
 
-const AGENTS_WITH_AUDIT: ToolConnectionTestAgent[] = AGENTS.map((agent, i) =>
+const AGENTS_WITH_AUDIT: StoryAgent[] = AGENTS.map((agent, i) =>
   i === 0
     ? {
         ...agent,

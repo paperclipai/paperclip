@@ -50,6 +50,18 @@ step through review, access and install. Reads are enabled for review;
 state-changing actions start off; newly discovered actions are quarantined until
 reviewed. That is the same treatment a curated connection gets.
 
+For **Just me**, the first probe of a new URL with no supplied credentials runs
+before a personal authorization exists. If the server requires OAuth, Paperclip
+creates the personal grant only after sign-in succeeds. If the server is public,
+Paperclip creates a personal grant with no credentials after the probe succeeds.
+That successful public probe saves the draft identity and its grant. A later
+catalog-refresh failure leaves them available for retry instead of undoing a
+grant that another setup attempt may already be using.
+Catalog and default-profile writes after that probe are atomic: a failure rolls
+back that step while retaining the established draft identity.
+Later health checks still require the user's authorization and return an
+actionable `422` error when it is missing.
+
 ### Advanced authentication
 
 Collapsed by default. Open it when the server's docs are specific:
@@ -177,9 +189,10 @@ through this page with either a key or browser sign-in.
 ## Verifying
 
 Deterministic coverage lives in
-`server/src/__tests__/generic-mcp-connection.test.ts`, which stands up an
-in-process MCP server plus authorization server. It needs no network and no
-vendor credentials, and every case connects by URL without naming a gallery app.
+`server/src/__tests__/generic-mcp-connection.test.ts` uses a simulated MCP/OAuth
+provider and a real loopback HTTP server for the personal public-URL regression.
+It needs no vendor credentials. Tests create an isolated PostgreSQL database
+and close their servers after use.
 A credentialed vendor smoke (for example live PostHog OAuth) may be recorded by
 QA but is not required for deterministic verification.
 

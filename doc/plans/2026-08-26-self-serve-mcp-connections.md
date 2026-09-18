@@ -104,6 +104,216 @@ This is a local, credential-free handoff check performed through the real BOB ca
 
 The audit found and fixed shared interoperability faults rather than adding provider exceptions: bounded provider-added DCR grants, RFC 7591 zero secret-expiry sentinels for public clients, authorization servers that explicitly omit refresh-token support, guarded HTTP requests that require a stable User-Agent, and numeric-loopback callbacks rejected by DCR servers. Hugging Face now explicitly requests only `read-mcp` instead of allowing the provider's omitted-scope default to request its complete scope set.
 
+## Tailscale HTTPS OAuth compatibility audit — 2026-08-31
+
+This audit used the isolated `apps-https-qa` full-clone instance on port 3102 at commit `5a988df600ebda30e446496862bf83c76d6d53d6`. The default instance remained on port 3100. Tailscale Serve mapped only `https:443` at `https://dottas-macbook-pro.tail29c1aa.ts.net` to `http://127.0.0.1:3102`; Funnel was not enabled. `PAPERCLIP_PUBLIC_URL` used that HTTPS origin, and no generic or provider-specific `PAPERCLIP_TOOL_OAUTH_*CLIENT*` override was present.
+
+The dedicated `Apps HTTPS QA 2026-08-31` company had zero agents. Loopback and HTTPS health, bootstrap readiness, cloned source data, and browser access passed. The OAuth client-metadata document exposed exactly one redirect URI: `https://dottas-macbook-pro.tail29c1aa.ts.net/api/tools/oauth/callback`. Successful grants and unsuccessful drafts were retained; no provider grant was revoked and neither Paperclip server was stopped.
+
+The credential-free preflight reached every one of the 19 automatic-OAuth endpoints, found OAuth metadata for all 19, and found DCR advertised for all 19. CIMD was also advertised by Notion, PostHog, Sentry, Jira, Airtable, Cloudflare, Hugging Face, Resend, and Todoist; the other ten did not advertise CIMD. The Tailscale hostname is tailnet-private and is not a public CIMD client ID. No app in this run was CIMD-only, so none received `public_cimd_retest_needed`.
+
+The matrix has exactly 35 terminal rows: 19 automatic OAuth, 12 customer OAuth, and four non-OAuth. “Exact callback” below means `https://dottas-macbook-pro.tail29c1aa.ts.net/api/tools/oauth/callback`. No provider tool was invoked and no read or write action was run.
+
+| # | App | Method / declared ownership | Credential-free preflight | Callback / registration source | Browser, callback/token, and catalog outcome | Prerequisite / Paperclip error code | Conclusion |
+|---:|---|---|---|---|---|---|---|
+| 1 | Notion | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; 37 actions discovered | Sole workspace selected; error code none | `works_out_of_box_dcr` |
+| 2 | PostHog | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; 684 actions discovered | Default project access; error code none | `works_out_of_box_dcr` |
+| 3 | Sentry | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; nine actions discovered | Existing account consent; error code none | `works_out_of_box_dcr` |
+| 4 | Jira | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | DCR and provider consent loaded, but tenant policy rejected the callback domain before consent; no token or catalog | Tenant callback-domain policy; error code none | `callback_or_client_allowlist_rejected` |
+| 5 | Airtable | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; 43 actions discovered | Sole visibly non-production base selected; error code none | `works_out_of_box_dcr` |
+| 6 | Cloudflare | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` draft | Provider accepted the callback and reached account selection; no account was selected, so no token or catalog | Two plausible accounts; error code none | `resource_selection_needed` |
+| 7 | Cloudinary | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; 30 actions discovered | Sole cloud selected; error code none | `works_out_of_box_dcr` |
+| 8 | Hugging Face | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; five actions discovered | Organization access omitted; error code none | `works_out_of_box_dcr` |
+| 9 | Miro | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` | Provider install relay returned through the callback; state and token exchange passed; active/healthy; 57 actions discovered | Sole preselected organization/team; error code none | `works_out_of_box_dcr` |
+| 10 | Netlify | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` | Provider relay returned through the callback; state and token exchange passed; active/healthy; nine actions discovered | Existing account consent; error code none | `works_out_of_box_dcr` |
+| 11 | Resend | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; 99 actions discovered | Sole team and sending-only access selected; error code none | `works_out_of_box_dcr` |
+| 12 | Todoist | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD yes | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; 47 actions discovered | Existing account consent; error code none | `works_out_of_box_dcr` |
+| 13 | Webflow | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` draft | Callback trust step passed; a provider sign-in route returned HTTP 502 before authorization; no token or catalog | Provider sign-in path; error code none | `provider_error_or_timeout` |
+| 14 | Wix | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` draft | Provider sign-in loaded with the exact callback but did not advance through the available account sign-in; no token or catalog | Provider sign-in/anti-automation gate; error code none | `sign_in_mfa_or_captcha_blocked` |
+| 15 | ClickHouse | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / no registration attempted | Paperclip required a ClickHouse Cloud service ID before OAuth; no callback, token, or catalog | Service selection required; error code none | `resource_selection_needed` |
+| 16 | Mixpanel | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; 64 actions discovered | Existing account consent; error code none | `works_out_of_box_dcr` |
+| 17 | Postman | US minimal hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` | Provider relay returned through the callback; state and token exchange passed; active/healthy; 41 actions discovered | Minimal catalog selected; error code none | `works_out_of_box_dcr` |
+| 18 | Stripe | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / `dcr` | Provider returned through the callback; state and token exchange passed; active/healthy; ten actions discovered | Visibly labeled test environment and read-only access selected; error code none | `works_out_of_box_dcr` |
+| 19 | Supabase | Recommended hosted OAuth / `dcr` | Reachable; OAuth metadata yes; DCR yes; CIMD no | Exact callback / no registration attempted | Paperclip required a project reference before OAuth; no callback, token, or catalog | Development project selection required; error code none | `resource_selection_needed` |
+| 20 | Linear | Customer-created OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and a client ID; client secret is optional for a public client; OAuth not started | Customer-created Linear app; error code none | `preregistration_required_by_design` |
+| 21 | Asana | Customer-created OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI states DCR is unsupported and requires preregistering the callback and a client ID; client secret is optional for a public client; OAuth not started | Customer-created Asana MCP app; error code none | `preregistration_required_by_design` |
+| 22 | Box | Customer-created OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and a client ID; client secret is optional for a public client; OAuth not started | Box administrator, AI access, and customer-created app; error code none | `preregistration_required_by_design` |
+| 23 | Gmail | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 24 | Google Drive | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 25 | Google Docs | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 26 | Google Sheets | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 27 | Google Slides | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 28 | Google Calendar | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 29 | Google Chat | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 30 | Google People | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 31 | Google Workspace Search | Google OAuth app / `customer` | Not applicable; UI contract inspected | Exact callback / customer client | UI requires preregistering the callback and customer client ID; client secret is optional for a public client; OAuth not started | Developer Preview enrollment, Cloud project/API enablement; error code none | `preregistration_required_by_design` |
+| 32 | Zapier | Provider-generated MCP URL / non-OAuth | Not applicable | Not applicable | UI requires the complete provider-generated MCP URL, including its embedded token | Provider-generated URL; error code none | `not_applicable_non_oauth` |
+| 33 | Shopify | Public Storefront MCP / no auth | Not applicable | Not applicable | UI identifies a public no-auth endpoint and requires a launched public storefront | Public storefront and permanent store domain; error code none | `not_applicable_non_oauth` |
+| 34 | Mem0 | Bearer API key / non-OAuth | Not applicable | Not applicable | UI requires a customer-created API key | Customer API key; error code none | `not_applicable_non_oauth` |
+| 35 | PagerDuty | API token / non-OAuth | Not applicable | Not applicable | UI requires a customer-created API token and regional endpoint | Customer token and account region; error code none | `not_applicable_non_oauth` |
+
+Summary counts:
+
+- `works_out_of_box_dcr`: 13 — Notion, PostHog, Sentry, Airtable, Cloudinary, Hugging Face, Miro, Netlify, Resend, Todoist, Mixpanel, Postman minimal, and Stripe.
+- `preregistration_required_by_design`: 12 — Linear, Asana, Box, and the nine Google Workspace cards.
+- `callback_or_client_allowlist_rejected`: 1 — Jira. This is the only newly observed stable-callback/allowlist candidate.
+- `resource_selection_needed`: 3 — Cloudflare, ClickHouse, and Supabase.
+- `provider_error_or_timeout`: 1 — Webflow.
+- `sign_in_mfa_or_captcha_blocked`: 1 — Wix.
+- `not_applicable_non_oauth`: 4 — Zapier, Shopify, Mem0, and PagerDuty.
+- `manual_client_required`, `oauth_passed_catalog_failed`, `account_or_plan_prerequisite`, and `public_cimd_retest_needed`: 0 each.
+
+The evidence supports arbitrary HTTPS callbacks through DCR for the 13 passing apps. Jira is the only automatic-OAuth app in this run that produced direct callback-domain allowlist evidence. The five inconclusive automatic-OAuth results are resource- or sign-in/provider-path blockers, not evidence that they require a shared stable callback. The 12 customer-client apps already require preregistration by design and are not newly discovered stable-callback candidates.
+
+## Paperclip Cloud managed OAuth broker — 2026-08-31
+
+The managed-callback P2 is part of the existing Paperclip Cloud application at
+`my.paperclip.app`. It does not add a service, hostname, repository, login
+system, or provider route to Paperclip ID. Paperclip ID authenticates the user
+for the existing Cloud customer session. Cloud owns fixed provider callbacks,
+provider client credentials, enrollment, explicit destination confirmation,
+code exchange, refresh, and revocation. The originating Paperclip instance is
+the only durable provider-token vault and continues to execute provider tools
+directly.
+
+The production Google callback is fixed at
+`https://my.paperclip.app/v1/connector/oauth/google/callback`; the reserved Box
+path remains dark until Paperclip owns a distributable, provider-approved Box
+application. Provider endpoints, clients, profiles, exact scope sets, resource
+servers, eligibility, approval state, and kill switches come from a closed
+Cloud registry. A caller cannot supply any of them.
+
+### Self-hosted enrollment
+
+```mermaid
+sequenceDiagram
+    actor U as Self-hosted administrator
+    participant P as Self-hosted Paperclip
+    participant C as Paperclip Cloud
+    participant I as Paperclip ID
+
+    U->>P: Enable Paperclip-managed connections
+    P->>P: Generate Ed25519 signing and X25519 sealing keys
+    P->>C: Create enrollment draft with public keys and exact origin
+    C-->>P: Short-lived verification URL
+    P-->>U: Open my.paperclip.app/connections/enroll
+    U->>C: Review exact destination
+    alt No current Cloud session
+        C->>I: Existing Cloud OIDC login
+        I-->>C: Existing identity-only callback
+    end
+    U->>C: Confirm enrollment
+    C-->>U: One-time approval code to the confirmed origin
+    U->>P: Enrollment callback with local state
+    P->>C: Redeem with signing-key proof
+    C-->>P: Enrollment id, audiences, origin, and capabilities
+    P->>P: Store private keys in ignored owner-only instance secrets
+```
+
+Cloud-hosted stacks are enrolled automatically during provisioning. Existing
+stacks receive a lazy backfill on their next managed deployment or first
+managed-connection roll. The existing per-stack secret store mints and retains
+the private keypairs, the existing provider delivery path places their values
+in the tenant environment, and the Cloud connector registry stores only public
+keys and the exact active stack origin.
+
+Every self-hosted enrollment requires HTTPS except exact HTTP loopback. The
+Cloud confirmation page prominently displays the normalized destination.
+Unknown, replayed, and expired enrollment state terminates on Cloud without an
+instance redirect. Tailscale HTTPS works because the browser performs the
+return trip; Cloud does not need to reach the private hostname.
+
+### Provider connection and custody
+
+```mermaid
+sequenceDiagram
+    actor U as Connecting user
+    participant P as Originating Paperclip instance
+    participant C as my.paperclip.app
+    participant I as Paperclip ID
+    participant O as Provider OAuth
+    participant V as Instance vault
+
+    U->>P: Connect a managed app/profile
+    P->>P: Bind local state to connection, company, user, and profile
+    P->>C: Signed authorization-session request
+    C-->>P: Cloud confirmation URL
+    P-->>U: Open confirmation URL
+    alt No current Cloud session
+        C->>I: Existing Cloud OIDC login
+        I-->>C: Existing Cloud OIDC callback
+    end
+    C-->>U: Show provider, scopes, destination, and custody notice
+    U->>C: Continue
+    C-->>U: Provider authorization URL with Cloud state and PKCE
+    U->>O: Choose the resource account and consent
+    O-->>C: Code and state at the fixed Cloud callback
+    C->>O: Exchange with the profile's managed client
+    O-->>C: Access and refresh credentials
+    C->>C: Validate exact profile scopes and seal to the instance key
+    C-->>U: 303 with opaque claim id and local state
+    U->>P: Instance callback
+    P->>C: Signed one-time claim redemption
+    C-->>P: X25519-sealed credential envelope
+    P->>P: Verify every binding and decrypt
+    P->>V: Store tokens on the personal grant
+    P->>P: Activate and discover the provider catalog
+```
+
+Only the opaque claim id and the instance's local state cross the browser back
+to the instance. Provider codes, tokens, error descriptions, client secrets,
+emails, and tenant identifiers do not appear in URLs. Cloud consumes provider
+state before examining any code or provider error; unknown and replayed state
+never redirects. Initial ciphertext expires within five minutes. The first
+claim binds it to a stable local redemption id, and only that id can retry the
+same sealed envelope before expiry. Plaintext provider tokens exist in Cloud
+memory only for the bounded exchange, refresh, or supported revocation request.
+
+```mermaid
+sequenceDiagram
+    participant P as Paperclip instance
+    participant C as Paperclip Cloud
+    participant O as Provider OAuth
+
+    P->>C: Signed refresh with hash-bound refresh token
+    C->>O: Refresh using the managed provider client
+    O-->>C: Rotated credentials
+    C-->>P: New credentials sealed to the instance key
+    P->>P: Validate bindings and rotate vault secrets
+    opt Provider proves isolated per-grant revocation
+        P->>C: Signed revocation with hash-bound token
+        C->>O: Revoke provider grant
+        C-->>P: Detail-free result
+    end
+```
+
+Managed grants therefore depend on Cloud for refresh and supported provider
+revocation, but not for provider tool calls. Managed Google profile removal is
+local-only because Google client-wide revocation can invalidate the same user's
+other Workspace profiles. A temporary Cloud outage leaves an existing access
+token usable until it expires and then surfaces as a temporary refresh failure.
+Customer-created clients remain available for self-hosters who need full
+independence or for providers not approved for a managed multi-tenant client.
+
+### Security and rollout boundary
+
+Every instance operation requires an enrolled Ed25519 signature, exact
+audience/environment/provider/profile/scope binding, a short expiry, and a
+single-use request id. Credential envelopes bind their purpose plus the same
+instance, environment, provider, profile, and sorted scope set as AEAD
+additional data. Exact origin matching has no wildcard, prefix, or suffix
+mode. Cloud login and explicit destination confirmation are required for every
+new authorization. Per-IP, account, instance, and provider limits, instance
+suspension, profile kill switches, and self-host eligibility checks provide
+additional containment; no generic OAuth endpoint or provider API proxy exists.
+
+All real profiles are dark-launched. Google begins with an internal
+`gmail.read` pilot only after Developer Preview enrollment, OAuth verification,
+and any restricted-scope assessment. Jira remains the next callback-allowlist
+research target. The 13 proven DCR providers stay instance-local, and Box stays
+customer-client-only until publication, commercial, enterprise-admin, and
+self-host distribution terms are approved.
+
 ## Automated acceptance
 
 - [x] Manifest tests assert 46 researched entries, 43 self-serve candidates, three blocked providers, unique slugs, HTTPS documentation/endpoints, authentication mode, prerequisite, risk tier, and verification date.

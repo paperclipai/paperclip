@@ -28,6 +28,7 @@
     "safeUrl": { "type": ["string", "null"], "maxLength": 8192, "pattern": "^https?://" },
     "plan": {
       "type": "object",
+      "description": "A complete provider-authored within-turn checklist snapshot. Consumers replace the prior snapshot with the same planId in PRP sourceSeq order; this is not Paperclip's durable Plan document.",
       "required": ["schema", "planId", "revision", "steps", "complete", "syncStatus"],
       "properties": {
         "schema": { "const": "paperclip.plan.updated.v1" },
@@ -36,8 +37,8 @@
         "explanation": { "$ref": "#/$defs/nullableShortText" },
         "steps": { "type": "array", "maxItems": 256, "items": { "type": "object", "required": ["stepId", "body", "status"], "properties": { "stepId": { "$ref": "#/$defs/id" }, "body": { "$ref": "#/$defs/shortText" }, "status": { "enum": ["pending", "in_progress", "completed", "blocked"] } }, "additionalProperties": false } },
         "complete": { "type": "boolean" },
-        "syncStatus": { "enum": ["streaming", "pending", "synchronized", "conflict", "not_applicable"] },
-        "documentRevision": { "type": ["integer", "null"], "minimum": 1 }
+        "syncStatus": { "description": "Legacy compatibility field. Within-turn checklist snapshots use not_applicable.", "enum": ["streaming", "pending", "synchronized", "conflict", "not_applicable"] },
+        "documentRevision": { "description": "Legacy compatibility field. Within-turn checklist snapshots use null.", "type": ["integer", "null"], "minimum": 1 }
       },
       "additionalProperties": false
     },

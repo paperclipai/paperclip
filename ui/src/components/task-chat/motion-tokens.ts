@@ -55,6 +55,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-approval-pulse", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-plan-entry-stagger", group: "States", kind: "time", min: 0, max: 300, step: 5 },
   { name: "--motion-plan-check", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-question-confirm", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
+  { name: "--motion-question-page-enter", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-streaming-cursor-blink", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-turn-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
@@ -63,7 +65,9 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-interstitial-dwell", group: "States", kind: "time", min: 0, max: 10000, step: 100 },
   { name: "--motion-scroll-pill-enter", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-scroll-pill-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-scrollbar-idle-delay", group: "States", kind: "time", min: 0, max: 2000, step: 10 },
   { name: "--motion-pane-glide", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-side-panel-tab", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
 ];
 
 /** Common easing presets offered by the tweak panel's easing picker. */

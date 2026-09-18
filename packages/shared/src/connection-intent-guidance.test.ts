@@ -37,7 +37,7 @@ describe("connection intent agent guidance", () => {
     [
       "pending user action",
       "returns `needs_user_action`",
-      "end the run in a waiting posture",
+      "finish any independent work, then yield in a waiting posture",
     ],
     [
       "continuation run",
@@ -67,7 +67,7 @@ describe("connection intent agent guidance", () => {
     expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain(
       "available or needs_user_action",
     );
-    expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain("end the run");
+    expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain("finish independent work, then yield");
     expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain("without retrying");
   });
 });

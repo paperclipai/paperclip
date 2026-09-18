@@ -556,6 +556,7 @@ function ConflictResolutionList({
 
 // ── Adapter type options for import ───────────────────────────────────
 
+const FALLBACK_IMPORT_ADAPTER_TYPE = "claude_local";
 const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapters().map((adapter) => ({
   value: adapter.type,
   label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
@@ -572,13 +573,14 @@ interface AdapterPickerItem {
    * Set when the manifest adapter is not installed on the destination: the
    * adapter type the agent falls back to unless the user picks another one.
    * Null when the manifest adapter is usable here (or availability is unknown,
-   * which fails open to the manifest adapter).
+   * which fails open to the manifest adapter except for native runner).
    */
   fallbackAdapterType: string | null;
 }
 
 function AdapterPickerList({
   agents,
+  adapterOptions,
   adapterOverrides,
   expandedSlugs,
   configValues,
@@ -587,6 +589,7 @@ function AdapterPickerList({
   onChangeConfig,
 }: {
   agents: AdapterPickerItem[];
+  adapterOptions: { value: string; label: string }[];
   adapterOverrides: Record<string, string>;
   expandedSlugs: Set<string>;
   configValues: Record<string, CreateConfigValues>;
@@ -630,7 +633,7 @@ function AdapterPickerList({
                     value={selectedType}
                     onChange={(e) => onChangeAdapter(agent.slug, e.target.value)}
                   >
-                    {IMPORT_ADAPTER_OPTIONS.map((opt) => (
+                    {adapterOptions.map((opt) => (
                       <option key={opt.value} value={opt.value}>
                         {opt.label}
                       </option>
@@ -1025,6 +1028,18 @@ export function CompanyImport() {
     if (!installedAdapters) return null;
     return new Set(installedAdapters.filter((a) => !a.disabled).map((a) => a.type));
   }, [installedAdapters]);
+  // Native runner is the one adapter that fails closed in the importer. Other
+  // adapter choices preserve the importer's existing fail-open behavior when
+  // availability cannot be read, but Paperclip Runner only appears after the
+  // server explicitly reports that its experimental flag is enabled.
+  const nativeRunnerAvailable =
+    availableAdapterTypes?.has("paperclip_runner") === true;
+  const importAdapterOptions = useMemo(
+    () => IMPORT_ADAPTER_OPTIONS.filter(
+      (option) => option.value !== "paperclip_runner" || nativeRunnerAvailable,
+    ),
+    [nativeRunnerAvailable],
+  );
 
   const localZipHelpText =
     "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
@@ -1573,21 +1588,34 @@ export function CompanyImport() {
   // CEO's adapter; while availability is unknown the manifest adapter stands.
   const adapterAgents = useMemo<AdapterPickerItem[]>(() => {
     if (!importPreview) return [];
-    return importPreview.manifest.agents.map((a) => ({
-      slug: a.slug,
-      name: a.name,
-      adapterType: a.adapterType,
-      // The fallback must itself be installed: the CEO's adapter when it is,
-      // else any installed adapter, else null so the manifest adapter stands
-      // and the server's unknown-adapter rejection is the backstop.
-      fallbackAdapterType:
-        availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)
-          ? availableAdapterTypes.has(ceoAdapterType)
+    return importPreview.manifest.agents.map((a) => {
+      let fallbackAdapterType: string | null = null;
+      if (a.adapterType === "paperclip_runner" && !nativeRunnerAvailable) {
+        const firstEnabledLegacyAdapter = availableAdapterTypes
+          ? [...availableAdapterTypes].find((type) => type !== "paperclip_runner") ?? null
+          : null;
+        fallbackAdapterType =
+          ceoAdapterType !== "paperclip_runner" &&
+          (!availableAdapterTypes || availableAdapterTypes.has(ceoAdapterType))
             ? ceoAdapterType
-            : [...availableAdapterTypes][0] ?? null
-          : null,
-    }));
-  }, [importPreview, availableAdapterTypes, ceoAdapterType]);
+            : firstEnabledLegacyAdapter ?? FALLBACK_IMPORT_ADAPTER_TYPE;
+      } else if (availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)) {
+        // The fallback must itself be installed: the CEO's adapter when it is,
+        // else any installed adapter, else null so the manifest adapter stands
+        // and the server's unknown-adapter rejection is the backstop.
+        fallbackAdapterType = availableAdapterTypes.has(ceoAdapterType)
+          ? ceoAdapterType
+          : [...availableAdapterTypes][0] ?? null;
+      }
+
+      return {
+        slug: a.slug,
+        name: a.name,
+        adapterType: a.adapterType,
+        fallbackAdapterType,
+      };
+    });
+  }, [importPreview, availableAdapterTypes, ceoAdapterType, nativeRunnerAvailable]);
 
   /** The adapter type an imported agent will actually use: an explicit user pick, else the availability fallback, else the manifest adapter. */
   function effectiveAdapterType(agent: AdapterPickerItem): string {
@@ -2048,6 +2076,7 @@ export function CompanyImport() {
           {/* Adapter picker list */}
           <AdapterPickerList
             agents={adapterAgents}
+            adapterOptions={importAdapterOptions}
             adapterOverrides={adapterOverrides}
             expandedSlugs={adapterExpandedSlugs}
             configValues={adapterConfigValues}

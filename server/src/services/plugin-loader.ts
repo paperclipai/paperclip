@@ -141,6 +141,7 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   string,
   { driverKey: string; envVars: readonly string[] }
 > = {
+  "@paperclipai/plugin-createos": { driverKey: "createos", envVars: ["CREATEOS_API_KEY"] },
   "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
   "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
   "@paperclipai/plugin-exe-dev": { driverKey: "exe-dev", envVars: ["EXE_API_KEY"] },
@@ -793,9 +794,11 @@ function buildStandaloneBundledPluginInstallArgs(
   packageRoot: string,
 ): string[] {
   const packageLockfilePath = path.join(packageRoot, "pnpm-lock.yaml");
-  return existsSync(packageLockfilePath)
-    ? ["install", "--ignore-workspace", "--frozen-lockfile"]
-    : ["install", "--ignore-workspace", "--no-lockfile"];
+  // Never let plugin-supplied workspace settings broaden dependency resolution
+  // or script execution. When a plugin declares a local install policy, disable
+  // dependency lifecycle scripts instead of loading that workspace configuration.
+  const scriptArgs = existsSync(path.join(packageRoot, "pnpm-workspace.yaml")) ? ["--ignore-scripts"] : [];
+  return ["install", "--ignore-workspace", ...scriptArgs, existsSync(packageLockfilePath) ? "--frozen-lockfile" : "--no-lockfile"];
 }
 
 function buildStandaloneBundledPluginInstallCommand(

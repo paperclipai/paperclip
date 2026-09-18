@@ -27,7 +27,7 @@ Notes:
 
 - The current published Daytona SDK package is `@daytonaio/sdk`.
 - The driver supports both `snapshot`-based and `image`-based sandbox creation. If both are set, validation rejects the config as ambiguous.
-- Reusable leases map to Daytona stop/start semantics. Non-reusable leases are deleted on release.
+- Reusable leases map to Daytona stop/start semantics. Non-reusable leases are deleted on release. A provider-resolved `target` does not change the identity of an existing sandbox. Release closes the same scoped lease that a later sentinel-verified resume reopens.
 
 ## Local development
 

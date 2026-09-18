@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act as reactAct, type ReactNode } from "react";
+import { act as reactAct, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -16,6 +16,7 @@ import {
 } from "@/fixtures/issueThreadInteractionFixtures";
 import { ConnectionIntentInteractionBody } from "./ConnectionIntentInteractionBody";
 
+const credentialRender = vi.hoisted(() => vi.fn());
 const setupOptionsMock = vi.hoisted(() => vi.fn());
 const completeMock = vi.hoisted(() => vi.fn());
 const declineMock = vi.hoisted(() => vi.fn());
@@ -28,6 +29,14 @@ vi.mock("@/api/connection-intents", () => ({
     decline: (...args: unknown[]) => declineMock(...args),
     setPhase: (...args: unknown[]) => setPhaseMock(...args),
   },
+}));
+
+vi.mock("@/components/ai-connections/AiConnectionCredentialStep", () => ({
+  AiConnectionCredentialStep: (props: { connectionId?: string; name: string; fixedMethod?: boolean; onComplete: (result: {connectionId: string; grantId: string; method: "api_key"}) => void; onCancel: () => void }) => { credentialRender(props); return <div data-testid="shared-ai-credentials">
+    <span>{props.name}</span><span>{String(props.fixedMethod)}</span>
+    <button onClick={() => props.onComplete({ connectionId: props.connectionId ?? "new-ai-account", grantId: "grant", method: "api_key" })}>Reconnect selected account</button>
+    <button onClick={props.onCancel}>Cancel repair</button>
+  </div>; },
 }));
 
 vi.mock("./ConnectionSetupFlow", () => ({
@@ -111,11 +120,7 @@ function terminal(
   } as ConnectionIntentInteraction;
 }
 
-function renderBody(
-  interaction: ConnectionIntentInteraction = pendingConnectionIntentInteraction,
-  currentUserId:
-    string | null = issueThreadInteractionFixtureMeta.currentUserId,
-) {
+function renderNode(node: ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -125,20 +130,30 @@ function renderBody(
   void act(() => {
     root?.render(
       <QueryClientProvider client={queryClient}>
-        <ConnectionIntentInteractionBody
-          interaction={interaction}
-          currentUserId={currentUserId}
-          addresseeLabel="Carol"
-        />
+        {node}
       </QueryClientProvider>,
     );
   });
   return host;
 }
 
+function renderBody(
+  interaction: ConnectionIntentInteraction = pendingConnectionIntentInteraction,
+  currentUserId:
+    string | null = issueThreadInteractionFixtureMeta.currentUserId,
+) {
+  return renderNode(
+    <ConnectionIntentInteractionBody
+      interaction={interaction}
+      currentUserId={currentUserId}
+      addresseeLabel="Carol"
+    />,
+  );
+}
+
 function button(label: string) {
   return Array.from(document.body.querySelectorAll("button")).find(
-    (candidate) => candidate.textContent?.trim() === label,
+    (candidate) => candidate.textContent?.trim() === label || (label === "Connect / Use existing" && candidate.textContent?.trim() === "Connect"),
   ) as HTMLButtonElement | undefined;
 }
 
@@ -169,7 +184,7 @@ afterEach(async () => {
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
   it.each([
-    [pendingConnectionIntentInteraction, "Connect / Use existing"],
+    [pendingConnectionIntentInteraction, "Connect"],
     [
       {
         ...pendingConnectionIntentInteraction,
@@ -178,7 +193,7 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
           phase: "authorizing",
         },
       },
-      "Authorizing…",
+      "Continue setup",
     ],
     [retryConnectionIntentInteraction, "Try again"],
     [connectedConnectionIntentInteraction, "Notion connected"],
@@ -295,6 +310,57 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     });
   });
 
+  it("restores focus when completion remounts the intent in a different task host", async () => {
+    setupOptionsMock.mockResolvedValue({
+      requestedAgentId: "agent-requesting",
+      existingConnections: [{ id: "connection-one", name: "Carol's Notion" }],
+    });
+    const acceptedInteraction = {
+      ...pendingConnectionIntentInteraction,
+      status: "accepted",
+      resolvedAt: new Date("2026-08-26T12:00:00.000Z"),
+      result: {
+        version: 1,
+        outcome: "connected",
+        connectionId: "connection-one",
+      },
+    } as ConnectionIntentInteraction;
+    let showAcceptedInteraction!: () => void;
+
+    function RemountingTaskHost() {
+      const [interaction, setInteraction] = useState(
+        pendingConnectionIntentInteraction,
+      );
+      showAcceptedInteraction = () => setInteraction(acceptedInteraction);
+      return (
+        <ConnectionIntentInteractionBody
+          key={interaction.status}
+          interaction={interaction}
+          currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          addresseeLabel="Carol"
+        />
+      );
+    }
+
+    completeMock.mockImplementation(async () => {
+      showAcceptedInteraction();
+      return acceptedInteraction;
+    });
+    renderNode(<RemountingTaskHost />);
+
+    await act(() => button("Connect / Use existing")?.click());
+    await flush();
+    await act(() => button("Use Carol's Notion")?.click());
+
+    await waitForAssertion(() => {
+      const target = document.getElementById(
+        `connection-intent-focus-target-${acceptedInteraction.id}`,
+      );
+      expect(document.body.textContent).toContain("Notion connected");
+      expect(document.activeElement).toBe(target);
+    });
+  });
+
   it("keeps the dialog open and surfaces completion failures", async () => {
     completeMock.mockRejectedValue(new Error("install commit failed"));
     renderBody();
@@ -343,5 +409,71 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
       pendingConnectionIntentInteraction.id,
       "needs_retry",
     );
+  });
+});
+
+
+describe("AI repair inside the card", () => {
+  const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
+  const connection = { id: "selected-account", name: "My Codex account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Dotta", status: "revoked" };
+  it.each(["anthropic", "openai"])("connects a missing %s default directly in the task", async (provider) => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiConnection: { provider, method: "api_key", mode: "responsible_user" } });
+    completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).not.toBeNull();
+    expect(credentialRender.mock.lastCall![0]).toMatchObject({ provider, ownership: "personal", agentIds: [interaction.payload.requestingAgentId], allAgents: false });
+    expect(credentialRender.mock.lastCall![0].connectionId).toBeUndefined();
+    expect(credentialRender.mock.lastCall![0].fixedMethod).toBeUndefined();
+    expect(document.body.textContent).toContain("This task can’t run until");
+    await act(() => button("Reconnect selected account")!.click());
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, "new-ai-account");
+  });
+  it("reuses authentication inline, preserves the selected account, cancels with focus, and completes", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection, canReconnect: true } });
+    completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
+    renderBody(interaction);
+    await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[data-testid="ai-connection-inline-repair"]')?.textContent).toContain("My Codex account");
+    await act(() => button("Cancel repair")!.click());
+    await waitForAssertion(() => expect(document.activeElement?.getAttribute("data-testid")).toBe("connection-intent-focus-target"));
+    expect(completeMock).not.toHaveBeenCalled();
+    await act(() => button("Fix connection")!.click());
+    await act(() => button("Reconnect selected account")!.click());
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, "selected-account");
+  });
+  it("keeps a late credential save after cancellation from accepting the request", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection, canReconnect: true } });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    const abandoned = credentialRender.mock.lastCall![0];
+    await act(() => button("Cancel repair")!.click());
+    await act(() => button("Fix connection")!.click());
+    await act(() => abandoned.onComplete({ connectionId: connection.id, grantId: "grant", method: "api_key" }));
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+  it("offers continuation for the restored account without another login", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [connection], aiRepair: { connection, canReconnect: true } });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+    await act(() => button("Continue task")!.click());
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, connection.id);
+  });
+  it("does not let another user reconnect the owner's account", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection, canReconnect: false } });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.body.textContent).toContain("Dotta must reconnect My Codex account");
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+  });
+  it("does not promise to run without credentials when declined", () => {
+    renderBody({ ...interaction, status: "rejected" });
+    expect(document.body.textContent).toContain("The task still needs a working AI connection");
+    expect(document.body.textContent).not.toContain("can continue without it");
   });
 });
