@@ -194,6 +194,20 @@ export interface AdapterRuntimeEvent {
   payload?: Record<string, unknown>;
 }
 
+/**
+ * A provider usage observation harvested from a live run's stream, such as
+ * Claude Code's `rate_limit_event`, which carries the same subscription
+ * window utilization the usage endpoint reports but costs no request.
+ */
+export interface AdapterProviderQuotaObservation {
+  /** Which provider payload `info` is; the host normalizes per kind. */
+  kind: "claude_rate_limit_info";
+  /** The raw provider payload, passed through untouched. */
+  info: Record<string, unknown>;
+  /** ISO timestamp of when the run reported it. */
+  observedAt: string;
+}
+
 export interface AdapterExecutionContext {
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
@@ -223,6 +237,12 @@ export interface AdapterExecutionContext {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  /**
+   * Best-effort: the run's stream reported provider usage (see
+   * AdapterProviderQuotaObservation). The host folds it into its quota
+   * snapshot; adapters never wait on or fail because of it.
+   */
+  onProviderQuotaObserved?: (observation: AdapterProviderQuotaObservation) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   /**
    * Reports that execution has crossed the adapter's dispatch boundary.
@@ -369,6 +389,12 @@ export interface HireApprovedHookResult {
 
 /** a single rate-limit or usage window returned by a provider quota API */
 export interface QuotaWindow {
+  /**
+   * stable machine key for the window, independent of the display label.
+   * Known keys: "five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus",
+   * "extra_usage", "credits". Null or omitted when the window has no known key.
+   */
+  key?: string | null;
   /** human label, e.g. "5h", "7d", "Sonnet 7d", "Credits" */
   label: string;
   /** percent of the window already consumed (0-100), null when not reported */
@@ -393,6 +419,12 @@ export interface ProviderQuotaResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   /** error message when ok is false */
   error?: string;
+  /**
+   * True when the provider throttled the usage read (HTTP 429). The usage
+   * endpoint itself is healthy, so the reader may retry after a short delay,
+   * and no fallback that reads the same endpoint should run.
+   */
+  rateLimited?: boolean;
   windows: QuotaWindow[];
 }
 

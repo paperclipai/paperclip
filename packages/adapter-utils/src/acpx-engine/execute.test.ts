@@ -1288,6 +1288,50 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(statusLine?.text).toContain('"cost"');
   });
 
+  it("hands harvested rate-limit info from usage updates to the host, and nothing without it", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const observed: unknown[] = [];
+    const rateLimit = { status: "allowed", rateLimitType: "five_hour", utilization: 0.42, resetsAt: 1757775600 };
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "status", text: "usage", tag: "usage_update", used: 10, size: 200000 };
+            yield { type: "status", text: "usage", tag: "usage_update", used: 20, size: 200000, rateLimit };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-quota-harvest",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onProviderQuotaObserved: async (observation: unknown) => {
+        observed.push(observation);
+      },
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ kind: "claude_rate_limit_info", info: rateLimit });
+    expect(typeof (observed[0] as { observedAt: string }).observedAt).toBe("string");
+  });
+
   it("falls back to usage_update events when the runtime lacks getStatus", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

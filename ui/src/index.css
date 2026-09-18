@@ -2798,6 +2798,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtr-3: 0fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[0fr]). */
   --tp-background-color-border-color: background-color,border-color; /* Extracted from ui/src/components/ActivityFeed.tsx (transition-[background-color,border-color]). */
   --tp-width-background-color: width,background-color; /* Extracted from ui/src/components/BudgetPolicyCard.tsx (transition-[width,background-color]). */
+  --hatch-blocked: repeating-linear-gradient(135deg, var(--status-task-blocked) 0 2px, transparent 2px 5px); /* Extracted from ui/src/components/BudgetPolicyCard.tsx (over-limit and runs-held hatch on the usage bar). */
   --tp-width: width; /* Extracted from ui/src/components/ClaudeSubscriptionPanel.tsx (transition-[width]). */
   --tp-background-color-color-opacity: background-color,color,opacity; /* Extracted from ui/src/components/FileTree.tsx (transition-[background-color,color,opacity]). */
   --tp-max-height: max-height; /* Extracted from ui/src/components/FoldCurtain.tsx (transition-[max-height]). */

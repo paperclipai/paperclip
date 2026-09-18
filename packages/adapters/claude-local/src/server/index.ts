@@ -17,6 +17,7 @@ export {
   isClaudeUnknownSessionError,
 } from "./parse.js";
 export {
+  ClaudeUsageRateLimitedError,
   getQuotaWindows,
   readClaudeAuthStatus,
   readClaudeToken,

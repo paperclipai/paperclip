@@ -38,6 +38,29 @@ export interface BudgetPolicySummary {
   observedAmount: number;
   remainingAmount: number;
   utilizationPercent: number;
+  /**
+   * True for a `subscription_percent` policy whose provider window could not
+   * be observed (quota fetch failed, window missing, or no utilization
+   * reported). `observedAmount` is then 0 as a placeholder, not a measurement,
+   * and `status` is "ok" only because nothing is known.
+   */
+  usageUnavailable?: boolean;
+  /**
+   * True for a `subscription_percent` policy whose `observedAmount` comes from
+   * the last successful provider read because the latest read failed. The
+   * value is a real measurement, just older than usual; `usageObservedAt`
+   * says how old.
+   */
+  usageStale?: boolean;
+  /** ISO timestamp of the provider read behind `observedAmount` (subscription policies only). */
+  usageObservedAt?: string | null;
+  /**
+   * True when the dispatch gate is holding new runs for this policy on the
+   * current observation: usage unreadable under a limit, or a stale read too
+   * old or too close to the limit to clear a run. Computed with the gate's
+   * own rule so the card and the gate agree.
+   */
+  usageHeld?: boolean;
   warnPercent: number;
   hardStopEnabled: boolean;
   notifyEnabled: boolean;

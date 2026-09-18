@@ -66,6 +66,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
+const mockReadQuotaSnapshot = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
@@ -125,6 +126,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/quota-windows.js", () => ({
     fetchAllQuotaWindows: mockFetchAllQuotaWindows,
+    readQuotaSnapshot: mockReadQuotaSnapshot,
   }));
 }
 

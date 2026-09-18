@@ -88,6 +88,11 @@ export type {
 } from "./work-timeline.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
+export {
+  subscriptionWindowGateService,
+  decideSubscriptionWindowWait,
+  SUBSCRIPTION_WINDOW_WAIT_RETRY_REASON,
+} from "./subscription-window-gate.js";
 export { secretService } from "./secrets.js";
 export { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 export { createSecretProposalsService } from "./secret-proposals.js";

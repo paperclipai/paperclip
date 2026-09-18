@@ -3020,6 +3020,10 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   };
 }
 
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string, unknown>) {
   await ctx.onLog("stdout", `${JSON.stringify(payload)}\n`);
 }
@@ -4836,6 +4840,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+              // The Claude ACP bridge attaches the SDK's rate_limit_event to
+              // usage updates and the patched acpx runtime keeps it as
+              // `rateLimit`. Hand it to the host so the quota snapshot can be
+              // refreshed from live runs instead of the rate-limited usage
+              // endpoint. Harvesting is best effort and never fails the run.
+              const rateLimit = (event as Record<string, unknown>).rateLimit;
+              if (ctx.onProviderQuotaObserved && isRecordValue(rateLimit)) {
+                try {
+                  await ctx.onProviderQuotaObserved({
+                    kind: "claude_rate_limit_info",
+                    info: rateLimit,
+                    observedAt: new Date().toISOString(),
+                  });
+                } catch {
+                  // Best effort only.
+                }
+              }
             }
             await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }

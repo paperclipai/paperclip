@@ -150,10 +150,35 @@ index ccdbe5b032521518022223733049b8b38793473b..a04948e2b1ab8e169778e0d839ab5bf6
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..7ec28ecf778623c6e63a2149a599172c184c49bd 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..dbea8ba54c31b359b4895d420d9e9221c4831b37 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
-@@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
+@@ -346,11 +346,12 @@ function usageUpdateEvent(payload) {
+ 		used,
+ 		size,
+ 		cost: normalizeUsageCost(payload.cost),
+-		breakdown: normalizeUsageBreakdown(meta?.usage)
++		breakdown: normalizeUsageBreakdown(meta?.usage),
++		rateLimit: isRecord(meta?.["_claude/rateLimit"]) ? meta["_claude/rateLimit"] : void 0
+ 	});
+ }
+ function buildUsageUpdateEvent(parts) {
+-	const { used, size, cost, breakdown } = parts;
++	const { used, size, cost, breakdown, rateLimit } = parts;
+ 	return {
+ 		type: "status",
+ 		text: used != null && size != null ? `usage updated: ${used}/${size}` : "usage updated",
+@@ -358,7 +359,8 @@ function buildUsageUpdateEvent(parts) {
+ 		...used != null ? { used } : {},
+ 		...size != null ? { size } : {},
+ 		...cost ? { cost } : {},
+-		...breakdown ? { breakdown } : {}
++		...breakdown ? { breakdown } : {},
++		...rateLimit ? { rateLimit } : {}
+ 	};
+ }
+ function availableCommandsUpdateEvent(payload) {
+@@ -744,7 +746,8 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
