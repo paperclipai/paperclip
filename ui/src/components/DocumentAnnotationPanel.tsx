@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from "react";
+import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import type {
   DocumentAnnotationComment,
   DocumentAnnotationThreadWithComments,
@@ -22,7 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, relativeTime } from "@/lib/utils";
 import type { DocumentAnnotationTarget } from "@/api/document-annotations";
-import { copyTextToClipboard } from "@/lib/clipboard";
+import { useCopyToast } from "@/lib/use-copy-action";
 import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
@@ -103,6 +103,7 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
 }
 
 export function AnnotationPanelBody(props: AnnotationPanelProps) {
+  const copyAnnotationLink = useCopyAnnotationLink();
   const [composerValue, setComposerValue] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -536,13 +537,21 @@ export function truncate(value: string, limit: number) {
   return `${value.slice(0, limit - 1)}…`;
 }
 
-export async function copyAnnotationLink(documentKey: string, threadId: string) {
-  if (typeof window === "undefined") return;
-  const { pathname } = window.location;
-  const hash = `#document-${encodeURIComponent(documentKey)}&thread=${encodeURIComponent(threadId)}`;
-  try {
-    await copyTextToClipboard(`${window.location.origin}${pathname}${hash}`);
-  } catch {
-    /* swallow */
-  }
+/**
+ * Copy a deep link to an annotation thread, and say whether it landed.
+ *
+ * The trigger is a menu item that closes on click, so the confirmation is a
+ * toast rather than an inline state nobody would still be looking at.
+ */
+export function useCopyAnnotationLink() {
+  const copyWithToast = useCopyToast();
+  return useCallback(
+    (documentKey: string, threadId: string) => {
+      if (typeof window === "undefined") return;
+      const { pathname } = window.location;
+      const hash = `#document-${encodeURIComponent(documentKey)}&thread=${encodeURIComponent(threadId)}`;
+      void copyWithToast(`${window.location.origin}${pathname}${hash}`, "Link copied");
+    },
+    [copyWithToast],
+  );
 }

@@ -54,6 +54,7 @@ import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { useCopyToast } from "@/lib/use-copy-action";
 import { skillStudioNewRoute, skillStudioRoute } from "@/lib/company-skill-routes";
 import {
   buildBlankSkillDraft,
@@ -1905,6 +1906,8 @@ function InputPane({
 }) {
   const queryClient = useQueryClient();
   const onError = useMutationErrorToast();
+  // The row's menu closes on click, so its copy confirmation goes to a toast.
+  const copyWithToast = useCopyToast();
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [savedInputDraft, setSavedInputDraft] = useState<SavedInputDraftState>(
     EMPTY_SAVED_INPUT_DRAFT_STATE,
@@ -2097,7 +2100,7 @@ function InputPane({
                             <DropdownMenuItem
                               onClick={() => {
                                 const input = inputs.find((i) => i.id === id);
-                                if (input) void copyTextToClipboard(input.content).catch(() => {});
+                                if (input) void copyWithToast(input.content, "Input content copied");
                               }}
                             >
                               <Copy className="mr-2 h-4 w-4" /> Copy content

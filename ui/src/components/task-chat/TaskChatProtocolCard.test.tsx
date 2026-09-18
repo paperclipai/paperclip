@@ -640,11 +640,13 @@ describe("TaskChatProtocolCard", () => {
       (button) => button.textContent?.includes("Production"),
     );
     await act(async () => production?.click());
-    // Single selection advances; multi-selection waits for Next.
+    // Selecting answers the question; every page waits for Next.
     const nextButton = () =>
       Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
         (button) => button.textContent?.trim() === "Next",
       );
+    expect(container.textContent).toContain("1 of 3");
+    await act(async () => nextButton()?.click());
     expect(container.textContent).toContain("2 of 3");
     expect(onDecision).not.toHaveBeenCalled();
     expect(container.textContent).toContain(

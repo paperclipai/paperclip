@@ -29,6 +29,7 @@ import {
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { useCopyAction } from "@/lib/use-copy-action";
 import { isAgentStatusInvokable } from "@paperclipai/shared";
 import { sanitizedSetupErrorMessage } from "./chat-setup-error";
 import {
@@ -579,6 +580,11 @@ function ProviderConnectStep({
     </div>
   );
   const [manifestCopied, setManifestCopied] = useState(false);
+  // A hook rather than a sticky boolean: this step stays mounted when the
+  // secret is regenerated, so a latched "copied" would keep vouching for a
+  // value the reader never copied. The status resets itself, and a refused
+  // clipboard reads as a failure instead of a success.
+  const webhookSecretCopy = useCopyAction();
   const [privateKeyVisible, setPrivateKeyVisible] = useState(false);
   const [privateKeyFileError, setPrivateKeyFileError] = useState<string | null>(
     null,
@@ -1267,12 +1273,24 @@ settings:
                   type="button"
                   variant="outline"
                   onClick={() => {
-                    void copyTextToClipboard(generatedWebhookSecret).catch(
-                      reportCopyFailure,
-                    );
+                    // Both signals, and each covers the other's blind spot.
+                    // The toast is the loud one, the way this step's other two
+                    // copy buttons report failure — but the provider dedupes an
+                    // identical toast inside 3.5s, so a reader who clicks twice
+                    // on a blocked clipboard would see nothing the second time.
+                    // The inline state answers every click.
+                    void webhookSecretCopy
+                      .copy(generatedWebhookSecret)
+                      .then((status) => {
+                        if (status === "failed") reportCopyFailure();
+                      });
                   }}
                 >
-                  Copy webhook secret
+                  {webhookSecretCopy.copied
+                    ? "Webhook secret copied"
+                    : webhookSecretCopy.failed
+                      ? "Couldn’t copy — select it manually"
+                      : "Copy webhook secret"}
                 </Button>
               </div>
               <p className="text-sm text-muted-foreground">

@@ -29,6 +29,7 @@ import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { useCopyAction } from "../lib/use-copy-action";
 import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -2734,7 +2735,7 @@ function SkillLocationCard({
   folderPath: string | null | undefined;
   onMove?: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, failed, copy } = useCopyAction();
   const canonical = folderPath && folderPath.length > 0 ? folderPath : "Unfiled";
   return (
     <section>
@@ -2748,16 +2749,11 @@ function SkillLocationCard({
           size="sm"
           variant="outline"
           onClick={() => {
-            void copyTextToClipboard(canonical)
-              .then(() => {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
-              })
-              .catch(() => {});
+            void copy(canonical);
           }}
         >
           <Copy className="mr-1.5 h-3.5 w-3.5" />
-          {copied ? "Copied" : "Copy path"}
+          {copied ? "Copied" : failed ? "Copy failed" : "Copy path"}
         </Button>
         {onMove ? (
           <Button size="sm" variant="outline" onClick={onMove}>

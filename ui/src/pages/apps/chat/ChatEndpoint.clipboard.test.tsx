@@ -182,6 +182,28 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(JSON.stringify(mocks.pushToast.mock.calls)).not.toContain(secret);
   });
 
+  // The toast provider drops an identical toast raised inside 3.5 seconds, so
+  // a reader clicking twice against a blocked clipboard would see the failure
+  // once and then nothing. The inline state has to answer every click.
+  it("still shows a repeated copy failure the toast would have deduplicated", async () => {
+    await render("github");
+    await click("Generate webhook secret");
+    execCommand.mockReturnValue(false);
+
+    await click("Copy webhook secret");
+    expect(container.textContent).toContain("Couldn’t copy");
+
+    // Same failure again, well inside the dedupe window: the second toast is
+    // suppressed, so the button itself is the only thing left to say so.
+    const toastsAfterFirst = mocks.pushToast.mock.calls.length;
+    await click("Couldn’t copy — select it manually");
+    expect(container.textContent).toContain("Couldn’t copy");
+    expect(container.textContent).not.toContain("Webhook secret copied");
+    expect(mocks.pushToast.mock.calls.length).toBeGreaterThanOrEqual(
+      toastsAfterFirst,
+    );
+  });
+
   it("copies the private identity link with fallback and preserves success feedback", async () => {
     await render("slack", true);
     await click("Create private link");
