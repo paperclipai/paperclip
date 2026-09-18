@@ -58,6 +58,7 @@ describe("probeClaudeModelRoute", () => {
 
     await expect(probeClaudeModelRoute("auto/claude-sonnet", env)).resolves.toBe("available");
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("limit=1000");
     expect(String(fetchSpy.mock.calls[1]?.[0])).toContain("after_id=page-one");
   });
 
