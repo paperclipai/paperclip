@@ -35,7 +35,9 @@ import {
   issueService,
 } from "../services/index.js";
 import {
+  isSkillTestKeyActor,
   isTaskBridgeKeyActor,
+  skillTestKeyScopedIssueId,
   taskBridgeKeyScope,
   taskBridgeScopeAssigneeAgentIds,
   taskBridgeScopeProjectIds,
@@ -75,12 +77,9 @@ const agentScopedIssueListQuerySchema = z.object({
     .optional(),
   /**
    * Optional free-text search. Applied as a case-insensitive ILIKE filter against
-   * the issue identifier, title. Scoped to the same task_bridge fence as the other
-   * filters: a query that would produce results outside the fence returns an empty
+   * the issue identifier and title. Scoped to the same task_bridge fence as the
+   * other filters: a query that matches only out-of-fence records returns an empty
    * page, not a 403 — the filter narrows a set that is already fenced.
-   *
-   * GRO-1123 decision (board, 2026-09-18): busca textual está no escopo; parâmetro
-   * `q` opcional na mesma rota escopada.
    */
   q: z.string().trim().min(1).max(500).optional(),
 });
@@ -91,6 +90,29 @@ export function agentScopedIssueListRoute(db: Db): Router {
   router.get("/agents/me/issues", async (req, res) => {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
       res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    // A `skill_test` run token is narrowed to ONE issue by the harness that
+    // issued it. It is not a company-wide key that merely lacks a fence, so the
+    // unrestricted branch below must never be reachable from one: an enumeration
+    // of every visible issue is strictly wider than the single issue the token
+    // was minted for. Refused here rather than filtered down to `issueId`,
+    // because a list route is not the surface a single-issue token needs — the
+    // issue-read route already serves it. This mirrors the refusal the issue
+    // create route applies to the same scope.
+    if (isSkillTestKeyActor(req)) {
+      res.status(403).json({
+        error: "Skill-test run tokens cannot list issues.",
+        details: {
+          scopedIssueId: skillTestKeyScopedIssueId(req),
+          securityPrinciples: [
+            "Least Privilege",
+            "Complete Mediation",
+            "Fail Securely",
+          ],
+        },
+      });
       return;
     }
 

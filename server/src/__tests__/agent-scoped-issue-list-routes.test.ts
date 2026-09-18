@@ -290,4 +290,28 @@ describeEmbeddedPostgres("GET /agents/me/issues task_bridge fence", () => {
     expect(second.body.items).toHaveLength(1);
     expect(second.body.hasMore).toBe(false);
   });
+
+  it("refuses a skill_test run token with 403", async () => {
+    // A skill_test token is issued per run, scoped to a single issue id. It must
+    // never reach the list surface: the single-issue boundary is strictly narrower
+    // than any enumeration the route could return, even when combined with the
+    // task_bridge fence logic.
+    const fixture = await seedFixture();
+    const actor: Express.Request["actor"] = {
+      type: "agent",
+      source: "agent_key",
+      agentId: fixture.bridgeAgentId,
+      companyId: fixture.companyId,
+      keyId: "skill-test-key",
+      keyScope: { kind: "skill_test", issueId: randomUUID() },
+      companyIds: [fixture.companyId],
+      memberships: [],
+      isInstanceAdmin: false,
+    };
+
+    const res = await request(appForActor(actor)).get("/agents/me/issues");
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toMatch(/skill.test/i);
+    expect(res.body.details?.scopedIssueId).toBeTruthy();
+  });
 });
