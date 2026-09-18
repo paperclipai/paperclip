@@ -156,71 +156,66 @@ export function trackAgentTaskRun(
 export function trackConnectorConnectionCreated(
   client: TelemetryClient,
   dims: {
-    connector_key: RawDimension<"custom">;
-    transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
-    auth_kind: RawDimension<"oauth" | "api_key" | "none">;
-    setup_flow: RawDimension<"gallery" | "api" | "example" | "composio_sync">;
-    status: RawDimension<"draft" | "active" | "disabled" | "archived">;
+    connector_key: string;
+    transport: RawDimension<EventDimensionsMap["connector.connection_created"]["transport"]>;
+    auth_kind: RawDimension<EventDimensionsMap["connector.connection_created"]["auth_kind"]>;
+    setup_flow: RawDimension<EventDimensionsMap["connector.connection_created"]["setup_flow"]>;
+    status: RawDimension<EventDimensionsMap["connector.connection_created"]["status"]>;
     enabled: boolean;
   },
 ): void {
-  client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure which catalog connectors installations create connections for
-    "connector.connection_created",
-    dims,
-  );
+  client.track("connector.connection_created", {
+    connector_key: dims.connector_key,
+    transport: asEventDimension(dims.transport),
+    auth_kind: asEventDimension(dims.auth_kind),
+    setup_flow: asEventDimension(dims.setup_flow),
+    status: asEventDimension(dims.status),
+    enabled: dims.enabled,
+  });
 }
 
 export function trackConnectorConnectionUpdated(
   client: TelemetryClient,
   dims: {
-    connector_key: RawDimension<"custom">;
-    transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
-    auth_kind: RawDimension<"oauth" | "api_key" | "none">;
-    change_source: RawDimension<
-      | "update_api"
-      | "gallery_setup"
-      | "oauth_callback"
-      | "credential_refresh"
-      | "archive"
-      | "example"
-      | "composio_sync"
-    >;
-    previous_status: RawDimension<"draft" | "active" | "disabled" | "archived">;
-    status: RawDimension<"draft" | "active" | "disabled" | "archived">;
+    connector_key: string;
+    transport: RawDimension<EventDimensionsMap["connector.connection_updated"]["transport"]>;
+    auth_kind: RawDimension<EventDimensionsMap["connector.connection_updated"]["auth_kind"]>;
+    change_source: RawDimension<EventDimensionsMap["connector.connection_updated"]["change_source"]>;
+    previous_status: RawDimension<EventDimensionsMap["connector.connection_updated"]["previous_status"]>;
+    status: RawDimension<EventDimensionsMap["connector.connection_updated"]["status"]>;
     previous_enabled: boolean;
     enabled: boolean;
   },
 ): void {
-  client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure connector lifecycle transitions (configured, paused, archived) after creation
-    "connector.connection_updated",
-    dims,
-  );
+  client.track("connector.connection_updated", {
+    connector_key: dims.connector_key,
+    transport: asEventDimension(dims.transport),
+    auth_kind: asEventDimension(dims.auth_kind),
+    change_source: asEventDimension(dims.change_source),
+    previous_status: asEventDimension(dims.previous_status),
+    status: asEventDimension(dims.status),
+    previous_enabled: dims.previous_enabled,
+    enabled: dims.enabled,
+  });
 }
 
 export function trackConnectorInvocationCompleted(
   client: TelemetryClient,
   dims: {
-    connector_key: RawDimension<"custom">;
-    transport: RawDimension<"mcp_remote" | "rest_api" | "local_stdio">;
-    status: RawDimension<
-      | "succeeded"
-      | "failed"
-      | "denied"
-      | "cancelled"
-      | "timed_out"
-      | "rate_limited"
-    >;
-    origin: RawDimension<"setup_test" | "agent" | "user" | "system" | "plugin">;
+    connector_key: string;
+    transport: RawDimension<EventDimensionsMap["connector.invocation_completed"]["transport"]>;
+    status: RawDimension<EventDimensionsMap["connector.invocation_completed"]["status"]>;
+    origin: RawDimension<EventDimensionsMap["connector.invocation_completed"]["origin"]>;
     duration_seconds?: number;
   },
 ): void {
-  client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/13578): measure whether connected connectors are successfully used and where invocations fail
-    "connector.invocation_completed",
-    dims,
-  );
+  client.track("connector.invocation_completed", {
+    connector_key: dims.connector_key,
+    transport: asEventDimension(dims.transport),
+    status: asEventDimension(dims.status),
+    origin: asEventDimension(dims.origin),
+    ...(dims.duration_seconds === undefined ? {} : { duration_seconds: dims.duration_seconds }),
+  });
 }
 
 export function trackErrorHandlerCrash(

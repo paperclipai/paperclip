@@ -42,9 +42,19 @@ export type RetentionClass = keyof typeof RETENTION_DAYS;
  *   counts (rotations detected). No token material and no PII.
  *   External-system event (Codex CLI) — not yet in PaperclipEventName.
  *   Class: operational_enum_count — 90-day window.
+ *
+ * connector.connection_created / connector.connection_updated /
+ * connector.invocation_completed
+ *   Carry only closed enums, booleans, a coarse rounded-seconds duration, and
+ *   the reviewed catalog slug (or the literal "custom") as connector_key. No
+ *   token material and no PII.
+ *   Class: operational_enum_count — 90-day window.
  */
 export const EVENT_RETENTION_CLASS: Partial<Record<string, RetentionClass>> = {
   "codex.credential_health": "operational_enum_count",
   "interaction.created": "operational_enum_count",
   "interaction.resolved": "operational_enum_count",
+  "connector.connection_created": "operational_enum_count",
+  "connector.connection_updated": "operational_enum_count",
+  "connector.invocation_completed": "operational_enum_count",
 };
