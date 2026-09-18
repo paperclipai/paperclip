@@ -49,6 +49,13 @@ describe("self-service Slack identity confirmation", () => {
     expect(container.textContent).toContain("current Paperclip permissions");
     expect(container.querySelector('a')?.textContent).toBe("Return to Slack");
   });
+  it("keeps other providers out of the Slack return flow", async () => {
+    mocks.previewIdentityLink.mockResolvedValue({ ...identity, provider: "github", selfService: false });
+    render(); await vi.waitFor(() => expect(button("Confirm identity")).toBeTruthy());
+    button("Confirm identity").click();
+    await vi.waitFor(() => expect(container.textContent).toContain("Identity linked"));
+    expect(container.querySelector('a[href="https://app.slack.com/"]')).toBeNull();
+  });
   it("lets nonmembers request access without confirming the identity", async () => {
     mocks.previewIdentityLink.mockResolvedValue({ ...identity, canConfirm: false });
     render(); await vi.waitFor(() => expect(button("Request access")).toBeTruthy());

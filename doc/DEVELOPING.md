@@ -486,8 +486,8 @@ Chat with an agent**. Before connecting, configure a public HTTPS URL that Slack
 can reach. The setup page shows this requirement above the app details.
 Slack app name, bot display name, and slash command are editable while the
 connection is a draft; valid edits save when a field loses focus. **Create Slack
-app** opens Slack with the generated manifest prefilled. The read-only manifest
-is collapsed by default and can be expanded to inspect or copy it. Once connected,
+app** opens Slack with the generated manifest prefilled. **View Slack App Manifest**
+opens the read-only manifest in a modal to inspect or copy it. Once connected,
 the app details are locked so reconnecting cannot silently change the registered
 command. Slack still requires workspace selection, installation approval, and
 copying the bot token and signing secret back into Paperclip.
@@ -519,6 +519,20 @@ conversation test is optional: **I've sent the test message** and **Skip test an
 finish** both finish setup once webhook verification and account linking are
 complete. The separate strict connection-test API retains its conversation and
 delivery checks.
+
+### Chat activity pagination and callback diagnostics
+
+The connection Activity tab loads 25 records per page. `GET /api/chat-endpoints/:id/activity?limit=25`
+returns `{ items, nextCursor }`; pass `cursor` to read older records. The limit must be 1–100.
+A timestamp and ID cursor preserves records with equal timestamps and avoids shifts from new arrivals.
+The first page refreshes automatically; older pages do not poll. Mutable action status can move an
+entry forward in time, so this is a live ledger, not a historical snapshot. Requests without pagination
+parameters retain the recent-100 array response for existing clients.
+
+Slack callback diagnostics tolerate HTTP between a TLS proxy and Paperclip when the public host,
+port, and path still match. A changed authority or path remains stale. This comparison only affects
+health display; it does not trust forwarded headers or alter Slack signature verification.
+
 
 ## Docker Quickstart (No local Node install)
 
@@ -1511,16 +1525,3 @@ from stored configuration problems. Verify connection transport and endpoint
 fields before disabling a connection. Verify workspace ownership, active runs,
 Git state, and runtime-service readiness before closing a workspace. A missing
 URL or old workspace timestamp alone does not prove that a row is disposable.
-
-### Chat activity pagination and callback diagnostics
-
-The connection Activity tab loads 25 records per page. `GET /api/chat-endpoints/:id/activity?limit=25`
-returns `{ items, nextCursor }`; pass `cursor` to read older records. The limit must be 1–100.
-A timestamp and ID cursor preserves records with equal timestamps and avoids shifts from new arrivals.
-The first page refreshes automatically; older pages do not poll. Mutable action status can move an
-entry forward in time, so this is a live ledger, not a historical snapshot. Requests without pagination
-parameters retain the recent-100 array response for existing clients.
-
-Slack callback diagnostics tolerate HTTP between a TLS proxy and Paperclip when the public host,
-port, and path still match. A changed authority or path remains stale. This comparison only affects
-health display; it does not trust forwarded headers or alter Slack signature verification.

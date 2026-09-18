@@ -84,7 +84,7 @@ export function ChatIdentityConfirm() {
             Paperclip permissions in {identity.companyName}.
           </p>
         </div>
-        <Button asChild><a href="https://app.slack.com/" target="_blank" rel="noopener noreferrer">Return to Slack</a></Button>
+        {identity.provider === "slack" && <Button asChild><a href="https://app.slack.com/" target="_blank" rel="noopener noreferrer">Return to Slack</a></Button>}
       </main>
     );
   }
