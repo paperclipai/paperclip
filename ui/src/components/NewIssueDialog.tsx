@@ -608,9 +608,21 @@ export function NewIssueDialog() {
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
       effectiveCompanyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(effectiveCompanyId, assigneeAdapterType, null, catalogProvider)
+        ? queryKeys.agents.adapterModels(
+            effectiveCompanyId,
+            assigneeAdapterType,
+            null,
+            catalogProvider,
+            selectedAssigneeAgent?.id ?? null,
+          )
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!, { provider: catalogProvider }),
+    queryFn: () =>
+      agentsApi.adapterModels(effectiveCompanyId!, assigneeAdapterType!, {
+        provider: catalogProvider,
+        // Scope discovery to the selected assignee so a gateway-backed agent
+        // offers its full catalog when picking a model for the new issue.
+        agentId: selectedAssigneeAgent?.id ?? null,
+      }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && supportsAssigneeOverrides,
   });
 

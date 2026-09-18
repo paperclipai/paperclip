@@ -745,9 +745,21 @@ export function IssueProperties({
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType, null, catalogProvider)
+        ? queryKeys.agents.adapterModels(
+            companyId,
+            assigneeAdapterType,
+            null,
+            catalogProvider,
+            assignee?.id ?? null,
+          )
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider }),
+    queryFn: () =>
+      agentsApi.adapterModels(companyId!, assigneeAdapterType!, {
+        provider: catalogProvider,
+        // Scope discovery to the assignee so a gateway-backed agent offers its
+        // full catalog as per-issue model overrides.
+        agentId: assignee?.id ?? null,
+      }),
     enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
   });
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
