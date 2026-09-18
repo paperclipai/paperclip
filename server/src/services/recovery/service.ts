@@ -119,7 +119,7 @@ import {
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
-import { hasArmedInvokableIssueWatchdog } from "../task-watchdog-scope.js";
+import { hasArmedInvokableIssueWatchdog } from "../task-watchdog-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,

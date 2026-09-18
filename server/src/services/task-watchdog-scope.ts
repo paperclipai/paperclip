@@ -1,7 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns, issues, issueWatchdogs } from "@paperclipai/db";
-import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { heartbeatRuns, issues, issueWatchdogs } from "@paperclipai/db";
 
 const MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH = 100;
 export const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
@@ -172,47 +171,4 @@ export async function taskWatchdogScopeAllowsIssueMutation(
     kind: "invalid" as const,
     detail: "Task-watchdog runs can only mutate the watched issue subtree.",
   };
-}
-
-/**
- * True when the issue itself has an active watchdog whose agent can actually
- * run it. Such a watchdog is a deliberate, supervised wait: it owns the next
- * wake for an idle issue, so recovery must not re-wake the issue first.
- *
- * A watchdog whose agent is missing, in another company, or not invokable
- * (paused, terminated, pending approval, invalid reporting chain) never
- * fires, so it does not count. Only the issue's own watchdog counts; a
- * watchdog on an ancestor issue is not considered here.
- */
-export async function hasArmedInvokableIssueWatchdog(
-  db: Db,
-  issue: Pick<IssueScopeTarget, "id" | "companyId">,
-) {
-  const watchdogAgent = await db
-    .select({
-      id: agents.id,
-      companyId: agents.companyId,
-      name: agents.name,
-      reportsTo: agents.reportsTo,
-      status: agents.status,
-    })
-    .from(issueWatchdogs)
-    .innerJoin(
-      agents,
-      and(
-        eq(agents.id, issueWatchdogs.watchdogAgentId),
-        eq(agents.companyId, issueWatchdogs.companyId),
-      ),
-    )
-    .where(
-      and(
-        eq(issueWatchdogs.companyId, issue.companyId),
-        eq(issueWatchdogs.issueId, issue.id),
-        eq(issueWatchdogs.status, "active"),
-      ),
-    )
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
-  if (!watchdogAgent) return false;
-  return (await evaluateAgentInvokabilityFromDb(db, watchdogAgent)).invokable;
 }

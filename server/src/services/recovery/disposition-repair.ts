@@ -12,7 +12,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
-import { hasArmedInvokableIssueWatchdog } from "../task-watchdog-scope.js";
+import { hasArmedInvokableIssueWatchdog } from "../task-watchdog-delivery.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 

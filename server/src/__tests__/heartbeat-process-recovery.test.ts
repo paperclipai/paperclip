@@ -20,6 +20,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHash, randomUUID } from "node:crypto";
 import { recordLegacyWorkspaceRestoreFailure, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
+import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -15108,6 +15109,105 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.continuationRequeued).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
     expect(agentId).toBeTruthy();
+  });
+
+  async function seedStrandedIssueWithSeparateWatchdog(input: {
+    summary: string;
+    watchdogRuntimeConfig?: Record<string, unknown>;
+  }) {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      resultJson: { summary: input.summary },
+    });
+    const watchdogAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: watchdogAgentId,
+      companyId,
+      name: "Watcher",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: input.watchdogRuntimeConfig ?? {},
+      permissions: {},
+    });
+    const [watchdog] = await db
+      .insert(issueWatchdogs)
+      .values({
+        companyId,
+        issueId,
+        watchdogAgentId,
+        instructions: "Review the issue when it stops.",
+        status: "active",
+      })
+      .returning();
+    return { companyId, issueId, watchdogAgentId, watchdog: watchdog! };
+  }
+
+  it("does not accept an armed watchdog whose agent has on-demand wakes disabled", async () => {
+    const { issueId } = await seedStrandedIssueWithSeparateWatchdog({
+      summary: "Parked on a watchdog whose agent skips on-demand wakes.",
+      watchdogRuntimeConfig: { heartbeat: { wakeOnDemand: false } },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
+  it("does not accept an armed watchdog whose agent is over its budget hard-stop", async () => {
+    const { companyId, issueId, watchdogAgentId } = await seedStrandedIssueWithSeparateWatchdog({
+      summary: "Parked on a watchdog whose agent is over budget.",
+    });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: watchdogAgentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: watchdogAgentId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
+  it("does not accept an armed watchdog that already reviewed the current stop state", async () => {
+    const { issueId, watchdog } = await seedStrandedIssueWithSeparateWatchdog({
+      summary: "Parked on a watchdog that already reviewed this stop.",
+    });
+    const stopState = await taskWatchdogService(db).previewWatchdogStopState(watchdog);
+    expect(stopState.state).toBe("stopped");
+    if (stopState.state !== "stopped") return;
+    await db
+      .update(issueWatchdogs)
+      .set({
+        lastReviewedFingerprint: stopState.stopFingerprint,
+        lastReviewedStopSnapshot: stopState.stopSnapshot,
+      })
+      .where(eq(issueWatchdogs.id, watchdog.id));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
   });
 
   it("preserves a delegated blocker edge as the durable external-wait path", async () => {
