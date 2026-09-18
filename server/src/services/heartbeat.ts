@@ -20302,6 +20302,14 @@ export function heartbeatService(
             .select({
               id: projects.id,
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              hasWorkspace: exists(
+                db.select({ id: projectWorkspaces.id })
+                  .from(projectWorkspaces)
+                  .where(and(
+                    eq(projectWorkspaces.projectId, projects.id),
+                    eq(projectWorkspaces.companyId, agent.companyId),
+                  )),
+              ).mapWith(Boolean),
               env: projects.env,
               updatedAt: projects.updatedAt,
             })
@@ -20433,10 +20441,9 @@ export function heartbeatService(
             isolatedWorkspacesEnabled,
           ),
           defaultIsolatedWorkspacesEnabled,
-          // A resolved project row, not the issue's raw `projectId`: the
-          // substituted policy must only reach a task whose repository the
-          // worktree can actually be cut from.
-          hasProject: Boolean(projectContext),
+          // Projects without workspace configuration get a plain managed
+          // directory. The operator default cannot turn it into a worktree.
+          hasProjectWorkspace: projectContext?.hasWorkspace ?? false,
         });
       const retainedTrust = await resolveAndRetainRunTrustPreset(db, {
         companyId: agent.companyId,
