@@ -6366,6 +6366,91 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairs[0].idempotencyKey).toBe(`issue_disposition_repair:${issueId}:${legacyDispositionFingerprint(companyId, issueId, agentId, runId)}:1`);
   });
 
+  async function runProductiveSuccessfulRunOnWatchedIssue(
+    watchdogAgentStatus: "idle" | "terminated",
+  ) {
+    const { companyId, agentId, runId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const watchdogAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: watchdogAgentId,
+      companyId,
+      name: "Watcher",
+      role: "engineer",
+      status: watchdogAgentStatus,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issueWatchdogs).values({
+      companyId,
+      issueId,
+      watchdogAgentId,
+      instructions: "Review the issue when it stops.",
+      status: "active",
+    });
+    mockAdapterExecute.mockImplementationOnce(
+      async (ctx: { runId: string }) => {
+        await db.insert(issueComments).values({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          createdByRunId: ctx.runId,
+          body: "Sent the vendor request. The watchdog supervises the wait.",
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Sent the vendor request. The watchdog supervises the wait.",
+          provider: "test",
+          model: "test-model",
+        };
+      },
+    );
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "finish_successful_run_handoff"),
+        ),
+      );
+    return { runId, issueId, handoffWakeups };
+  }
+
+  it("skips the finish-handoff wake when an armed watchdog owns the next wake", async () => {
+    const { issueId, handoffWakeups } =
+      await runProductiveSuccessfulRunOnWatchedIssue("idle");
+
+    expect(handoffWakeups).toHaveLength(0);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("still queues the finish-handoff wake when the watchdog agent can never run", async () => {
+    const { issueId, runId, handoffWakeups } =
+      await runProductiveSuccessfulRunOnWatchedIssue("terminated");
+
+    expect(handoffWakeups).toHaveLength(1);
+    expect(handoffWakeups[0]?.idempotencyKey).toBe(
+      `finish_successful_run_handoff:${issueId}:${runId}:1`,
+    );
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedQueuedIssueRunFixture();
