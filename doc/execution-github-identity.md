@@ -39,7 +39,10 @@ Remote launchers prepend their directory to the execution target's effective
 reads the provider's environment before staging the launcher shell files.
 This keeps legacy NVM and user-local agent installations available alongside
 newer images with system-wide CLIs. The generated shell files retain that
-combined path with managed `git` and `gh` first. Sandbox command checks use
+combined path with managed `git` and `gh` first. The launcher directory has
+its own CommonJS package scope, so the extensionless Node launchers work
+inside repositories that declare `"type": "module"` without changing the
+project's package configuration. Sandbox command checks use
 the same sanitized environment as execution, so a CLI visible only in the
 provider's default environment cannot pass the launch check. Failed path
 discovery stops startup instead of silently falling back to a minimal path.

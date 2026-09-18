@@ -67,6 +67,26 @@ async function sandbox(layout: string) {
 }
 
 describe("managed GitHub launcher environment", () => {
+  it.each(["module", "commonjs"])("runs managed GitHub launchers inside a %s project", async (type) => {
+    const fixture = await sandbox("usr/bin");
+    const packageJson = JSON.stringify({ type });
+    await writeFile(path.join(fixture.root, "package.json"), packageJson);
+    // Exercise real Git; gh uses the fixture CLI because it need not be installed.
+    await rm(path.join(fixture.bin, "git"));
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-package-type", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    for (const cli of ["git", "gh"]) {
+      const result = await fixture.runner.execute({
+        command: path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, cli), args: ["--version"], env,
+      });
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(cli === "git" ? /^git version / : /^gh started\n$/);
+    }
+    expect(await readFile(path.join(fixture.root, "package.json"), "utf8")).toBe(packageJson);
+  });
+
   it("clears empty identity overrides in sandbox shells and preserves a captured identity", async () => {
     const fixture = await sandbox("usr/bin");
     const env = await prepareGitHubOperationLaunchers({

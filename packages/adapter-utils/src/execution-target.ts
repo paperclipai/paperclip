@@ -1718,6 +1718,9 @@ export async function prepareGitHubOperationLaunchers(input: {
     .join("");
   const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
   const files: Record<string, string> = Object.fromEntries([
+    // Remote launchers live beneath the checkout. Pin their own package scope
+    // so an enclosing project's "type": "module" cannot reinterpret require().
+    ["package.json", '{"type":"commonjs"}\n'],
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
