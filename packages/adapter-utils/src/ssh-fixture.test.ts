@@ -461,7 +461,10 @@ describe("ssh env-lab fixture", () => {
       },
       command: "node",
       args: ["--version"],
-      env: { FOO: "bar" },
+      // No environment, so this stays a purely local build with no connection.
+      // Environment delivery has its own end-to-end coverage in
+      // ssh-remote-env.test.ts.
+      env: {},
     });
 
     // The remote script rides the last ssh argument. The SSH target is an
@@ -481,12 +484,15 @@ describe("ssh env-lab fixture", () => {
     // nvm in .bashrc still resolves node under a non-login SSH command.
     expect(remoteScript).toContain(".bashrc");
     // The last ssh argument wraps the script as `sh -c '...'`, so the inner
-    // quotes are escaped. Assert the command still runs: cd, env, and the argv.
+    // quotes are escaped. Assert the command still runs: cd and the argv.
     expect(remoteScript).toContain("cd ");
     expect(remoteScript).toContain("/srv/paperclip/workspace");
-    expect(remoteScript).toContain("exec env ");
     expect(remoteScript).toContain("node");
     expect(remoteScript).toContain("--version");
+    // Environment assignments must never be built into the command line; they
+    // would land in the world-readable /proc/<pid>/cmdline of this long-lived
+    // ssh client (REVIP-3492).
+    expect(remoteScript).not.toContain("exec env ");
     await target.cleanup();
   });
 
