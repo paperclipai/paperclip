@@ -2933,10 +2933,24 @@ export function recoveryService(
   async function resolveContinuationWaitingOnReview(
     issue: typeof issues.$inferSelect,
   ) {
-    const [existingBlockers, openChildren] = await Promise.all([
+    const [allExistingBlockers, allOpenChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
       openChildIssues(issue),
     ]);
+    // A parent may deliberately block its own follow-up child. Waiting on such
+    // a child would form a blocking cycle, so leave it out of the wait.
+    const cycleFormingIds = new Set(
+      await issuesSvc.findCycleFormingBlockerIds(issue.companyId, issue.id, [
+        ...allExistingBlockers.map((row) => row.id),
+        ...allOpenChildren.map((row) => row.id),
+      ]),
+    );
+    const existingBlockers = allExistingBlockers.filter(
+      (row) => !cycleFormingIds.has(row.id),
+    );
+    const openChildren = allOpenChildren.filter(
+      (row) => !cycleFormingIds.has(row.id),
+    );
     const blockedByIssueIds = [
       ...new Set([
         ...existingBlockers.map((row) => row.id),
@@ -3476,12 +3490,24 @@ export function recoveryService(
           continue;
         }
 
-        const [sourceState, healthyChildren, hasNewSourcePath] =
+        const [sourceState, allHealthyChildren, hasNewSourcePath] =
           await Promise.all([
             collectDispositionRepairSourceState(db, { issue }),
             healthyOpenChildIssues(issue),
             sourceHasNewPathOutsideRecoveryAction(action),
           ]);
+        // A child that waits on this issue cannot restore it: blocking the
+        // issue on that child would form a cycle.
+        const cycleFormingChildIds = new Set(
+          await issuesSvc.findCycleFormingBlockerIds(
+            issue.companyId,
+            issue.id,
+            allHealthyChildren.map((child) => child.id),
+          ),
+        );
+        const healthyChildren = allHealthyChildren.filter(
+          (child) => !cycleFormingChildIds.has(child.id),
+        );
         const durablePathRestored =
           action.ownerType !== "board" && sourceState.hasDurableWaitingPath;
         if (
