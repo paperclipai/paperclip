@@ -4625,7 +4625,6 @@ export function issueRoutes(
     actorType: "agent" | "user";
     actorId: string;
     actorAgentId?: string | null;
-    actorRunId?: string | null;
     reviewInteractionId?: string;
   }) {
     const nextStatus = typeof input.updateFields.status === "string"
@@ -4634,7 +4633,18 @@ export function issueRoutes(
     // Conversations wait for the next message; successful run finalization owns
     // the waiting state. They do not need an execution-task review assignment.
     if (isConversation(input.existing) && !input.reviewInteractionId) return null;
-    if (input.existing.status === "in_review" || nextStatus !== "in_review") return null;
+    const stayingOrEnteringReview =
+      nextStatus === "in_review" || input.existing.status === "in_review";
+    if (!stayingOrEnteringReview) return null;
+    // An explicit confirmation binding must persist even when the issue is
+    // already in_review (execution-policy repair, follow-up PATCH). The
+    // auto-detected review path still only applies when entering in_review.
+    if (
+      !input.reviewInteractionId &&
+      (input.existing.status === "in_review" || nextStatus !== "in_review")
+    ) {
+      return null;
+    }
     if (input.actorType !== "agent" && !input.reviewInteractionId) return null;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(
@@ -4665,8 +4675,7 @@ export function issueRoutes(
           (interaction.kind === "request_confirmation" ||
             interaction.kind === "request_checkbox_confirmation") &&
           (input.actorType === "agent"
-            ? interaction.createdByAgentId === input.actorAgentId &&
-              interaction.sourceRunId === input.actorRunId
+            ? interaction.createdByAgentId === input.actorAgentId
             : interaction.createdByUserId === input.actorId) &&
           !(
             interaction.kind === "request_confirmation" &&
@@ -4680,7 +4689,7 @@ export function issueRoutes(
       );
       if (!designatedReviewConfirmation) {
         const creatorDescription =
-          input.actorType === "agent" ? "this agent run" : "this user";
+          input.actorType === "agent" ? "this agent" : "this user";
         throw unprocessable(
           `reviewInteractionId must identify a pending non-tool confirmation created by ${creatorDescription}`,
           {
@@ -5248,6 +5257,48 @@ export function issueRoutes(
     if (runId) return runId;
     res.status(401).json({ error: "Agent run id required" });
     return null;
+  }
+
+  async function assertNoPendingDesignatedReviewConfirmation(input: {
+    issue: Parameters<typeof resolveIssueReviewRequester>[1];
+    requestedReviewInteractionId?: string;
+  }) {
+    const persistedReviewInteractionId = (
+      await resolveIssueReviewRequester(db, input.issue)
+    )?.reviewInteractionId;
+    if (
+      input.requestedReviewInteractionId &&
+      input.requestedReviewInteractionId !== persistedReviewInteractionId
+    ) {
+      throw unprocessable(
+        "reviewInteractionId must match the persisted review confirmation binding",
+        {
+          code: "review_interaction_binding_mismatch",
+          reviewInteractionId: input.requestedReviewInteractionId,
+          persistedReviewInteractionId: persistedReviewInteractionId ?? null,
+        },
+      );
+    }
+    if (!persistedReviewInteractionId) return;
+
+    const pendingBoundConfirmation = (
+      await issueThreadInteractionService(db).listForIssue(input.issue.id)
+    ).find(
+      (interaction) =>
+        interaction.id === persistedReviewInteractionId &&
+        interaction.status === "pending" &&
+        (interaction.kind === "request_confirmation" ||
+          interaction.kind === "request_checkbox_confirmation"),
+    );
+    if (!pendingBoundConfirmation) return;
+
+    throw unprocessable(
+      "Cannot complete execution review while the designated confirmation is still pending",
+      {
+        code: "pending_review_confirmation",
+        reviewInteractionId: persistedReviewInteractionId,
+      },
+    );
   }
 
   async function hasActiveCheckoutManagementOverride(
@@ -8931,8 +8982,13 @@ export function issueRoutes(
       "Server-Timing",
       `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`,
     );
+    const reviewRequester =
+      issue.status === "in_review"
+        ? await resolveIssueReviewRequester(db, issue)
+        : null;
     res.json({
       ...issue,
+      reviewInteractionId: reviewRequester?.reviewInteractionId ?? null,
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
@@ -9398,7 +9454,6 @@ export function issueRoutes(
               actorType: actor.actorType,
               actorId: actor.actorId,
               actorAgentId: actor.agentId,
-              actorRunId: actor.runId,
             });
             const executionPolicy = normalizeIssueExecutionPolicy(
               lockedIssue.executionPolicy ?? null,
@@ -13340,9 +13395,28 @@ export function issueRoutes(
         actorType: actor.actorType,
         actorId: actor.actorId,
         actorAgentId: actor.agentId,
-        actorRunId: actor.runId,
         reviewInteractionId: requestedReviewInteractionId,
       });
+      if (reviewInteractionId) {
+        const executionState = parseIssueExecutionState(
+          updateFields.executionState ?? existing.executionState,
+        );
+        if (executionState?.status === "pending") {
+          updateFields.executionState = {
+            ...executionState,
+            reviewRequest: {
+              ...(executionState.reviewRequest ?? {}),
+              id: reviewInteractionId,
+            },
+          };
+        }
+      }
+      if (transition.decision) {
+        await assertNoPendingDesignatedReviewConfirmation({
+          issue: existing,
+          requestedReviewInteractionId,
+        });
+      }
       const enteringReviewRequested =
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
@@ -13850,7 +13924,16 @@ export function issueRoutes(
           ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>
         >;
         referencedIssueIdentifiers?: string[];
-      } = issue;
+        reviewInteractionId?: string | null;
+      } = {
+        ...issue,
+        reviewInteractionId:
+          reviewInteractionId ??
+          (issue.status === "in_review"
+            ? (await resolveIssueReviewRequester(db, issue))?.reviewInteractionId ??
+              null
+            : null),
+      };
       let updatedRelations: Awaited<
         ReturnType<typeof svc.getRelationSummaries>
       > | null = null;
@@ -17586,6 +17669,9 @@ export function issueRoutes(
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
       let goalCommentSteered = false;
       if (shouldAutoApproveReviewComment) {
+        await assertNoPendingDesignatedReviewConfirmation({
+          issue: currentIssue,
+        });
         const transition = applyIssueExecutionPolicyTransition({
           issue: currentIssue,
           policy: currentExecutionPolicy,
