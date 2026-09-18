@@ -46,6 +46,8 @@ const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.me
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
 };
+const INDEX_REFRESH_SKILL_MARKDOWN = readFileSync(new URL("../skills/index-refresh/SKILL.md", import.meta.url), "utf8");
+const WIKI_LINT_SKILL_MARKDOWN = readFileSync(new URL("../skills/wiki-lint/SKILL.md", import.meta.url), "utf8");
 const DEFAULT_MANAGED_SKILL = {
   status: "resolved",
   skillId: "skill-1",
@@ -1528,6 +1530,55 @@ Duplicate headings receive stable suffixes.
       wikiId: "default",
     });
     expect(pages.content).toBe("No pages indexed yet.");
+  });
+
+  it("paginates wiki page inventory and makes completeness explicit", async () => {
+    const harness = createTestHarness({ manifest });
+    const allPages = [
+      { path: "wiki/concepts/a.md", title: "A", page_type: "concepts" },
+      { path: "wiki/concepts/b.md", title: "B", page_type: "concepts" },
+      { path: "wiki/concepts/c.md", title: "C", page_type: "concepts" },
+    ];
+    harness.ctx.db.query = async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      harness.dbQueries.push({ sql, params });
+      if (!sql.includes("wiki_pages")) return [];
+      const cursor = params?.[3] as string | null;
+      const requested = Number(params?.[4]);
+      return allPages.filter((page) => cursor == null || page.path > cursor).slice(0, requested) as T[];
+    };
+    await plugin.definition.setup(harness.ctx);
+
+    const first = await harness.executeTool<{
+      data: { pages: Array<{ path: string }>; pageInfo: { complete: boolean; nextCursor: string | null; returned: number } };
+    }>("wiki_list_pages", { companyId: COMPANY_ID, wikiId: "default", limit: 2 });
+    expect(first.data.pages.map((page) => page.path)).toEqual([
+      "wiki/concepts/a.md",
+      "wiki/concepts/b.md",
+    ]);
+    expect(first.data.pageInfo).toMatchObject({ complete: false, returned: 2 });
+
+    const second = await harness.executeTool<{
+      data: { pages: Array<{ path: string }>; pageInfo: { complete: boolean; nextCursor: string | null; returned: number } };
+    }>("wiki_list_pages", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      limit: 2,
+      cursor: first.data.pageInfo.nextCursor,
+    });
+    expect(second.data.pages.map((page) => page.path)).toEqual(["wiki/concepts/c.md"]);
+    expect(second.data.pageInfo).toEqual({ limit: 2, returned: 1, complete: true, nextCursor: null });
+    await expect(harness.executeTool("wiki_list_pages", {
+      companyId: COMPANY_ID,
+      wikiId: "default",
+      cursor: Buffer.from("raw/not-a-page.md", "utf8").toString("base64url"),
+    })).rejects.toThrow("Invalid wiki page inventory cursor.");
+
+    const listPagesTool = manifest.tools?.find((tool) => tool.name === "wiki_list_pages");
+    expect(listPagesTool?.description).toContain("until complete is true");
+    expect(JSON.stringify(listPagesTool?.parametersSchema)).toContain('"cursor":{"type":"string"');
+    expect(JSON.stringify(listPagesTool?.parametersSchema)).toContain('"limit":{"type":"number"');
+    expect(INDEX_REFRESH_SKILL_MARKDOWN).toContain("pageInfo.nextCursor");
+    expect(WIKI_LINT_SKILL_MARKDOWN).toContain("pageInfo.nextCursor");
   });
 
   it("filters stale page and raw source rows out of browse data", async () => {
