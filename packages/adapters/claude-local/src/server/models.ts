@@ -129,7 +129,7 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
 
   const now = Date.now();
   const baseUrl = resolveAnthropicBaseUrl();
-  const keyFingerprint = fingerprint(credential.value);
+  const keyFingerprint = fingerprint(`${credential.kind}:${credential.value}`);
   if (
     options?.forceRefresh !== true &&
     cached &&
