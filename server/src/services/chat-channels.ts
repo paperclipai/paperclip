@@ -9938,7 +9938,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       db.select({ at: chatDeliveries.createdAt }).from(chatDeliveries).where(and(
         eq(chatDeliveries.companyId, record.endpoint.companyId), eq(chatDeliveries.endpointId, endpointId),
         inArray(chatDeliveries.principalId, principalIds), gte(chatDeliveries.createdAt, new Date(startedAt)),
-        eq(chatDeliveries.eventKind, "message"),
+        inArray(chatDeliveries.eventKind, ["message", "mention"]),
       )).orderBy(asc(chatDeliveries.createdAt)).limit(1).then((rows) => rows[0]),
       db.select({ at: chatActions.createdAt }).from(chatActions).where(and(
         eq(chatActions.companyId, record.endpoint.companyId), eq(chatActions.endpointId, endpointId),

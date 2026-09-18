@@ -12564,6 +12564,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
+    expect(endpoint.allowUnlinkedPeople).toBe(false);
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
 
     const configured = await service.configure(
       endpoint.id,
@@ -12691,6 +12693,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -13973,6 +13976,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -19424,6 +19428,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await first.service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await first.service.configure(
       endpoint.id,
       {
@@ -19562,6 +19567,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -20133,6 +20139,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     const signingSecret = "durable-ingress-signing-secret";
     await service.configure(
       endpoint.id,
@@ -20786,6 +20793,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -22602,6 +22610,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -27668,6 +27677,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
         "owner-user",
       );
+      await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
       await service.configure(
         endpoint.id,
         {
@@ -28535,6 +28545,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       [blockedEndpoint, "xoxb-blocked-outbox"],
       [readyEndpoint, "xoxb-ready-outbox"],
     ] as const) {
+      await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
       await service.configure(
         endpoint.id,
         {
@@ -46366,7 +46377,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).not.toHaveBeenCalled();
   });
 
-  it("scopes Slack setup message detection to the linked user and current test", async () => {
+  it.each(["message", "mention", "slash"] as const)("scopes Slack setup %s detection to the linked user and current test", async (kind) => {
     const fixture = await seedCompany();
     const { endpoint, service } = await configuredSlackEndpoint(fixture);
     const now = new Date();
@@ -46379,7 +46390,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.confirmIdentityLink(new URL(fresh.confirmationUrl).searchParams.get("token")!, "owner-user");
     await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "old-test-message", createdAt: new Date(now.getTime() - 60_000), status: "processed" });
     expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    if (kind === "slash") {
     await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "current-test-message", status: "processed" });
+    } else {
+      await db.insert(chatDeliveries).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, providerEventId: "current-test-message", deduplicationKey: "current-test-message", eventKind: kind, normalizedEvent: {}, state: "processed" });
+    }
     expect(await service.setupTestStatus(endpoint.id, "owner-user")).toMatchObject({ messageReceivedAt: expect.any(String) });
     expect(await service.setupTestStatus(endpoint.id, "someone-else")).toEqual({ messageReceivedAt: null });
   });
