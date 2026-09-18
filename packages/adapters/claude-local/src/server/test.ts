@@ -68,7 +68,9 @@ async function addClaudeModelRouteCheck(
 ): Promise<AdapterEnvironmentTestResult> {
   if (ctx.executionTarget?.kind === "remote") return result;
   const config = parseObject(ctx.config);
-  const env = parseObject(config.env);
+  const configEnv = parseObject(config.env);
+  const useHostEnv = !Boolean(config.managedAiConnection);
+  const env = useHostEnv ? { ...process.env, ...configEnv } : configEnv;
   const model = resolveClaudeModel(config.model, env);
   const status = await probeClaudeModelRoute(model, env);
   if (!status) return result;

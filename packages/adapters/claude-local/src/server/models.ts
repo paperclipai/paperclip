@@ -4,6 +4,9 @@ import { models as DIRECT_MODELS } from "../index.js";
 
 const ANTHROPIC_MODELS_ENDPOINT = "/v1/models";
 const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
+const ANTHROPIC_MODELS_PAGE_LIMIT = 1000;
+const ANTHROPIC_MODELS_COMPLETE_PAGE_LIMIT = 10_000;
+const ANTHROPIC_MODELS_MAX_PAGES = 20;
 const ANTHROPIC_MODELS_CACHE_TTL_MS = 60_000;
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
@@ -74,6 +77,13 @@ function resolveAnthropicBaseUrl(env: Record<string, unknown> = process.env): st
 type AnthropicModelsResult = {
   models: AdapterModel[];
   reachable: boolean;
+  complete: boolean;
+};
+
+type AnthropicModelsPage = {
+  models: AdapterModel[];
+  hasMore: boolean;
+  lastId: string | null;
 };
 
 async function fetchAnthropicModels(
@@ -82,39 +92,76 @@ async function fetchAnthropicModels(
 ): Promise<AnthropicModelsResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ANTHROPIC_MODELS_TIMEOUT_MS);
+  const models: AdapterModel[] = [];
+  let afterId: string | null = null;
+  const seenCursors = new Set<string>();
   try {
-    const response = await fetch(`${baseUrl}${ANTHROPIC_MODELS_ENDPOINT}`, {
-      headers: {
-        "anthropic-version": ANTHROPIC_API_VERSION,
-        ...(credential.kind === "api-key" ? { "x-api-key": credential.value } : {}),
-        Authorization: `Bearer ${credential.value}`,
-      },
-      signal: controller.signal,
-    });
-    if (!response.ok) return { models: [], reachable: false };
-
-    const payload = (await response.json()) as { data?: unknown };
-    const data = Array.isArray(payload.data) ? payload.data : [];
-    const models: AdapterModel[] = [];
-    for (const item of data) {
-      if (typeof item !== "object" || item === null) continue;
-      const record = item as { id?: unknown; display_name?: unknown };
-      if (typeof record.id !== "string" || record.id.trim().length === 0) continue;
-      const displayName =
-        typeof record.display_name === "string" && record.display_name.trim().length > 0
-          ? record.display_name
-          : record.id;
-      models.push({
-        id: record.id,
-        label: displayName,
+    const requestPage = async (limit: number, cursor: string | null): Promise<AnthropicModelsPage | null> => {
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (cursor) query.set("after_id", cursor);
+      const response = await fetch(`${baseUrl}${ANTHROPIC_MODELS_ENDPOINT}?${query}`, {
+        headers: {
+          "anthropic-version": ANTHROPIC_API_VERSION,
+          ...(credential.kind === "api-key" ? { "x-api-key": credential.value } : {}),
+          Authorization: `Bearer ${credential.value}`,
+        },
+        signal: controller.signal,
       });
+      if (!response.ok) return null;
+
+      const payload = (await response.json()) as { data?: unknown; has_more?: unknown; last_id?: unknown };
+      const pageModels: AdapterModel[] = [];
+      const data = Array.isArray(payload.data) ? payload.data : [];
+      for (const item of data) {
+        if (typeof item !== "object" || item === null) continue;
+        const record = item as { id?: unknown; display_name?: unknown };
+        if (typeof record.id !== "string" || record.id.trim().length === 0) continue;
+        const displayName =
+          typeof record.display_name === "string" && record.display_name.trim().length > 0
+            ? record.display_name
+            : record.id;
+        pageModels.push({
+          id: record.id,
+          label: displayName,
+        });
+      }
+      return {
+        models: pageModels,
+        hasMore: payload.has_more === true,
+        lastId: typeof payload.last_id === "string" ? payload.last_id.trim() || null : null,
+      };
+    };
+
+    for (let page = 0; page < ANTHROPIC_MODELS_MAX_PAGES; page += 1) {
+      const pageResult = await requestPage(ANTHROPIC_MODELS_PAGE_LIMIT, afterId);
+      if (!pageResult) return { models: dedupeModels(models), reachable: false, complete: false };
+      models.push(...pageResult.models);
+
+      if (!pageResult.hasMore) {
+        return { models: dedupeModels(models), reachable: true, complete: true };
+      }
+
+      const nextAfterId = pageResult.lastId;
+      if (!nextAfterId || seenCursors.has(nextAfterId)) {
+        const completePage = await requestPage(ANTHROPIC_MODELS_COMPLETE_PAGE_LIMIT, null);
+        if (completePage && !completePage.hasMore) {
+          return {
+            models: dedupeModels([...models, ...completePage.models]),
+            reachable: true,
+            complete: true,
+          };
+        }
+        return { models: dedupeModels(models), reachable: true, complete: false };
+      }
+      seenCursors.add(nextAfterId);
+      afterId = nextAfterId;
     }
-    return { models: dedupeModels(models), reachable: true };
+    return { models: dedupeModels(models), reachable: true, complete: false };
   } catch (error) {
     console.warn("[paperclip] Claude model discovery failed", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return { models: [], reachable: false };
+    return { models: dedupeModels(models), reachable: false, complete: false };
   } finally {
     clearTimeout(timeout);
   }
@@ -141,7 +188,7 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
   }
 
   const fetched = await fetchAnthropicModels(credential, baseUrl);
-  if (fetched.models.length > 0) {
+  if (fetched.complete && fetched.models.length > 0) {
     const merged = mergedWithFallback(fetched.models);
     cached = {
       keyFingerprint,
@@ -191,6 +238,13 @@ export async function probeClaudeModelRoute(
   if (!credential) return "credentials-missing";
 
   const fetched = await fetchAnthropicModels(credential, resolveAnthropicBaseUrl(env));
+  if (!fetched.complete) {
+    if (fetched.models.some((entry) => entry.id === model)) return "available";
+    if (!fetched.reachable && fetched.models.length === 0 && DIRECT_MODELS.some((entry) => entry.id === model)) {
+      return "fallback-only";
+    }
+    return "provider-unavailable";
+  }
   if (fetched.models.length === 0) {
     if (!fetched.reachable) {
       return DIRECT_MODELS.some((entry) => entry.id === model) ? "fallback-only" : "provider-unavailable";
