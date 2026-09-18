@@ -860,6 +860,8 @@ const chatIdentityLinkIntentResponseSchema = z
 
 const chatIdentityLinkPreviewResponseSchema = z
   .object({
+    selfService: z.boolean().optional(),
+    canConfirm: z.boolean().optional(),
     endpointId: z.string().uuid(),
     companyId: z.string().uuid(),
     companyName: z.string(),
@@ -1474,6 +1476,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/setup",
   "POST /api/chat-endpoints/{endpointId}/setup-secret",
   "POST /api/chat-endpoints/{endpointId}/test",
+  "POST /api/chat-endpoints/{endpointId}/finish",
+  "GET /api/chat-endpoints/{endpointId}/test-status",
   "POST /api/chat-endpoints/{endpointId}/photon/inspect",
   "GET /api/chat-endpoints/{endpointId}/resources",
   "PUT /api/chat-endpoints/{endpointId}/resources",
@@ -1482,6 +1486,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/chat-endpoints/{endpointId}/principals/{principalId}/link",
   "POST /api/chat-identity-links/confirm",
   "GET /api/chat-identity-links/preview",
+  "POST /api/chat-identity-links/request-access",
   "GET /api/chat-endpoints/{endpointId}/conversations",
   "GET /api/chat-endpoints/{endpointId}/activity",
   "POST /api/chat-endpoints/{endpointId}/deliveries/{deliveryId}/replay",
@@ -2224,6 +2229,27 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post", path: "/api/chat-endpoints/{endpointId}/finish", tags: ["chat-channels"],
+  summary: "Finish Slack onboarding with an optional conversation test",
+  description: "Requires a verified Slack webhook and an authorized identity linked to the current user. Records that a full conversation test was not required.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: { 200: r.ok(chatEndpointResponseSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+registry.registerPath({
+  method: "get", path: "/api/chat-endpoints/{endpointId}/test-status", tags: ["chat-channels"],
+  summary: "Check for the current user's first setup message",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: { 200: r.ok(z.object({ messageReceivedAt: z.string().nullable() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "post", path: "/api/chat-identity-links/request-access", tags: ["chat-channels"],
+  summary: "Request company membership using a private Slack identity link",
+  description: "Creates a pending human join request for admin approval. Requires a valid, unexpired self-service token and a signed-in user. Does not grant access or link an identity.",
+  request: { body: jsonBody(confirmChatIdentityLinkSchema) },
+  responses: { 200: r.ok(z.object({ status: z.enum(["member", "pending_approval"]) })), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/chat-endpoints/{endpointId}/test",
   tags: ["chat-channels"],
@@ -2346,7 +2372,7 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Preview an external identity-link intent",
   description:
-    "Returns the company and provider identity that a valid, unexpired confirmation token would link. Company membership is checked before returning the preview.",
+    "Returns the company and provider identity that a valid, unexpired confirmation token would link. Admin-created links require company access. Private links issued to a signed Slack sender allow a signed-in recipient to preview that identity and request company access.",
   request: {
     query: z.object({ token: z.string().min(32).max(4096) }).strict(),
   },

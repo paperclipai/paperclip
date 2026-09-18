@@ -749,11 +749,7 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
-        <Route element={streamlinedUiLoaded ? <CloudAccessGate /> : <PaperclipLoading />}>
-          <Route path="chat-identity/confirm" element={
-            <ChatConnectorsExperimentalGate><ChatIdentityConfirm /></ChatConnectorsExperimentalGate>
-          } />
-        </Route>
+        <Route path="chat-identity/confirm" element={<ChatIdentityConfirm />} />
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
         <Route path="ux-lab/bootstrap-setup" element={<BootstrapSetupUxLab />} />
         <Route path="ux-lab/responsible-user-denial" element={<ResponsibleUserDenialUxLab />} />

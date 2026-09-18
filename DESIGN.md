@@ -35,6 +35,14 @@ Existing tiers already in index.css (~80+ tokens) — extraction maps to these o
 7. **Words are part of the system.** One name per concept across the entire UI — the canonical term is *task* (never *issue* or *ticket* in copy, labels, or empty states). Buttons name the action ("Approve hire," not "Submit"). Errors say what happened and what to do. Empty states say what to do first. **Note:** enforcing the task rename is a visible change and is explicitly OUT of the zero-visual-change extraction run; it happens in its own follow-up run.
 8. **Agent-modifiable by design.** The system must be changeable via instructions: single token source, lint rules that enforce it, and this document kept current. A correct change should be expressible as "edit tokens + run checks," not "visit 40 files."
 
+## Form and wizard footers
+
+Keep **Save & exit** (or Cancel/Back) and the primary Continue/Connect/Finish
+action in one shared footer row, vertically centered. Put the subdued secondary
+action on the left and the primary action on the right. A step owns its whole
+footer: do not render Save & exit in a separate parent block below it. Check this
+alignment in every step and conditional state, not just the first screen.
+
 ## Contextual feedback
 
 Do not show a toast for task or run state already visible on the current screen.

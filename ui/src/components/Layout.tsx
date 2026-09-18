@@ -1,3 +1,4 @@
+import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
@@ -614,6 +615,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
+    <ChatSetupSidebarProvider>
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
       className={cn(
@@ -787,5 +789,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <AnnouncementWell health={health} />
       </div>
     </GeneralSettingsProvider>
+    </ChatSetupSidebarProvider>
   );
 }

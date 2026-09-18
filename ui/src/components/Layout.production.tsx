@@ -1,3 +1,4 @@
+import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import {
   useCallback,
   useEffect,
@@ -634,6 +635,7 @@ export function Layout() {
   }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
+    <ChatSetupSidebarProvider>
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
         className={cn(
@@ -785,5 +787,6 @@ export function Layout() {
         <ToastViewport />
       </div>
     </GeneralSettingsProvider>
+    </ChatSetupSidebarProvider>
   );
 }

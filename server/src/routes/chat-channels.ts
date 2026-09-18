@@ -186,6 +186,20 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     res.json(await service.test(endpointId(req)));
   });
 
+  router.post("/chat-endpoints/:endpointId/finish", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    res.json(await service.finishSlackSetup(endpointId(req), userId));
+  });
+  router.get("/chat-endpoints/:endpointId/test-status", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    res.set("Cache-Control", "no-store");
+    res.json(await service.setupTestStatus(endpointId(req), userId));
+  });
+
   router.get("/chat-endpoints/:endpointId/resources", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
     res.json(await service.listResources(endpointId(req)));
@@ -251,21 +265,27 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     },
   );
 
+  router.post("/chat-identity-links/request-access", validate(confirmChatIdentityLinkSchema), async (req, res) => {
+    assertBoard(req);
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    res.json(await service.requestIdentityAccess(req.body.token, userId, req.ip ?? "unknown"));
+  });
+
   router.get("/chat-identity-links/preview", async (req, res) => {
     assertBoard(req);
     const token = typeof req.query.token === "string" ? req.query.token : "";
     if (token.length < 32 || token.length > 4096)
       throw badRequest("A valid identity-link token is required");
-    const preview = await getAccessibleResource(
-      req,
-      res,
-      service.previewIdentityLink(token).catch((error) => {
-        // Do not distinguish a valid foreign-company token from an invalid or
-        // expired token. Confirmation keeps its own validation contract.
-        if (error instanceof HttpError && error.status === 422) return null;
-        throw error;
-      }),
-      "Identity-link request not found",
+    res.set("Cache-Control", "no-store");
+    const invitation = await service.previewIdentityLink(token, actorUserId(req)).catch((error) => {
+      if (error instanceof HttpError && error.status === 422) return null;
+      throw error;
+    });
+    // A link privately issued to a signed Slack sender is an invitation to
+    // request membership. Other link intents retain company-access checks.
+    const preview = invitation?.selfService ? invitation : await getAccessibleResource(
+      req, res, Promise.resolve(invitation), "Identity-link request not found",
     );
     if (!preview) return;
     res.json(preview);

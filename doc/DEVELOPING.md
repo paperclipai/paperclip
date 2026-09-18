@@ -479,6 +479,47 @@ preserves all companies, agents, and secrets and ignores the bootstrap flags.
 The worktree execution setting is the only value it may reconcile in that
 case.
 
+### Slack chat setup in a test drive
+
+Enable **Chat connectors** in Instance Settings, then open **Connectors → Slack →
+Chat with an agent**. Before connecting, configure a public HTTPS URL that Slack
+can reach. The setup page shows this requirement above the app details.
+Slack app name, bot display name, and slash command are editable while the
+connection is a draft; valid edits save when a field loses focus. **Create Slack
+app** opens Slack with the generated manifest prefilled. The read-only manifest
+is collapsed by default and can be expanded to inspect or copy it. Once connected,
+the app details are locked so reconnecting cannot silently change the registered
+command. Slack still requires workspace selection, installation approval, and
+copying the bot token and signing secret back into Paperclip.
+
+After Slack verifies its Events Request URL, the wizard asks you to send
+`/<your-command> connect`. This command works before a sender or channel is
+allowed to start work. It records the Slack identity and sends a private,
+one-time confirmation link that expires after 15 minutes; it creates no task
+and grants no access. You can confirm **This is my Slack account** in the wizard,
+or follow the private link and sign into Paperclip. Both paths check company
+membership before linking, and future messages use the linked user's current
+permissions. The wizard only lists identities that sent the connect command to
+this endpoint during the current test.
+
+New Slack connections disable **Allow unlinked people** by default. The Access
+page includes the shareable connect command and instructions for other users.
+Other Slack users join through the same connect command after setup. A signed-in
+nonmember can **Request access** from the confirmation page. This creates a
+pending human join request in the company's existing admin approval queue; it
+does not grant membership or link the identity. After approval, confirm the
+identity, or send the connect command again if the link has expired. Successful
+confirmation also queues a private Slack acknowledgement.
+
+The final wizard step suggests `@<your-bot> you there?`, then continuing in
+the agent's thread. Select the bot from Slack's @mention suggestions so the
+message includes a real mention. It detects a message or task command from the current user's
+linked Slack identity during this setup session and shows a checkmark. This
+conversation test is optional: **I've sent the test message** and **Skip test and
+finish** both finish setup once webhook verification and account linking are
+complete. The separate strict connection-test API retains its conversation and
+delivery checks.
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:

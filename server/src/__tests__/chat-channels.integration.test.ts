@@ -48,6 +48,7 @@ import {
   chatEndpoints,
   chatExternalPrincipals,
   chatIdentityLinks,
+  joinRequests,
   chatMessageLinks,
   chatPublications,
   chatSdkState,
@@ -1575,15 +1576,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    if (overrides?.allowUnlinkedPeople !== undefined) {
-      await context.service.update(
-        endpoint.id,
-        {
-          allowUnlinkedPeople: overrides.allowUnlinkedPeople,
-        },
-        "owner-user",
-      );
-    }
+    // Most transport fixtures exercise restricted guests explicitly. Production
+    // Slack creation defaults to linked accounts only (covered separately).
+    await context.service.update(endpoint.id, {
+      allowUnlinkedPeople: overrides.allowUnlinkedPeople ?? true,
+    }, "owner-user");
     await context.service.configure(
       endpoint.id,
       {
@@ -2912,6 +2909,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       assignedAgentId: fixture.assignedAgentId,
       assignedAgentName: "Maya",
       status: "draft",
+      allowUnlinkedPeople: false,
       setup: { command: expect.stringMatching(/^\/maya-[a-z0-9]{6}$/) },
     });
     const createdCommand = createResponse.body.setup.command as string;
@@ -2945,6 +2943,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect((await service.get(createResponse.body.id)).setup.command).toBe(
       createdCommand,
     );
+  });
+
+  it("persists Slack manifest draft details and the registered command, then locks them once connected", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService();
+    const app = routesApp(db, fixture.companyId, service);
+    const endpoint = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId });
+    const slackApp = { appName: "Research Ops", botName: "research-ops", command: "/research" };
+    await request(app).patch(`/api/chat-endpoints/${endpoint.id}`).send({ slackApp }).expect(200);
+    expect((await service.get(endpoint.id)).setup).toMatchObject({ slackApp, command: "/research" });
+    const [stored] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored.setup.command).toBe("/research");
+    await request(app).patch(`/api/chat-endpoints/${endpoint.id}`)
+      .send({ slackApp: { ...slackApp, command: "not-a-command" } }).expect(400);
+    await db.update(chatEndpoints).set({ status: "verifying" }).where(eq(chatEndpoints.id, endpoint.id));
+    await request(app).patch(`/api/chat-endpoints/${endpoint.id}`)
+      .send({ slackApp: { ...slackApp, command: "/different" } }).expect(409);
+    expect((await service.get(endpoint.id)).setup.command).toBe("/research");
+    const github = await service.create(fixture.companyId, { provider: "github", assignedAgentId: fixture.assignedAgentId });
+    await request(app).patch(`/api/chat-endpoints/${github.id}`).send({ slackApp }).expect(422);
   });
 
   it("rejects chat endpoints for non-invokable agents", async () => {
@@ -46226,6 +46244,87 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       }
     });
+  });
+
+  it("discovers a Slack connect identity without starting work or granting access", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+    const post = vi.fn();
+    const postEphemeral = vi.fn(async () => ({ id: "connect-notice", usedFallback: false }));
+    const event = {
+      endpointId: endpoint.id, provider: "slack" as const,
+      event: {
+        channel: { id: "C-CONNECT", isDM: false, post, postEphemeral } as never,
+        command: endpoint.setup.command!, text: "connect", triggerId: "connect-discovery-1",
+        user: { userId: "U-CONNECT", userName: "connector", fullName: "Connect Person", isBot: false, isMe: false, isSystem: false },
+        raw: { trigger_id: "connect-discovery-1" }, adapter: {} as never, openModal: async () => undefined,
+      },
+    };
+    await callbacks.onSlashCommand!(event);
+    await callbacks.onSlashCommand!(event);
+    await vi.waitFor(() => expect(postEphemeral).toHaveBeenCalledTimes(1));
+    const [identity] = await service.listPrincipals(endpoint.id);
+    expect(identity).toMatchObject({ externalLabel: "Connect Person", status: "pending", paperclipUserId: null, lastConnectAt: expect.any(String) });
+    expect(await service.listConversations(endpoint.id)).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_connect")))).toHaveLength(1);
+    expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slash_task_start")))).toHaveLength(0);
+    const other = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId }, "owner-user");
+    await db.update(chatEndpoints).set({ status: "verifying", providerAccountId: (await service.get(endpoint.id)).providerAccountId }).where(eq(chatEndpoints.id, other.id));
+    expect((await service.listPrincipals(other.id))[0]?.lastConnectAt).toBeNull();
+    const notice = String((postEphemeral.mock.calls[0] as unknown[])[1]);
+    const token = /token=([A-Za-z0-9_-]+)/.exec(notice)![1];
+    expect(notice).toContain("Connect your Paperclip account");
+    expect((postEphemeral.mock.calls[0] as unknown[])[2]).toEqual({ fallbackToDM: false });
+    expect(await service.previewIdentityLink(token, "owner-user")).toMatchObject({ selfService: true, canConfirm: true, externalLabel: "Connect Person" });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    await expect(service.finishSlackSetup(endpoint.id, "owner-user")).rejects.toMatchObject({ status: 403 });
+    const outsiderId = `outsider-${fixture.companyId}`;
+    const now = new Date();
+    await db.insert(authUsers).values({ id: outsiderId, name: "Outside Person", email: `${outsiderId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now });
+    const outsideApp = routesApp(db, randomUUID(), service, outsiderId);
+    expect((await request(outsideApp).get(`/api/chat-identity-links/preview?token=${token}`)).body).toMatchObject({ selfService: true, canConfirm: false });
+    await expect(service.confirmIdentityLink(token, outsiderId)).rejects.toMatchObject({ status: 403 });
+    expect((await request(outsideApp).post("/api/chat-identity-links/request-access").send({ token })).body).toMatchObject({ status: "pending_approval" });
+    await service.requestIdentityAccess(token, outsiderId, "test");
+    expect(await db.select().from(joinRequests).where(eq(joinRequests.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, fixture.companyId), eq(companyMemberships.principalId, outsiderId)))).toHaveLength(0);
+    const adminOnly = await service.createLinkIntent(other.id, identity.principalId, 600);
+    const adminToken = new URL(adminOnly.confirmationUrl).searchParams.get("token")!;
+    expect((await request(outsideApp).get(`/api/chat-identity-links/preview?token=${adminToken}`)).status).toBe(404);
+    await expect(service.requestIdentityAccess(adminToken, outsiderId, "test")).rejects.toMatchObject({ status: 403 });
+    const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+    const originalThread = providerRuntime.thread.bind(providerRuntime);
+    const confirmationNotice = vi.fn(async () => ({ id: "linked-notice", threadId: "C-CONNECT" }));
+    providerRuntime.thread = (id: string) => ({ ...originalThread(id), postEphemeral: confirmationNotice });
+    await service.confirmIdentityLink(token, "owner-user");
+    await vi.waitFor(() => expect(confirmationNotice).toHaveBeenCalledWith("U-CONNECT", expect.stringContaining("account is connected"), { fallbackToDM: false }));
+    expect((await service.listPrincipals(endpoint.id))[0]).toMatchObject({ status: "linked", paperclipUserId: "owner-user" });
+    await expect(service.test(endpoint.id)).rejects.toMatchObject({ details: { code: "chat_test_follow_up_missing" } });
+    await expect(service.confirmIdentityLink(token, "owner-user")).rejects.toMatchObject({ status: 422 });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    const finished = await service.finishSlackSetup(endpoint.id, "owner-user");
+    expect(finished).toMatchObject({ status: "active", setup: { step: "complete", testSkipped: true } });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("scopes Slack setup message detection to the linked user and current test", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, service } = await configuredSlackEndpoint(fixture);
+    const now = new Date();
+    const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: (await service.get(endpoint.id)).providerAccountId!, externalId: "U-TEST", kind: "user", displayName: "Test" }).returning();
+    const intent = await service.createLinkIntent(endpoint.id, principal.id, 600);
+    const token = new URL(intent.confirmationUrl).searchParams.get("token")!;
+    await db.update(chatIdentityLinks).set({ expiresAt: new Date(now.getTime() - 1) }).where(eq(chatIdentityLinks.principalId, principal.id));
+    await expect(service.confirmIdentityLink(token, "owner-user")).rejects.toMatchObject({ status: 422 });
+    const fresh = await service.createLinkIntent(endpoint.id, principal.id, 600);
+    await service.confirmIdentityLink(new URL(fresh.confirmationUrl).searchParams.get("token")!, "owner-user");
+    await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "old-test-message", createdAt: new Date(now.getTime() - 60_000), status: "processed" });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "current-test-message", status: "processed" });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toMatchObject({ messageReceivedAt: expect.any(String) });
+    expect(await service.setupTestStatus(endpoint.id, "someone-else")).toEqual({ messageReceivedAt: null });
   });
 
   it("turns a Slack slash command into a new native thread and one Paperclip task", async () => {

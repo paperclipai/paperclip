@@ -1,3 +1,4 @@
+import { ChatSetupNavigation } from "@/components/chat/ChatSetupNavigation";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -235,31 +236,13 @@ export function EmailEndpointSetup() {
           {step === 6 ? "Close" : "Cancel"}
         </Button>
       </header>
-      {step !== 6 && (
-        <nav aria-label="Setup progress">
-          <ol className="flex gap-4">
-            {labels.map((label, i) => (
-              <li
-                className="flex flex-1 items-center gap-2 text-sm"
-                key={label}
-              >
-                <span
-                  className={
-                    i <= current
-                      ? "flex size-7 shrink-0 items-center justify-center rounded-full bg-foreground text-background"
-                      : "flex size-7 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground"
-                  }
-                >
-                  {i < current ? <Check className="size-4" /> : i + 1}
-                </span>
-                <span aria-current={i === current ? "step" : undefined}>
-                  {label}
-                </span>
-              </li>
-            ))}
-          </ol>
-        </nav>
-      )}
+      <ChatSetupNavigation
+        labels={labels}
+        step={current}
+        availableStep={current}
+        disabled={connect.isPending || setup.isPending || step === 2 || step === 6}
+        onSelect={(index) => setStep(step < 3 ? index : index + 3)}
+      />
       {step === 0 && (
         <AccessStep
           companyId={companyId}
