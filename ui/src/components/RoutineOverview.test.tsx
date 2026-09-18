@@ -166,6 +166,12 @@ describe("RoutineOverview", () => {
     });
   });
 
+  it("describes webhook-only routines as externally triggered", () => {
+    expect(summarizeRoutineSchedule([{ ...routine.triggers[0]!, kind: "webhook", enabled: true }])).toEqual({
+      label: "1 active webhook", detail: "Runs on incoming requests", nextRunAt: null,
+    });
+  });
+
   it("adapts compact run tasks to the canonical task presentation", () => {
     const issue = routineRunIssue(run.linkedIssue!, run, "company-1", "project-1");
     expect(issue).toMatchObject({

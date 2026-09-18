@@ -106,7 +106,7 @@ describe("routine contextual navigation", () => {
     expect(frame?.classList).toContain("bg-background");
     expect(frame?.classList).toContain("border-r");
     expect(container.querySelector('a[href="/routines/routine-1/overview"]')?.textContent).toBe("Overview");
-    expect(container.querySelector('a[href="/routines/routine-1/triggers"]')?.textContent).toBe("Schedule");
+    expect(container.querySelector('a[href="/routines/routine-1/triggers"]')?.textContent).toBe("Triggers");
     expect(container.querySelector('a[href="/activity/runs?entityType=routine&entityId=routine-1"]'))
       .not.toBeNull();
     expect(container.querySelector('a[href="/activity?entityType=routine&entityId=routine-1"]'))

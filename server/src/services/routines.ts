@@ -2163,7 +2163,10 @@ export function routineService(
         assignee,
         parentIssue,
         descriptionDocument,
-        triggers: triggers as RoutineTrigger[],
+        triggers: triggers.map((trigger) => ({
+          ...trigger,
+          webhookUrl: trigger.kind === "webhook" && trigger.publicId ? routineWebhookUrl(trigger.publicId) : null,
+        })) as RoutineTrigger[],
         recentRuns,
         activeIssue,
       };
@@ -2944,9 +2947,11 @@ export function routineService(
           .update(rawBody)
           .digest("hex");
         const normalizedSignature = providedSignature.replace(/^sha256=/, "");
+        const providedBuf = Buffer.from(normalizedSignature);
+        const expectedBuf = Buffer.from(expectedHmac);
         const valid =
-          normalizedSignature.length === expectedHmac.length &&
-          crypto.timingSafeEqual(Buffer.from(normalizedSignature), Buffer.from(expectedHmac));
+          providedBuf.length === expectedBuf.length &&
+          crypto.timingSafeEqual(providedBuf, expectedBuf);
         if (!valid) throw unauthorized();
         hmacReplayKey = `webhook-hmac:${crypto
           .createHash("sha256")

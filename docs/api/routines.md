@@ -126,7 +126,11 @@ Three trigger kinds:
 }
 ```
 
-Signing modes: `bearer` (default), `hmac_sha256`. Replay window range: 30–86400 seconds (default 300).
+Signing modes: `bearer` (default), `hmac_sha256`, `github_hmac`, and `none`.
+The replay window applies to `hmac_sha256` only: 30–86400 seconds (default 300).
+Creating a webhook returns `trigger` and one-time `secretMaterial` containing
+`webhookUrl` and `webhookSecret`. Save the secret before closing the dialog.
+Routine details retain the URL; rotate the secret if its value is lost.
 
 **API** — fires only when called explicitly via [Manual Run](#manual-run):
 
@@ -184,7 +188,68 @@ Fires a run immediately, bypassing the schedule. Concurrency policy still applie
 POST /api/routine-triggers/public/{publicId}/fire
 ```
 
-Fires a webhook trigger from an external system. Requires a valid `Authorization` or `X-Paperclip-Signature` + `X-Paperclip-Timestamp` header pair matching the trigger's signing mode.
+Fires a webhook trigger from an external system without a Paperclip login. Send
+`Content-Type: application/json` and a JSON object. The trigger authenticates the
+request using its own secret; an agent or board API key is not a substitute.
+
+| Mode | Headers and signature |
+|------|-----------------------|
+| `bearer` | `Authorization: Bearer <webhookSecret>` |
+| `hmac_sha256` | `X-Paperclip-Timestamp` (Unix seconds or milliseconds) and `X-Paperclip-Signature: sha256=<hex>`; HMAC-SHA256 over the timestamp string, a dot, and the exact body bytes |
+| `github_hmac` | `X-Hub-Signature-256: sha256=<hex>`; HMAC-SHA256 over the exact body bytes, without a timestamp. `X-Paperclip-Signature` is also accepted. Configure GitHub to send JSON. |
+| `none` | No signature. Anyone with the generated URL can fire the trigger; keep it private. |
+
+For a bearer trigger:
+
+```sh
+curl --fail-with-body "$WEBHOOK_URL" \
+  -H "Authorization: Bearer $WEBHOOK_SECRET" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: deployment-123' \
+  --data-binary '{"event":"deployment","variables":{"environment":"staging"}}'
+```
+
+For a timestamped HMAC trigger, sign and send the same bytes:
+
+```js
+import { createHmac } from "node:crypto";
+const body = JSON.stringify({ variables: { environment: "staging" } });
+const timestamp = String(Math.floor(Date.now() / 1000));
+const signature = createHmac("sha256", process.env.WEBHOOK_SECRET)
+  .update(`${timestamp}.`).update(body).digest("hex");
+const response = await fetch(process.env.WEBHOOK_URL, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Paperclip-Timestamp": timestamp,
+    "X-Paperclip-Signature": `sha256=${signature}`,
+  },
+  body,
+});
+console.log(response.status, await response.json());
+```
+
+`202` returns the routine run, including its status and linked task. The task
+runs asynchronously, so acceptance does not mean the agent has finished.
+Concurrency policy can coalesce or skip a delivery while work is active.
+Payload fields or a nested `variables` object supply declared routine variables;
+nested values take precedence. The full payload is retained in run history.
+
+For bearer, GitHub HMAC, and unsigned triggers, send a stable `Idempotency-Key`
+when retrying a delivery to receive the original run without creating another
+task. Timestamped HMAC rejects an identical signed delivery with `409`, even
+inside the replay window; stale timestamps and invalid secrets/signatures return
+`401`. Disabled triggers and paused/archived routines return `409`. Missing
+required variables return `422`; non-JSON media types return `415` and invalid
+JSON objects return `400`. Rotating a secret immediately invalidates the old one.
+
+Cloud installations use their canonical public origin for generated URLs.
+Self-hosted installations should set `PAPERCLIP_PUBLIC_URL` to their HTTPS
+origin. The reverse proxy must forward this POST endpoint and its authorization,
+signature, timestamp, and idempotency headers without requiring a browser login.
+For local HTTPS testing, proxy an isolated test instance through Tailscale Serve;
+use Funnel only if the sender is outside the tailnet. Existing routine and agent
+execution controls still apply, including the isolated-worktree execution gate.
 
 ## List Runs
 

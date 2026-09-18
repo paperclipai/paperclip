@@ -41,6 +41,14 @@ export function summarizeRoutineSchedule(triggers: RoutineTrigger[]): RoutineSch
     .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
 
   if (schedules.length === 0) {
+    const webhooks = triggers.filter((trigger) => trigger.kind === "webhook" && trigger.enabled);
+    if (webhooks.length > 0) {
+      return {
+        label: `${webhooks.length} active webhook${webhooks.length === 1 ? "" : "s"}`,
+        detail: "Runs on incoming requests",
+        nextRunAt: null,
+      };
+    }
     return { label: "No active schedule", detail: "Manual runs only", nextRunAt: null };
   }
 
@@ -134,6 +142,7 @@ function OverviewFact({
 export function RoutineOverview() {
   const { routine, routineRuns, currentAssignee, hasLiveRun } = useRoutineDetail();
   const schedule = summarizeRoutineSchedule(routine.triggers);
+  const hasWebhook = routine.triggers.some((trigger) => trigger.kind === "webhook" && trigger.enabled);
   const sortedRuns = [...(routineRuns ?? [])].sort(
     (left, right) => new Date(right.triggeredAt).getTime() - new Date(left.triggeredAt).getTime(),
   );
@@ -161,21 +170,21 @@ export function RoutineOverview() {
         />
         <OverviewFact
           icon={CalendarClock}
-          label="Schedule"
+          label="Triggers"
           value={schedule.label}
           detail={<span className="font-mono">{schedule.detail}</span>}
         />
         <OverviewFact
           icon={Clock3}
           label="Next run"
-          value={schedule.nextRunAt ? formatRoutineTimestamp(schedule.nextRunAt) : "Not scheduled"}
-          detail={schedule.nextRunAt ? "Scheduled" : "Add or enable a schedule"}
+          value={schedule.nextRunAt ? formatRoutineTimestamp(schedule.nextRunAt) : hasWebhook ? "On webhook delivery" : "Not scheduled"}
+          detail={schedule.nextRunAt ? "Scheduled" : hasWebhook ? "Waiting for an incoming request" : "Add or enable a schedule"}
         />
         <OverviewFact
           icon={Play}
           label="Last run"
           value={lastRun ? <StatusBadge status={lastRun.status} /> : "No runs yet"}
-          detail={lastRun ? formatRoutineTimestamp(lastRun.triggeredAt) : "Run manually or wait for the schedule"}
+          detail={lastRun ? formatRoutineTimestamp(lastRun.triggeredAt) : "Run manually or wait for a trigger"}
         />
       </div>
 

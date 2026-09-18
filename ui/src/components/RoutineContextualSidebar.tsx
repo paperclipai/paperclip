@@ -39,7 +39,7 @@ export type RoutineContextualNavItem = {
 
 export const ROUTINE_CONTEXTUAL_NAV_ITEMS: readonly RoutineContextualNavItem[] = [
   { view: "overview", label: "Overview", icon: LayoutDashboard },
-  { view: "triggers", label: "Schedule", icon: CalendarClock },
+  { view: "triggers", label: "Triggers", icon: CalendarClock },
   { view: "variables", label: "Variables", icon: Braces },
   { view: "delivery", label: "Delivery", icon: Send },
   { view: "secrets", label: "Secrets", icon: KeyRound },

@@ -15,7 +15,7 @@ import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { forbidden, unauthorized } from "../errors.js";
+import { badRequest, forbidden, unauthorized, unsupportedMediaType } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -654,6 +654,12 @@ export function routineRoutes(
   });
 
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
+    if (!req.is("application/json")) {
+      throw unsupportedMediaType("Send the webhook payload with Content-Type: application/json");
+    }
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      throw badRequest("Webhook payload must be a JSON object");
+    }
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),

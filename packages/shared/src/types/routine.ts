@@ -185,6 +185,7 @@ export interface RoutineTrigger {
   nextRunAt: Date | null;
   lastFiredAt: Date | null;
   publicId: string | null;
+  webhookUrl?: string | null;
   secretId: string | null;
   signingMode: string | null;
   replayWindowSec: number | null;

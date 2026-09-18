@@ -10,6 +10,7 @@ import {
   createDefaultNewTrigger,
   type NewTriggerDraft,
   type RoutineDetailContextValue,
+  type SecretMessage,
 } from "./context";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -36,7 +37,7 @@ function typeCron(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function Harness({ createMutate }: { createMutate: ReturnType<typeof vi.fn> }) {
+function Harness({ createMutate, secretMessage }: { createMutate: ReturnType<typeof vi.fn>; secretMessage?: SecretMessage }) {
   const [newTrigger, setNewTrigger] = useState<NewTriggerDraft>({
     ...createDefaultNewTrigger(),
     cronExpression: "0 8-18/2 * * 1-5",
@@ -49,6 +50,9 @@ function Harness({ createMutate }: { createMutate: ReturnType<typeof vi.fn> }) {
     },
     newTrigger,
     setNewTrigger,
+    secretMessage,
+    copySecretValue: vi.fn(),
+    setSecretMessage: vi.fn(),
     createTrigger: {
       isPending: false,
       mutate: createMutate,
@@ -76,6 +80,30 @@ describe("TriggersSection", () => {
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
+  });
+
+  it("offers an enabled webhook option in the trigger picker", () => {
+    const root = createRoot(container);
+    act(() => root.render(<Harness createMutate={vi.fn()} />));
+    act(() => buttonByText(container, "New trigger").click());
+    const kind = container.querySelector('[role="combobox"]')!;
+    act(() => kind.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    const webhook = [...document.querySelectorAll('[role="option"]')].find((option) => option.textContent === "webhook");
+    expect(webhook).toBeTruthy();
+    expect(webhook?.getAttribute("aria-disabled")).not.toBe("true");
+    act(() => root.unmount());
+  });
+
+  it("shows one-time webhook credentials on the trigger setup screen", () => {
+    const root = createRoot(container);
+    act(() => root.render(<Harness createMutate={vi.fn()} secretMessage={{
+      title: "Webhook trigger created",
+      entries: [{ webhookUrl: "https://paperclip.example/api/routine-triggers/public/test/fire", webhookSecret: "one-time-secret" }],
+    }} />));
+    expect((container.querySelector('input[aria-label="New webhook secret"]') as HTMLInputElement).value).toBe("one-time-secret");
+    expect(container.textContent).toContain("Save this now");
+    expect(buttonByText(container, "Done")).toBeTruthy();
+    act(() => root.unmount());
   });
 
   it("closes the add-trigger composer and resets the draft after a successful create", () => {
