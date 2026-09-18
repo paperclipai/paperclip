@@ -786,6 +786,7 @@ describe("codex_local ACP lane", () => {
       service_tier: "fast",
       features: { fast_mode: true },
     });
+    expect(runtimes[0]?.startInputs[0]?.text).toContain("yield_time_ms=1000");
   });
 
   it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
