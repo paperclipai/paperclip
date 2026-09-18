@@ -243,9 +243,48 @@ export interface AdapterExecutionContext {
   startupTraceContext?: import("./acpx-engine/startup-timing.js").StartupTraceContext;
 }
 
+export interface AdapterModelTokenRates {
+  inputPerMillion: number | null;
+  cachedInputPerMillion: number | null;
+  outputPerMillion: number | null;
+}
+
+export interface AdapterModelFusionComponent {
+  id: string;
+  modelKey: string;
+  modelLabel: string;
+  effortKey: string;
+  effortLabel: string;
+  effortSource: "uid" | "label_fixed" | "unspecified";
+  label: string;
+  modifiers: string[];
+}
+
+export interface AdapterModelFusion {
+  version: 1;
+  kind: "fusion";
+  components: {
+    orchestrator: AdapterModelFusionComponent;
+    worker: AdapterModelFusionComponent;
+  } | null;
+  rates: {
+    orchestrator: AdapterModelTokenRates;
+    worker: AdapterModelTokenRates;
+  } | null;
+  costSummary: string | null;
+}
+
 export interface AdapterModel {
   id: string;
   label: string;
+  /**
+   * Reasoning-effort tiers this model supports (e.g. ["auto", "low",
+   * "high"]), when the adapter can discover them per model. Adapters that
+   * populate this let the board offer only the tiers the selected model
+   * actually has instead of a union across all models.
+   */
+  efforts?: string[];
+  fusion?: AdapterModelFusion;
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";

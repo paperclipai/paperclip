@@ -125,6 +125,11 @@ one exists. If no shared constant exists, use the generated telemetry type as th
 domain. In all cases, the generated telemetry type remains the source of truth
 for the emitted value.
 
+Enum domains grow over time. For example, `adapter_type` gains `devin_local`
+when the built-in adapter lands. Add public subsystem names in the same PR as
+the generated-contract update. This enum addition contains no user content.
+It still follows the telemetry privacy-review requirement in `AGENTS.md`.
+
 ## Required, Optional, And Sentinel Values
 
 Required and optional dimensions are defined by `EventDimensionsMap`.

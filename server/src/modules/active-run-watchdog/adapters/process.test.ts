@@ -142,6 +142,26 @@ describe("adapters", () => {
       );
     });
 
+    it("terminates a devin_local process through the extracted watchdog", async () => {
+      mockedIsPidAlive.mockReturnValueOnce(true).mockReturnValueOnce(false);
+      mockedIsProcessGroupAlive.mockReturnValue(false);
+      mockedTerminateLocalService.mockResolvedValue(undefined);
+      const outcome = await createProcessAdapter().cleanupRunProcess({
+        runId: "devin-run",
+        adapterType: "devin_local",
+        fallbackPid: 4242,
+        fallbackProcessGroupId: null,
+      });
+      expect(outcome).toEqual({
+        attempted: true,
+        outcome: "terminated",
+        adapterType: "devin_local",
+        pid: 4242,
+        processGroupId: null,
+      });
+      expect(mockedTerminateLocalService).toHaveBeenCalledWith({ pid: 4242, processGroupId: null }, undefined);
+    });
+
     it.each([
       { fallbackPid: 0, fallbackProcessGroupId: null },
       { fallbackPid: -7, fallbackProcessGroupId: null },

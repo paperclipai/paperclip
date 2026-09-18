@@ -311,6 +311,28 @@ describe("adapter model listing", () => {
       expect(errorSpy.mock.calls.length).toBe(callsAfterFirst);
     });
 
+    it("preserves declared devin_local Fusion ids as opaque label-only options", async () => {
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        devin_local: [
+          {
+            id: "fusion-alpha-1-high-sidekick-beta-2-medium",
+            label: "Fusion (Alpha 1 High + Beta 2 Medium)",
+          },
+          { id: "private-composition-id" },
+        ],
+      });
+
+      const models = await listAdapterModels("devin_local");
+
+      expect(models).toEqual([
+        {
+          id: "fusion-alpha-1-high-sidekick-beta-2-medium",
+          label: "Fusion (Alpha 1 High + Beta 2 Medium)",
+        },
+        { id: "private-composition-id", label: "private-composition-id" },
+      ]);
+    });
+
     it("ignores declared models for adapters not in the map", async () => {
       process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
         opencode_local: [{ id: "model-a" }],
