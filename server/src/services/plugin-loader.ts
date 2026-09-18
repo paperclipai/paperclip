@@ -816,7 +816,8 @@ function buildLocalPluginRecoveryCommand(
     const repoRoot = options.repoRoot ?? REPO_ROOT;
     const relativePath = path.relative(repoRoot, packageRoot) || ".";
     const installCommand = buildStandaloneBundledPluginInstallCommand(packageRoot);
-    return `cd ${relativePath} && ${installCommand} && pnpm build`;
+    const sdkLinkScript = path.relative(packageRoot, path.join(repoRoot, "scripts", "link-plugin-dev-sdk.mjs"));
+    return `cd ${relativePath} && ${installCommand} && node ${sdkLinkScript} . && pnpm build`;
   }
 
   return buildLocalPluginBuildCommand(pkgJson);
@@ -841,6 +842,13 @@ function buildLocalPluginBuildCommands(
       commands.push({
         file: "pnpm",
         args: buildStandaloneBundledPluginInstallArgs(packageRoot),
+        cwd: packageRoot,
+      });
+      // Local SDK linking is a repository bootstrap step. It must also work
+      // when the operator disables dependency lifecycle scripts.
+      commands.push({
+        file: process.execPath,
+        args: [path.join(options.repoRoot ?? REPO_ROOT, "scripts", "link-plugin-dev-sdk.mjs"), packageRoot],
         cwd: packageRoot,
       });
     }
