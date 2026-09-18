@@ -7576,6 +7576,105 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("folds a persisted disposition-repair action when an invokable watchdog is armed", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    const sourceState = await collectDispositionRepairSourceState(db, {
+      issue: sourceIssue,
+    });
+    expect(sourceState.durablePathReason).toBeNull();
+    const action = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId,
+        sourceIssueId: issueId,
+        kind: "deliberate_wait_without_target",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: sourceIssue.assigneeAgentId,
+        previousOwnerAgentId: sourceIssue.assigneeAgentId,
+        returnOwnerAgentId: sourceIssue.assigneeAgentId,
+        cause: "deliberate_wait_without_target",
+        fingerprint: sourceState.fingerprint,
+        evidence: { sourceStateFingerprint: sourceState.fingerprint },
+        nextAction: "Record a durable disposition.",
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 1,
+          maxAttempts: 5,
+        },
+        attemptCount: 1,
+        maxAttempts: 5,
+        timeoutAt: new Date(Date.now() - 60_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const deadWatcherId = randomUUID();
+    await db.insert(agents).values({
+      id: deadWatcherId,
+      companyId,
+      name: "RetiredWatcher",
+      role: "engineer",
+      status: "terminated",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const [watchdog] = await db
+      .insert(issueWatchdogs)
+      .values({
+        companyId,
+        issueId,
+        watchdogAgentId: deadWatcherId,
+        instructions: "Nothing can fire this.",
+        status: "active",
+      })
+      .returning();
+    const deadWatchdogState = await collectDispositionRepairSourceState(db, {
+      issue: sourceIssue,
+    });
+    expect(deadWatchdogState.hasDurableWaitingPath).toBe(false);
+    expect(deadWatchdogState.durablePathReason).toBeNull();
+
+    await db
+      .update(issueWatchdogs)
+      .set({ watchdogAgentId: sourceIssue.assigneeAgentId! })
+      .where(eq(issueWatchdogs.id, watchdog!.id));
+    const armedState = await collectDispositionRepairSourceState(db, {
+      issue: sourceIssue,
+    });
+    expect(armedState.hasDurableWaitingPath).toBe(true);
+    expect(armedState.durablePathReason).toBe("watchdog");
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const folded = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id))
+      .then((rows) => rows[0] ?? null);
+    expect(folded).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "durable_path_restored:watchdog",
+    });
+  });
+
   it("reschedules an expired persisted disposition repair without duplicating the retry", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
