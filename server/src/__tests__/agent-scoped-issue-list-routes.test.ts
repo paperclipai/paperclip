@@ -236,6 +236,30 @@ describeEmbeddedPostgres("GET /agents/me/issues task_bridge fence", () => {
     expect(res.body).toEqual({ items: [], hasMore: false });
   });
 
+  it("applies q inside both task_bridge fence dimensions", async () => {
+    const fixture = await seedFixture();
+    const actor = taskBridgeActor(fixture.companyId, fixture.bridgeAgentId, {
+      projectIds: [fixture.projectAId, fixture.projectBId],
+      allowedAssigneeAgentIds: [fixture.allowedPeerAgentId],
+    });
+
+    const match = await request(appForActor(actor))
+      .get("/agents/me/issues")
+      .query({ q: "Allowed B" });
+    expect(match.status, JSON.stringify(match.body)).toBe(200);
+    expect(match.body.items.map((issue: { id: string }) => issue.id)).toEqual([
+      fixture.issueBId,
+    ]);
+
+    // Both records containing "Outside" sit beyond one side of the fence. The text
+    // filter narrows the already-fenced set; it must never make either issue visible.
+    const fenced = await request(appForActor(actor))
+      .get("/agents/me/issues")
+      .query({ q: "Outside" });
+    expect(fenced.status, JSON.stringify(fenced.body)).toBe(200);
+    expect(fenced.body.items).toEqual([]);
+  });
+
   it("returns hasMore until the final page", async () => {
     const fixture = await seedFixture();
     await db.insert(issues).values({

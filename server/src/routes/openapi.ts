@@ -2991,6 +2991,7 @@ registry.registerPath({
       assigneeAgentId: z.union([z.literal("null"), z.string().uuid()]).optional(),
       projectId: z.string().uuid().optional(),
       status: z.string().optional(),
+      q: z.string().min(1).max(500).optional(),
       limit: z.coerce.number().int().positive().max(1000).optional(),
       offset: z.coerce.number().int().nonnegative().optional(),
     }),

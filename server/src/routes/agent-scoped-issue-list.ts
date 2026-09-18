@@ -73,6 +73,16 @@ const agentScopedIssueListQuerySchema = z.object({
   assigneeAgentId: z
     .union([z.literal("null"), z.string().uuid("assigneeAgentId must be a UUID or 'null'")])
     .optional(),
+  /**
+   * Optional free-text search. Applied as a case-insensitive ILIKE filter against
+   * the issue identifier, title. Scoped to the same task_bridge fence as the other
+   * filters: a query that would produce results outside the fence returns an empty
+   * page, not a 403 — the filter narrows a set that is already fenced.
+   *
+   * GRO-1123 decision (board, 2026-09-18): busca textual está no escopo; parâmetro
+   * `q` opcional na mesma rota escopada.
+   */
+  q: z.string().trim().min(1).max(500).optional(),
 });
 
 export function agentScopedIssueListRoute(db: Db): Router {
@@ -101,6 +111,7 @@ export function agentScopedIssueListRoute(db: Db): Router {
       status,
       projectId: rawProjectId,
       assigneeAgentId: rawAssigneeAgentId,
+      q,
     } = parsed.data;
 
     const limit = parsedLimit ?? ISSUE_LIST_DEFAULT_LIMIT;
@@ -188,6 +199,7 @@ export function agentScopedIssueListRoute(db: Db): Router {
       projectId: rawProjectId,
       projectIds: projectIdsFilter,
       assigneeAgentIds: assigneeAgentIdsFilter,
+      q,
       limit: fetchLimit,
       offset: resolvedOffset,
     });
