@@ -1985,6 +1985,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
     await expect(svc.countUnreadTouchedByUser(companyId, userId, ["todo", "in_progress"])).resolves.toBe(1);
+
+    await svc.archiveInbox(companyId, normalIssueId, userId);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(0);
   });
 
   it("accepts array-form status filters in list and count", async () => {

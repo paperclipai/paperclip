@@ -24,6 +24,7 @@ import {
   agentMineInboxQuerySchema,
   ADAPTER_AGNOSTIC_KEYS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  HEARTBEAT_RUN_STATUSES,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -36,6 +37,7 @@ import {
   type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
+  type HeartbeatRunStatus,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
@@ -290,6 +292,41 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
+}
+
+function readHeartbeatRunListLimit(value: unknown) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw badRequest("limit must be an integer between 1 and 1000");
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+    throw badRequest("limit must be an integer between 1 and 1000");
+  }
+  return limit;
+}
+
+function readHeartbeatRunListOffset(value: unknown) {
+  if (value === undefined) return 0;
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw badRequest("offset must be a non-negative integer");
+  }
+  const offset = Number(value);
+  if (!Number.isSafeInteger(offset)) {
+    throw badRequest("offset must be a non-negative integer");
+  }
+  return offset;
+}
+
+function readHeartbeatRunListStatus(value: unknown): HeartbeatRunStatus | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    !HEARTBEAT_RUN_STATUSES.includes(value as HeartbeatRunStatus)
+  ) {
+    throw badRequest(`status must be one of: ${HEARTBEAT_RUN_STATUSES.join(", ")}`);
+  }
+  return value as HeartbeatRunStatus;
 }
 
 function readRunIssueId(context: Record<string, unknown> | null) {
@@ -6541,10 +6578,11 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
-    const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const limit = readHeartbeatRunListLimit(req.query.limit);
+    const offset = readHeartbeatRunListOffset(req.query.offset);
+    const status = readHeartbeatRunListStatus(req.query.status);
     const summary = req.query.summary === "true" || req.query.summary === "1";
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary, offset, status });
     res.json(await runRedactions.redactForRuns(companyId, runs));
   });
 

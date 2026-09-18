@@ -1,6 +1,11 @@
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import type { HeartbeatRun, RoutineRunSummary } from "@paperclipai/shared";
+import { useEffect, useMemo, useRef } from "react";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import {
+  HEARTBEAT_RUN_STATUSES,
+  type HeartbeatRun,
+  type HeartbeatRunStatus,
+  type RoutineRunSummary,
+} from "@paperclipai/shared";
 import { Activity, CircleDotDashed } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
@@ -20,7 +25,8 @@ import { Link, useSearchParams } from "@/lib/router";
 import { relativeTime } from "@/lib/utils";
 
 const ALL = "__all";
-const RUN_LIMIT = 200;
+const ROUTINE_RUN_LIMIT = 200;
+const RUN_PAGE_SIZE = 25;
 
 function runSummary(run: HeartbeatRun) {
   const result = run.resultJson as { summary?: unknown; result?: unknown } | null;
@@ -121,7 +127,7 @@ function RoutineScopedRuns({
           );
         })}
       </ul>
-      <p className="text-xs text-muted-foreground">Showing the {RUN_LIMIT} most recent routine runs.</p>
+      <p className="text-xs text-muted-foreground">Showing the {ROUTINE_RUN_LIMIT} most recent routine runs.</p>
     </div>
   );
 }
@@ -129,24 +135,41 @@ function RoutineScopedRuns({
 export function AuditRuns({ companyId, routineId }: { companyId: string; routineId?: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = searchParams.get("agentId") ?? ALL;
-  const status = searchParams.get("runStatus") ?? ALL;
+  const requestedStatus = searchParams.get("runStatus");
+  const status =
+    requestedStatus &&
+    HEARTBEAT_RUN_STATUSES.includes(requestedStatus as HeartbeatRunStatus)
+      ? (requestedStatus as HeartbeatRunStatus)
+      : ALL;
+  const loadMoreRef = useRef<HTMLDivElement>(null);
+  const loadMoreInFlightRef = useRef(false);
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
     enabled: !routineId,
   });
-  const runs = useQuery({
-    queryKey: queryKeys.audit.runs(companyId, agentId === ALL ? null : agentId),
-    queryFn: () =>
-      heartbeatsApi.list(companyId, agentId === ALL ? undefined : agentId, RUN_LIMIT, {
+  const runs = useInfiniteQuery({
+    queryKey: [
+      ...queryKeys.audit.runs(companyId, agentId === ALL ? null : agentId),
+      "infinite",
+      RUN_PAGE_SIZE,
+      status,
+    ],
+    queryFn: ({ pageParam }) =>
+      heartbeatsApi.list(companyId, agentId === ALL ? undefined : agentId, RUN_PAGE_SIZE, {
         summary: true,
+        offset: pageParam,
+        status: status === ALL ? undefined : status,
       }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      lastPage.length === RUN_PAGE_SIZE ? lastPageParam + RUN_PAGE_SIZE : undefined,
     refetchInterval: 15_000,
     enabled: !routineId,
   });
   const routineRuns = useQuery({
     queryKey: [...queryKeys.routines.runs(routineId ?? ""), "audit"],
-    queryFn: () => routinesApi.listRuns(routineId!, RUN_LIMIT),
+    queryFn: () => routinesApi.listRuns(routineId!, ROUTINE_RUN_LIMIT),
     enabled: Boolean(routineId),
     refetchInterval: 15_000,
   });
@@ -154,14 +177,35 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
     () => new Map((agents.data ?? []).map((agent) => [agent.id, agent])),
     [agents.data],
   );
-  const statuses = useMemo(
-    () => Array.from(new Set((runs.data ?? []).map((run) => run.status))).sort(),
-    [runs.data],
-  );
-  const visibleRuns = useMemo(
-    () => (runs.data ?? []).filter((run) => status === ALL || run.status === status),
-    [runs.data, status],
-  );
+  const runRows = useMemo(() => {
+    const byId = new Map<string, HeartbeatRun>();
+    for (const run of runs.data?.pages.flat() ?? []) byId.set(run.id, run);
+    return Array.from(byId.values());
+  }, [runs.data]);
+
+  useEffect(() => {
+    if (!runs.isFetchingNextPage) loadMoreInFlightRef.current = false;
+  }, [runs.isFetchingNextPage]);
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !runs.hasNextPage || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (
+          entry?.isIntersecting &&
+          !runs.isFetchingNextPage &&
+          !loadMoreInFlightRef.current
+        ) {
+          loadMoreInFlightRef.current = true;
+          void runs.fetchNextPage();
+        }
+      },
+      { rootMargin: "50%" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [runs.fetchNextPage, runs.hasNextPage, runs.isFetchingNextPage]);
 
   const updateFilter = (key: "agentId" | "runStatus", value: string) => {
     setSearchParams(
@@ -233,7 +277,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL}>All statuses</SelectItem>
-              {statuses.map((value) => (
+              {HEARTBEAT_RUN_STATUSES.map((value) => (
                 <SelectItem key={value} value={value}>
                   {readableSource(value)}
                 </SelectItem>
@@ -261,14 +305,14 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
             Try again
           </Button>
         </div>
-      ) : visibleRuns.length === 0 ? (
+      ) : runRows.length === 0 ? (
         <EmptyState
           icon={agentId !== ALL || status !== ALL ? CircleDotDashed : Activity}
           message={agentId !== ALL || status !== ALL ? "No runs match these filters." : "No runs yet."}
         />
       ) : (
         <ul className="divide-y divide-border border-y border-border" aria-label="Recent runs">
-          {visibleRuns.map((run) => {
+          {runRows.map((run) => {
             const agent = agentById.get(run.agentId);
             const summary = runSummary(run);
             const duration = runDuration(run);
@@ -306,7 +350,17 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
         </ul>
       )}
 
-      <p className="text-xs text-muted-foreground">Showing the {RUN_LIMIT} most recent runs.</p>
+      <div ref={loadMoreRef} className="flex min-h-8 items-center justify-center text-xs text-muted-foreground">
+        {runs.isFetchingNextPage ? (
+          <span>Loading more runs…</span>
+        ) : runs.hasNextPage ? (
+          <Button variant="ghost" size="sm" onClick={() => void runs.fetchNextPage()}>
+            Load more runs
+          </Button>
+        ) : runRows.length > RUN_PAGE_SIZE ? (
+          <span>All {runRows.length} runs loaded.</span>
+        ) : null}
+      </div>
     </div>
   );
 }

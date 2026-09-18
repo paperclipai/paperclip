@@ -1,6 +1,7 @@
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
+  HeartbeatRunStatus,
   HeartbeatRunEvent,
   WorkspaceOperation,
   ProviderTraceFrame,
@@ -103,6 +104,8 @@ export type RuntimeRequestResolution =
 
 export interface HeartbeatRunListOptions {
   summary?: boolean;
+  offset?: number;
+  status?: HeartbeatRunStatus;
 }
 
 export interface ProviderTraceInspection {
@@ -122,6 +125,10 @@ export const heartbeatsApi = {
     if (agentId) searchParams.set("agentId", agentId);
     if (limit) searchParams.set("limit", String(limit));
     if (options.summary) searchParams.set("summary", "true");
+    if (options.offset !== undefined) {
+      searchParams.set("offset", String(options.offset));
+    }
+    if (options.status) searchParams.set("status", options.status);
     const qs = searchParams.toString();
     return api.get<HeartbeatRun[]>(
       `/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`,
