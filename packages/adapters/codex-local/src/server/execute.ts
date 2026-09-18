@@ -78,6 +78,7 @@ import {
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
   stageCodexHomeForSync,
+  managedCodexMcpBearerTokenEnv,
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
@@ -891,6 +892,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onEvent,
     });
     const env: Record<string, string> = { ...paperclipBaseEnv };
+    Object.assign(env, managedCodexMcpBearerTokenEnv(managedMcpGateways));
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
       (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
