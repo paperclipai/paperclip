@@ -12868,6 +12868,8 @@ export function issueRoutes(
       }
       const shouldCancelActiveRunForCancelledStatus =
         existing.status !== "cancelled" && updateFields.status === "cancelled";
+      const agentCancellationRequested =
+        req.actor.type === "agent" && shouldCancelActiveRunForCancelledStatus;
       if (resumeRequested === true && !commentBody) {
         res.status(400).json({ error: "Follow-up intent requires a comment" });
         return;
@@ -12875,7 +12877,8 @@ export function issueRoutes(
       if (
         (reopenRequested === true ||
           resumeRequested === true ||
-          Array.isArray(req.body.blockedByIssueIds)) &&
+          Array.isArray(req.body.blockedByIssueIds) ||
+          agentCancellationRequested) &&
         (await assertLowTrustControlPlaneDenied(
           req,
           res,
@@ -12896,6 +12899,10 @@ export function issueRoutes(
         req.actor.type === "agent" &&
         typeof updateFields.status === "string" &&
         updateFields.status !== existing.status &&
+        // Cancellation stops work; it does not resume it. The ordinary
+        // mutation, checkout, recovery, review, and low-trust gates still
+        // authorize this terminal disposition.
+        updateFields.status !== "cancelled" &&
         (isBlocked || (isClosed && !isClosedIssueStatus(updateFields.status)));
       if (
         resumeRequested !== true &&
