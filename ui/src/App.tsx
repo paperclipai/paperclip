@@ -749,7 +749,11 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
-        <Route path="chat-identity/confirm" element={<ChatIdentityConfirm />} />
+        <Route element={streamlinedUiLoaded ? <CloudAccessGate allowMembershipRequest /> : <PaperclipLoading />}>
+          {/* The identity APIs enforce the chat rollout flag. Nonmembers cannot
+              read experimental settings, but a private invitation may request membership. */}
+          <Route path="chat-identity/confirm" element={<ChatIdentityConfirm />} />
+        </Route>
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
         <Route path="ux-lab/bootstrap-setup" element={<BootstrapSetupUxLab />} />
         <Route path="ux-lab/responsible-user-denial" element={<ResponsibleUserDenialUxLab />} />

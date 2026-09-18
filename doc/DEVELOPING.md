@@ -511,6 +511,13 @@ does not grant membership or link the identity. After approval, confirm the
 identity, or send the connect command again if the link has expired. Successful
 confirmation also queues a private Slack acknowledgement.
 
+Slack identity invitation pages retain the cloud authentication and bootstrap
+checks. Signed-in nonmembers may open a valid private invitation to request
+membership, but confirmation still requires membership in the invitation's
+company. Preview, access-request, and confirmation APIs also enforce the chat
+connector rollout flag on the server; invitees cannot read board experimental
+settings before they join. Expired or consumed tokens grant no access.
+
 The final wizard step suggests `@<your-bot> you there?`, then continuing in
 the agent's thread. Select the bot from Slack's @mention suggestions so the
 message includes a real mention. It detects a message or task command from the current user's

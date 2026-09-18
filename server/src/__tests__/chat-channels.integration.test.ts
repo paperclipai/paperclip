@@ -120,6 +120,7 @@ import {
 } from "../services/chat-teams-personal-recipient.js";
 import * as discordQuestionForms from "../services/chat-discord-question-forms.js";
 import { issueService } from "../services/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { NativeChatAttachmentReadScope } from "../services/native-runtime/chat-attachment-read.js";
@@ -46315,6 +46316,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it("discovers a Slack connect identity without starting work or granting access", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
     const post = vi.fn();
@@ -46354,6 +46356,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const outsideApp = routesApp(db, randomUUID(), service, outsiderId);
     expect((await request(outsideApp).get(`/api/chat-identity-links/preview?token=${token}`)).body).toMatchObject({ selfService: true, canConfirm: false });
     await expect(service.confirmIdentityLink(token, outsiderId)).rejects.toMatchObject({ status: 403 });
+    await request(outsideApp).post("/api/chat-identity-links/confirm").send({ token }).expect(403);
     expect((await request(outsideApp).post("/api/chat-identity-links/request-access").send({ token })).body).toMatchObject({ status: "pending_approval" });
     await service.requestIdentityAccess(token, outsiderId, "test");
     expect(await db.select().from(joinRequests).where(eq(joinRequests.companyId, fixture.companyId))).toHaveLength(1);
@@ -46371,6 +46374,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect((await service.listPrincipals(endpoint.id))[0]).toMatchObject({ status: "linked", paperclipUserId: "owner-user" });
     await expect(service.test(endpoint.id)).rejects.toMatchObject({ details: { code: "chat_test_follow_up_missing" } });
     await expect(service.confirmIdentityLink(token, "owner-user")).rejects.toMatchObject({ status: 422 });
+    await request(outsideApp).post("/api/chat-identity-links/request-access").send({ token }).expect(422);
     expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
     const finished = await service.finishSlackSetup(endpoint.id, "owner-user");
     expect(finished).toMatchObject({ status: "active", setup: { step: "complete", testSkipped: true } });

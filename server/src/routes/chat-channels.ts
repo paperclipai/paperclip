@@ -26,6 +26,7 @@ import {
   type ChatChannelServiceOptions,
 } from "../services/chat-channels.js";
 import { accessService } from "../services/access.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { recordChatWebhookStage } from "../services/chat-webhook-diagnostics.js";
 import {
   createInviteRateLimiter,
@@ -86,6 +87,18 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   const router = Router();
   const service = options.service ?? chatChannelService(db, options);
   const access = accessService(db);
+
+  async function assertIdentityLinkAccess(req: ExpressRequest): Promise<string> {
+    assertBoard(req);
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    // Enforce rollout here: invited nonmembers cannot read the board's
+    // experimental-settings API. A private token never bypasses this gate.
+    if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) {
+      throw forbidden("Chat connectors are not enabled on this instance");
+    }
+    return userId;
+  }
 
   async function assertConnectionManager(
     req: ExpressRequest,
@@ -258,27 +271,23 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-identity-links/confirm",
     validate(confirmChatIdentityLinkSchema),
     async (req, res) => {
-      assertBoard(req);
-      const userId = actorUserId(req);
-      if (!userId) throw badRequest("A signed-in Paperclip user is required");
+      const userId = await assertIdentityLinkAccess(req);
       res.json(await service.confirmIdentityLink(req.body.token, userId));
     },
   );
 
   router.post("/chat-identity-links/request-access", validate(confirmChatIdentityLinkSchema), async (req, res) => {
-    assertBoard(req);
-    const userId = actorUserId(req);
-    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    const userId = await assertIdentityLinkAccess(req);
     res.json(await service.requestIdentityAccess(req.body.token, userId, req.ip ?? "unknown"));
   });
 
   router.get("/chat-identity-links/preview", async (req, res) => {
-    assertBoard(req);
+    const userId = await assertIdentityLinkAccess(req);
     const token = typeof req.query.token === "string" ? req.query.token : "";
     if (token.length < 32 || token.length > 4096)
       throw badRequest("A valid identity-link token is required");
     res.set("Cache-Control", "no-store");
-    const invitation = await service.previewIdentityLink(token, actorUserId(req)).catch((error) => {
+    const invitation = await service.previewIdentityLink(token, userId).catch((error) => {
       if (error instanceof HttpError && error.status === 422) return null;
       throw error;
     });
