@@ -22,6 +22,41 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("classifies an acpx quota wall as a quota wait, not an adapter fault", () => {
+    // acpx collapses the typed `limit` session failure into this sentence and
+    // drops the provider's own wording, so the reset time cannot be parsed and
+    // the default backoff applies. What must not happen is the run falling
+    // through as an unclassified adapter fault: that flips the agent to `error`
+    // and retries straight back into a wall that is still up.
+    const now = new Date("2026-09-18T05:39:21.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "ACP agent reported a terminal limit failure.",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
+  it("leaves the acpx quota sentence unclassified when the engine does not tag it", () => {
+    // Regression guard for the shape that caused the outage: the same sentence
+    // under `acpx_turn_failed` is filtered out before PROVIDER_QUOTA_ERROR_RE
+    // is ever tried, because the generic wording matches no quota pattern. This
+    // documents why the acpx engine has to tag the failure itself.
+    const now = new Date("2026-09-18T05:39:21.000Z");
+    expect(
+      classifyAdapterFailureForRecovery({
+        errorCode: "acpx_turn_failed",
+        error: "ACP agent reported a terminal limit failure.",
+        resultJson: null,
+      }, now),
+    ).toBeNull();
+  });
+
   it("uses the default recovery backoff when quota reset time is absent", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({

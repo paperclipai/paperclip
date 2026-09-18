@@ -159,6 +159,14 @@ import {
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
+// A provider quota wall reaches this engine in one of two shapes. acpx maps a
+// typed `limit` session failure to "ACP agent reported a terminal limit
+// failure." and drops the provider's own sentence; some backends still let the
+// original wording through. Match both so the run is classified as a wait
+// rather than an adapter fault. Keep the provider-text half aligned with
+// `PROVIDER_QUOTA_ERROR_RE` in the server recovery classifier.
+const ACPX_PROVIDER_QUOTA_RE =
+  /(?:terminal limit failure|you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|rate[ _-]?limit(?:ed)?)/i;
 
 function routeChildStderr(state: ChildStderrState, chunk: string) {
   if (state.logPath) {
@@ -4957,6 +4965,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        // A provider quota wall is a wait, not an adapter fault. acpx collapses
+        // the typed `limit` session failure into a generic sentence and drops
+        // the provider's own wording, so match both: the acpx sentence and the
+        // original provider text when it does survive. Without this the run
+        // lands on `acpx_turn_failed`, `classifyAdapterFailureForRecovery`
+        // filters it out before `PROVIDER_QUOTA_ERROR_RE` is ever tried, the
+        // agent flips to `error` instead of staying idle, and the retries fire
+        // straight back into a door that is still shut.
+        const providerQuota =
+          !timedOut &&
+          !channelLost &&
+          terminal.status === "failed" &&
+          ACPX_PROVIDER_QUOTA_RE.test(`${errorMessage ?? ""}\n${terminalStopReason ?? ""}`);
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -4976,9 +4997,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? "acpx_timeout"
             : channelLost
               ? DUPLEX_CHANNEL_LOST_ERROR_CODE
-              : terminal.status === "failed"
-                ? "acpx_turn_failed"
-                : null,
+              : providerQuota
+                ? "provider_quota"
+                : terminal.status === "failed"
+                  ? "acpx_turn_failed"
+                  : null,
+          ...(providerQuota ? { errorFamily: "provider_quota" as const } : {}),
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
