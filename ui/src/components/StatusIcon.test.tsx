@@ -107,4 +107,14 @@ describe("StatusIcon — glyph size (PAP-243a)", () => {
     expect(html).toContain('width="16"');
     expect(html).toContain('height="16"');
   });
+
+  it("can place the default glyph in a larger layout footprint without resizing it", () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon status="todo" glyphContainerClassName="size-6" showLabel />,
+    );
+    expect(html).toContain('data-status-glyph-container="true"');
+    expect(html).toContain('class="size-6"');
+    expect(html).toContain('width="16"');
+    expect(html).toContain('height="16"');
+  });
 });
