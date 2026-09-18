@@ -7330,6 +7330,81 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
+  it("keeps reconciling other companies when one stranded issue fails", async () => {
+    const failing = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const healthy = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const failingChildId = randomUUID();
+    const healthyChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: failingChildId,
+        companyId: failing.companyId,
+        parentId: failing.issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: healthyChildId,
+        companyId: healthy.companyId,
+        parentId: healthy.issueId,
+        title: "Sub-task still to do",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    // Make every update of the failing issue throw inside the database.
+    await db.execute(
+      sql.raw(`
+        CREATE FUNCTION recovery_isolation_test_fail() RETURNS trigger AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected recovery failure';
+        END;
+        $$ LANGUAGE plpgsql;
+        CREATE TRIGGER recovery_isolation_test_fail
+          BEFORE UPDATE ON issues
+          FOR EACH ROW
+          WHEN (OLD.id = '${failing.issueId}')
+          EXECUTE FUNCTION recovery_isolation_test_fail();
+      `),
+    );
+    try {
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.failed).toBe(1);
+      expect(result.waitingOnReviewResolved).toBe(1);
+      expect(result.issueIds).toEqual([healthy.issueId]);
+    } finally {
+      await db.execute(
+        sql.raw(`
+          DROP TRIGGER IF EXISTS recovery_isolation_test_fail ON issues;
+          DROP FUNCTION IF EXISTS recovery_isolation_test_fail();
+        `),
+      );
+    }
+
+    await expect(
+      sourceBlockerIssueIds(healthy.companyId, healthy.issueId),
+    ).resolves.toEqual([healthyChildId]);
+    await expect(
+      sourceBlockerIssueIds(failing.companyId, failing.issueId),
+    ).resolves.toEqual([]);
+  });
+
   it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -16533,13 +16608,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sql`create trigger test_native_blocked_wait_fault before insert on issue_comments for each row execute function test_native_blocked_wait_fault()`,
     );
     try {
-      await expect(
-        heartbeatService(db).reconcileStrandedAssignedIssues(),
-      ).rejects.toMatchObject({
-        cause: expect.objectContaining({
-          message: "native_blocked_wait_fixture_fault",
-        }),
-      });
+      // Recovery isolates the failed candidate: the pass continues and
+      // counts it, and the transaction still rolls back the wait.
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.failed).toBe(1);
+      expect(result.issueIds).not.toContain(issueId);
     } finally {
       await db.execute(
         sql`drop trigger test_native_blocked_wait_fault on issue_comments`,
