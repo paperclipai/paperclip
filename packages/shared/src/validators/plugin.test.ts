@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
 import { resolveDeclaredSandboxCapabilities } from "../environment-support.js";
-import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginToolDeclarationSchema, pluginUiSlotDeclarationSchema } from "./plugin.js";
 
 function buildSandboxProviderManifest(driver: Record<string, unknown>) {
   return {
@@ -120,6 +120,31 @@ describe("plugin manifest validators", () => {
     expect(parsed.success).toBe(false);
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("provider key"))).toBe(true);
+  });
+});
+
+describe("plugin tool timeout declaration", () => {
+  const tool = {
+    name: "search",
+    displayName: "Search",
+    description: "Searches things",
+    parametersSchema: { type: "object" },
+  };
+
+  it("accepts tools without a timeout and passes through a valid one", () => {
+    expect(pluginToolDeclarationSchema.parse(tool)).toEqual(tool);
+    expect(
+      pluginToolDeclarationSchema.parse({ ...tool, timeoutMs: 5_000 }).timeoutMs,
+    ).toBe(5_000);
+  });
+
+  it("rejects non-positive, fractional, and over-clamp timeouts", () => {
+    for (const timeoutMs of [0, -100, 1.5, 900_001, Number.NaN]) {
+      expect(
+        pluginToolDeclarationSchema.safeParse({ ...tool, timeoutMs }).success,
+        String(timeoutMs),
+      ).toBe(false);
+    }
   });
 });
 

@@ -117,6 +117,10 @@ export const pluginToolDeclarationSchema = z.object({
   displayName: z.string().min(1),
   description: z.string().min(1),
   parametersSchema: jsonSchemaSchema,
+  // Per-tool call timeout in milliseconds. Optional; tools without one use
+  // the transport default. Must fit the host RPC clamp (15 minutes); invalid
+  // values fail manifest validation loudly instead of degrading at runtime.
+  timeoutMs: z.number().int().positive().max(15 * 60 * 1000).optional(),
 });
 
 const pluginEnvironmentTemplateConfigFieldSchema = z.string()
