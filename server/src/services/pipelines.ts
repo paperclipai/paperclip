@@ -2975,6 +2975,64 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             config: breakdownConfig,
           })
         : null;
+      // ── Reuse existing automation issue if one exists for this case+STAGE ──
+      // When the pipeline cycles back to the same stage (e.g., implement -> pr_review
+      // -> implement due to PR feedback), reuse the existing automation issue instead
+      // of creating a new one. This keeps PR comments on the same issue so the agent
+      // sees them, and avoids the "2 tickets" problem.
+      //
+      // MUST be scoped to automationId (this stage's on_enter), not just role=automation
+      // for the case. Without the automationId join below, ANY prior stage's execution
+      // issue (e.g. Brief's) satisfies this query, so the next stage's on_enter
+      // (e.g. Architect) silently "succeeds" by reusing the earlier, already-`done`
+      // issue instead of dispatching a real agent for its own routine — the case then
+      // sits at the new stage with no live run and no error anywhere (DAI-314/DF-288,
+      // 2026-09-07: confirmed via retry — dispatch kept reusing the closed Brief issue
+      // until the stale link was unlinked and a fresh execution issue was created).
+      const existingIssueLink = await db
+        .select({ issueId: pipelineCaseIssueLinks.issueId })
+        .from(pipelineCaseIssueLinks)
+        .innerJoin(issues, eq(issues.id, pipelineCaseIssueLinks.issueId))
+        .innerJoin(
+          pipelineAutomationExecutions,
+          eq(pipelineAutomationExecutions.id, pipelineCaseIssueLinks.automationAttemptId),
+        )
+        .where(and(
+          eq(pipelineCaseIssueLinks.companyId, execution.companyId),
+          eq(pipelineCaseIssueLinks.caseId, execution.caseId),
+          eq(pipelineCaseIssueLinks.role, "automation"),
+          isNull(pipelineCaseIssueLinks.retiredAt),
+          ne(issues.status, "cancelled"),
+          isNull(issues.cancelledAt),
+          eq(pipelineAutomationExecutions.automationId, execution.automationId),
+        ))
+        .orderBy(desc(pipelineCaseIssueLinks.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingIssueLink?.issueId) {
+        // Reuse the existing automation issue — reset to todo so the agent re-runs.
+        // Do NOT exclude status="done": this issue was found via the same-stage-scoped
+        // query above, so "done" here means "the previous run of THIS stage's automation
+        // completed" -- exactly the re-entry case reuse exists for. Excluding it left the
+        // issue stuck at "done" while the code below still marked the automation execution
+        // "succeeded" and returned without ever calling runPipelineStageEntryRoutine --
+        // a silent stall with no dispatch and no error.
+        await db
+          .update(issues)
+          .set({ status: "todo", updatedAt: nowDate() })
+          .where(eq(issues.id, existingIssueLink.issueId));
+        const [reused] = await db
+          .update(pipelineAutomationExecutions)
+          .set({
+            status: "succeeded",
+            executionIssueId: existingIssueLink.issueId,
+            error: null,
+            updatedAt: nowDate(),
+          })
+          .where(eq(pipelineAutomationExecutions.id, execution.id))
+          .returning();
+        return { status: "succeeded", execution: reused! };
+      }
       const run = await routinesSvc.runPipelineStageEntryRoutine(execution.routineId, {
         source: "api",
         assigneeAgentId: routine.assigneeAgentId,
