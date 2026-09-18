@@ -676,6 +676,14 @@ async function streamLocalFileToSsh(input: {
       settled = true;
       source.destroy();
       ssh.kill("SIGTERM");
+      // A destination EPIPE usually means the remote script exited early; if
+      // it left a diagnostic on stderr, surface that instead of the bare
+      // EPIPE so the run log shows the real cause.
+      const remoteStderr = sshStderr.trim();
+      if ((error as NodeJS.ErrnoException).code === "EPIPE" && remoteStderr) {
+        reject(new Error(remoteStderr));
+        return;
+      }
       reject(error);
     };
 
@@ -684,6 +692,10 @@ async function streamLocalFileToSsh(input: {
     });
     source.on("error", fail);
     ssh.on("error", fail);
+    // pipe() does not forward destination errors: when the remote script exits
+    // early, the kernel answers our continued writes with EPIPE on ssh.stdin,
+    // which crashes the whole server process as an unhandled 'error' event.
+    ssh.stdin?.on("error", fail);
     if (input.progress) {
       input.progress.counter.on("error", fail);
       source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
@@ -1400,9 +1412,19 @@ export async function syncDirectoryToSsh(input: {
       settled = true;
       tar.kill("SIGTERM");
       ssh.kill("SIGTERM");
+      // Prefer the remote diagnostic over a bare EPIPE (see
+      // streamLocalFileToSsh).
+      const remoteStderr = sshStderr.trim();
+      if ((error as NodeJS.ErrnoException).code === "EPIPE" && remoteStderr) {
+        reject(new Error(remoteStderr));
+        return;
+      }
       reject(error);
     };
 
+    // pipe() does not forward destination errors: an early ssh exit surfaces
+    // as EPIPE on ssh.stdin and would crash the server if left unhandled.
+    ssh.stdin?.on("error", fail);
     if (progress) {
       progress.counter.on("error", fail);
       tar.stdout?.pipe(progress.counter).pipe(ssh.stdin ?? null);
@@ -1511,9 +1533,20 @@ export async function syncDirectoryFromSsh(input: {
         settled = true;
         ssh.kill("SIGTERM");
         tar.kill("SIGTERM");
+        // The EPIPE destination is the local tar, but the actual failure is
+        // usually the remote side (ssh stderr), so prefer that diagnostic
+        // over the bare EPIPE (see streamLocalFileToSsh).
+        const remoteStderr = sshStderr.trim();
+        if ((error as NodeJS.ErrnoException).code === "EPIPE" && remoteStderr) {
+          reject(new Error(remoteStderr));
+          return;
+        }
         reject(error);
       };
 
+      // pipe() does not forward destination errors: an early tar exit surfaces
+      // as EPIPE on tar.stdin and would crash the server if left unhandled.
+      tar.stdin?.on("error", fail);
       if (progress) {
         progress.counter.on("error", fail);
         ssh.stdout?.pipe(progress.counter).pipe(tar.stdin ?? null);
