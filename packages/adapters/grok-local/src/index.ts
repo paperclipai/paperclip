@@ -14,7 +14,7 @@ Adapter: grok_local
 Use when:
 - You want Paperclip to run the native Grok Build CLI locally on the host machine
 - You want resumable Grok sessions across heartbeats via \`--resume\`
-- You want Paperclip-managed instructions and skills staged into the execution workspace using Grok's native discovery paths (\`Agents.md\` and \`.claude/skills\`)
+- You want Paperclip-managed instructions appended to each run's system prompt and skills staged in \`.claude/skills\`
 
 Don't use when:
 - You need a webhook-style external invocation (use http or openclaw_gateway)
@@ -23,7 +23,7 @@ Don't use when:
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
-- instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe, otherwise falls back to \`--rules @file\`
+- instructionsFilePath (string, optional): absolute path to a markdown instructions file, at most 64 KiB encoded as UTF-8. Paperclip reads its contents and passes them via \`--rules\` for each run, preserving existing project instruction files; larger inline instructions are rejected before launch. Reads are bounded to 64 KiB plus one overflow byte, even if the file grows; symlinks to regular files are supported, and non-regular files are rejected
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Grok model id. Defaults to grok-build.
 - permissionMode (string, optional): Grok permission mode passed via \`--permission-mode\`. Unset by default: Grok >= 1.0 enforces \`dontAsk\` as deny-by-default and it overrides \`--always-approve\`, so unattended runs rely on \`--always-approve\` alone unless you explicitly need a mode
