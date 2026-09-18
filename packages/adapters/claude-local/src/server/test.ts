@@ -79,19 +79,33 @@ async function addClaudeModelRouteCheck(
         level: "info" as const,
         message: `Configured model is advertised by the provider: ${model}.`,
       }
-    : status === "fallback-only"
-      ? {
-          code: "claude_model_route_fallback_only",
-          level: "warn" as const,
-          message: `Configured model is only covered by Paperclip's static fallback catalog: ${model}.`,
-          hint: "Verify the provider catalog and route before relying on this model.",
-        }
-      : {
-          code: "claude_model_route_unavailable",
-          level: "warn" as const,
-          message: `Configured model is not advertised by the configured provider: ${model}.`,
-          hint: "Choose a model from the provider catalog or verify the configured route.",
-        };
+      : status === "fallback-only"
+        ? {
+            code: "claude_model_route_fallback_only",
+            level: "warn" as const,
+            message: `Configured model is only covered by Paperclip's static fallback catalog: ${model}.`,
+            hint: "Verify the provider catalog and route before relying on this model.",
+          }
+        : status === "credentials-missing"
+          ? {
+              code: "claude_model_route_credentials_missing",
+              level: "warn" as const,
+              message: `Could not check the configured provider route because Claude credentials are missing: ${model}.`,
+              hint: "Configure ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, then retry the Test.",
+            }
+          : status === "provider-unavailable"
+            ? {
+                code: "claude_model_route_provider_unavailable",
+                level: "warn" as const,
+                message: `Could not read the configured provider catalog for model: ${model}.`,
+                hint: "Verify provider health and the configured route before relying on this model.",
+              }
+            : {
+                code: "claude_model_route_unavailable",
+                level: "warn" as const,
+                message: `Configured model is not advertised by the configured provider: ${model}.`,
+                hint: "Choose a model from the provider catalog or verify the configured route.",
+              };
 
   const checks = [...result.checks, check];
   return { ...result, status: summarizeStatus(checks), checks };
