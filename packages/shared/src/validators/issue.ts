@@ -416,19 +416,19 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .nullable()
     .default(null),
   timeoutAt: z.string().datetime().optional().nullable().default(null),
-  maxAttempts: z
-    .number()
-    .int()
-    .positive()
-    .max(100)
-    .optional()
-    .nullable()
-    .default(null),
-  recoveryPolicy: z
-    .enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)
-    .optional()
-    .nullable()
-    .default(null),
+  maxAttempts: z.number().int().positive().max(100).optional().nullable().default(null),
+  recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
+  slowdownAfterGreens: z.number().int().nonnegative().max(1000).optional().nullable().default(null),
+  slowdownCadenceSeconds: z.number().int().positive().max(24 * 60 * 60).optional().nullable().default(null),
+  slowdownAfterInReviewSeconds: z.number().int().positive().max(7 * 24 * 60 * 60).optional().nullable().default(null),
+}).superRefine((value, ctx) => {
+  if (value.slowdownAfterGreens != null && value.slowdownCadenceSeconds == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["slowdownCadenceSeconds"],
+      message: "slowdownCadenceSeconds is required when slowdownAfterGreens is set",
+    });
+  }
 });
 
 export const issueExecutionPolicySchema = z.object({
@@ -492,6 +492,10 @@ export const issueExecutionMonitorStateSchema = z.object({
     .default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
+  consecutiveGreens: z.number().int().nonnegative().max(1000).nullable().optional().default(null),
+  deployConfirmed: z.boolean().nullable().optional().default(null),
+  lastGreenAt: z.string().datetime().nullable().optional().default(null),
+  inReviewSinceAt: z.string().datetime().nullable().optional().default(null),
 });
 
 export const issueReviewRequestSchema = z
