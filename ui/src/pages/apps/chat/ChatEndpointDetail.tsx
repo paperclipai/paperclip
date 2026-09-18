@@ -310,7 +310,7 @@ export function ChatEndpointDetail() {
               Continue setup
             </Button>
           ) : null}
-          {(activeTab !== "conversations" || endpoint.status !== "active") && <StatusBadge status={endpoint.status} />}
+          {endpoint.status !== "active" && <StatusBadge status={endpoint.status} />}
         </div>
       </header>
       {activeTab === "settings" && (
@@ -750,10 +750,14 @@ function Activity({
   const [resolutionItem, setResolutionItem] = useState<ChatActivityItem | null>(
     null,
   );
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const cursor = cursors[cursors.length - 1];
+  useEffect(() => setCursors([undefined]), [endpointId]);
   const query = useQuery({
-    queryKey: queryKeys.chatEndpoints.activity(endpointId),
-    queryFn: () => chatEndpointsApi.listActivity(endpointId),
+    queryKey: [...queryKeys.chatEndpoints.activity(endpointId), cursor ?? null],
+    queryFn: () => chatEndpointsApi.listActivityPage(endpointId, cursor),
     ...liveChatQueryOptions,
+    refetchInterval: cursor ? false : liveChatQueryOptions.refetchInterval,
   });
   const replay = useMutation({
     mutationFn: (item: ChatActivityItem) =>
@@ -862,7 +866,7 @@ function Activity({
         tone: "error",
       }),
   });
-  const rows = query.data ?? [];
+  const rows = query.data?.items ?? [];
   const { status } = endpoint;
   const health = connectionHealthPresentation(endpoint);
   const lifecycleAction = lifecycle.variables;
@@ -1115,6 +1119,13 @@ function Activity({
           )}
         </div>
       </div>
+      <nav aria-label="Activity pagination" className="flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground">Page {cursors.length}</span>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors((pages) => pages.slice(0, -1))}>Previous</Button>
+          <Button size="sm" variant="outline" disabled={!query.data?.nextCursor || query.isFetching || query.isError} onClick={() => { if (query.data?.nextCursor) setCursors((pages) => [...pages, query.data.nextCursor!]); }}>Next</Button>
+        </div>
+      </nav>
       <AlertDialog
         open={resolutionItem !== null}
         onOpenChange={(open) => !open && setResolutionItem(null)}

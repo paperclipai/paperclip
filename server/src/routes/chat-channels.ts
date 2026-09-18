@@ -298,7 +298,13 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 
   router.get("/chat-endpoints/:endpointId/activity", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
-    res.json(await service.listActivity(endpointId(req)));
+    if (req.query.limit !== undefined || req.query.cursor !== undefined) {
+      if ((req.query.limit !== undefined && (typeof req.query.limit !== "string" || !/^\d+$/.test(req.query.limit)))
+        || (req.query.cursor !== undefined && typeof req.query.cursor !== "string")) throw badRequest("Invalid activity pagination parameters");
+      res.json(await service.listActivityPage(endpointId(req), req.query.limit === undefined ? 25 : Number(req.query.limit), req.query.cursor as string | undefined));
+    } else {
+      res.json(await service.listActivity(endpointId(req)));
+    }
   });
 
   router.post(

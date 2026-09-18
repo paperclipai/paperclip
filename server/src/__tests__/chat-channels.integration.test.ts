@@ -12813,6 +12813,63 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  it("paginates mixed activity beyond 100 rows without losing timestamp ties", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService(new FakeChatSdkRuntime(), fakeSlackFetch());
+    const endpoint = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId }, "owner-user");
+    const other = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId }, "owner-user");
+    const createdAt = new Date("2026-01-01T00:00:00.123Z");
+    const deliveries = await db.insert(chatDeliveries).values(Array.from({ length: 110 }, (_, index) => ({
+      companyId: fixture.companyId, endpointId: endpoint.id,
+      providerEventId: `page-${index}`, deduplicationKey: `page-${index}`,
+      eventKind: "message" as const, normalizedEvent: {}, state: "processed" as const, createdAt,
+    }))).returning();
+    const actions = await db.insert(chatActions).values(Array.from({ length: 15 }, (_, index) => ({
+      companyId: fixture.companyId, endpointId: endpoint.id,
+      kind: "slack_session_sync", providerActionId: `page-${index}`,
+      // Activity for session actions follows updatedAt, not createdAt.
+      createdAt: new Date("2025-01-01T00:00:00Z"), updatedAt: createdAt,
+    }))).returning();
+    await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: other.id, kind: "slash_task_start", providerActionId: "other-endpoint", createdAt });
+    const expected = [...deliveries, ...actions].map((row) => row.id).sort((a, b) => b.localeCompare(a));
+    const found: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const result = await service.listActivityPage(endpoint.id, 25, cursor);
+      expect(result.items).toHaveLength(25);
+      found.push(...result.items.map((row) => row.id));
+      expect(Boolean(result.nextCursor)).toBe(page < 4);
+      cursor = result.nextCursor ?? undefined;
+      if (page === 0) {
+        // New arrivals must not shift the older pages.
+        await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, kind: "slash_task_start", providerActionId: "new-arrival", createdAt: new Date("2026-01-02T00:00:00Z") });
+      }
+    }
+    expect(found).toEqual(expected);
+    expect(await service.listActivity(endpoint.id)).toHaveLength(100);
+    await expect(service.listActivityPage(endpoint.id, 0)).rejects.toMatchObject({ status: 400 });
+    await expect(service.listActivityPage(endpoint.id, 101)).rejects.toMatchObject({ status: 400 });
+    await expect(service.listActivityPage(endpoint.id, 25, "invalid")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("recognizes Slack callbacks behind TLS termination without trusting forwarded headers", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, service } = await configuredSlackEndpoint(fixture);
+    const path = `/api/chat-webhooks/${endpoint.publicId}/slack`;
+    const body = JSON.stringify({ type: "url_verification", challenge: "proxy-check" });
+    const request = signedSlackWebhookRequest({ url: `http://paperclip.example${path}`, contentType: "application/json", body });
+    request.headers.set("x-forwarded-host", "untrusted.example");
+    request.headers.set("x-forwarded-proto", "https");
+    await service.handleWebhook(endpoint.publicId, "slack", request);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false, callbackSurfaces: { events: { status: "current" } } } });
+    // A different public host or port is still drift, even with TLS termination.
+    for (const publicBaseUrl of ["https://moved.example", "https://paperclip.example:8443"]) {
+      const moved = createService(new FakeChatSdkRuntime(), fakeSlackFetch(), { publicBaseUrl });
+      await expect(moved.service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true, callbackSurfaces: { events: { status: "stale" } } } });
+      await moved.service.shutdown();
+    }
+  });
+
   it("tracks Slack callback surfaces independently and reports public URL drift", async () => {
     const fixture = await seedCompany();
     const { endpoint, runtime, service } =

@@ -573,7 +573,7 @@ describe("openapi routes", () => {
     const activity =
       spec.paths["/api/chat-endpoints/{endpointId}/activity"].get.responses[
         "200"
-      ].content["application/json"].schema.items;
+      ].content["application/json"].schema.oneOf[0].items;
     expect(activity.properties.actionType.enum).toEqual([
       "slash_task_start",
       "provider_effect",

@@ -522,6 +522,21 @@ function canonicalCallbackUrl(value: string): string | null {
   }
 }
 
+// TLS terminates at a reverse proxy in many self-hosted deployments. The
+// transport scheme is not evidence of URL drift; authority and path still are.
+// This is diagnostic only: it does not trust forwarded headers or change auth.
+function slackCallbackMatchesPublicUrl(observed: string, current: string): boolean {
+  const canonical = canonicalCallbackUrl(observed);
+  if (canonical === current) return true;
+  if (!canonical) return false;
+  const observedUrl = new URL(canonical);
+  const currentUrl = new URL(current);
+  return observedUrl.protocol === "http:"
+    && currentUrl.protocol === "https:"
+    && observedUrl.host === currentUrl.host
+    && observedUrl.pathname === currentUrl.pathname;
+}
+
 type SlackCallbackInspection = {
   surface: SlackCallbackSurface;
   url: string;
@@ -2631,7 +2646,7 @@ function providerSetupState(
         return {
           status:
             currentUrl !== null &&
-            canonicalCallbackUrl(observation.url) === currentUrl
+            slackCallbackMatchesPublicUrl(observation.url, currentUrl)
               ? "current"
               : "stale",
           observedAt: observation.observedAt,
@@ -28300,7 +28315,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
-  async function listActivity(endpointId: string) {
+  async function listActivity(endpointId: string, page?: { limit: number; before?: { createdAt: string; id: string } }) {
+    const limit = page ? page.limit + 1 : 100;
+    // Match the millisecond precision of the public timestamp and use a UUID
+    // tie-breaker so equal timestamps never skip records between pages.
+    const before = (date: AnyPgColumn, id: AnyPgColumn) => page?.before
+      ? sql`(date_trunc('milliseconds', ${date}), ${id}) < (${page.before.createdAt}::timestamptz, ${page.before.id}::uuid)`
+      : undefined;
     const recoveryIngress = alias(chatActions, "github_recovery_ingress");
     const [
       deliveries,
@@ -28315,65 +28336,69 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       db
         .select()
         .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpointId))
-        .orderBy(desc(chatDeliveries.createdAt))
-        .limit(100),
+        .where(and(eq(chatDeliveries.endpointId, endpointId), before(chatDeliveries.createdAt, chatDeliveries.id)))
+        .orderBy(desc(sql`date_trunc('milliseconds', ${chatDeliveries.createdAt})`), desc(chatDeliveries.id))
+        .limit(limit),
       db
         .select()
         .from(chatPublications)
-        .where(eq(chatPublications.endpointId, endpointId))
-        .orderBy(desc(chatPublications.createdAt))
-        .limit(100),
+        .where(and(eq(chatPublications.endpointId, endpointId), before(chatPublications.createdAt, chatPublications.id)))
+        .orderBy(desc(sql`date_trunc('milliseconds', ${chatPublications.createdAt})`), desc(chatPublications.id))
+        .limit(limit),
       db
         .select()
         .from(chatActions)
         .where(
           and(
             eq(chatActions.endpointId, endpointId),
+            before(chatActions.createdAt, chatActions.id),
             eq(chatActions.kind, "slash_task_start"),
           ),
         )
-        .orderBy(desc(chatActions.createdAt))
-        .limit(100),
+        .orderBy(desc(sql`date_trunc('milliseconds', ${chatActions.createdAt})`), desc(chatActions.id))
+        .limit(limit),
       db
         .select()
         .from(chatActions)
         .where(
           and(
             eq(chatActions.endpointId, endpointId),
+            before(chatActions.createdAt, chatActions.id),
             eq(chatActions.kind, "provider_effect"),
             eq(chatActions.status, "delivery_unknown"),
           ),
         )
-        .orderBy(desc(chatActions.createdAt))
-        .limit(100),
+        .orderBy(desc(sql`date_trunc('milliseconds', ${chatActions.createdAt})`), desc(chatActions.id))
+        .limit(limit),
       db
         .select()
         .from(chatActions)
         .where(
           and(
             eq(chatActions.endpointId, endpointId),
+            before(chatActions.createdAt, chatActions.id),
             eq(chatActions.kind, "github_webhook_ingress"),
             eq(chatActions.status, "failed"),
             sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'false'`,
           ),
         )
-        .orderBy(desc(chatActions.createdAt))
-        .limit(100),
+        .orderBy(desc(sql`date_trunc('milliseconds', ${chatActions.createdAt})`), desc(chatActions.id))
+        .limit(limit),
       db
         .select()
         .from(chatActions)
         .where(
           and(
             eq(chatActions.endpointId, endpointId),
+            before(chatActions.updatedAt, chatActions.id),
             inArray(chatActions.kind, [
               "slack_session_sync",
               "slack_session_stop",
             ]),
           ),
         )
-        .orderBy(desc(chatActions.updatedAt))
-        .limit(100),
+        .orderBy(desc(sql`date_trunc('milliseconds', ${chatActions.updatedAt})`), desc(chatActions.id))
+        .limit(limit),
       db
         .select({
           action: chatActions,
@@ -28392,27 +28417,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .where(
           and(
             eq(chatActions.endpointId, endpointId),
+            before(chatActions.updatedAt, chatActions.id),
             eq(chatActions.kind, "github_webhook_recovery"),
           ),
         )
-        .orderBy(desc(chatActions.updatedAt))
-        .limit(100),
+        .orderBy(desc(sql`date_trunc('milliseconds', ${chatActions.updatedAt})`), desc(chatActions.id))
+        .limit(limit),
       db
         .select()
         .from(chatSdkState)
         .where(
           and(
             eq(chatSdkState.endpointId, endpointId),
+            before(chatSdkState.updatedAt, chatSdkState.id),
             eq(chatSdkState.stateKey, GITHUB_RECOVERY_STATE_KEY),
           ),
         )
         .limit(1),
     ]);
-    const ambiguousProviderEffectDeliveryIds = new Set(
-      providerEffects.flatMap((action) =>
-        action.deliveryId ? [action.deliveryId] : [],
-      ),
-    );
+    // A provider effect can be on another page. Replay safety must still
+    // consider every unresolved effect associated with these deliveries.
+    const ambiguousEffects = deliveries.length ? await db.select({ deliveryId: chatActions.deliveryId })
+      .from(chatActions).where(and(
+        eq(chatActions.endpointId, endpointId),
+        eq(chatActions.kind, "provider_effect"),
+        eq(chatActions.status, "delivery_unknown"),
+        inArray(chatActions.deliveryId, deliveries.map((row) => row.id)),
+      )) : [];
+    const ambiguousProviderEffectDeliveryIds = new Set(ambiguousEffects.map((row) => row.deliveryId));
     const transferRows = publications.length
       ? await db
           .select(fileTransferProjectionColumns)
@@ -28706,8 +28738,32 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : [];
       }),
     ]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 100);
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      .slice(0, limit);
+  }
+
+  async function listActivityPage(endpointId: string, limit = 25, cursor?: string) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw badRequest("Activity limit must be between 1 and 100");
+    let before: { createdAt: string; id: string } | undefined;
+    if (cursor !== undefined) {
+      try {
+        if (cursor.length > 256) throw new Error("Invalid cursor");
+        const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+        if (!Array.isArray(value) || value.length !== 2
+          || typeof value[0] !== "string" || new Date(value[0]).toISOString() !== value[0]
+          || typeof value[1] !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value[1])) throw new Error("Invalid cursor");
+        before = { createdAt: value[0], id: value[1] };
+      } catch { throw badRequest("Invalid activity cursor"); }
+    }
+    const rows = await listActivity(endpointId, { limit, before });
+    const items = rows.slice(0, limit);
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: rows.length > limit && last
+        ? Buffer.from(JSON.stringify([last.createdAt, last.id])).toString("base64url")
+        : null,
+    };
   }
 
   async function replayDelivery(endpointId: string, deliveryId: string) {
@@ -37856,6 +37912,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     revokeLink,
     listConversations,
     listActivity,
+    listActivityPage,
     replayDelivery,
     replayPublication,
     resolveAction,

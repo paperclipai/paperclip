@@ -259,6 +259,10 @@ export const chatEndpointsApi = {
         `/chat-endpoints/${endpointId}/activity`,
       ),
     ),
+  listActivityPage: (endpointId: string, cursor?: string) =>
+    api.get<{ items: ChatActivityItem[]; nextCursor: string | null }>(
+      `/chat-endpoints/${endpointId}/activity?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    ),
   getIssueBinding: (issueId: string) =>
     api.get<ExternalChannelBindingSummary | null>(
       `/issues/${issueId}/chat-binding`,

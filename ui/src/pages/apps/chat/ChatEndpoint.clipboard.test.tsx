@@ -14,6 +14,8 @@ import { ChatEndpointDetail } from "./ChatEndpointDetail";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
+  tab: "access",
+  listActivityPage: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   setup: vi.fn(),
@@ -47,7 +49,7 @@ vi.mock("@/context/SidebarContext", () => ({
 }));
 vi.mock("@/lib/router", () => ({
   useNavigate: () => vi.fn(),
-  useParams: () => ({ endpointId: "endpoint-a", tab: "access" }),
+  useParams: () => ({ endpointId: "endpoint-a", tab: mocks.tab }),
   useSearchParams: () => [new URLSearchParams(mocks.search), mocks.setParams],
   Link: ({ children }: { children: React.ReactNode }) => (
     <span>{children}</span>
@@ -65,6 +67,8 @@ describe("chat setup and identity-link clipboard actions", () => {
   const secret = "synthetic-one-time-webhook-secret";
 
   beforeEach(() => {
+    mocks.tab = "access";
+    mocks.listActivityPage.mockReset();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -154,6 +158,28 @@ describe("chat setup and identity-link clipboard actions", () => {
     await settle();
     return endpoint;
   }
+
+  it("pages older activity and lets users return after a page fails", async () => {
+    mocks.tab = "activity";
+    const item = (id: string) => ({ id, kind: "delivery", status: "processed", summary: id, createdAt: "2026-01-01T00:00:00Z" });
+    mocks.listActivityPage.mockImplementation(async (_id, cursor) => cursor
+      ? { items: [item("Older message")], nextCursor: null }
+      : { items: [item("Newest message")], nextCursor: "older-cursor" });
+    await render("slack", true);
+    expect(container.textContent).toContain("Newest message");
+    await click("Next");
+    expect(mocks.listActivityPage).toHaveBeenLastCalledWith("endpoint-a", "older-cursor");
+    expect(container.textContent).toContain("Older message");
+    expect(container.textContent).toContain("Page 2");
+    await click("Previous");
+    expect(container.textContent).toContain("Newest message");
+    client.removeQueries({ queryKey: [...queryKeys.chatEndpoints.activity("endpoint-a"), "older-cursor"] });
+    mocks.listActivityPage.mockRejectedValue(new Error("Offline"));
+    await click("Next");
+    expect(container.textContent).toContain("Connection activity could not be loaded");
+    await click("Previous");
+    expect(container.textContent).toContain("Page 1");
+  });
 
   it.each(["slack", "microsoft-teams"] as const)(
     "copies the %s manifest via the insecure-context fallback",

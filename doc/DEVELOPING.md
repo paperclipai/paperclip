@@ -1511,3 +1511,16 @@ from stored configuration problems. Verify connection transport and endpoint
 fields before disabling a connection. Verify workspace ownership, active runs,
 Git state, and runtime-service readiness before closing a workspace. A missing
 URL or old workspace timestamp alone does not prove that a row is disposable.
+
+### Chat activity pagination and callback diagnostics
+
+The connection Activity tab loads 25 records per page. `GET /api/chat-endpoints/:id/activity?limit=25`
+returns `{ items, nextCursor }`; pass `cursor` to read older records. The limit must be 1–100.
+A timestamp and ID cursor preserves records with equal timestamps and avoids shifts from new arrivals.
+The first page refreshes automatically; older pages do not poll. Mutable action status can move an
+entry forward in time, so this is a live ledger, not a historical snapshot. Requests without pagination
+parameters retain the recent-100 array response for existing clients.
+
+Slack callback diagnostics tolerate HTTP between a TLS proxy and Paperclip when the public host,
+port, and path still match. A changed authority or path remains stale. This comparison only affects
+health display; it does not trust forwarded headers or alter Slack signature verification.
