@@ -45,6 +45,25 @@ export interface PluginStreamBus {
   ): void;
 }
 
+export function createPluginStreamNotificationHandler(
+  installedPluginId: string,
+  streamBus: PluginStreamBus,
+): (method: string, params: Record<string, unknown>) => void {
+  return (method, params) => {
+    const channel = String(params.channel ?? "");
+    const companyId = String(params.companyId ?? "");
+    if (!channel || !companyId) return;
+
+    if (method === "streams.emit") {
+      streamBus.publish(installedPluginId, channel, companyId, params.event);
+    } else if (method === "streams.open") {
+      streamBus.publish(installedPluginId, channel, companyId, params.event, "open");
+    } else if (method === "streams.close") {
+      streamBus.publish(installedPluginId, channel, companyId, params.event, "close");
+    }
+  };
+}
+
 /**
  * Create a new PluginStreamBus instance.
  */
