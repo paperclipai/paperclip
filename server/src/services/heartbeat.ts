@@ -529,7 +529,11 @@ import {
 } from "./recovery/review-path-recovery.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
-import { withAgentStartLock } from "./agent-start-lock.js";
+import {
+  runOutsideFleetRunAdmission,
+  withAgentStartLock,
+  withFleetRunAdmissionLock,
+} from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -643,6 +647,80 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+
+// Fleet-wide ceiling on concurrently RUNNING agent runs for the whole instance.
+//
+// The ceiling is OFF unless the operator sets PAPERCLIP_MAX_CONCURRENT_AGENT_RUNS.
+// A non-zero default would change run admission for every deployment, including
+// hosts with capacity for more, so this is a deliberate opt-in knob rather than
+// a new baseline. The knob bounds the instance on a constrained host: 2 is the
+// measured value for the 2-core / 3.0 GiB host in the 2026-09-16 stall
+// signature (evidence: t_7abdc779, t_58faaa4b). `heartbeat.maxConcurrentRuns`
+// is per agent and was at its floor of 1, so one promotion sweep queued one run
+// for every agent and started them together. Six concurrent `opencode run`
+// children plus their git-snapshot children filled the 3.0 GiB `memory.high` of
+// paperclip.service and parked the tree in mem_cgroup_handle_over. On that box
+// the children measured ~245-520 MB each (~2.0 GB total) against an app
+// MainThread of ~1.1 GB RSS plus ~0.4 GB swap, with CPUQuota=150%, so 2 is the
+// honest number for the CPU share and the queue absorbs the rest.
+//
+// Clamped to 1..50 when set.
+const HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MIN = 1;
+const HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MAX = 50;
+
+/**
+ * No ceiling. The fleet term is skipped unless the operator explicitly opts in
+ * with PAPERCLIP_MAX_CONCURRENT_AGENT_RUNS; see the rationale above.
+ */
+export const FLEET_MAX_CONCURRENT_RUNS_DEFAULT: number | null = null;
+export const FLEET_MAX_CONCURRENT_RUNS_ENV_VAR =
+  "PAPERCLIP_MAX_CONCURRENT_AGENT_RUNS";
+
+export function normalizeFleetMaxConcurrentRuns(value: unknown): number | null {
+  const parsed = readFiniteNumber(value);
+  if (parsed === null) return FLEET_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(
+    HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MIN,
+    Math.min(HEARTBEAT_FLEET_MAX_CONCURRENT_RUNS_MAX, Math.floor(parsed)),
+  );
+}
+
+// The ceiling is overridable from the environment (so it is a config knob, not a
+// recompile) and env values always arrive as strings, which `asNumber` treats as
+// absent. Parse both shapes here instead of inheriting that assumption.
+function readFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * How many queued runs this agent may claim right now. The lower of the
+ * per-agent cap and the remaining fleet-wide budget wins, so the fleet cap is a
+ * hard ceiling rather than a suggestion.
+ */
+export function computeAvailableRunSlots(input: {
+  agentMaxConcurrentRuns: number;
+  agentRunningRuns: number;
+  /** null means no fleet ceiling; only the per-agent cap applies. */
+  fleetMaxConcurrentRuns: number | null;
+  fleetRunningRuns: number;
+}) {
+  const agentSlots = input.agentMaxConcurrentRuns - input.agentRunningRuns;
+  if (input.fleetMaxConcurrentRuns === null) {
+    return Math.max(0, agentSlots);
+  }
+  return Math.max(
+    0,
+    Math.min(agentSlots, input.fleetMaxConcurrentRuns - input.fleetRunningRuns),
+  );
+}
+
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -16828,6 +16906,25 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  // Fleet-wide counterpart of countRunningRunsForAgent: every running run in the
+  // instance, whichever agent owns it. This is the number the fleet cap bounds;
+  // it is read from the DB (not an in-process counter) so a watchdog restart,
+  // which resets process memory exactly when the retry backlog is largest,
+  // cannot reset the ceiling to zero.
+  async function countRunningRunsGlobal() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
+  function fleetMaxConcurrentRuns() {
+    return normalizeFleetMaxConcurrentRuns(
+      runtimeEnv[FLEET_MAX_CONCURRENT_RUNS_ENV_VAR],
+    );
+  }
+
   async function withChatControlRecoveryGate(
     run: typeof heartbeatRuns.$inferSelect,
     stage: "claim" | "dispatch",
@@ -19312,6 +19409,10 @@ export function heartbeatService(
       });
     }
 
+    // Oldest ticket first. With a fleet-wide ceiling the sweep decides which
+    // waiting ticket gets a freed slot, so it must hand it to the run that has
+    // been queued longest rather than to whichever agent the planner happens to
+    // return first — otherwise the agents that sort late never run.
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -19322,7 +19423,8 @@ export function heartbeatService(
           eq(companies.status, "active"),
           cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
         ),
-      );
+      )
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
@@ -19639,141 +19741,155 @@ export function heartbeatService(
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
 
-    return withAgentStartLock(agentId, async () => {
-      const agent = await getAgent(agentId);
-      if (!agent) return [];
-      const invokability = await getAgentInvokability(agent);
-      if (!invokability.invokable) {
-        if (shouldCancelRunsForNonInvokableAgent(invokability)) {
-          await cancelActiveForAgentInternal(
-            agentId,
-            `Cancelled because the agent is not invokable: ${invokability.reason}`,
-          );
+    return withAgentStartLock(agentId, () => withFleetRunAdmissionLock(async () => {
+        const agent = await getAgent(agentId);
+        if (!agent) return [];
+        const invokability = await getAgentInvokability(agent);
+        if (!invokability.invokable) {
+          if (shouldCancelRunsForNonInvokableAgent(invokability)) {
+            await cancelActiveForAgentInternal(
+              agentId,
+              `Cancelled because the agent is not invokable: ${invokability.reason}`,
+            );
+          }
+          return [];
         }
-        return [];
-      }
-      const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(
-        0,
-        policy.maxConcurrentRuns - runningCount,
-      );
-      if (availableSlots <= 0) return [];
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        // Per-agent cap AND fleet-wide ceiling. The per-agent number is 1 on this
+        // deployment, so the fleet term is the one that actually bounds the
+        // instance's `opencode run` fan-out.
+        const fleetCeiling = fleetMaxConcurrentRuns();
+        const availableSlots = computeAvailableRunSlots({
+          agentMaxConcurrentRuns: policy.maxConcurrentRuns,
+          agentRunningRuns: runningCount,
+          fleetMaxConcurrentRuns: fleetCeiling,
+          // Skip the global count when there is no ceiling to compare against.
+          fleetRunningRuns:
+            fleetCeiling === null ? 0 : await countRunningRunsGlobal(),
+        });
+        if (availableSlots <= 0) return [];
 
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.agentId, agentId),
-            eq(heartbeatRuns.status, "queued"),
-            cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
-          ),
-        )
-        .orderBy(asc(heartbeatRuns.createdAt));
-      if (queuedRuns.length === 0) return [];
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agentId),
+              eq(heartbeatRuns.status, "queued"),
+              cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.createdAt));
+        if (queuedRuns.length === 0) return [];
 
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(
-        agent.companyId,
-        queuedRuns,
-      );
-      const queuedIssueIds = [
-        ...new Set(
-          queuedRuns
-            .map((run) =>
-              readNonEmptyString(parseObject(run.contextSnapshot).issueId),
-            )
-            .filter((issueId): issueId is string => Boolean(issueId)),
-        ),
-      ];
-      const issueRows = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-          priority: issues.priority,
-        })
-        .from(issues)
-        .where(
-          queuedIssueIds.length > 0
-            ? and(
-                eq(issues.companyId, agent.companyId),
-                inArray(issues.id, queuedIssueIds),
+        const dependencyReadiness = await listQueuedRunDependencyReadiness(
+          agent.companyId,
+          queuedRuns,
+        );
+        const queuedIssueIds = [
+          ...new Set(
+            queuedRuns
+              .map((run) =>
+                readNonEmptyString(parseObject(run.contextSnapshot).issueId),
               )
-            : sql`false`,
-        );
-      const issueById = new Map(issueRows.map((row) => [row.id, row]));
-      const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
-
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
-      }
-      if (claimedRuns.length === 0) return [];
-
-      for (const claimedRun of claimedRuns) {
-        const execution = executeRun(claimedRun.id).catch((err) => {
-          logger.error(
-            { err, runId: claimedRun.id },
-            "queued heartbeat execution failed",
+              .filter((issueId): issueId is string => Boolean(issueId)),
+          ),
+        ];
+        const issueRows = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+          })
+          .from(issues)
+          .where(
+            queuedIssueIds.length > 0
+              ? and(
+                  eq(issues.companyId, agent.companyId),
+                  inArray(issues.id, queuedIssueIds),
+                )
+              : sql`false`,
           );
+        const issueById = new Map(issueRows.map((row) => [row.id, row]));
+        const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+        const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+          const leftIssueId = readNonEmptyString(
+            parseObject(left.contextSnapshot).issueId,
+          );
+          const rightIssueId = readNonEmptyString(
+            parseObject(right.contextSnapshot).issueId,
+          );
+          const leftReadiness = leftIssueId
+            ? dependencyReadiness.get(leftIssueId)
+            : null;
+          const rightReadiness = rightIssueId
+            ? dependencyReadiness.get(rightIssueId)
+            : null;
+          const leftReady = leftIssueId
+            ? (leftReadiness?.isDependencyReady ?? true)
+            : true;
+          const rightReady = rightIssueId
+            ? (rightReadiness?.isDependencyReady ?? true)
+            : true;
+          const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
+          const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
+          const leftRank = leftIssueId
+            ? leftReady
+              ? leftIssue?.status === "in_progress"
+                ? 0
+                : 1
+              : 3
+            : 2;
+          const rightRank = rightIssueId
+            ? rightReady
+              ? rightIssue?.status === "in_progress"
+                ? 0
+                : 1
+              : 3
+            : 2;
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
+          const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+          if (leftPriorityRank !== rightPriorityRank)
+            return leftPriorityRank - rightPriorityRank;
+          return left.createdAt.getTime() - right.createdAt.getTime();
         });
-        // Register the in-flight execution so drainActiveRunExecutions() can await
-        // it. executeRun resolves only after its finally block finishes flushing
-        // run rows/events, so awaiting this promise guarantees the run's writes
-        // have landed before a caller (e.g. a test's afterEach) mutates the DB.
-        activeRunExecutionPromises.add(execution);
-        void execution.finally(() => {
-          // drainActiveRunExecutions loops on activeRunExecutionPromises.size,
-          // so an entry that never clears here would hang it forever.
-          activeRunExecutionPromises.delete(execution);
-        });
-      }
-      return claimedRuns;
-    });
+
+        const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimedRuns.length >= availableSlots) break;
+          const claimed = await claimQueuedRun(queuedRun, companyAgents);
+          if (claimed) claimedRuns.push(claimed);
+        }
+        if (claimedRuns.length === 0) return [];
+
+        for (const claimedRun of claimedRuns) {
+          // Spawn the execution outside the admission context. Otherwise the
+          // fire-and-forget run inherits the lock's reentrancy marker and a later
+          // promotion from it would run admission inline after this lock has
+          // already been released, letting two count-and-claim sections overlap.
+          const execution = runOutsideFleetRunAdmission(() =>
+            executeRun(claimedRun.id),
+          ).catch((err) => {
+            logger.error(
+              { err, runId: claimedRun.id },
+              "queued heartbeat execution failed",
+            );
+          });
+          // Register the in-flight execution so drainActiveRunExecutions() can await
+          // it. executeRun resolves only after its finally block finishes flushing
+          // run rows/events, so awaiting this promise guarantees the run's writes
+          // have landed before a caller (e.g. a test's afterEach) mutates the DB.
+          activeRunExecutionPromises.add(execution);
+          void execution.finally(() => {
+            // drainActiveRunExecutions loops on activeRunExecutionPromises.size,
+            // so an entry that never clears here would hang it forever.
+            activeRunExecutionPromises.delete(execution);
+          });
+        }
+        return claimedRuns;
+      }));
   }
 
   // Await every background heartbeat execution that is currently in flight. A

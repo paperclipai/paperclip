@@ -7291,7 +7291,9 @@ export function issueService(db: Db) {
       while (queue.length > 0) {
         const current = queue.shift()!;
         if (current === blockerIssueId) {
-          throw unprocessable("Blocking relations cannot contain cycles");
+          throw unprocessable("Blocking relations cannot contain cycles", {
+            code: "blocking_relations_cycle",
+          });
         }
         if (visited.has(current)) continue;
         visited.add(current);
