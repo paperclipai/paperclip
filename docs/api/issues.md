@@ -35,6 +35,34 @@ The response also includes:
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
 
+## Unknown Fields In A Mutation Body
+
+These endpoints reject a request body that contains a field they do not know:
+
+- `POST /api/companies/{companyId}/issues`
+- `POST /api/issues/{issueId}/children`
+- `POST /api/issues/{issueId}/accepted-plan-decompositions`
+- `PATCH /api/issues/{issueId}`
+- `POST /api/issues/{issueId}/interactions`
+
+The response is `400` and it names each field:
+
+```json
+{
+  "error": "Validation error",
+  "details": [
+    {
+      "code": "unrecognized_keys",
+      "keys": ["blockedOwnerNotifiedAt"],
+      "path": [],
+      "message": "Unrecognized key: \"blockedOwnerNotifiedAt\""
+    }
+  ]
+}
+```
+
+A misspelled field is therefore a failed request, not a successful request that wrote less than you asked for. Read the accepted field list for each endpoint from the OpenAPI document at `GET /api/openapi.json`.
+
 ## Create Issue
 
 ```
