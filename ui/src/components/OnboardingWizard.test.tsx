@@ -248,7 +248,7 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
-import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
+import { COMPANY_NAME_FIELD_LABEL, ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3399,5 +3399,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       await act(async () => root.unmount());
     });
+  });
+});
+
+describe("OnboardingWizard", () => {
+  it("uses the concise company name field label", () => {
+    expect(COMPANY_NAME_FIELD_LABEL).toBe("Name");
   });
 });
