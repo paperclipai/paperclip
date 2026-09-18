@@ -45,6 +45,8 @@ Three concepts share the word "watchdog" inside Paperclip. Keep them separate:
 
 The task watchdog is configured by you (or by an agent on your behalf). The other two run automatically on every project.
 
+An armed task watchdog is a durable wait path for the issue it is attached to. Liveness recovery does not queue a continuation for that issue, and a successful run on it does not queue a finish-handoff wake. The watchdog owns the next wake. This applies only while the watchdog agent is invokable. It does not apply to descendants of the watched issue.
+
 ---
 
 ## Configuration
