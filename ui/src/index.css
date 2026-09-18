@@ -3042,3 +3042,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 @media (prefers-reduced-motion: reduce) {
   .announcement-well { animation: none; }
 }
+
+/* Native disclosure marker is replaced by the connection-health chevron. */
+.chat-connection-health-summary::-webkit-details-marker {
+  display: none;
+}
