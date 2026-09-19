@@ -74,6 +74,21 @@ export function defaultSkillMarkdown(name: string, tagline: string) {
   ].join("\n");
 }
 
+export function updateSkillDraftTagline(draft: SkillCreateDraft, tagline: string): SkillCreateDraft {
+  const markdown = draft.markdown === defaultSkillMarkdown(draft.name, draft.tagline)
+    ? defaultSkillMarkdown(draft.name, tagline)
+    : draft.markdown;
+
+  return {
+    ...draft,
+    tagline,
+    // A new skill has no independent description field, so keep its derived
+    // description in sync. A fork preserves the source description instead.
+    description: draft.forkedFromSkillId !== null ? draft.description : tagline,
+    markdown,
+  };
+}
+
 export function skillAccentColor(key: string, explicit: string | null | undefined): string {
   const trimmed = explicit?.trim();
   if (trimmed) return trimmed;
