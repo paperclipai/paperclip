@@ -3,7 +3,12 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import type { Command } from "commander";
 import { readConfig, resolveConfigPath } from "../config/store.js";
-import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
+import {
+  HEALTH_PROBE_TOKEN_HEADER,
+  resolveInstanceHealthToken,
+  resolvePaperclipInstanceId,
+  resolvePaperclipInstanceRoot,
+} from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 
@@ -31,7 +36,15 @@ function healthUrl(instanceId: string): string {
 
 async function probeHealth(instanceId: string): Promise<HealthResult> {
   try {
-    const response = await fetch(healthUrl(instanceId), { signal: AbortSignal.timeout(2_000) });
+    const token = resolveInstanceHealthToken(instanceId);
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers[HEALTH_PROBE_TOKEN_HEADER] = token;
+    }
+    const response = await fetch(healthUrl(instanceId), {
+      signal: AbortSignal.timeout(2_000),
+      headers,
+    });
     const body = await response.json() as { status?: unknown; serverVersion?: unknown; version?: unknown };
     return { ok: response.ok && body.status === "ok", serverVersion: typeof body.serverVersion === "string" ? body.serverVersion : typeof body.version === "string" ? body.version : null };
   } catch (error) {
