@@ -958,6 +958,27 @@ export function redactEventPayload(
   return sanitized;
 }
 
+// Bedrock inference profile IDs overlap the generic JWT shape. This exception
+// applies only to the top-level model field of an agent adapter configuration.
+const BEDROCK_CLAUDE_MODEL_ID_RE = /^(?:us|eu|apac|global)\.anthropic\.claude-(?:opus|sonnet|haiku|fable)-\d+(?:-\d+)*(?:-v\d+)?(?::\d+)?$/;
+
+function preserveAgentModelId(
+  adapterConfig: Record<string, unknown>,
+  sanitized: Record<string, unknown>,
+): Record<string, unknown> {
+  const model = adapterConfig.model;
+  if (typeof model === "string" && model.length <= 128 && BEDROCK_CLAUDE_MODEL_ID_RE.test(model)) {
+    sanitized.model = model;
+  }
+  return sanitized;
+}
+
+export function sanitizeAgentAdapterConfig(
+  adapterConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  return preserveAgentModelId(adapterConfig, sanitizeRecord(adapterConfig));
+}
+
 function redactAgentEnvBinding(value: unknown): unknown {
   if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) {
     return sanitizeValue(value);
@@ -973,7 +994,9 @@ export function redactAgentAdapterConfig(
   adapterConfig: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!isPlainObject(adapterConfig)) return adapterConfig;
-  if (!isPlainObject(adapterConfig.env)) return redactEventPayload(adapterConfig) ?? {};
+  if (!isPlainObject(adapterConfig.env)) {
+    return preserveAgentModelId(adapterConfig, redactEventPayload(adapterConfig) ?? {});
+  }
 
   // Redact `env` here and sanitize the remaining keys separately, so bindings
   // are never processed twice. `redactAgentEnvBinding` is authoritative for
@@ -984,7 +1007,10 @@ export function redactAgentAdapterConfig(
     Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
   );
 
-  return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
+  return {
+    ...preserveAgentModelId(rest, redactEventPayload(rest) ?? {}),
+    env: redactedEnv,
+  };
 }
 
 export function redactSensitiveText(input: string): string {
