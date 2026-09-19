@@ -204,6 +204,7 @@ describe("budgetService", () => {
       scopeType: "agent",
       scopeId: "agent-1",
       scopeName: "Budget Agent",
+      cause: "budget_exhausted",
       reason: "Agent cannot start because its budget hard-stop is still exceeded.",
     });
   });
@@ -230,6 +231,7 @@ describe("budgetService", () => {
       scopeType: "company",
       scopeId: "company-1",
       scopeName: "Paperclip",
+      cause: "company_paused",
       reason: "Company is paused because its budget hard-stop was reached.",
     });
   });
@@ -495,6 +497,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       scopeType: "agent",
       scopeId: agentId,
       scopeName: "Budget Agent SECRET_TOKEN_SHOULD_NOT_LEAK",
+      cause: "budget_exhausted",
       reason: "Agent is paused because its budget hard-stop was reached.",
     });
 
@@ -604,6 +607,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       scopeType: "project",
       scopeId: projectId,
       scopeName: "Budget Project",
+      cause: "budget_exhausted",
       reason: "Project cannot start work because its budget hard-stop is still exceeded.",
     });
 

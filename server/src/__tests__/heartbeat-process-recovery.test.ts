@@ -1,4 +1,5 @@
 import * as controllerLeases from "../services/legacy-controller-lease.js";
+import * as budgetsModule from "../services/budgets.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
@@ -12980,6 +12981,100 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups).toHaveLength(1);
+  });
+
+  it("skips a stranded assigned issue while its company is paused", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+    });
+    await db
+      .update(companies)
+      .set({ status: "paused", pauseReason: "manual", pausedAt: new Date() })
+      .where(eq(companies.id, companyId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("skips a stranded assigned issue when its company is paused during the sweep", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    // The pause lands after the candidate read, while this issue waits its turn
+    // in the sweep. The invocation probe is the first reader that sees it.
+    const originalBudgetService = budgetsModule.budgetService;
+    const budgetSpy = vi
+      .spyOn(budgetsModule, "budgetService")
+      .mockImplementation((...args: Parameters<typeof originalBudgetService>) => {
+        const service = originalBudgetService(...args);
+        return {
+          ...service,
+          getInvocationBlock: async (
+            ...blockArgs: Parameters<typeof service.getInvocationBlock>
+          ) => {
+            await db
+              .update(companies)
+              .set({
+                status: "paused",
+                pauseReason: "manual",
+                pausedAt: new Date(),
+              })
+              .where(eq(companies.id, companyId));
+            return service.getInvocationBlock(...blockArgs);
+          },
+        };
+      });
+
+    try {
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.escalated).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(result.issueIds).toEqual([]);
+    } finally {
+      budgetSpy.mockRestore();
+    }
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
   });
 
   it("re-enqueues recovery when the latest in-progress continuation made progress but left no live path", async () => {
