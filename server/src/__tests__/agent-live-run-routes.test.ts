@@ -17,6 +17,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
 }));
 
 const mockIssueService = vi.hoisted(() => ({

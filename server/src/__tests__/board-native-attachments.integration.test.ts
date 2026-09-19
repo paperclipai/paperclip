@@ -52,6 +52,7 @@ vi.mock("../services/heartbeat.js", async (importOriginal) => ({
     getRun: async () => null,
     getActiveRunForAgent: async () => null,
     reportRunActivity: async () => undefined,
+    repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
   }),
 }));
 

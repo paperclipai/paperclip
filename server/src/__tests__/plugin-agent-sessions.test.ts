@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { publishLiveEvent } from "../services/live-events.js";
 
 const mockWakeup = vi.hoisted(() => vi.fn());
-const mockHeartbeatService = vi.hoisted(() => vi.fn(() => ({ wakeup: mockWakeup })));
+const mockHeartbeatService = vi.hoisted(() => vi.fn(() => ({ wakeup: mockWakeup, repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }) })));
 
 vi.mock("../services/heartbeat.js", () => ({
   heartbeatService: mockHeartbeatService,

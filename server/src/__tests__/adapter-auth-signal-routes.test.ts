@@ -74,6 +74,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: vi.fn(),
     cancelActiveForAgent: vi.fn(),
+    repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
   }),
   ISSUE_LIST_DEFAULT_LIMIT: 50,
   issueApprovalService: () => ({}),
