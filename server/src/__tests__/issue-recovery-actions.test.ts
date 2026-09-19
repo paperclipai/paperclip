@@ -667,6 +667,95 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("does not restore a board recovery action through a child that waits on the source", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, sourceIssueId));
+    const followUpChildId = randomUUID();
+    await db.insert(issues).values({
+      id: followUpChildId,
+      companyId,
+      parentId: sourceIssueId,
+      title: "Follow-up that waits on the source",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    // The source deliberately blocks its own follow-up child, so the child
+    // has a durable waiting path and looks healthy on its own.
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: followUpChildId,
+      type: "blocks",
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:cyclic-child",
+      nextAction: "Board decision required.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.failed).toBe(0);
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({ status: "active", outcome: null });
+    expect(actionRow?.resolutionNote).not.toBe(
+      "durable_path_restored:healthy_child",
+    );
+    const sourceBlockers = await db
+      .select({ issueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, sourceIssueId));
+    expect(sourceBlockers).toEqual([]);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a cycle-forming blocker write through the API with 422", async () => {
+    const { companyId, sourceIssueId, prefix } = await seedCompany();
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      parentId: sourceIssueId,
+      title: "Follow-up that waits on the source",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: childId,
+      type: "blocks",
+    });
+
+    const response = await request(createApp())
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [childId] })
+      .expect(422);
+
+    expect(response.body.error).toBe("Blocking relations cannot contain cycles");
+  });
+
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({

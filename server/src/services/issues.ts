@@ -7257,13 +7257,18 @@ export function issueService(db: Db) {
     }));
   }
 
-  async function assertNoBlockingCycles(
+  /**
+   * Returns the candidate blocker ids that would close a cycle if they were
+   * set as blockers of `issueId`: the candidates that `issueId` already
+   * blocks, directly or transitively.
+   */
+  async function findCycleFormingBlockerIds(
     companyId: string,
     issueId: string,
-    blockerIssueIds: string[],
+    candidateIssueIds: string[],
     dbOrTx: DbReader = db,
-  ) {
-    if (blockerIssueIds.length === 0) return;
+  ): Promise<string[]> {
+    if (candidateIssueIds.length === 0) return [];
 
     const rows = await dbOrTx
       .select({
@@ -7285,18 +7290,36 @@ export function issueService(db: Db) {
       adjacency.set(row.blockerIssueId, list);
     }
 
-    for (const blockerIssueId of blockerIssueIds) {
-      const queue = [...(adjacency.get(issueId) ?? [])];
-      const visited = new Set<string>([issueId]);
-      while (queue.length > 0) {
-        const current = queue.shift()!;
-        if (current === blockerIssueId) {
-          throw unprocessable("Blocking relations cannot contain cycles");
-        }
-        if (visited.has(current)) continue;
-        visited.add(current);
-        queue.push(...(adjacency.get(current) ?? []));
-      }
+    const reachable = new Set<string>();
+    const queue = [...(adjacency.get(issueId) ?? [])];
+    const visited = new Set<string>([issueId]);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      reachable.add(current);
+      if (visited.has(current)) continue;
+      visited.add(current);
+      queue.push(...(adjacency.get(current) ?? []));
+    }
+
+    return [...new Set(candidateIssueIds)].filter((candidate) =>
+      reachable.has(candidate),
+    );
+  }
+
+  async function assertNoBlockingCycles(
+    companyId: string,
+    issueId: string,
+    blockerIssueIds: string[],
+    dbOrTx: DbReader = db,
+  ) {
+    const cycleFormingIds = await findCycleFormingBlockerIds(
+      companyId,
+      issueId,
+      blockerIssueIds,
+      dbOrTx,
+    );
+    if (cycleFormingIds.length > 0) {
+      throw unprocessable("Blocking relations cannot contain cycles");
     }
   }
 
@@ -8395,6 +8418,12 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
+
+    findCycleFormingBlockerIds: (
+      companyId: string,
+      issueId: string,
+      candidateIssueIds: string[],
+    ) => findCycleFormingBlockerIds(companyId, issueId, candidateIssueIds, db),
 
     getRelationSummaries: async (issueId: string) => {
       const issue = await db

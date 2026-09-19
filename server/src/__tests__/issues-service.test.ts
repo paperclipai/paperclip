@@ -4374,6 +4374,93 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects transitive blocking cycles with the same 422", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    const issueC = randomUUID();
+    await db.insert(issues).values([
+      { id: issueA, companyId, title: "Issue A", status: "todo", priority: "medium" },
+      { id: issueB, companyId, title: "Issue B", status: "todo", priority: "medium" },
+      { id: issueC, companyId, title: "Issue C", status: "todo", priority: "medium" },
+    ]);
+
+    // A blocks B, B blocks C. Blocking A on C closes the loop.
+    await svc.update(issueB, { blockedByIssueIds: [issueA] });
+    await svc.update(issueC, { blockedByIssueIds: [issueB] });
+
+    await expect(
+      svc.update(issueA, { blockedByIssueIds: [issueC] }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Blocking relations cannot contain cycles",
+    });
+  });
+
+  it("finds the candidate blockers that would close a blocking cycle", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    const parent = randomUUID();
+    const directChild = randomUUID();
+    const sibling = randomUUID();
+    const transitiveChild = randomUUID();
+    const upstream = randomUUID();
+    const unrelated = randomUUID();
+    await db.insert(issues).values([
+      { id: parent, companyId, title: "Parent", status: "todo", priority: "medium" },
+      { id: directChild, companyId, parentId: parent, title: "Direct child", status: "todo", priority: "medium" },
+      { id: sibling, companyId, title: "Sibling", status: "todo", priority: "medium" },
+      { id: transitiveChild, companyId, parentId: parent, title: "Transitive child", status: "todo", priority: "medium" },
+      { id: upstream, companyId, title: "Upstream", status: "todo", priority: "medium" },
+      { id: unrelated, companyId, title: "Unrelated", status: "todo", priority: "medium" },
+    ]);
+
+    // parent -> directChild, parent -> sibling -> transitiveChild, upstream -> parent.
+    await svc.update(directChild, { blockedByIssueIds: [parent] });
+    await svc.update(sibling, { blockedByIssueIds: [parent] });
+    await svc.update(transitiveChild, { blockedByIssueIds: [sibling] });
+    await svc.update(parent, { blockedByIssueIds: [upstream] });
+
+    const cycleForming = await svc.findCycleFormingBlockerIds(companyId, parent, [
+      directChild,
+      transitiveChild,
+      upstream,
+      unrelated,
+      directChild,
+    ]);
+    expect(cycleForming.sort()).toEqual([directChild, transitiveChild].sort());
+
+    await expect(
+      svc.findCycleFormingBlockerIds(companyId, parent, []),
+    ).resolves.toEqual([]);
+    // Relations are company-scoped.
+    await expect(
+      svc.findCycleFormingBlockerIds(otherCompanyId, parent, [directChild]),
+    ).resolves.toEqual([]);
+  });
+
   it("only returns dependents once every blocker is done", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
