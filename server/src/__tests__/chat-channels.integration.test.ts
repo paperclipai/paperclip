@@ -12987,6 +12987,74 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  it("records the public Cloud proxy host for authenticated Slack callback health", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, service } = await configuredSlackEndpoint(fixture);
+    const canonicalOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://paperclip.example");
+    const path = `/api/chat-webhooks/${endpoint.publicId}/slack`;
+    const cases = [
+      ["events", "application/json", JSON.stringify({ type: "url_verification", challenge: "cloud-proxy-check" })],
+      ["interactivity", "application/x-www-form-urlencoded", new URLSearchParams({ payload: JSON.stringify({ type: "block_actions", team: { id: "T-PAPERCLIP" } }) }).toString()],
+      ["slashCommands", "application/x-www-form-urlencoded", new URLSearchParams({ command: "/maya-paperclip", team_id: "T-PAPERCLIP" }).toString()],
+    ] as const;
+    try {
+      for (const [surface, contentType, body] of cases) {
+        const request = signedSlackWebhookRequest({ url: `http://tenant.internal:3100${path}`, contentType, body });
+        request.headers.set("x-forwarded-host", "paperclip.example");
+        request.headers.set("x-forwarded-proto", "https");
+        expect((await service.handleWebhook(endpoint.publicId, "slack", request)).ok).toBe(true);
+        await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: {
+          callbacksNeedUpdate: false, callbackSurfaces: { [surface]: { status: "current" } },
+        } });
+        // The proxy hint is evidence, not a rewrite to the adapter request.
+        expect(request.url).toBe(`http://tenant.internal:3100${path}`);
+      }
+      canonicalOrigin.mockReturnValue("https://moved.example");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: {
+        callbacksNeedUpdate: true, callbackSurfaces: { events: { status: "stale" }, interactivity: { status: "stale" }, slashCommands: { status: "stale" } },
+      } });
+    } finally {
+      await service.shutdown();
+      canonicalOrigin.mockRestore();
+    }
+  });
+
+  it("does not let rejected callbacks or malformed proxy hints establish healthy Slack callbacks", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
+    const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+    const canonicalOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://paperclip.example");
+    const path = `/api/chat-webhooks/${endpoint.publicId}/slack`;
+    const body = JSON.stringify({ type: "url_verification", challenge: "proxy-hint-check" });
+    const send = async (host: string, protocol = "https", signed = true) => {
+      const request = signedSlackWebhookRequest({ url: `http://tenant.internal:3100${path}`, contentType: "application/json", body });
+      request.headers.set("x-forwarded-host", host);
+      request.headers.set("x-forwarded-proto", protocol);
+      if (!signed) request.headers.delete("x-slack-signature");
+      // The fake provider runtime supplies the adapter's authentication result.
+      providerRuntime.webhookResponse = new Response(signed ? "accepted" : "rejected", { status: signed ? 202 : 401 });
+      return service.handleWebhook(endpoint.publicId, "slack", request);
+    };
+    try {
+      // A real callback on an old public hostname must still warn.
+      await send("old.example");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      expect((await send("paperclip.example", "https", false)).status).toBe(401);
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      for (const host of ["paperclip.example, proxy.example", "paperclip.example/path", "user@paperclip.example", "paperclip.example?query=1", "paperclip.example#fragment", "paperclip.example:8443"]) {
+        await send(host);
+        await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      }
+      await send("paperclip.example", "javascript");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      await send("paperclip.example");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false } });
+    } finally {
+      await service.shutdown();
+      canonicalOrigin.mockRestore();
+    }
+  });
+
   it("tracks Slack callback surfaces independently and reports public URL drift", async () => {
     const fixture = await seedCompany();
     const { endpoint, runtime, service } =

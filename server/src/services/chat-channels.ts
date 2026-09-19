@@ -544,10 +544,35 @@ type SlackCallbackInspection = {
   isUrlVerification: boolean;
 };
 
+// Cloud rewrites Host for upstream routing and overwrites X-Forwarded-Host
+// with the public request host. Only use this as callback-health evidence on a
+// claimed Cloud instance, after provider authentication succeeded. It must not
+// change the Request passed to the adapter, signature verification, routing,
+// board identity, or the configured URL used to generate callbacks.
+function slackCallbackObservationUrl(request: Request): string | null {
+  const directUrl = canonicalCallbackUrl(request.url);
+  if (!directUrl || !runtimeCanonicalOrigin()) return directUrl;
+  const host = request.headers.get("x-forwarded-host")?.trim();
+  const protocol = request.headers.get("x-forwarded-proto")?.trim();
+  if (!host || (protocol !== "https" && protocol !== "http")) return directUrl;
+  try {
+    const origin = new URL(`${protocol}://${host}`);
+    // Accept one authority only, never credentials, paths, queries, or lists.
+    if (origin.host !== host.toLowerCase() || origin.username || origin.password) return directUrl;
+    const observed = new URL(directUrl);
+    observed.protocol = origin.protocol;
+    observed.host = origin.host;
+    observed.port = origin.port;
+    return observed.toString();
+  } catch {
+    return directUrl;
+  }
+}
+
 async function inspectSlackCallback(
   request: Request,
 ): Promise<SlackCallbackInspection | null> {
-  const url = canonicalCallbackUrl(request.url);
+  const url = slackCallbackObservationUrl(request);
   if (!url) return null;
   const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
   let body: string;
