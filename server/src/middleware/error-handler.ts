@@ -236,9 +236,15 @@ export function errorHandler(
     return;
   }
 
-  // JSON body-parser errors (malformed JSON payloads) — map to 400 instead of 500.
-  if (err instanceof SyntaxError && (err as any).status === 400 && "body" in (err as any)) {
-    res.status(400).json({ error: "Bad Request", message: err.message });
+  // Only body-parser's malformed-JSON errors are client input failures.
+  // Parser messages can quote request bytes; return a constant response and
+  // keep the raw error out of crash reporting and HTTP error context.
+  if (
+    err instanceof SyntaxError &&
+    "status" in err && err.status === 400 &&
+    "type" in err && err.type === "entity.parse.failed"
+  ) {
+    res.status(400).json({ error: "Invalid JSON body" });
     return;
   }
 
