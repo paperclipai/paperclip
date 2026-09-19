@@ -27,6 +27,7 @@ import {
   formatInlineRecord,
   handleCommandError,
   printOutput,
+  readUtf8ContentFile,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
@@ -697,7 +698,7 @@ export function registerAgentCommands(program: Command): void {
       .action(async (agentId: string, opts: AgentInstructionsFilePutOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const content = opts.contentFile ? await fs.readFile(opts.contentFile, "utf8") : opts.content;
+          const content = opts.contentFile ? await readUtf8ContentFile(opts.contentFile) : opts.content;
           const payload = upsertAgentInstructionsFileSchema.parse({
             path: opts.path,
             content,
