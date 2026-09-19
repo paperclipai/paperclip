@@ -122,6 +122,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Pi harness",
     icon: Terminal,
   },
+  agy_local: {
+    label: "Antigravity (agy)",
+    description: "Antigravity CLI harness",
+    icon: Sparkles,
+  },
   cursor: {
     label: "Cursor",
     description: "Cursor CLI harness",
