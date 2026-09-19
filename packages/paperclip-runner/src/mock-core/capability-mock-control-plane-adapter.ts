@@ -937,7 +937,7 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
           identifier: `${this.#state.company.issuePrefix}-${this.#nextCounter("issue-number")}`,
           title: requireText(command.title, "task title"),
           description: command.description ?? null,
-          status: command.blockedByTaskIds?.length ? "blocked" : "todo",
+          status: command.status === "backlog" ? "backlog" : command.blockedByTaskIds?.length ? "blocked" : "todo",
           priority: command.priority ?? "medium",
           workMode: "standard",
           parentId: task.id,

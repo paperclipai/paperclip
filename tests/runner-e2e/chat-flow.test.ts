@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { AskUserQuestionsPayload } from "../../packages/shared/src/types/issue.js";
 import {
+  assertChatBacklogCreation,
   assertChatHandoff,
   assertChatReassignment,
   assertChatTaskHandoff,
@@ -100,7 +101,7 @@ describe("chat acceptance contracts", () => {
     const matrix = runnerMatrix.filter(
       (cell) => cell.suite.id === "agent-chat",
     );
-    expect(matrix).toHaveLength(26);
+    expect(matrix).toHaveLength(28);
     expect(new Set(matrix.map((cell) => cell.profile.id))).toEqual(
       new Set([
         "legacy-codex",
@@ -109,7 +110,7 @@ describe("chat acceptance contracts", () => {
         "runner-acpx-claude",
       ]),
     );
-    expect(new Set(matrix.map((cell) => cell.task.id)).size).toBe(7);
+    expect(new Set(matrix.map((cell) => cell.task.id)).size).toBe(8);
     expect(
       matrix.every(
         (cell) =>
@@ -384,5 +385,27 @@ describe("reassignment outcome oracle", () => {
     if (defect === "backlog-started") data.runs.push({ ...data.runs[0]!, id: "early", contextSnapshot: { issueId: "queued" } });
     if (defect === "missing-output") data.outputBody = "I reassigned it";
     expect(() => assertChatReassignment(data)).toThrow();
+  });
+});
+
+describe("backlog creation outcome oracle", () => {
+  const evidence = () => ({
+    tasks: [{ id: "held", companyId: "co", title: "Later", status: "backlog", parentId: null, assigneeAgentId: "planner" }],
+    taskRuns: [] as ChatRun[], ownerId: "planner", marker: "PLAN123",
+    plan: { body: "Three steps PLAN123", latestRevisionId: "revision-1", updatedAt: "2026-09-19T00:00:00Z" },
+    activity: [{ action: "issue.created", details: { status: "backlog", source: "paperclip_runner_protocol" } }],
+  });
+  it("accepts one planned backlog task with no execution", () => {
+    expect(() => assertChatBacklogCreation(evidence())).not.toThrow();
+  });
+  it.each(["duplicate", "status", "started-then-stopped", "corrected-after-creation", "owner", "plan"])("rejects %s", defect => {
+    const data = evidence();
+    if (defect === "duplicate") data.tasks.push({ ...data.tasks[0]!, id: "duplicate" });
+    if (defect === "status") data.tasks[0]!.status = "todo";
+    if (defect === "started-then-stopped") data.taskRuns.push({ id: "early", companyId: "co", agentId: "planner", status: "cancelled" });
+    if (defect === "corrected-after-creation") data.activity[0]!.details.status = "todo";
+    if (defect === "owner") data.tasks[0]!.assigneeAgentId = "other";
+    if (defect === "plan") data.plan.body = "I saved a plan";
+    expect(() => assertChatBacklogCreation(data)).toThrow();
   });
 });

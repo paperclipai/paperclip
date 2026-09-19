@@ -1577,6 +1577,7 @@ function commandForOperation(
     case "create_task":
       return {
         kind: "create_task",
+        status: input.status as "backlog" | "todo" | undefined,
         title: requireString(input.title),
         description: typeof input.description === "string" ? input.description : undefined,
         assigneeActorId: typeof input.assigneeActorId === "string" ? input.assigneeActorId : undefined,

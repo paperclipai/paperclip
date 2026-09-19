@@ -175,7 +175,7 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The default `--all` selection is 169 cells (146 local and 23 Daytona) and 367
+The default `--all` selection is 171 cells (148 local and 23 Daytona) and 371
 expected paid agent turns. The explicit-only everyday suite adds 35 catalog cells
 and is excluded from `--all`. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
@@ -462,7 +462,7 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100). The 169-cell default selection takes more than
+integer from 1–100 on AWS (default 100). The 171-cell default selection takes more than
 one wave at that limit; use suite selectors for smaller campaigns. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
@@ -809,3 +809,5 @@ accepted review started before any parent run finished, the harness fails
 promptly with an unexercised-boundary diagnostic. Missing evidence in separately
 fetched snapshots does not trigger this rejection. Successful work alone does
 not prove that this recovery path was tested.
+
+The native `agent-chat.create-backlog` case saves a plan and assigned backlog task, then asks for its status. It checks the original creation audit, absence of all task runs, plan persistence, and exactly one task, so creating runnable work and correcting its status afterward fails the eval.

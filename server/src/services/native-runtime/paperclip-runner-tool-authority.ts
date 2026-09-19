@@ -762,6 +762,9 @@ export class PaperclipRunnerToolAuthority {
 
   async #createTask(input: Record<string, unknown>, identityContextId: string | null): Promise<unknown> {
     const idempotencyKey = requiredString(input.idempotencyKey);
+    if (input.status !== undefined && input.status !== "backlog" && input.status !== "todo") {
+      throw new Error("paperclip_runner_tool_input_invalid");
+    }
     const assigneeAgentId = input.assigneeActorId === null || input.assigneeActorId === undefined
       ? this.binding.agentId
       : requiredString(input.assigneeActorId);
@@ -815,7 +818,8 @@ export class PaperclipRunnerToolAuthority {
         description: input.description === null || input.description === undefined
           ? null
           : requiredString(input.description),
-        status: blockedByIssueIds.length > 0 ? "blocked" as const : "todo" as const,
+        status: input.status === "backlog" ? "backlog" as const
+          : blockedByIssueIds.length > 0 ? "blocked" as const : "todo" as const,
         workMode: "standard" as const,
         priority,
         assigneeAgentId,

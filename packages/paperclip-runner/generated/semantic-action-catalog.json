@@ -1973,7 +1973,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution.",
+    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -2032,6 +2032,13 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "status": {
+          "description": "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved).",
+          "enum": [
+            "backlog",
+            "todo"
           ]
         },
         "title": {

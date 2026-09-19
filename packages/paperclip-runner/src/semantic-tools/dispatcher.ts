@@ -384,6 +384,7 @@ export class CapabilitySemanticDispatcher {
       case "create_task":
         command = {
           kind: "create_task",
+          status: optionalString(input.status) as "backlog" | "todo" | undefined,
           taskId,
           title: requiredString(input.title),
           description: nullableOptionalString(input.description),

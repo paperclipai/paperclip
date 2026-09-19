@@ -419,3 +419,5 @@ then open the protocol inspector to review events and reducer state. Expand a
 Terminal row and its nested **Debug details** disclosure to inspect every
 canonical event retained for that command. The header marker `🖇️ v0.1.2`
 identifies the current console iteration.
+
+`create_task` accepts an optional initial `status` of `backlog` or `todo`. Use `backlog` when the user wants a saved task or plan without execution: assignment and the initial plan are committed without scheduling a wake, even when dependencies are already complete. Omitting status preserves immediate delegation (`todo`, or `blocked` for unresolved dependencies).
