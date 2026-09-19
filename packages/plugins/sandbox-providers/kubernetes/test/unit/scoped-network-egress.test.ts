@@ -57,6 +57,39 @@ describe("scoped network egress", () => {
     expect(name).toMatch(/unique-tail-egress$/);
   });
 
+  it("never inherits the provider open-internet baseline into a cilium task grant", async () => {
+    const createNamespacedCustomObject = vi.fn().mockResolvedValue({});
+    await createScopedNetworkEgressPolicy({
+      clients: { custom: { createNamespacedCustomObject } } as never,
+      namespace: "paperclip-acme",
+      mode: "cilium",
+      runId: "run-123",
+      workloadName: "pc-workload",
+      ownerReference: { apiVersion: "batch/v1", kind: "Job", name: "pc-workload", uid: "uid-1" },
+      grant: { allowFqdns: ["github.com"], allowCidrs: [] },
+    });
+    const body: any = createNamespacedCustomObject.mock.calls[0][0].body;
+    expect(
+      body.spec.egress.some((rule: any) => rule.toCIDRSet?.some((entry: any) => entry.cidr === "0.0.0.0/0")),
+    ).toBe(false);
+    expect(body.spec.egress).toHaveLength(1);
+  });
+
+  it("keeps a standard CIDR task grant narrow regardless of provider posture", async () => {
+    const createNamespacedNetworkPolicy = vi.fn().mockResolvedValue({});
+    await createScopedNetworkEgressPolicy({
+      clients: { networking: { createNamespacedNetworkPolicy } } as never,
+      namespace: "paperclip-acme",
+      mode: "standard",
+      runId: "run-123",
+      workloadName: "pc-workload",
+      ownerReference: { apiVersion: "batch/v1", kind: "Job", name: "pc-workload", uid: "uid-1" },
+      grant: { allowFqdns: [], allowCidrs: ["203.0.113.0/24"] },
+    });
+    const body: any = createNamespacedNetworkPolicy.mock.calls[0][0].body;
+    expect(body.spec.egress).toEqual([{ to: [{ ipBlock: { cidr: "203.0.113.0/24" } }] }]);
+  });
+
   it("adds the policy and grant path to likely network denials", () => {
     expect(appendNetworkEgressDenyHint("curl: Could not resolve host: example.com", {
       allowFqdns: ["github.com"],
