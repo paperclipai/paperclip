@@ -297,6 +297,29 @@ describe("issue thread interaction schemas", () => {
     })).toThrow("text questions cannot define options");
   });
 
+  it("accepts a question set that presents only the open-ended subset of the questions", () => {
+    // Agents author choice questions in `questions` and mirror only the
+    // open-ended ones in `questionSet`, so clients must render the union.
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [
+          { id: "website", prompt: "What is your website address?", selectionMode: "single", required: true, options: [{ id: "type", label: "Type it" }] },
+          { id: "analytics", prompt: "How should we get your numbers?", selectionMode: "single", required: true, options: [{ id: "export", label: "I will export them" }, { id: "skip", label: "Skip this week" }] },
+        ],
+        questionSet: {
+          schema: "paperclip.question_set.v1",
+          questions: [{ id: "website", prompt: "What is your website address?", required: true, answerMode: "text" }],
+        },
+      },
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
+    if (parsed.kind !== "ask_user_questions") return;
+    expect(parsed.payload.questions).toHaveLength(2);
+    expect(parsed.payload.questionSet?.questions).toHaveLength(1);
+  });
+
   it("rejects unsafe request_confirmation target hrefs", () => {
     const base = {
       kind: "request_confirmation",

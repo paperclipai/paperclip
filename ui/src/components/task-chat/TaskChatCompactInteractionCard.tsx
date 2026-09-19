@@ -58,6 +58,7 @@ import {
 } from "@/lib/issue-thread-interactions";
 import { cn } from "@/lib/utils";
 import { QuestionForm } from "./QuestionForm";
+import { questionSetForInteraction } from "./question-set-union";
 import {
   TaskChatComposerTakeoverControls,
   TaskChatComposerTakeoverHeader,
@@ -645,52 +646,6 @@ function ReceiptDisclosure({
       {detail}
     </details>
   );
-}
-
-function questionSetForInteraction(
-  interaction: AskUserQuestionsInteraction,
-): PaperclipQuestionSet {
-  if (interaction.payload.questionSet) return interaction.payload.questionSet;
-  return {
-    schema: "paperclip.question_set.v1",
-    ...(interaction.title ? { title: interaction.title } : {}),
-    ...(interaction.payload.submitLabel
-      ? { submitLabel: interaction.payload.submitLabel }
-      : {}),
-    questions: interaction.payload.questions.map((question) => {
-      const freeText = question.options.find(
-        (option) => option.freeText === true,
-      );
-      return {
-        id: question.id,
-        prompt: question.prompt,
-        ...(question.helpText ? { helpText: question.helpText } : {}),
-        required: question.required === true,
-        answerMode:
-          question.selectionMode === "multi"
-            ? ("multi_select" as const)
-            : ("single_select" as const),
-        options: question.options
-          .filter((option) => option.freeText !== true)
-          .map((option) => ({
-            id: option.id,
-            label: option.label,
-            ...(option.description ? { description: option.description } : {}),
-          })),
-        ...(freeText
-          ? {
-              customAnswer: {
-                enabled: true as const,
-                label: freeText.label,
-                ...(freeText.description
-                  ? { placeholder: freeText.description }
-                  : {}),
-              },
-            }
-          : {}),
-      };
-    }),
-  };
 }
 
 function questionResponseForInteraction(
