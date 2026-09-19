@@ -62,7 +62,6 @@ import {
   acpxRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
-  defaultCapabilityRunnerdBinary,
   executeNativeSession,
   applyNativeSessionGoalControl,
   inspectWarmRunTransition,
@@ -10626,8 +10625,10 @@ async function createRunnerdBackendWithinSessionClaim(
       }
     }
     if (!usedPreinstalledRunner) {
-      const sourceBinary =
-        explicitRemoteBinary ?? defaultCapabilityRunnerdBinary();
+      // Upload the same artifact used for the controller identity. The server
+      // vendors the runner under vendor/paperclip-runner/bin, so the package
+      // development fallback cannot locate it in a deployed server.
+      const sourceBinary = controllerRunnerBinary;
       if (!existsSync(sourceBinary)) {
         throw new Error("runner_remote_artifact_unavailable");
       }
