@@ -51,6 +51,12 @@ is recorded as a plugin error without taking down the application.
 The catalog alone does not auto-enable plugins on self-hosted instances.
 Operators can explicitly install catalog entries through the normal plugin
 CLI. The package's manifest ID and version must match the catalog.
+The manifest's worker and optional UI entrypoints must match the verified
+`package.json` declarations and stay inside the bundle.
+
+At boot, selected distribution entries adopt the current image's package path
+even when a previous npm or local install has the same version. Reconciliation
+keeps the registry ID, configuration, stored state and operator-disabled status.
 
 Keep each key's directory stable across releases. The activation guard also
 covers persisted installs: a plugin removed from the image catalog, or no

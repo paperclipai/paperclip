@@ -76,4 +76,29 @@ describe("image-owned plugin catalogs", () => {
       expect(() => guard({ pluginKey: "acme.widget", packageRoot: localPath, manifest: manifest as PaperclipPluginManifestV1 })).toThrow(/identity\/version/);
     }
   });
+
+  it("binds runtime worker and UI entrypoints to the digest-verified package declarations", () => {
+    const { root, localPath } = fixture();
+    const entries = readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG);
+    const guard = distributionPluginActivationGuard(root, entries, ["acme.widget"]);
+    const manifest = { id: "acme.widget", version: "1.0.0", entrypoints: { worker: "dist/worker.js", ui: "./dist/ui" } } as PaperclipPluginManifestV1;
+    expect(() => guard({ packageRoot: localPath, manifest })).not.toThrow();
+    for (const name of ["worker", "ui"] as const) {
+      for (const value of ["/outside/worker.js", "../outside", "dist/../worker.js", "C:/outside", "dist\\worker.js", "dist/other", "", undefined]) {
+        const invalid = { ...manifest, entrypoints: { ...manifest.entrypoints, [name]: value } } as PaperclipPluginManifestV1;
+        expect(() => guard({ packageRoot: localPath, manifest: invalid })).toThrow(/entrypoint/);
+      }
+    }
+  });
+
+  it("accepts worker-only bundles but rejects a UI path absent from verified metadata", () => {
+    const { root, localPath, entry, save } = fixture();
+    writeFileSync(path.join(localPath, "package.json"), JSON.stringify({ version: "1.0.0", paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
+    save([{ ...entry, digest: distributionBundleDigest(localPath) }]);
+    const guard = distributionPluginActivationGuard(root, readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG), null);
+    const manifest = { id: "acme.widget", version: "1.0.0", entrypoints: { worker: "./dist/worker.js" } } as PaperclipPluginManifestV1;
+    expect(() => guard({ packageRoot: localPath, manifest })).not.toThrow();
+    manifest.entrypoints.ui = "./dist/ui";
+    expect(() => guard({ packageRoot: localPath, manifest })).toThrow(/verified package/);
+  });
 });

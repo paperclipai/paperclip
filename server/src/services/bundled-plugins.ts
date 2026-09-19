@@ -208,6 +208,7 @@ interface RegistryPluginRow {
   status: string;
   version: string;
   manifestJson: PaperclipPluginManifestV1;
+  packagePath?: string | null;
   lastError?: string | null;
 }
 
@@ -216,7 +217,7 @@ export interface BundledPluginProvisionerDeps {
     getByKey(pluginKey: string): Promise<RegistryPluginRow | null>;
     update(
       id: string,
-      data: { version?: string; manifest?: PaperclipPluginManifestV1 },
+      data: { version?: string; manifest?: PaperclipPluginManifestV1; packagePath?: string },
     ): Promise<unknown>;
     updateStatus(id: string, input: { status: "ready"; lastError: string | null }): Promise<unknown>;
   };
@@ -246,7 +247,9 @@ function defaultBundleManifestExists(localPath: string): boolean {
  * Reconcile a present bundled plugin's persisted manifest with the shipped
  * bundle. The bundle is part of the release image, so its manifest is the
  * source of truth. When the bundle declares a version that differs from the
- * persisted version, update the stored manifest and version. This propagates
+ * persisted version, update the stored manifest and version. Distribution
+ * entries also adopt the image's package path, including same-version installs.
+ * This propagates
  * a manifest change (for example a new driver capability) to an existing
  * install that the auto-install path skips.
  *
@@ -259,21 +262,25 @@ async function reconcileBundledPluginManifest(
   install: ResolvedBundledPlugin,
   deps: BundledPluginProvisionerDeps,
   bundleManifestExists: (localPath: string) => boolean,
+  verifiedManifest?: PaperclipPluginManifestV1,
 ): Promise<void> {
   try {
-    if (!bundleManifestExists(install.localPath)) return;
-    const bundleManifest = await deps.loader.loadManifest(install.localPath);
+    if (!verifiedManifest && !bundleManifestExists(install.localPath)) return;
+    const bundleManifest = verifiedManifest ?? await deps.loader.loadManifest(install.localPath);
     if (!bundleManifest) return;
-    if (bundleManifest.version === existing.version) return;
+    const rebindPackage = install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
+    if (bundleManifest.version === existing.version && !rebindPackage) return;
     await deps.registry.update(existing.id, {
       version: bundleManifest.version,
       manifest: bundleManifest,
+      ...(rebindPackage ? { packagePath: install.localPath } : {}),
     });
     deps.logger.info(
       {
         pluginKey: install.pluginKey,
         fromVersion: existing.version,
         toVersion: bundleManifest.version,
+        ...(rebindPackage ? { packagePath: install.localPath } : {}),
       },
       "reconciled bundled plugin manifest to the shipped bundle version",
     );
@@ -367,22 +374,24 @@ export async function ensureBundledPlugins(
   const bundleManifestExists = deps.bundleManifestExists ?? defaultBundleManifestExists;
   for (const install of installs) {
     try {
+      let verifiedManifest: PaperclipPluginManifestV1 | undefined;
       if (install.distribution) {
         const manifest = await deps.loader.loadManifest(install.localPath);
         if (manifest?.id !== install.pluginKey || manifest.version !== install.distribution.version) {
           throw new Error("Distribution manifest does not match its catalog identity/version");
         }
+        verifiedManifest = manifest;
       }
       const existing = await deps.registry.getByKey(install.pluginKey);
       if (existing && (existing.status !== "uninstalled" || !opts.reinstallUninstalled)) {
         // The bundle ships with the release image, so its manifest is the
         // source of truth for a present plugin. Reconcile the persisted
-        // manifest when the shipped bundle declares a newer version. Without
+        // manifest when the shipped bundle declares a different version. Without
         // this step a manifest capability added to a bundle never reaches an
         // existing install, because the auto-install below skips a present
-        // plugin. The reconcile updates only the stored manifest row; the
-        // running worker already runs the shipped code.
-        await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists);
+        // plugin. Distribution entries also replace a legacy/npm package path
+        // before loadAll resolves the worker. Configuration and status stay put.
+        await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists, verifiedManifest);
         if (existing.status === "error") {
           await reenableErroredBundledPlugin(existing, install, deps);
           continue;
@@ -395,7 +404,7 @@ export async function ensureBundledPlugins(
       }
       // Skip silently when the bundle is absent (e.g. local dev or an image
       // built without the plugin). Not an error condition.
-      if (!bundleManifestExists(install.localPath)) {
+      if (!verifiedManifest && !bundleManifestExists(install.localPath)) {
         deps.logger.info(
           { pluginKey: install.pluginKey, pluginPath: install.localPath },
           "bundled plugin bundle not present; skipping auto-install",

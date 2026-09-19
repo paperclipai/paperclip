@@ -215,6 +215,7 @@ type LooseRow = {
   version?: string;
   manifestJson?: Record<string, unknown>;
   lastError?: string | null;
+  packagePath?: string | null;
 };
 
 // Build a minimal manifest for a persisted row or a shipped bundle. The reconcile
@@ -400,6 +401,41 @@ describe("ensureBundledPlugins", () => {
     });
     await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "/old/plugins/widget"])("adopts a selected distribution path from %s even at the same version", async (packagePath) => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    for (const status of ["ready", "disabled", "error"]) {
+      const { deps, loadManifest, update, installPlugin, updateStatus } = makeDeps({
+        rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status, version: "0.1.0", packagePath } },
+        // Distribution packages may declare a manifest outside dist/manifest.js.
+        bundleManifestExists: () => false,
+      });
+      const manifest = makeManifest("acme.widget", "0.1.0");
+      loadManifest.mockResolvedValue(manifest);
+      await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+      // Same row: retain config/state and operator-disabled status; only error
+      // gets the existing one-shot boot retry. No reinstall/capability reset.
+      expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { packagePath: localPath, version: "0.1.0", manifest });
+      expect(installPlugin).not.toHaveBeenCalled();
+      expect(updateStatus).toHaveBeenCalledTimes(status === "error" ? 1 : 0);
+      expect(loadManifest).toHaveBeenCalledExactlyOnceWith(localPath);
+      expect(deps.logger.error).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not rebind a distribution install whose new manifest fails validation", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update, updateStatus } = makeDeps({
+      rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "error", packagePath: "/old/widget" } },
+    });
+    loadManifest.mockRejectedValue(new Error("Distribution manifest entrypoints do not match the verified package"));
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).not.toHaveBeenCalled();
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(deps.logger.error).toHaveBeenCalled();
   });
 
   it("swallows a reconcile error and continues boot", async () => {

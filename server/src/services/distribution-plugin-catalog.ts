@@ -18,7 +18,17 @@ export const distributionPluginCatalogSchema = z.object({
 
 export type DistributionPlugin = z.infer<typeof distributionPluginCatalogSchema>["plugins"][number] & {
   localPath: string;
+  /** Normalized paths from the digest-verified package metadata. */
+  entrypoints: { worker: string; ui?: string };
 };
+
+function bundleEntrypoint(declared: unknown): string {
+  const relative = typeof declared === "string" ? declared.replace(/^\.\//, "").replace(/\/$/, "") : "";
+  if (!relative || path.posix.isAbsolute(relative) || path.win32.isAbsolute(relative) || relative.includes("\\") || relative.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("Distribution entrypoint must stay inside its bundle");
+  }
+  return relative;
+}
 
 export function distributionPluginsRoot(catalogRoot: string): string {
   // Match canonical paths persisted by local-path installs (for example,
@@ -53,6 +63,13 @@ export function distributionPluginActivationGuard(
     }
     if (input.manifest && (input.manifest.id !== entry.pluginKey || input.manifest.version !== entry.version)) {
       throw new Error("Distribution manifest does not match its catalog identity/version");
+    }
+    if (input.manifest) {
+      const worker = bundleEntrypoint(input.manifest.entrypoints.worker);
+      const ui = input.manifest.entrypoints.ui === undefined ? undefined : bundleEntrypoint(input.manifest.entrypoints.ui);
+      if (worker !== entry.entrypoints.worker || ui !== entry.entrypoints.ui) {
+        throw new Error("Distribution manifest entrypoints do not match the verified package");
+      }
     }
   };
 }
@@ -117,13 +134,13 @@ export function readDistributionPluginCatalog(
     for (const name of ["manifest", "worker", "ui"] as const) {
       const declared = pkg.paperclipPlugin[name];
       if (name === "ui" && declared === undefined) continue;
-      const relative = typeof declared === "string" ? declared.replace(/^\.\//, "").replace(/\/$/, "") : "";
-      if (!relative || relative.startsWith("/") || relative.includes("\\") || relative.split("/").some((part: string) => !part || part === "." || part === "..")) {
-        throw new Error("Distribution entrypoint must stay inside its bundle");
-      }
+      const relative = bundleEntrypoint(declared);
       const target = fs.statSync(path.join(localPath, relative));
       if (name === "ui" ? !target.isDirectory() : !target.isFile()) throw new Error("Distribution entrypoint is not prebuilt");
     }
-    return { ...entry, localPath };
+    return { ...entry, localPath, entrypoints: {
+      worker: bundleEntrypoint(pkg.paperclipPlugin.worker),
+      ...(pkg.paperclipPlugin.ui === undefined ? {} : { ui: bundleEntrypoint(pkg.paperclipPlugin.ui) }),
+    } };
   });
 }
