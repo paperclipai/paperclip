@@ -518,6 +518,16 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+// Error codes whose text is worth scanning for a provider-failure cause. ACP
+// engines (acpx) report every failed turn as `acpx_turn_failed`, which is why
+// the turn-failure code has to appear here: without it a session/usage-limit
+// turn failure is classified as nothing and the issue is requeued immediately.
+const ADAPTER_FAILURE_RECOVERY_ERROR_CODES = new Set<string>([
+  "adapter_failed",
+  "provider_quota",
+  "configuration_incomplete",
+  "acpx_turn_failed",
+]);
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -615,11 +625,13 @@ export function classifyAdapterFailureForRecovery(
   if (latestRun.errorCode === "adapter_engine_unavailable") {
     return { kind: "configuration_incomplete" };
   }
-  if (
-    latestRun.errorCode !== "adapter_failed" &&
-    latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
-  ) {
+  // ACP engines (acpx) collapse every failed turn into `acpx_turn_failed`, so a
+  // spent provider usage window arrives under a code that is not
+  // `adapter_failed`. Scan turn failures too, or a provider-quota message is
+  // never scheduled and the issue falls through to an immediate continuation
+  // requeue that dispatches a new run into the same closed window.
+  const scanQuotaOnly = latestRun.errorCode === "acpx_turn_failed";
+  if (!ADAPTER_FAILURE_RECOVERY_ERROR_CODES.has(latestRun.errorCode ?? "")) {
     return null;
   }
   const resultJson = parseObject(latestRun.resultJson);
@@ -628,9 +640,12 @@ export function classifyAdapterFailureForRecovery(
     latestRun.error ?? "",
     JSON.stringify(resultJson),
   ].join("\n");
+  // A turn failure is eligible for the quota wait only. Misconfiguration that
+  // surfaces through the same phase code keeps whatever handling it had.
   if (
-    latestRun.errorCode === "configuration_incomplete" ||
-    CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)
+    !scanQuotaOnly &&
+    (latestRun.errorCode === "configuration_incomplete" ||
+      CONFIGURATION_INCOMPLETE_ERROR_RE.test(error))
   ) {
     return { kind: "configuration_incomplete" };
   }

@@ -114,6 +114,62 @@ describe("classifyAdapterFailureForRecovery", () => {
   });
 
   it.each([
+    ["You've hit your session limit · resets 9:20pm (Pacific/Auckland)"],
+    ["You've hit your session limit · resets 2:30am (Pacific/Auckland)"],
+  ])(
+    "classifies a provider-quota turn failure reported under the engine turn-failure code: %s",
+    (error) => {
+      // acpx-based adapters collapse every failed turn into `acpx_turn_failed`,
+      // so the provider-quota wording arrives under a code the classifier did
+      // not scan. Unclassified, the issue fell through to the immediate
+      // continuation requeue: a new run was dispatched into the same spent
+      // usage window (observed live at ~56% of one outage's failures).
+      const now = new Date("2026-09-16T04:50:00.000Z");
+      const classification = classifyAdapterFailureForRecovery(
+        {
+          errorCode: "acpx_turn_failed",
+          error: `Internal error: ${error}`,
+          resultJson: null,
+        },
+        now,
+      );
+
+      expect(classification).toEqual({
+        kind: "provider_quota",
+        retryAt: new Date(
+          error.includes("9:20pm")
+            ? "2026-09-16T09:20:00.000Z"
+            : "2026-09-16T14:30:00.000Z",
+        ),
+        parsedResetTime: true,
+      });
+    },
+  );
+
+  it("leaves a non-quota turn failure unclassified", () => {
+    expect(
+      classifyAdapterFailureForRecovery(
+        {
+          errorCode: "acpx_turn_failed",
+          error: "Internal error: the agent process exited before completing the turn",
+          resultJson: null,
+        },
+        new Date("2026-09-16T04:50:00.000Z"),
+      ),
+    ).toBeNull();
+  });
+
+  it("does not route a turn failure into the configuration branch", () => {
+    expect(
+      classifyAdapterFailureForRecovery({
+        errorCode: "acpx_turn_failed",
+        error: "No API credentials were found for this provider",
+        resultJson: null,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",
     "API key is not set",
