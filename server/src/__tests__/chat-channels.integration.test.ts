@@ -12976,6 +12976,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const body = JSON.stringify({ type: "url_verification", challenge: "proxy-check" });
     const request = signedSlackWebhookRequest({ url: `http://paperclip.example${path}`, contentType: "application/json", body });
     request.headers.set("x-forwarded-host", "untrusted.example");
+    request.headers.set("x-paperclip-cloud-forwarded-host", "untrusted.example");
+    request.headers.set("x-paperclip-cloud-forwarded-proto", "https");
     request.headers.set("x-forwarded-proto", "https");
     await service.handleWebhook(endpoint.publicId, "slack", request);
     await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false, callbackSurfaces: { events: { status: "current" } } } });
@@ -12998,16 +13000,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ["slashCommands", "application/x-www-form-urlencoded", new URLSearchParams({ command: "/maya-paperclip", team_id: "T-PAPERCLIP" }).toString()],
     ] as const;
     try {
-      for (const [surface, contentType, body] of cases) {
-        const request = signedSlackWebhookRequest({ url: `http://tenant.internal:3100${path}`, contentType, body });
-        request.headers.set("x-forwarded-host", "paperclip.example");
-        request.headers.set("x-forwarded-proto", "https");
-        expect((await service.handleWebhook(endpoint.publicId, "slack", request)).ok).toBe(true);
-        await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: {
-          callbacksNeedUpdate: false, callbackSurfaces: { [surface]: { status: "current" } },
-        } });
-        // The proxy hint is evidence, not a rewrite to the adapter request.
-        expect(request.url).toBe(`http://tenant.internal:3100${path}`);
+      for (const prefix of ["x-forwarded", "x-paperclip-cloud-forwarded"]) {
+        for (const [surface, contentType, body] of cases) {
+          const request = signedSlackWebhookRequest({ url: `http://tenant.internal:3100${path}`, contentType, body });
+          request.headers.set("x-forwarded-host", "tenant.up.railway.app");
+          request.headers.set(`${prefix}-host`, "paperclip.example");
+          request.headers.set(`${prefix}-proto`, "https");
+          expect((await service.handleWebhook(endpoint.publicId, "slack", request)).ok).toBe(true);
+          await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: {
+            callbacksNeedUpdate: false, callbackSurfaces: { [surface]: { status: "current" } },
+          } });
+          // The proxy hint is evidence, not a rewrite to the adapter request.
+          expect(request.url).toBe(`http://tenant.internal:3100${path}`);
+        }
       }
       canonicalOrigin.mockReturnValue("https://moved.example");
       await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: {
@@ -13028,8 +13033,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const body = JSON.stringify({ type: "url_verification", challenge: "proxy-hint-check" });
     const send = async (host: string, protocol = "https", signed = true) => {
       const request = signedSlackWebhookRequest({ url: `http://tenant.internal:3100${path}`, contentType: "application/json", body });
-      request.headers.set("x-forwarded-host", host);
-      request.headers.set("x-forwarded-proto", protocol);
+      request.headers.set("x-paperclip-cloud-forwarded-host", host);
+      request.headers.set("x-paperclip-cloud-forwarded-proto", protocol);
       if (!signed) request.headers.delete("x-slack-signature");
       // The fake provider runtime supplies the adapter's authentication result.
       providerRuntime.webhookResponse = new Response(signed ? "accepted" : "rejected", { status: signed ? 202 : 401 });
