@@ -1,5 +1,9 @@
 import { connectionPurposeTransportSchema } from "@paperclipai/shared";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
+import {
+  emitConnectorConnectionCreated,
+  emitConnectorConnectionUpdated,
+} from "./connector-telemetry.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -651,6 +655,11 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /**
+   * Test seam for reproducing a Composio child deleted between the sync's
+   * child listing and that child's lifecycle write.
+   */
+  beforeComposioChildLifecycleWrite?: (childId: string) => Promise<void>;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -6420,6 +6429,7 @@ export function toolAccessService(
 
       return { connection: updatedConnection, applicationArchived };
     });
+    emitConnectorConnectionUpdated(archived.connection, connection, "archive");
 
     // Only now, with every access path closed, revoke the credentials. Each
     // `secrets.remove` marks the row deleted before it calls the provider, so a
@@ -7099,7 +7109,8 @@ export function toolAccessService(
     for (const child of children) {
       if (child.status === "archived") continue;
       const config = asRecord(child.config);
-      await db
+      await options.beforeComposioChildLifecycleWrite?.(child.id);
+      const [updated] = await db
         .update(toolConnections)
         .set({
           enabled: false,
@@ -7108,7 +7119,11 @@ export function toolAccessService(
             : config,
           updatedAt: now(),
         })
-        .where(eq(toolConnections.id, child.id));
+        .where(eq(toolConnections.id, child.id))
+        .returning();
+      // Emit only what the database confirmed: a concurrently deleted child
+      // returns no row and must not report a transition it never committed.
+      if (updated) emitConnectorConnectionUpdated(updated, child, "composio_sync");
     }
   }
 
@@ -7152,7 +7167,8 @@ export function toolAccessService(
       const config = { ...asRecord(child.config) };
       delete config.disabledByComposioParent;
       const active = account?.status.toUpperCase() === "ACTIVE";
-      await db
+      await options.beforeComposioChildLifecycleWrite?.(child.id);
+      const [updated] = await db
         .update(toolConnections)
         .set({
           enabled: active,
@@ -7165,7 +7181,11 @@ export function toolAccessService(
             : `Composio reports the ${childConfig.toolkitSlug} connected account as ${account?.status.toUpperCase() ?? "MISSING"}. Reconnect it in Composio.`,
           updatedAt: now(),
         })
-        .where(eq(toolConnections.id, child.id));
+        .where(eq(toolConnections.id, child.id))
+        .returning();
+      // Emit only what the database confirmed: a concurrently deleted child
+      // returns no row and must not report a transition it never committed.
+      if (updated) emitConnectorConnectionUpdated(updated, child, "composio_sync");
     }
   }
 
@@ -7260,6 +7280,7 @@ export function toolAccessService(
         toolkitSlug: account.toolkit.slug,
       },
     });
+    emitConnectorConnectionCreated(created, "composio_sync");
     return created;
   }
 
@@ -8445,6 +8466,7 @@ export function toolAccessService(
       await ensureDefaultOrganizationGrant(updated);
       await syncCredentialBindings(updated);
       await ensureRuntimeSlot(updated);
+      emitConnectorConnectionUpdated(updated, existing, "example");
       return { row: updated, created: false };
     }
     const connectionId = randomUUID();
@@ -8473,6 +8495,7 @@ export function toolAccessService(
     await ensureDefaultOrganizationGrant(created);
     await syncCredentialBindings(created);
     await ensureRuntimeSlot(created);
+    emitConnectorConnectionCreated(created, "example");
     return { row: created, created: true };
   }
 
@@ -10815,7 +10838,10 @@ export function toolAccessService(
         ),
       )
       .returning();
-    if (updated) await syncCredentialBindings(updated);
+    if (updated) {
+      await syncCredentialBindings(updated);
+      emitConnectorConnectionUpdated(updated, connection, "credential_refresh");
+    }
     return updated ?? null;
   }
 
@@ -11703,6 +11729,11 @@ export function toolAccessService(
                 )
                 .returning();
               await syncCredentialBindings(reauthorizationRequired);
+              emitConnectorConnectionUpdated(
+                reauthorizationRequired,
+                latestConnection,
+                "credential_refresh",
+              );
             } else {
               const activeGrantRefs = await db
                 .select({
@@ -13125,6 +13156,15 @@ export function toolAccessService(
           })
           .returning();
       }
+      if (revivedConnectionPrevious) {
+        emitConnectorConnectionUpdated(
+          connectionRow,
+          revivedConnectionPrevious,
+          "gallery_setup",
+        );
+      } else {
+        emitConnectorConnectionCreated(connectionRow, "gallery");
+      }
       if (personalIdentityUserId) {
         // "Just me" (PAP-17835 seam #4). The credential is committed straight to
         // the caller's own grant; the connection row keeps only the header
@@ -14120,6 +14160,11 @@ export function toolAccessService(
 
       return { profileId, profileBindings, policies, updatedConnection };
     });
+    emitConnectorConnectionUpdated(
+      transactionResult.updatedConnection,
+      connection,
+      "gallery_setup",
+    );
 
     const details = await profileDetails(
       transactionResult.profileId,
@@ -15825,6 +15870,10 @@ export function toolAccessService(
             : null,
       });
     }
+    const preActivationLifecycle = {
+      status: connection.status,
+      enabled: connection.enabled,
+    };
     [connection] = await db
       .update(toolConnections)
       .set({
@@ -15841,6 +15890,11 @@ export function toolAccessService(
         ),
       )
       .returning();
+    emitConnectorConnectionUpdated(
+      connection,
+      preActivationLifecycle,
+      "oauth_callback",
+    );
     await db
       .update(toolApplications)
       .set({ status: "active", updatedAt: now() })
@@ -15936,6 +15990,10 @@ export function toolAccessService(
       stateRow.connectionId,
       stateRow.companyId,
     );
+    const preCallbackLifecycle = {
+      status: connection.status,
+      enabled: connection.enabled,
+    };
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"
         ? connection.config.sourceTemplateKey
@@ -16211,6 +16269,11 @@ export function toolAccessService(
           tx,
         );
       });
+      emitConnectorConnectionUpdated(
+        connection,
+        preCallbackLifecycle,
+        "oauth_callback",
+      );
 
       // Personal OAuth used to return immediately after saving the grant. That
       // left the connection draft/paused and its catalog empty, so the person
@@ -16427,6 +16490,11 @@ export function toolAccessService(
       await ensureDefaultOrganizationGrant(connection, tx);
       await syncCredentialBindings(connection, [], tx);
     });
+    emitConnectorConnectionUpdated(
+      connection,
+      preCallbackLifecycle,
+      "oauth_callback",
+    );
 
     await checkConnectionHealth(connection.id, input.actor);
     const refresh = await refreshCatalog(connection.id, input.actor, {
@@ -17718,6 +17786,7 @@ export function toolAccessService(
           await disableComposioChildren(row);
         else await restoreComposioChildren(row);
       }
+      emitConnectorConnectionCreated(row, "api");
       return toConnection(row);
     },
 
@@ -18612,6 +18681,7 @@ export function toolAccessService(
         if (row.enabled) await restoreComposioChildren(row);
         else await disableComposioChildren(row);
       }
+      emitConnectorConnectionUpdated(row, existing, "update_api");
       return toConnection(row);
     },
 
