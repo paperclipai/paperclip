@@ -30,6 +30,7 @@ export const AGENT_ADAPTER_TYPES = [
   "claude_local",
   "codex_local",
   "paperclip_runner",
+  "devin_local",
   "cursor_cloud",
   "gemini_local",
   "grok_local",

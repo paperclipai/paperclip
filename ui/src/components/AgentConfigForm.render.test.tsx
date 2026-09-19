@@ -9,10 +9,15 @@ import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shar
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
+import { AgentConfigForm, AdapterLoginPanel, ModelDropdown, subtractPersistedOverlay, supportsAdapterModelRefresh, type AdapterLoginDescriptor } from "./AgentConfigForm";
+import { ModelDropdown as LeafModelDropdown } from "./ModelDropdown";
+import { DevinModelPicker } from "../adapters/devin-local/model-picker";
+import type { DevinModelDraftStatus } from "../adapters/devin-local/model-selection";
+import type { AdapterModel } from "../api/agents";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
+import { invalidateConfigSchemaCache } from "../adapters/schema-config-fields";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -96,33 +101,41 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
-vi.mock("../adapters", () => ({
-  getUIAdapter: (type: string) => ({
-    type,
-    label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
-    // The stand-in also records the two gates the form resolves for every
-    // adapter, so a test can assert the plumbing without rendering a real
-    // adapter's fields.
-    ConfigFields: ({ adapterType, hideInstructionsFile, managedSandboxOnly }: {
-      adapterType: string;
-      hideInstructionsFile?: boolean;
-      managedSandboxOnly?: boolean;
-    }) =>
-      adapterType === "hermes_gateway"
-        ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
-        : (
-          <div
-            data-testid="adapter-config-fields"
-            data-hide-instructions-file={String(hideInstructionsFile === true)}
-            data-managed-sandbox-only={String(managedSandboxOnly === true)}
-          />
-        ),
-    buildAdapterConfig: (values: { model?: string }) => ({
-      model: values.model || undefined,
-    }),
-    parseStdoutLine: () => [],
-  }),
-}));
+vi.mock("../adapters", async () => {
+  const registry = await vi.importActual<typeof import("../adapters/registry")>(
+    "../adapters/registry",
+  );
+  return {
+    getUIAdapter: (type: string) =>
+      type === "devin_local"
+        ? registry.getUIAdapter(type)
+        : {
+            type,
+            label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
+            // The stand-in also records the two gates the form resolves for every
+            // adapter, so a test can assert the plumbing without rendering a real
+            // adapter's fields.
+            ConfigFields: ({ adapterType, hideInstructionsFile, managedSandboxOnly }: {
+              adapterType: string;
+              hideInstructionsFile?: boolean;
+              managedSandboxOnly?: boolean;
+            }) =>
+              adapterType === "hermes_gateway"
+                ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
+                : (
+                  <div
+                    data-testid="adapter-config-fields"
+                    data-hide-instructions-file={String(hideInstructionsFile === true)}
+                    data-managed-sandbox-only={String(managedSandboxOnly === true)}
+                  />
+                ),
+            buildAdapterConfig: (values: { model?: string }) => ({
+              model: values.model || undefined,
+            }),
+            parseStdoutLine: () => [],
+          },
+  };
+});
 
 // The projected login capability per adapter type. The server projects these
 // safe scalar fields. `codex_local` drives the displayed-code panel; `claude_local`
@@ -267,6 +280,7 @@ async function renderForm(
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    adapterModels?: AdapterModel[];
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -298,6 +312,7 @@ async function renderForm(
               onDirtyChange={options.onDirtyChange}
               onSaveActionChange={options.onSaveActionChange}
               onCancelActionChange={options.onCancelActionChange}
+              adapterModels={options.adapterModels}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
@@ -782,6 +797,48 @@ describe("AgentConfigForm environment selector", () => {
     await act(async () => save.click());
     expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ thinking: "low" }) }));
     expect(result.onSave.mock.calls[0][0].adapterConfig.effort).toBeUndefined();
+  });
+
+  it("reads and saves Devin effort using only the selected family's tiers", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "devin-family", label: "Devin family", efforts: ["low", "high"] },
+      { id: "other-family", label: "Other family", efforts: ["medium", "max"] },
+    ]);
+    const result = await renderForm([], { adapterType: "devin_local", adapterConfig: { model: "devin-family", thinkingEffort: "high" } });
+    roots.push(result.root);
+    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "High")!;
+    expect(effort).toBeTruthy();
+    await act(async () => effort.click());
+    await flushReact();
+    const choices = [...document.querySelectorAll("button")].map(button => button.textContent?.replace(/\s+/g, "").trim());
+    expect(choices).toContain("Lowlow");
+    expect(choices).not.toContain("Mediummedium");
+    expect(choices).not.toContain("Maxmax");
+    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Lowlow")!;
+    await act(async () => low.click());
+    await flushReact();
+    const save = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save")!;
+    await act(async () => save.click());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ thinkingEffort: "low" }) }));
+    expect(result.onSave.mock.calls[0][0].adapterConfig.effort).toBeUndefined();
+  });
+
+  it("creates a Devin agent with the selected family's effort via onChange", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "devin-family", label: "Devin family", efforts: ["low", "high"] },
+      { id: "other-family", label: "Other family", efforts: ["medium", "max"] },
+    ]);
+    const result = await renderCreateForm([], { adapterType: "devin_local", model: "devin-family", thinkingEffort: "high" });
+    roots.push(result.root);
+    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "High")!;
+    expect(effort).toBeTruthy();
+    await act(async () => effort.click());
+    await flushReact();
+    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Lowlow")!;
+    expect(low).toBeTruthy();
+    await act(async () => low.click());
+    await flushReact();
+    expect(result.onChange).toHaveBeenLastCalledWith(expect.objectContaining({ thinkingEffort: "low" }));
   });
 
   it("hides the environment override when Local is the only configured environment", async () => {
@@ -3857,5 +3914,1310 @@ describe("subtractPersistedOverlay", () => {
     expect(subtractPersistedOverlay(changed, persisted).adapterConfig).toEqual({
       args: ["--flag", "other"],
     });
+  });
+});
+
+function setSelectValue(select: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+const FUSION_COMPONENT = {
+  id: "alpha-high",
+  modelKey: "alpha",
+  modelLabel: "Alpha",
+  effortKey: "high",
+  effortLabel: "High",
+  effortSource: "uid" as const,
+  label: "Alpha High",
+  modifiers: [] as string[],
+};
+
+const FUSION_MODELS = [
+  {
+    id: "fusion-alpha-high-sidekick-beta-low",
+    label: "Fusion (Alpha High + Beta Low)",
+    fusion: {
+      version: 1 as const,
+      kind: "fusion" as const,
+      components: {
+        orchestrator: FUSION_COMPONENT,
+        worker: {
+          ...FUSION_COMPONENT,
+          id: "beta-low",
+          modelKey: "beta",
+          modelLabel: "Beta",
+          effortKey: "low",
+          effortLabel: "Low",
+          label: "Beta Low",
+        },
+      },
+      rates: {
+        orchestrator: { inputPerMillion: 1, cachedInputPerMillion: 0.5, outputPerMillion: 2 },
+        worker: { inputPerMillion: 0.1, cachedInputPerMillion: 0.05, outputPerMillion: 0.2 },
+      },
+      costSummary: "$1 / 1M Input",
+    },
+  },
+  {
+    id: "fusion-alpha-high-sidekick-beta-low-priority",
+    label: "Fusion (Alpha High + Beta Low Priority)",
+    fusion: {
+      version: 1 as const,
+      kind: "fusion" as const,
+      components: {
+        orchestrator: FUSION_COMPONENT,
+        worker: {
+          ...FUSION_COMPONENT,
+          id: "beta-low-priority",
+          modelKey: "beta",
+          modelLabel: "Beta",
+          effortKey: "low",
+          effortLabel: "Low",
+          label: "Beta Low Fast",
+          modifiers: ["priority"],
+        },
+      },
+      rates: null,
+      costSummary: "$2 / 1M Input",
+    },
+  },
+  {
+    id: "fusion-alpha-low-sidekick-delta-3",
+    label: "Fusion (Alpha Low + Delta)",
+    fusion: {
+      version: 1 as const,
+      kind: "fusion" as const,
+      components: {
+        orchestrator: {
+          ...FUSION_COMPONENT,
+          id: "alpha-low",
+          effortKey: "low",
+          effortLabel: "Low",
+          label: "Alpha Low",
+        },
+        worker: {
+          ...FUSION_COMPONENT,
+          id: "delta-3",
+          modelKey: "delta",
+          modelLabel: "Delta",
+          effortKey: "unspecified:delta-3",
+          effortLabel: "Not specified by catalog",
+          effortSource: "unspecified" as const,
+          label: "Delta",
+        },
+      },
+      rates: null,
+      costSummary: null,
+    },
+  },
+  {
+    id: "fusion-legacy-opaque",
+    label: "Fusion (Legacy + Unknown)",
+    fusion: { version: 1 as const, kind: "fusion" as const, components: null, rates: null, costSummary: "$2 / 1M Input" },
+  },
+  { id: "devin-family", label: "Devin family", efforts: ["low", "high"] },
+];
+
+describe("Devin Fusion model picker", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue(FUSION_MODELS);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockAgentsApi.testEnvironment.mockResolvedValue({
+      adapterType: "devin_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date(0).toISOString(),
+    });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    invalidateConfigSchemaCache("devin_local");
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("shows roles, rates, the exact UID, and the cost warning for a Fusion selection", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "fusion-alpha-high-sidekick-beta-low" },
+    });
+    roots.push(result.root);
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]');
+    expect(strategy?.value).toBe("fusion");
+    expect(result.container.textContent).toContain("Fusion run-cost reporting may exclude worker usage");
+    expect(result.container.textContent).toContain("Alpha");
+    expect(result.container.textContent).toContain("Beta");
+    expect(result.container.textContent).toContain("fusion-alpha-high-sidekick-beta-low");
+    expect(result.container.textContent).not.toContain("Thinking effort");
+    expect(result.container.querySelector('select[aria-label="Orchestrator model"]')).toBeTruthy();
+    expect(result.container.querySelector('select[aria-label="Orchestrator effort"]')).toBeTruthy();
+    expect(result.container.querySelector('select[aria-label="Worker model"]')).toBeTruthy();
+    expect(result.container.querySelector('select[aria-label="Worker effort"]')).toBeTruthy();
+  });
+
+  it("blocks save while a partial Fusion draft is pending, keeps the old UID, and Discard restores", async () => {
+    const dirty = vi.fn();
+    let save: (() => void) | null = null;
+    let discard: (() => void) | null = null;
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", thinkingEffort: "high" },
+    }, {
+      onDirtyChange: dirty,
+      onSaveActionChange: (action) => { save = action; },
+      onCancelActionChange: (action) => { discard = action; },
+    });
+    roots.push(result.root);
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    expect(strategy.value).toBe("single");
+    await act(async () => setSelectValue(strategy, "fusion"));
+    await flushReact();
+    const orchestrator = result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator model"]')!;
+    await act(async () => setSelectValue(orchestrator, "alpha"));
+    await flushReact();
+
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => { await save?.(); });
+    expect(result.onSave).not.toHaveBeenCalled();
+
+    await act(async () => discard?.());
+    await flushReact();
+    const restored = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    expect(restored.value).toBe("single");
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it("saves the exact UID with generic axes stripped after a complete filter selection", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", thinkingEffort: "high", contextSize: "1m", fastMode: true, priority: true, permissionMode: "normal" },
+    });
+    roots.push(result.root);
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    await act(async () => setSelectValue(strategy, "fusion"));
+    await flushReact();
+    await act(async () => setSelectValue(result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator model"]')!, "alpha"));
+    await flushReact();
+    await act(async () => setSelectValue(result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator effort"]')!, "low"));
+    await flushReact();
+    await act(async () => setSelectValue(result.container.querySelector<HTMLSelectElement>('select[aria-label="Worker model"]')!, "delta"));
+    await flushReact();
+
+    const save = [...result.container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save")!;
+    expect(save).toBeTruthy();
+    await act(async () => save.click());
+    await flushReact();
+    expect(result.onSave).toHaveBeenCalled();
+    const patch = result.onSave.mock.calls[0][0] as { adapterConfig: Record<string, unknown> };
+    expect(patch.adapterConfig.model).toBe("fusion-alpha-low-sidekick-delta-3");
+    for (const key of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+      expect(patch.adapterConfig).not.toHaveProperty(key);
+    }
+    expect(patch.adapterConfig.permissionMode).toBe("normal");
+  });
+
+  it("requires an explicit Combination choice while multiple candidates remain", async () => {
+    const result = await renderCreateForm([], { adapterType: "devin_local", model: "devin-family" });
+    roots.push(result.root);
+    const modelPatches = () =>
+      result.onChange.mock.calls
+        .map((call) => call[0] as { model?: string })
+        .filter((patch) => "model" in patch)
+        .map((patch) => patch.model);
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    await act(async () => setSelectValue(strategy, "fusion"));
+    await flushReact();
+    await act(async () => setSelectValue(result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator model"]')!, "alpha"));
+    await flushReact();
+    await act(async () => setSelectValue(result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator effort"]')!, "high"));
+    await flushReact();
+    await act(async () => setSelectValue(result.container.querySelector<HTMLSelectElement>('select[aria-label="Worker model"]')!, "beta"));
+    await flushReact();
+    await act(async () => setSelectValue(result.container.querySelector<HTMLSelectElement>('select[aria-label="Worker effort"]')!, "low"));
+    await flushReact();
+    expect(modelPatches()).toEqual([]);
+
+    const combo = result.container.querySelector<HTMLButtonElement>('button[aria-label="Combination"]')!;
+    expect(combo).toBeTruthy();
+    await act(async () => combo.click());
+    await flushReact();
+    const priorityOption = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Beta Low Priority"),
+    )!;
+    expect(priorityOption).toBeTruthy();
+    await act(async () => priorityOption.click());
+    await flushReact();
+    expect(modelPatches()).toContain("fusion-alpha-high-sidekick-beta-low-priority");
+  });
+
+  it("clears the four generic schema axes on a deliberate Fusion choice in create mode", async () => {
+    const result = await renderCreateForm([], {
+      adapterType: "devin_local",
+      model: "devin-family",
+      thinkingEffort: "high",
+      adapterSchemaValues: { contextSize: "1m", fastMode: true, priority: true },
+    });
+    roots.push(result.root);
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    await act(async () => setSelectValue(strategy, "fusion"));
+    await flushReact();
+    const combo = result.container.querySelector<HTMLButtonElement>('button[aria-label="Combination"]')!;
+    await act(async () => combo.click());
+    await flushReact();
+    const option = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Beta Low Priority"),
+    )!;
+    await act(async () => option.click());
+    await flushReact();
+
+    const last = result.onChange.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(last.model).toBe("fusion-alpha-high-sidekick-beta-low-priority");
+    expect(last.thinkingEffort).toBe("");
+    const schemaValues = last.adapterSchemaValues as Record<string, unknown>;
+    for (const key of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+      expect(schemaValues).not.toHaveProperty(key);
+    }
+  });
+
+  it("rejects a manually typed bare fusion value immediately", async () => {
+    const result = await renderCreateForm([], { adapterType: "devin_local" });
+    roots.push(result.root);
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    await act(async () => setSelectValue(strategy, "single"));
+    await flushReact();
+    const modelTrigger = [...result.container.querySelectorAll("button")].find(
+      (button) => button.getAttribute("aria-label") === "Model",
+    )!;
+    await act(async () => modelTrigger.click());
+    await flushReact();
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+    expect(search).toBeTruthy();
+    await act(async () => {
+      setInputValue(search, "fusion");
+    });
+    await flushReact();
+    const manual = [...document.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Use manual model"),
+    )!;
+    expect(manual).toBeTruthy();
+    await act(async () => manual.click());
+    await flushReact();
+    expect(result.container.textContent).toContain(
+      "Choose an explicit Fusion combination; select an orchestrator and worker.",
+    );
+  });
+
+  it("blocks a bare stored fusion value on save", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: " Fusion " },
+    });
+    roots.push(result.root);
+    expect(result.container.textContent).toContain(
+      "Choose an explicit Fusion combination; select an orchestrator and worker.",
+    );
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    await act(async () => setSelectValue(strategy, "fusion"));
+    await flushReact();
+    const orchestrator = result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator model"]')!;
+    await act(async () => setSelectValue(orchestrator, "alpha"));
+    await flushReact();
+    const save = [...result.container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save");
+    expect(save).toBeTruthy();
+    await act(async () => save!.click());
+    await flushReact();
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps opaque and missing entries selectable without emitting on catalog load", async () => {
+    const result = await renderCreateForm([], { adapterType: "devin_local", model: "fusion-legacy-opaque" });
+    roots.push(result.root);
+    await flushReact();
+    const modelPatches = result.onChange.mock.calls
+      .map((call) => call[0] as { model?: string })
+      .filter((patch) => "model" in patch);
+    expect(modelPatches).toEqual([]);
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    expect(strategy.value).toBe("fusion");
+    expect(result.container.textContent).toContain("Fusion (Legacy + Unknown)");
+  });
+
+  it("shows an alert when the catalog fails and still allows manual entry", async () => {
+    mockAgentsApi.adapterModels.mockRejectedValue(new Error("discovery offline"));
+    const result = await renderCreateForm([], { adapterType: "devin_local", model: "devin-family" });
+    roots.push(result.root);
+    await flushReact();
+    expect(result.container.textContent).toContain("discovery offline");
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    await act(async () => setSelectValue(strategy, "fusion"));
+    await flushReact();
+    const combo = result.container.querySelector<HTMLButtonElement>('button[aria-label="Combination"]')!;
+    expect(combo).toBeTruthy();
+    await act(async () => combo.click());
+    await flushReact();
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="Search combinations"]')!;
+    expect(search).toBeTruthy();
+  });
+
+  it("surfaces a refresh failure through the picker when the host passes the catalog", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "fusion-alpha-high-sidekick-beta-low" },
+    }, { adapterModels: FUSION_MODELS as AdapterModel[] });
+    roots.push(result.root);
+    await flushReact();
+    expect(result.container.querySelector('select[aria-label="Strategy"]')).toBeTruthy();
+
+    mockAgentsApi.adapterModels.mockRejectedValueOnce(new Error("refresh offline"));
+    const refreshButton = () =>
+      [...result.container.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Refresh models",
+      )!;
+    await act(async () => refreshButton().click());
+    await flushReact();
+
+    const lastCall = mockAgentsApi.adapterModels.mock.calls.at(-1)!;
+    expect(lastCall[2]?.refresh).toBe(true);
+    expect(result.container.textContent).toContain("refresh offline");
+    expect(refreshButton().disabled).toBe(false);
+    expect(
+      result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator model"]')!.value,
+    ).toBe("alpha");
+    expect(
+      result.container.querySelector<HTMLSelectElement>('select[aria-label="Worker model"]')!.value,
+    ).toBe("beta");
+    expect(result.container.textContent).toContain("fusion-alpha-high-sidekick-beta-low");
+    expect(result.onSave).not.toHaveBeenCalled();
+
+    mockAgentsApi.adapterModels.mockResolvedValue(FUSION_MODELS);
+    await act(async () => refreshButton().click());
+    await flushReact();
+    expect(result.container.textContent).not.toContain("refresh offline");
+    expect(result.container.textContent).toContain("fusion-alpha-high-sidekick-beta-low");
+  });
+
+  it("discards a stale refresh failure after the selection changes mid-flight", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "fusion-alpha-high-sidekick-beta-low" },
+    }, { adapterModels: FUSION_MODELS as AdapterModel[] });
+    roots.push(result.root);
+    await flushReact();
+
+    let rejectRefresh: (error: Error) => void = () => {};
+    mockAgentsApi.adapterModels.mockImplementationOnce(
+      () => new Promise((_, reject) => { rejectRefresh = reject; }),
+    );
+    const refreshButton = () =>
+      [...result.container.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Refresh models",
+      )!;
+    await act(async () => refreshButton().click());
+
+    const orchestrator = result.container.querySelector<HTMLSelectElement>('select[aria-label="Orchestrator model"]')!;
+    await act(async () => setSelectValue(orchestrator, ""));
+    await flushReact();
+
+    await act(async () => rejectRefresh(new Error("stale refresh failure")));
+    await flushReact();
+
+    expect(result.container.textContent).not.toContain("stale refresh failure");
+    expect(refreshButton().disabled).toBe(false);
+    expect(result.container.textContent).toContain("Complete the model selection before continuing.");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a detection failure instead of adopting a stale detected model", async () => {
+    mockAgentsApi.detectModel.mockResolvedValue({
+      model: "fusion-alpha-high-sidekick-beta-low",
+      candidates: [],
+    });
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family" },
+    }, { adapterModels: FUSION_MODELS as AdapterModel[] });
+    roots.push(result.root);
+    await flushReact();
+    expect(
+      result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!.value,
+    ).toBe("single");
+
+    mockAgentsApi.detectModel.mockRejectedValueOnce(new Error("detection offline"));
+    const detectButton = [...result.container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Detect model",
+    )!;
+    await act(async () => detectButton.click());
+    await flushReact();
+
+    expect(result.container.textContent).toContain("detection offline");
+    expect(
+      result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!.value,
+    ).toBe("single");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("renders a stored auto effort as Auto with the Auto option selected", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", thinkingEffort: "auto" },
+    }, { adapterModels: FUSION_MODELS as AdapterModel[] });
+    roots.push(result.root);
+    await flushReact();
+
+    expect(result.container.textContent).not.toContain("not available for this model");
+    const effortTrigger = [...result.container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Auto",
+    )!;
+    expect(effortTrigger).toBeTruthy();
+    await act(async () => effortTrigger.click());
+    await flushReact();
+    const autoOption = [...document.querySelectorAll("button")].find(
+      (button) =>
+        button !== effortTrigger &&
+        button.textContent?.trim().startsWith("Auto"),
+    )!;
+    expect(autoOption.className).toContain("bg-accent");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("clears the four generic axes when saving a metadata-backed opaque Fusion choice", async () => {
+    const opaqueModels = [
+      ...(FUSION_MODELS as AdapterModel[]),
+      {
+        id: "acme-pair-1",
+        label: "Acme Pair One",
+        fusion: {
+          version: 1 as const,
+          kind: "fusion" as const,
+          components: null,
+          rates: null,
+          costSummary: null,
+        },
+      },
+    ];
+    mockAgentsApi.adapterModels.mockResolvedValue(opaqueModels);
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: {
+        model: "devin-family",
+        thinkingEffort: "high",
+        contextSize: "1m",
+        fastMode: true,
+        priority: true,
+        permissionMode: "dangerous",
+        cwd: "/work/repo",
+        timeoutSec: 42,
+        env: { MY_KEY: { type: "plain", value: "x" } },
+      },
+    }, { adapterModels: opaqueModels as AdapterModel[] });
+    roots.push(result.root);
+    await flushReact();
+
+    const strategy = result.container.querySelector<HTMLSelectElement>('select[aria-label="Strategy"]')!;
+    await act(async () => setSelectValue(strategy, "fusion"));
+    await flushReact();
+    const combo = result.container.querySelector<HTMLButtonElement>('button[aria-label="Combination"]')!;
+    await act(async () => combo.click());
+    await flushReact();
+    const option = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Acme Pair One"),
+    )!;
+    expect(option).toBeTruthy();
+    await act(async () => option.click());
+    await flushReact();
+
+    const saveButton = [...result.container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Save",
+    )!;
+    await act(async () => saveButton.click());
+    await flushReact();
+
+    expect(result.onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ replaceAdapterConfig: true }),
+    );
+    const patch = result.onSave.mock.calls.at(-1)![0] as {
+      adapterConfig: Record<string, unknown>;
+    };
+    expect(patch.adapterConfig).toMatchObject({
+      model: "acme-pair-1",
+      permissionMode: "dangerous",
+      cwd: "/work/repo",
+      timeoutSec: 42,
+      env: { MY_KEY: { type: "plain", value: "x" } },
+    });
+    for (const axis of ["thinkingEffort", "contextSize", "fastMode", "priority"]) {
+      expect(patch.adapterConfig).not.toHaveProperty(axis);
+    }
+  });
+
+  it("shows an unlisted stored permission mode verbatim with no active segment", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", permissionMode: "future-mode" },
+    });
+    roots.push(result.root);
+    await flushReact();
+
+    const marker = result.container.querySelector('span[role="status"]')!;
+    expect(marker.textContent).toBe("Current value: future-mode (not listed)");
+    const segmentButtons = [
+      ...marker.parentElement!.querySelectorAll<HTMLButtonElement>("button[aria-pressed]"),
+    ];
+    expect(segmentButtons).toHaveLength(6);
+    for (const button of segmentButtons) {
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+    }
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unlisted permission mode when an unrelated field is saved", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: {
+        model: "devin-family",
+        permissionMode: "future-mode",
+        cwd: "/work/old",
+      },
+    });
+    roots.push(result.root);
+    await flushReact();
+
+    const cwdInput = result.container.querySelector<HTMLInputElement>(
+      'input[placeholder="/Users/you/project"]',
+    )!;
+    expect(cwdInput).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!
+        .set!.call(cwdInput, "/work/new");
+      cwdInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+    const saveButton = [...result.container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Save",
+    )!;
+    await act(async () => saveButton.click());
+    await flushReact();
+
+    expect(result.onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ replaceAdapterConfig: true }),
+    );
+    const patch = result.onSave.mock.calls.at(-1)![0] as {
+      adapterConfig: Record<string, unknown>;
+    };
+    expect(patch.adapterConfig).toMatchObject({
+      model: "devin-family",
+      permissionMode: "future-mode",
+      cwd: "/work/new",
+    });
+  });
+
+  it("sends a supported permission mode only after an explicit choice", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", permissionMode: "future-mode" },
+    });
+    roots.push(result.root);
+    await flushReact();
+
+    const marker = result.container.querySelector('span[role="status"]')!;
+    const normal = [
+      ...marker.parentElement!.querySelectorAll<HTMLButtonElement>("button"),
+    ].find((button) => button.textContent?.trim() === "normal")!;
+    await act(async () => normal.click());
+    await flushReact();
+    expect(normal.getAttribute("aria-pressed")).toBe("true");
+    expect(result.container.querySelector('span[role="status"]')).toBeNull();
+
+    const saveButton = [...result.container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Save",
+    )!;
+    await act(async () => saveButton.click());
+    await flushReact();
+    const patch = result.onSave.mock.calls.at(-1)![0] as {
+      adapterConfig: Record<string, unknown>;
+    };
+    expect(patch.adapterConfig.permissionMode).toBe("normal");
+  });
+
+  it("shows the unknown marker instead of an active Default for an unlisted context size", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", contextSize: "200k" },
+    });
+    roots.push(result.root);
+    await flushReact();
+
+    const markers = [...result.container.querySelectorAll('span[role="status"]')];
+    const marker = markers.find((el) => el.textContent?.includes("200k"))!;
+    expect(marker.textContent).toBe("Current value: 200k (not listed)");
+    const segmentButtons = [
+      ...marker.parentElement!.querySelectorAll<HTMLButtonElement>("button[aria-pressed]"),
+    ];
+    expect(segmentButtons).toHaveLength(2);
+    for (const button of segmentButtons) {
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+    }
+  });
+
+  it("keeps alias normalization for a stored bypass permission mode", async () => {
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", permissionMode: "bypass" },
+    });
+    roots.push(result.root);
+    await flushReact();
+
+    const dangerous = [...result.container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "dangerous",
+    )!;
+    expect(dangerous.getAttribute("aria-pressed")).toBe("true");
+    expect(result.container.querySelector('span[role="status"]')).toBeNull();
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  function stubDevinSchemaFetch(schema: { fields: unknown[] } | null) {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/api/adapters/devin_local/config-schema" && schema) {
+        return { ok: true, json: async () => schema };
+      }
+      return { ok: false, json: async () => ({}) };
+    }));
+  }
+
+  async function openRunPolicyAdvanced(container: HTMLElement) {
+    await act(async () => {
+      for (const button of container.querySelectorAll("button")) {
+        if (button.textContent?.trim() === "Advanced Run Policy") button.click();
+      }
+    });
+    await flushReact();
+  }
+
+  function fieldInput(container: HTMLElement, labelText: string) {
+    const labels = [...container.querySelectorAll("label")].filter(
+      (label) => label.textContent?.trim() === labelText,
+    );
+    return {
+      labels,
+      input: labels[0]?.closest("div")?.parentElement?.querySelector("input") ?? null,
+    };
+  }
+
+  it("renders Timeout and Interrupt grace controls under Advanced Run Policy when the schema advertises them", async () => {
+    invalidateConfigSchemaCache("devin_local");
+    stubDevinSchemaFetch({
+      fields: [
+        { key: "timeoutSec", type: "number", default: 1800 },
+        { key: "graceSec", type: "number", default: 15 },
+      ],
+    });
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", timeoutSec: 480, graceSec: 5 },
+    });
+    roots.push(result.root);
+    await flushReact();
+    await openRunPolicyAdvanced(result.container);
+
+    const timeout = fieldInput(result.container, "Timeout (sec)");
+    const grace = fieldInput(result.container, "Interrupt grace period (sec)");
+    expect(timeout.labels).toHaveLength(1);
+    expect(grace.labels).toHaveLength(1);
+    expect(timeout.input?.value).toBe("480");
+    expect(grace.input?.value).toBe("5");
+
+    await act(async () => setInputValue(timeout.input!, "0"));
+    await flushReact();
+    const save = [...result.container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Save",
+    )!;
+    await act(async () => save.click());
+    await flushReact();
+    const patch = result.onSave.mock.calls.at(-1)![0] as {
+      adapterConfig: Record<string, unknown>;
+    };
+    expect(patch.adapterConfig.timeoutSec).toBe(0);
+    expect(patch.adapterConfig.model).toBe("devin-family");
+    expect(patch.adapterConfig.graceSec).toBe(5);
+  });
+
+  it("defaults the Devin Timeout control to the executor default of 1800 when unset", async () => {
+    invalidateConfigSchemaCache("devin_local");
+    stubDevinSchemaFetch({
+      fields: [
+        { key: "timeoutSec", type: "number", default: 1800 },
+        { key: "graceSec", type: "number", default: 15 },
+      ],
+    });
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family" },
+    });
+    roots.push(result.root);
+    await flushReact();
+    await openRunPolicyAdvanced(result.container);
+
+    expect(fieldInput(result.container, "Timeout (sec)").input?.value).toBe("1800");
+    expect(fieldInput(result.container, "Interrupt grace period (sec)").input?.value).toBe("15");
+  });
+
+  it("still renders one Timeout and grace control when the config schema fails to load", async () => {
+    invalidateConfigSchemaCache("devin_local");
+    stubDevinSchemaFetch(null);
+    const result = await renderForm([], {
+      adapterType: "devin_local",
+      adapterConfig: { model: "devin-family", timeoutSec: 480, graceSec: 5 },
+    });
+    roots.push(result.root);
+    await flushReact();
+    await openRunPolicyAdvanced(result.container);
+
+    expect(fieldInput(result.container, "Timeout (sec)").labels).toHaveLength(1);
+    expect(fieldInput(result.container, "Interrupt grace period (sec)").labels).toHaveLength(1);
+  });
+});
+
+describe("non-Devin model dropdown", () => {
+  let roots: Root[] = [];
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+  });
+
+  it("does not merge detected-model candidates into the option list", async () => {
+    mockAgentsApi.detectModel.mockResolvedValue({
+      model: "codex-detected",
+      candidates: ["zz-peer-candidate"],
+    });
+    const result = await renderForm([], {
+      adapterType: "codex_local",
+      adapterConfig: { model: "existing-model" },
+    });
+    roots.push(result.root);
+    await flushReact();
+
+    const modelTrigger = () =>
+      result.container.querySelector<HTMLButtonElement>('button[aria-label="Model"]')!;
+
+    await act(async () => modelTrigger().click());
+    await flushReact();
+    expect(document.querySelector('[title="zz-peer-candidate"]')).toBeNull();
+  });
+});
+
+describe("DevinModelPicker standalone boundary", () => {
+  let pickerRoots: Root[] = [];
+
+  afterEach(async () => {
+    for (const root of pickerRoots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    pickerRoots = [];
+    document.body.innerHTML = "";
+  });
+
+  function PickerHost({
+    initialValue,
+    models,
+    overrides,
+    changes,
+    statuses,
+    setValueRef,
+  }: {
+    initialValue: string;
+    models: AdapterModel[];
+    overrides: Record<string, unknown>;
+    changes: string[];
+    statuses: DevinModelDraftStatus[];
+    setValueRef: { current: ((v: string) => void) | null };
+  }) {
+    const [value, setValue] = useState(initialValue);
+    const [open, setOpen] = useState(false);
+    setValueRef.current = setValue;
+    return (
+      <TooltipProvider>
+      <DevinModelPicker
+        models={models}
+        value={value}
+        onChange={(uid) => {
+          changes.push(uid);
+          setValue(uid);
+        }}
+        open={open}
+        onOpenChange={setOpen}
+        allowDefault
+        required={false}
+        groupByProvider={false}
+        creatable
+        scopeKey="standalone"
+        catalogState="ready"
+        onDraftStatusChange={(status) => statuses.push(status)}
+        {...overrides}
+      />
+      </TooltipProvider>
+    );
+  }
+
+  async function renderPicker(
+    options: {
+      initialValue?: string;
+      models?: AdapterModel[];
+      overrides?: Record<string, unknown>;
+    } = {},
+  ) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const changes: string[] = [];
+    const statuses: DevinModelDraftStatus[] = [];
+    const setValueRef: { current: ((v: string) => void) | null } = { current: null };
+    await act(async () => {
+      root.render(
+        <PickerHost
+          initialValue={options.initialValue ?? ""}
+          models={options.models ?? (FUSION_MODELS as AdapterModel[])}
+          overrides={options.overrides ?? {}}
+          changes={changes}
+          statuses={statuses}
+          setValueRef={setValueRef}
+        />,
+      );
+    });
+    await flushReact();
+    return { container, root, changes, statuses, setValueRef };
+  }
+
+  async function pickStandalone(
+    container: HTMLElement,
+    selectLabel: string,
+    value: string,
+  ) {
+    const select = container.querySelector<HTMLSelectElement>(
+      `select[aria-label="${selectLabel}"]`,
+    );
+    expect(select, `Missing select ${selectLabel}`).toBeTruthy();
+    await act(async () => setSelectValue(select!, value));
+    await flushReact();
+  }
+
+  async function pickComboOption(labelPart: string) {
+    const trigger = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Combination"]',
+    );
+    expect(trigger, "Missing Combination trigger").toBeTruthy();
+    await act(async () => trigger!.click());
+    await flushReact();
+    const option = [...document.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes(labelPart),
+    );
+    expect(option, `Missing option ${labelPart}`).toBeTruthy();
+    await act(async () => option!.click());
+    await flushReact();
+  }
+
+  it("supports adapter model refresh for devin_local and re-exports the leaf dropdown", () => {
+    expect(supportsAdapterModelRefresh("devin_local")).toBe(true);
+    expect(ModelDropdown).toBe(LeafModelDropdown);
+  });
+
+  it("emits the exact UID for every structured row via the Combination dropdown", async () => {
+    const structured = (FUSION_MODELS as AdapterModel[]).filter(
+      (model) => model.fusion?.components,
+    );
+    for (const row of structured) {
+      const { container, root, changes } = await renderPicker();
+      pickerRoots.push(root);
+      await pickStandalone(container, "Strategy", "fusion");
+      await pickComboOption(row.label);
+      expect(changes.at(-1)).toBe(row.id);
+      await act(async () => root.unmount());
+      pickerRoots.pop();
+      container.remove();
+    }
+  });
+
+  it("auto-fills a sole fixed worker effort after the worker model choice", async () => {
+    const { container, root } = await renderPicker();
+    pickerRoots.push(root);
+    await pickStandalone(container, "Strategy", "fusion");
+    await pickStandalone(container, "Worker model", "delta");
+    const effort = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Worker effort"]',
+    )!;
+    expect(effort.disabled).toBe(true);
+    expect(effort.value).toBe("unspecified:delta-3");
+    expect(effort.selectedOptions[0]?.textContent).toContain(
+      "Not specified by catalog",
+    );
+  });
+
+  it("keeps an adopted UID when a late detect response resolves", async () => {
+    let resolveDetect: (value: string | null) => void = () => {};
+    const detectPromise = new Promise<string | null>((resolve) => {
+      resolveDetect = resolve;
+    });
+    const onDetectModel = vi.fn(() => detectPromise);
+    const { container, root, changes } = await renderPicker({
+      overrides: { onDetectModel },
+    });
+    pickerRoots.push(root);
+    const detectButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Detect model",
+    );
+    expect(detectButton).toBeTruthy();
+    await act(async () => detectButton!.click());
+    await pickStandalone(container, "Strategy", "fusion");
+    await pickComboOption("Beta Low Priority");
+    const chosen = changes.at(-1);
+    expect(chosen).toBe("fusion-alpha-high-sidekick-beta-low-priority");
+    await act(async () => {
+      resolveDetect("devin-family");
+    });
+    await flushReact();
+    expect(changes.at(-1)).toBe(chosen);
+    expect(container.textContent).not.toContain("Could not detect");
+    const settledDetect = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Detect model",
+    ) as HTMLButtonElement | undefined;
+    expect(settledDetect?.disabled).toBe(false);
+  });
+
+  it("ignores a refresh failure that resolves after a newer field action", async () => {
+    let rejectRefresh: (error: Error) => void = () => {};
+    const onRefreshModels = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectRefresh = reject;
+        }),
+    );
+    const { container, root } = await renderPicker({
+      initialValue: "fusion-alpha-high-sidekick-beta-low",
+      overrides: { onRefreshModels },
+    });
+    pickerRoots.push(root);
+    const refreshButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Refresh models",
+    );
+    expect(refreshButton).toBeTruthy();
+    await act(async () => refreshButton!.click());
+    await pickStandalone(container, "Worker model", "beta");
+    await act(async () => {
+      rejectRefresh(new Error("stale refresh failure"));
+    });
+    await flushReact();
+    expect(container.textContent).not.toContain("stale refresh failure");
+    const settledRefresh = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Refresh models",
+    ) as HTMLButtonElement | undefined;
+    expect(settledRefresh?.disabled).toBe(false);
+  });
+
+  it("shows a current refresh failure and re-enables the button", async () => {
+    const onRefreshModels = vi.fn(async () => {
+      throw new Error("catalog refresh offline");
+    });
+    const { container, root } = await renderPicker({
+      overrides: { onRefreshModels },
+    });
+    pickerRoots.push(root);
+    const refreshButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Refresh models",
+    )!;
+    await act(async () => refreshButton.click());
+    await flushReact();
+    expect(container.textContent).toContain("catalog refresh offline");
+    expect(refreshButton.disabled).toBe(false);
+  });
+
+  it("renders a parser-produced fixed effort label without duplicating the suffix", async () => {
+    const fixedEffortRow = {
+      id: "fusion-alpha-fixed-sidekick-beta-low",
+      label: "Fusion (Alpha Fixed + Beta Low)",
+      fusion: {
+        version: 1 as const,
+        kind: "fusion" as const,
+        components: {
+          orchestrator: {
+            ...FUSION_COMPONENT,
+            id: "alpha-fixed",
+            modelKey: "alphaFixed",
+            modelLabel: "AlphaFixed",
+            effortKey: "fixed:alpha-fixed",
+            effortLabel: "High (fixed)",
+            effortSource: "label_fixed" as const,
+            label: "Alpha Fixed",
+          },
+          worker: {
+            ...FUSION_COMPONENT,
+            id: "beta-low",
+            modelKey: "beta",
+            modelLabel: "Beta",
+            effortKey: "low",
+            effortLabel: "Low",
+            label: "Beta Low",
+          },
+        },
+        rates: null,
+        costSummary: null,
+      },
+    } as unknown as AdapterModel;
+    const { container, root } = await renderPicker({
+      models: [...(FUSION_MODELS as AdapterModel[]), fixedEffortRow],
+    });
+    pickerRoots.push(root);
+    await pickStandalone(container, "Strategy", "fusion");
+    await pickStandalone(container, "Orchestrator model", "alphaFixed");
+    const effort = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Orchestrator effort"]',
+    )!;
+    expect(effort.disabled).toBe(true);
+    expect(effort.value).toBe("fixed:alpha-fixed");
+    expect(effort.selectedOptions[0]?.textContent?.trim()).toBe("High (fixed)");
+    expect(container.textContent).not.toContain("(fixed) (fixed)");
+  });
+
+  it("survives malformed rates and still renders Unknown for both roles", async () => {
+    const malformed = {
+      id: "fusion-bad-rates",
+      label: "Fusion (Bad Rates)",
+      fusion: {
+        version: 1 as const,
+        kind: "fusion" as const,
+        components: {
+          orchestrator: FUSION_COMPONENT,
+          worker: {
+            ...FUSION_COMPONENT,
+            id: "beta-low",
+            modelKey: "beta",
+            modelLabel: "Beta",
+            effortKey: "low",
+            effortLabel: "Low",
+            label: "Beta Low",
+          },
+        },
+        rates: { orchestrator: null, worker: { inputPerMillion: 1 } },
+        costSummary: 42,
+      },
+    } as unknown as AdapterModel;
+    const { container, root } = await renderPicker({
+      initialValue: "fusion-bad-rates",
+      models: [...(FUSION_MODELS as AdapterModel[]), malformed],
+    });
+    pickerRoots.push(root);
+    expect(container.textContent).toContain("Unknown");
+  });
+
+  it("renders fractional and zero token rates without rounding them away", async () => {
+    const fractional = {
+      id: "fusion-fractional-rates",
+      label: "Fusion (Fractional Rates)",
+      fusion: {
+        version: 1 as const,
+        kind: "fusion" as const,
+        components: {
+          orchestrator: FUSION_COMPONENT,
+          worker: {
+            ...FUSION_COMPONENT,
+            id: "beta-low",
+            modelKey: "beta",
+            modelLabel: "Beta",
+            effortKey: "low",
+            effortLabel: "Low",
+            label: "Beta Low",
+          },
+        },
+        rates: {
+          orchestrator: {
+            inputPerMillion: 0.001,
+            cachedInputPerMillion: 0,
+            outputPerMillion: 1.5,
+          },
+          worker: {
+            inputPerMillion: null,
+            cachedInputPerMillion: null,
+            outputPerMillion: null,
+          },
+        },
+        costSummary: null,
+      },
+    } as unknown as AdapterModel;
+    const { container, root } = await renderPicker({
+      initialValue: "fusion-fractional-rates",
+      models: [...(FUSION_MODELS as AdapterModel[]), fractional],
+    });
+    pickerRoots.push(root);
+    expect(container.textContent).toContain("$0.001");
+    expect(container.textContent).toContain("$0");
+    expect(container.textContent).toContain("Unknown");
+  });
+
+  it("treats an unknown metadata version as opaque but still selectable", async () => {
+    const opaqueVersion = {
+      id: "fusion-future-version",
+      label: "Fusion (Future Version)",
+      fusion: {
+        version: 2,
+        kind: "fusion",
+        components: { orchestrator: {}, worker: {} },
+        rates: null,
+        costSummary: null,
+      },
+    } as unknown as AdapterModel;
+    const { container, root, changes } = await renderPicker({
+      models: [...(FUSION_MODELS as AdapterModel[]), opaqueVersion],
+    });
+    pickerRoots.push(root);
+    await pickStandalone(container, "Strategy", "fusion");
+    await pickComboOption("Future Version");
+    expect(changes.at(-1)).toBe("fusion-future-version");
+    expect(container.textContent).toContain(
+      "Structured orchestrator and worker metadata is unavailable",
+    );
+  });
+
+  it("keeps opaque rows reachable in the Combination list while filters are set", async () => {
+    const { container, root } = await renderPicker();
+    pickerRoots.push(root);
+    await pickStandalone(container, "Strategy", "fusion");
+    await pickStandalone(container, "Orchestrator model", "alpha");
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Combination"]',
+    )!;
+    await act(async () => trigger.click());
+    await flushReact();
+    expect(document.body.textContent).toContain("Fusion (Legacy + Unknown)");
+  });
+
+  it("announces cleared dependent fields by name when a prefix changes", async () => {
+    const { container, root } = await renderPicker({
+      initialValue: "fusion-alpha-high-sidekick-beta-low",
+    });
+    pickerRoots.push(root);
+    await pickStandalone(container, "Orchestrator effort", "low");
+    expect(container.textContent).toContain("Cleared");
+    expect(container.textContent).toContain("Worker model");
+  });
+
+  it("filters a 2000-entry catalog locally with no discovery or mutation calls", async () => {
+    const bigCatalog: AdapterModel[] = [
+      ...(FUSION_MODELS as AdapterModel[]),
+      ...Array.from({ length: 175 }, (_, index) => ({
+        id: `fusion-synth-${index}-sidekick-synth-w-${index}`,
+        label: `Fusion Synth ${index}`,
+        fusion: {
+          version: 1 as const,
+          kind: "fusion" as const,
+          components: {
+            orchestrator: {
+              ...FUSION_COMPONENT,
+              id: `synth-o-${index}`,
+              modelKey: `synth-${index}`,
+              modelLabel: `Synth ${index}`,
+            },
+            worker: {
+              ...FUSION_COMPONENT,
+              id: `synth-w-${index}`,
+              modelKey: "beta",
+              modelLabel: "Beta",
+              effortKey: "low",
+              effortLabel: "Low",
+              label: "Beta Low",
+            },
+          },
+          rates: null,
+          costSummary: null,
+        },
+      })),
+      ...Array.from({ length: 1825 }, (_, index) => ({
+        id: `plain-${index}`,
+        label: `Plain ${index}`,
+      })),
+    ];
+    const onDetectModel = vi.fn(async () => null);
+    const onRefreshModels = vi.fn(async () => {});
+    const { container, root, changes, statuses } = await renderPicker({
+      models: bigCatalog,
+      overrides: { onDetectModel, onRefreshModels },
+    });
+    pickerRoots.push(root);
+    await pickStandalone(container, "Strategy", "fusion");
+    await pickStandalone(container, "Orchestrator model", "synth-7");
+    expect(changes).toHaveLength(0);
+    expect(onDetectModel).not.toHaveBeenCalled();
+    expect(onRefreshModels).not.toHaveBeenCalled();
+    expect(statuses.at(-1)?.pending).toBe(true);
+  });
+
+  it("exposes detect and refresh actions in default, single, and fusion views", async () => {
+    const onDetectModel = vi.fn(async () => null);
+    const onRefreshModels = vi.fn(async () => {});
+    const { container, root } = await renderPicker({
+      overrides: { onDetectModel, onRefreshModels },
+    });
+    pickerRoots.push(root);
+    const labels = () =>
+      [...container.querySelectorAll("button")].map((button) =>
+        button.textContent?.trim(),
+      );
+    expect(labels()).toContain("Detect model");
+    expect(labels()).toContain("Refresh models");
+    await pickStandalone(container, "Strategy", "single");
+    expect(labels()).toContain("Detect model");
+    expect(labels()).toContain("Refresh models");
+    await pickStandalone(container, "Strategy", "fusion");
+    expect(labels()).toContain("Detect model");
+    expect(labels()).toContain("Refresh models");
+  });
+
+  it("resets the draft when the host value changes externally", async () => {
+    const { container, root, statuses, setValueRef } = await renderPicker();
+    pickerRoots.push(root);
+    await pickStandalone(container, "Strategy", "fusion");
+    expect(statuses.at(-1)?.pending).toBe(true);
+    await act(async () => setValueRef.current?.("devin-family"));
+    await flushReact();
+    expect(statuses.at(-1)?.view).toBe("single");
+    expect(statuses.at(-1)?.pending).toBe(false);
+    const strategy = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Strategy"]',
+    )!;
+    expect(strategy.value).toBe("single");
   });
 });

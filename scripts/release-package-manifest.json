@@ -25,6 +25,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/devin-local",
+    "name": "@paperclipai/adapter-devin-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/gemini-local",
     "name": "@paperclipai/adapter-gemini-local",
     "publishFromCi": true
