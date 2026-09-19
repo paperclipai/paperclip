@@ -5453,6 +5453,86 @@ describe("native warm session supervision", () => {
     });
   });
 
+  it.each(["checkpoint first", "turn first"])("serializes restart checkpoint and turn admission: %s", async (order) => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-close-race-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = stateBase;
+    let finishClose!: () => void;
+    const closing = new Promise<void>((resolve) => { finishClose = resolve; });
+    const close = vi.fn(() => closing);
+    try {
+      const first = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          runId: "run-close-race-first",
+          executionWorkspaceId: "workspace-close-race",
+        },
+        session: {
+          ...execution.session,
+          normalizedSessionId: "session-close-race",
+          lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
+        },
+      } as NativeExecutionInputV1;
+      const result = {
+        result: { summary: "completed" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn-close-race",
+        normalizedSessionId: first.session.normalizedSessionId,
+        providerSessionId: "provider-close-race",
+        driverKind: "test",
+        driverVersion: "1",
+        nativeEventCount: 1,
+        highestContiguousSourceSeq: 1,
+        usage: null,
+      };
+      state.execute.mockReset().mockImplementationOnce(async (options) => {
+        await options.onSession?.({ close });
+        return result;
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(first), execution: first,
+        runnerInstanceId: "runner-close-race", useRunnerd: true,
+      });
+      const second = { ...first, binding: { ...first.binding, runId: "run-close-race-second" } };
+      const reachedAdmission = new Error("test reached post-checkpoint admission");
+      state.stageNativeRunnerWakeAttachments.mockClear();
+      state.stageNativeRunnerWakeAttachments.mockImplementationOnce(async () => {
+        if (order === "turn first") {
+          await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toMatchObject({ closed: 0, busy: 1 });
+          expect(close).not.toHaveBeenCalled();
+        }
+        throw reachedAdmission;
+      });
+      const shutdown = order === "checkpoint first" ? closeIdleWarmNativeSessionsForRestart() : undefined;
+      if (shutdown) await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      const continuation = executePaperclipNativeSession({
+        db: leaseDb(second), execution: second,
+        runnerInstanceId: "runner-close-race", useRunnerd: true,
+      }).catch((error) => error);
+      try {
+        if (order === "checkpoint first") {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
+        } else {
+          expect(await continuation).toBe(reachedAdmission);
+        }
+        expect(state.execute).toHaveBeenCalledOnce();
+      } finally {
+        finishClose();
+        await shutdown;
+        expect(await continuation).toBe(reachedAdmission);
+      }
+      expect(state.stageNativeRunnerWakeAttachments).toHaveBeenCalledOnce();
+    } finally {
+      finishClose();
+      await closeIdleWarmNativeSessionsForRestart();
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("checkpoints a busy warm session on release after the restart sweep: checkpoint fails=%s", async (checkpointFails) => {
     const checkpointError = new Error("restart checkpoint failed");
     let finishCheckpoint!: () => void;

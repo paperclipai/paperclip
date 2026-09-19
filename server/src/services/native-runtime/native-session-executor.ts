@@ -353,6 +353,9 @@ type WarmNativeSession = {
 };
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
+// Closing a remote owner saves its checkpoint asynchronously. A new turn must
+// not inspect or quarantine that owner's state until the save has finished.
+const closingWarmNativeSessions = new Map<string, Promise<void>>();
 
 /**
  * Close idle native sessions before an operator destroys their remote
@@ -391,7 +394,7 @@ async function closeIdleWarmNativeSessions(input: {
     if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
       continue;
     }
-    if (entry.busy) {
+    if (entry.busy || executingRunnerdSessionScopes.has(sessionId)) {
       // A busy turn can complete while another idle session is checkpointing.
       // Fence that entry now so its eventual release cannot leave a new idle
       // owner behind after the shutdown sweep has already passed it.
@@ -403,11 +406,19 @@ async function closeIdleWarmNativeSessions(input: {
     // Remove ownership before awaiting close so a racing continuation cannot
     // adopt a session whose transport is already shutting down.
     warmNativeSessions.delete(sessionId);
+    const closing = Promise.resolve().then(() =>
+      entry.session.close({ reason: input.reason }),
+    );
+    closingWarmNativeSessions.set(sessionId, closing);
     try {
-      await entry.session.close({ reason: input.reason });
+      await closing;
       closed += 1;
     } catch {
       failed += 1;
+    } finally {
+      if (closingWarmNativeSessions.get(sessionId) === closing) {
+        closingWarmNativeSessions.delete(sessionId);
+      }
     }
   }
   return { closed, busy, failed };
@@ -6936,6 +6947,11 @@ export async function executePaperclipNativeSession(input: {
       input.execution.binding.runId,
     );
     ownsSessionScope = true;
+
+    // The shutdown sweep can have removed an idle owner while its remote
+    // checkpoint is still being saved. The scope reservation also prevents
+    // a later sweep from closing an owner this turn is about to acquire.
+    await closingWarmNativeSessions.get(sessionScopeId);
 
     const targetKind = input.runnerExecutionTarget?.kind ?? "local";
     const chatAttachmentReadScope = new NativeChatAttachmentReadScope({
