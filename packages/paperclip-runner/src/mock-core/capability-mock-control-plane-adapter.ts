@@ -891,6 +891,32 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
         entityRefs.push(`artifact:${artifact.id}`, `work-product:${workProduct.id}`);
         break;
       }
+      case "reassign_task": {
+        const target = this.#task(command.targetTaskId);
+        const assignee = this.#actor(command.assigneeActorId);
+        this.#assertCompany(run.companyId, target.companyId, assignee.companyId);
+        if (target.id === task.id) throw new CapabilityMockControlPlaneError("reassignment_current_task", "Delegate with create_task instead of reassigning the caller");
+        if (["done", "cancelled", "in_review"].includes(target.status)) throw new CapabilityMockControlPlaneError("reassignment_state_denied", "Task cannot be reassigned in this state");
+        if (assignee.status !== "active") throw new CapabilityMockControlPlaneError("reassignment_target_unavailable", "Assignee must be active");
+        if (target.assigneeActorId !== command.expectedAssigneeActorId || (target.statusVersion ?? 0) !== command.expectedStatusVersion) {
+          throw new CapabilityMockControlPlaneError("reassignment_conflict", "Refresh the task before deciding again");
+        }
+        requireText(command.reason, "reassignment reason");
+        entityRefs.push(`task:${target.id}`);
+        if (target.assigneeActorId === assignee.id) break;
+        if (target.executionRunId) {
+          const previous = this.#state.runs.find(candidate => candidate.id === target.executionRunId);
+          if (previous) previous.status = "cancelled";
+        }
+        target.assigneeActorId = assignee.id;
+        target.statusVersion = (target.statusVersion ?? 0) + 1;
+        target.checkoutRunId = null;
+        target.executionRunId = null;
+        if (target.status === "in_progress") target.status = "todo";
+        this.#appendComment(target.id, run.actorId, command.reason);
+        if (target.status === "todo") scheduledWakeIds.push(this.#scheduleWake(assignee.id, target.id, "manual", { reason: command.reason }, 0));
+        break;
+      }
       case "set_dependencies": {
         this.#replaceDependencies(task, command.blockedByTaskIds);
         if (command.blockedByTaskIds.length > 0) {

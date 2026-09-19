@@ -1,3 +1,4 @@
+import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import type {
   PaperclipJsonSchema,
   PaperclipSemanticActionDescriptor,
@@ -413,6 +414,9 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       ["idempotencyKey", "serviceId", "action"],
     ),
     outputSchema: operationReceipt,
+  }),
+  descriptor({
+    ...reassignTaskAction.live.descriptor, placement: "optional", effect: "write",
   }),
   descriptor({
     operationId: "set_dependencies",

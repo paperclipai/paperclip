@@ -1527,6 +1527,119 @@
       "standard",
       "skill_test"
     ],
+    "description": "Reassign an existing task to another company agent. Read search_tasks first and supply its current assignee and statusVersion to prevent overwriting a concurrent change. Preserve the task, documents, dependencies, and blocked/backlog status. Active work is stopped before handoff. Use a stable idempotency key for retries. Cannot reassign this run’s own task, conversations, completed tasks, or pending reviews; use create_task for delegation from the current task.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeActorId": {
+          "description": "New company agent ID from list_agents.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "expectedAssigneeActorId": {
+          "description": "Current assigneeAgentId from search_tasks; null means unassigned.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedStatusVersion": {
+          "description": "Current statusVersion from search_tasks.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the task should move and context for the new owner.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "taskId": {
+          "description": "Existing task ID from search_tasks.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "taskId",
+        "assigneeActorId",
+        "expectedAssigneeActorId",
+        "expectedStatusVersion",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "operationId": "reassign_task",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "description": "Stable command identifier.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "disposition": {
+          "enum": [
+            "applied",
+            "duplicate"
+          ]
+        },
+        "entityRefs": {
+          "description": "Entities affected by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "scheduledWakeIds": {
+          "description": "Wake identifiers scheduled by the operation.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "stateRevision": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "commandId",
+        "disposition",
+        "stateRevision",
+        "entityRefs",
+        "scheduledWakeIds"
+      ],
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "delegation:tasks:assign"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Reassign task",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
     "description": "Replace the active task's first-class blocker set.",
     "effect": "write",
     "inputSchema": {

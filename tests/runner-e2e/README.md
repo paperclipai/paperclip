@@ -132,17 +132,22 @@ minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
 `agent-chat` (**Persistent Agent Chat**) adds six workflows on `legacy-codex`,
-`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **24 local cells**.
+`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **26 local cells**.
 They cover continuity across server restart, fresh context after `/new`,
 Stop/reset/resume, draft/revise/approve/plan handoff, clarification with existing
 project reuse, and a new project with two repository URLs. Each cell opens the
 production chat surface and resolves the backing issue through the chat API.
 The source conversation must settle to `in_review` / `waiting`; handed-off
 execution tasks must finish with their initial Plan and output documents.
-Reset runs are retained separately from the 68 expected provider turns in this
+Reset runs are retained separately from the 72 expected provider turns in this
 suite. Cancelled turns and execution-task runs remain included in billing and
 cleanup. The production chat directive is injected normally; fixtures do not
 replace it with completion instructions. Daytona is excluded.
+
+The native Codex and Claude profiles also cover reassignment of existing ready
+and backlog tasks. The oracle verifies stable task IDs, preserved descriptions,
+assignment audit evidence, exactly one successful successor run and its output
+document, no backlog execution, and a usable source conversation after reload.
 
 ```bash
 # Run these after deterministic checks, with the required provider keys set.
@@ -168,7 +173,7 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The default `--all` selection is 167 cells (144 local and 23 Daytona) and 363
+The default `--all` selection is 169 cells (146 local and 23 Daytona) and 367
 expected paid agent turns. The explicit-only everyday suite adds 35 catalog cells
 and is excluded from `--all`. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
@@ -455,7 +460,7 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100). The 167-cell default selection takes more than
+integer from 1–100 on AWS (default 100). The 169-cell default selection takes more than
 one wave at that limit; use suite selectors for smaller campaigns. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports

@@ -249,12 +249,30 @@ export async function sendChatMessage(page: Page, message: string) {
   await page.getByTestId("task-chat-composer-send").last().click();
 }
 
+
+/** Independent durable oracle: prose alone cannot make a reassignment pass. */
+export function assertChatReassignment(input: {
+  readyId: string; queuedId: string; teammateId: string; tasks: ChatIssue[]; runs: ChatRun[];
+  audit: Array<{ action: string; details?: Record<string, unknown> }>; outputBody: string; marker: string;
+}) {
+  expect(input.tasks.map(task => task.id).sort()).toEqual([input.readyId, input.queuedId].sort());
+  expect(input.tasks.find(task => task.id === input.readyId)).toMatchObject({ status: "done", assigneeAgentId: input.teammateId });
+  expect(input.tasks.find(task => task.id === input.queuedId)).toMatchObject({ status: "backlog", assigneeAgentId: input.teammateId });
+  const successor = input.runs.filter(run => run.contextSnapshot?.issueId === input.readyId);
+  expect(successor).toHaveLength(1);
+  expect(successor[0]).toMatchObject({ agentId: input.teammateId, status: "succeeded", runtimeMode: "native" });
+  expect(input.runs.filter(run => run.contextSnapshot?.issueId === input.queuedId)).toHaveLength(0);
+  expect(input.audit.filter(row => row.action === "issue.reassigned" && row.details?.source === "paperclip_runner_protocol")).toHaveLength(1);
+  expect(input.outputBody).toContain(input.marker);
+}
+
 export async function runChatFlow(input: {
   page: Page;
   api: RunnerApi;
   fixtures: LiveFixtureValues;
   execution: MatrixExecution;
   nonce: string;
+  workspacePath: string;
   restart: () => Promise<void>;
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
@@ -465,6 +483,39 @@ export async function runChatFlow(input: {
       }
       expect(issue!.id).toBe(initialId);
       await noTasks();
+    } else if (caseId === "reassign-task") {
+      const config = execution.profile.buildAgent({
+        environmentId: f.environment.id, environmentFixtureId: execution.environment.id,
+        workspacePath: input.workspacePath, secretRefs: f.secretRefs, executionId: nonce,
+      });
+      const teammate = await api.post<{ id: string }>(`/api/companies/${f.company.id}/agents`, {
+        ...config, name: "Riley Reassignment", role: "engineer", reportsTo: f.agent.id,
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Complete the assigned work and save the requested Paperclip document." } },
+      });
+      const queued = await api.post<ChatIssue>(`/api/companies/${f.company.id}/issues`, {
+        title: `Later checklist ${nonce}`, description: `Preserve this deferred scope ${draftMarker}.`,
+        status: "backlog", assigneeAgentId: f.agent.id,
+      });
+      const ready = await api.post<ChatIssue>(`/api/companies/${f.company.id}/issues`, {
+        title: `Ready checklist ${nonce}`, status: "todo",
+        description: `Write a short launch checklist as a Paperclip document attached to this task, including ${marker}. Complete this task after saving it.`,
+      });
+      await turn(`Assign the existing Ready checklist ${nonce} task to Riley Reassignment so Riley completes it. Also move the existing Later checklist ${nonce} task from you to Riley, keeping it in backlog. Preserve both tasks and their descriptions. Explain the handoff briefly here. Do not create replacement tasks or start the backlog work.`, 2);
+      const observedTasks = await tasks();
+      const readyAfter = await api.get<ChatIssue>(`/api/issues/${ready.id}`);
+      const queuedAfter = await api.get<ChatIssue>(`/api/issues/${queued.id}`);
+      const output = await readChatOutputDocument(api, ready.id, marker);
+      const activity = await api.get<Array<{ action: string; details?: Record<string, unknown> }>>(`/api/issues/${ready.id}/activity`);
+      assertChatReassignment({ readyId: ready.id, queuedId: queued.id, teammateId: teammate.id, tasks: observedTasks, runs,
+        audit: activity, outputBody: output.body, marker });
+      expect(queuedAfter).toMatchObject({ assigneeAgentId: teammate.id, status: "backlog", description: `Preserve this deferred scope ${draftMarker}.` });
+      expect(readyAfter).toMatchObject({ assigneeAgentId: teammate.id, status: "done" });
+      expect(issue!).toMatchObject({ assigneeAgentId: f.agent.id, conversationState: "waiting" });
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+      await expect(page.getByRole("link", { name: readyAfter.identifier! }).first()).toBeVisible();
+      await input.capture("chat-reassignment", "Reassignment completed in Agent Chat", "chat-reassignment.png");
+      await input.evidence("chat-reassignment.json", { tasks: observedTasks, runs, activity, output, teammateId: teammate.id });
     } else {
       let existingProject: { id: string; name: string } | undefined;
       let acceptedPlan: Plan | undefined;

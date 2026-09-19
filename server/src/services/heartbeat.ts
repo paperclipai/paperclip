@@ -3649,6 +3649,7 @@ interface WakeupOptions {
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
+    statusVersion?: number;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -24093,6 +24094,21 @@ export function heartbeatService(
                       runnerRemoteProviderPackPath:
                         runtimeEnv.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim() ||
                         null,
+                      stopTaskForReassignment: async (target) => {
+                        await settleLiveRunnerGoalBeforeInterrupt(db, target);
+                        if (!target.runId) return;
+                        const prior = await getRun(target.runId);
+                        if (!prior || prior.companyId !== target.companyId || prior.agentId !== target.agentId) {
+                          throw conflict("Reassignment run binding changed");
+                        }
+                        const stopped = await cancelRunInternal(target.runId, "Cancelled for task reassignment", {
+                          errorCode: "issue_reassigned", suppressImmediateRecovery: true,
+                          resultJson: { reassignmentStopConfirmed: true },
+                        });
+                        if (stopped && ["running", "queued", "scheduled_retry"].includes(stopped.status)) {
+                          throw conflict("The previous run did not stop; reassignment was not applied");
+                        }
+                      },
                       enqueueWakeup,
                       onSpawn: async (meta) => {
                         markDispatchStarted();
@@ -26738,6 +26754,7 @@ export function heartbeatService(
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              statusVersion: issues.statusVersion,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
@@ -26963,7 +26980,8 @@ export function heartbeatService(
           if (
             issueStateGuard &&
             (!issueStateGuard.statuses.includes(issue.status) ||
-              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId)
+              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId ||
+              (issueStateGuard.statusVersion !== undefined && issue.statusVersion !== issueStateGuard.statusVersion))
           ) {
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,

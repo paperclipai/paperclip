@@ -41,10 +41,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      23, 38, 52, 24, 42, 14, 10, 2,
+      23, 38, 52, 26, 42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(205);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(205);
+    expect(validateRunnerCatalog()).toHaveLength(207);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(207);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -68,7 +68,7 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(363);
+    ).toBe(367);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
@@ -561,10 +561,10 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(167);
+    expect(jobs).toHaveLength(169);
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(23);
-    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(144);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(167);
+    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(146);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(169);
     expect(
       jobs.find(
         (job) =>

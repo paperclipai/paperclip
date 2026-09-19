@@ -929,8 +929,9 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Task-backed conversations, session resets, and project plan handoff.",
     groups: ["chat"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
-    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 24,
-    definitionMetadata: { version: 1, resetRunsCountedSeparately: true },
+    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 26,
+    excludedExecutionIds: ["legacy-codex", "legacy-claude"].map(profile => `agent-chat.${profile}.local.reassign-task`),
+    definitionMetadata: { version: 2, resetRunsCountedSeparately: true },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {

@@ -1583,6 +1583,8 @@ function commandForOperation(
         priority: typeof input.priority === "string" ? input.priority as never : undefined,
         blockedByTaskIds: optionalStringArray(input.blockedByTaskIds),
       };
+    case "reassign_task":
+      return { kind: "reassign_task", targetTaskId: requireString(input.taskId), assigneeActorId: requireString(input.assigneeActorId), expectedAssigneeActorId: input.expectedAssigneeActorId === null ? null : requireString(input.expectedAssigneeActorId), expectedStatusVersion: Number(input.expectedStatusVersion), reason: requireString(input.reason) };
     case "set_dependencies":
       return { kind: "set_dependencies", blockedByTaskIds: optionalStringArray(input.blockedByTaskIds) ?? [] };
     case "request_approval":
