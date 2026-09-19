@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import type { AskUserQuestionsPayload } from "../../packages/shared/src/types/issue.js";
 import {
+  assertChatBacklogCreation,
   assertChatHandoff,
+  assertChatReassignment,
   assertChatTaskHandoff,
   chatQuestionPresentation,
   chatRunFailure,
@@ -95,11 +97,11 @@ describe("chat acceptance contracts", () => {
     );
     expect(chatMarker("CHAT", "one-1")).not.toBe(chatMarker("CHAT", "two-1"));
   });
-  it("has exactly six workflows on the four chosen local profiles", () => {
+  it("covers existing workflows and native reassignment on the chosen local profiles", () => {
     const matrix = runnerMatrix.filter(
       (cell) => cell.suite.id === "agent-chat",
     );
-    expect(matrix).toHaveLength(24);
+    expect(matrix).toHaveLength(28);
     expect(new Set(matrix.map((cell) => cell.profile.id))).toEqual(
       new Set([
         "legacy-codex",
@@ -108,7 +110,7 @@ describe("chat acceptance contracts", () => {
         "runner-acpx-claude",
       ]),
     );
-    expect(new Set(matrix.map((cell) => cell.task.id)).size).toBe(6);
+    expect(new Set(matrix.map((cell) => cell.task.id)).size).toBe(8);
     expect(
       matrix.every(
         (cell) =>
@@ -361,5 +363,54 @@ describe("chat acceptance contracts", () => {
         target,
       ),
     ).toBe(false);
+  });
+});
+
+
+describe("reassignment outcome oracle", () => {
+  const evidence = () => ({ readyId: "ready", queuedId: "queued", teammateId: "riley",
+    tasks: [{ id: "ready", companyId: "co", title: "Ready", status: "done", assigneeAgentId: "riley" }, { id: "queued", companyId: "co", title: "Later", status: "backlog", assigneeAgentId: "riley" }],
+    runs: [{ id: "successor", companyId: "co", agentId: "riley", status: "succeeded", runtimeMode: "native", contextSnapshot: { issueId: "ready" } }],
+    audit: [{ action: "issue.reassigned", details: { source: "paperclip_runner_protocol" } }], outputBody: "Launch CHECK123", marker: "CHECK123",
+  });
+  it("accepts persisted ownership and exactly one successful successor", () => {
+    expect(() => assertChatReassignment(evidence())).not.toThrow();
+  });
+  it.each(["owner", "duplicate", "missing-run", "missing-audit", "backlog-started", "missing-output"])("rejects %s evidence", defect => {
+    const data = evidence();
+    if (defect === "owner") data.tasks[0]!.assigneeAgentId = "old";
+    if (defect === "duplicate") data.tasks.push({ ...data.tasks[0]!, id: "replacement" });
+    if (defect === "missing-run") data.runs = [];
+    if (defect === "missing-audit") data.audit = [];
+    if (defect === "backlog-started") data.runs.push({ ...data.runs[0]!, id: "early", contextSnapshot: { issueId: "queued" } });
+    if (defect === "missing-output") data.outputBody = "I reassigned it";
+    expect(() => assertChatReassignment(data)).toThrow();
+  });
+});
+
+describe("backlog creation outcome oracle", () => {
+  const evidence = () => ({
+    tasks: [{ id: "held", companyId: "co", title: "Later", status: "backlog", parentId: null, assigneeAgentId: "planner" }],
+    runs: [] as ChatRun[], ownerId: "planner", marker: "PLAN123",
+    plan: { body: "Three steps PLAN123", latestRevisionId: "revision-1", updatedAt: "2026-09-19T00:00:00Z" },
+    activity: [{ action: "issue.created", details: { status: "backlog", source: "paperclip_runner_protocol" } }],
+  });
+  it("accepts one planned backlog task with no execution", () => {
+    expect(() => assertChatBacklogCreation(evidence())).not.toThrow();
+  });
+  it("does not mistake the creating conversation for task execution", () => {
+    const data = evidence();
+    data.runs.push({ id: "creator", companyId: "co", agentId: "planner", status: "succeeded", contextSnapshot: { issueId: "conversation" } });
+    expect(() => assertChatBacklogCreation(data)).not.toThrow();
+  });
+  it.each(["duplicate", "status", "started-then-stopped", "corrected-after-creation", "owner", "plan"])("rejects %s", defect => {
+    const data = evidence();
+    if (defect === "duplicate") data.tasks.push({ ...data.tasks[0]!, id: "duplicate" });
+    if (defect === "status") data.tasks[0]!.status = "todo";
+    if (defect === "started-then-stopped") data.runs.push({ id: "early", companyId: "co", agentId: "planner", status: "cancelled", contextSnapshot: { issueId: "held" } });
+    if (defect === "corrected-after-creation") data.activity[0]!.details.status = "todo";
+    if (defect === "owner") data.tasks[0]!.assigneeAgentId = "other";
+    if (defect === "plan") data.plan.body = "I saved a plan";
+    expect(() => assertChatBacklogCreation(data)).toThrow();
   });
 });

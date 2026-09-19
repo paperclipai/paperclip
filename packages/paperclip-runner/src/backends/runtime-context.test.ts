@@ -69,8 +69,10 @@ describe("native runtime context files", () => {
     );
   });
 
-  it("requires requested file deliverables before completion in ordinary native tasks", () => {
+  it("distinguishes durable Paperclip documents from requested file deliverables", () => {
     const constraints = nativeTaskConstraints(runtimeInput("/bundle", "AGENTS.md")).join("\n");
+    expect(constraints).toContain("Paperclip documents directly with write_document");
+    expect(constraints).toContain("unless the user also requests a downloadable file");
     expect(constraints).toContain("register_deliverable");
     expect(constraints).toContain("deliverable:");
     expect(constraints).toContain("download link");

@@ -57,8 +57,8 @@
     },
     {
       "id": "delegation_dependencies",
-      "description": "Create delegated work and maintain dependency edges.",
-      "operationIds": ["create_task", "set_dependencies"]
+      "description": "Create or reassign delegated work and maintain dependency edges.",
+      "operationIds": ["create_task", "reassign_task", "set_dependencies"]
     },
     {
       "id": "governance",
@@ -180,9 +180,9 @@
       "legacyGroup": 6,
       "name": "Subtasks",
       "owner": "optional delegation tools",
-      "operationIds": ["create_task"],
+      "operationIds": ["create_task", "reassign_task"],
       "controlPlaneOperationIds": ["route_wake"],
-      "realSurface": "company issue create, child issue, assignment, and wake services",
+      "realSurface": "company issue create, child issue, guarded reassignment, and wake services",
       "mockStateDomains": ["company", "task", "actor", "blockers", "wake", "audit"],
       "prpEvidence": "company/task state diff, audit reference, and continuation wake evidence",
       "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency."

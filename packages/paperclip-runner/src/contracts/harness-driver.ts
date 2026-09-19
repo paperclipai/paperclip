@@ -453,7 +453,7 @@ export interface AcpxSessionIdentity {
   requestedModel: string;
   effectiveModel: string;
   /** Missing on legacy snapshots; those used the historical approve-reads behavior. */
-  permissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  permissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

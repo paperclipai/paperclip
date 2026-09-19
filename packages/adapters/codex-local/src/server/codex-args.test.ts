@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
+  it.each([null, "existing-session"])("defaults direct and resumed launches to full bypass (%s)", (resumeSessionId) => {
+    const { args } = buildCodexExecArgs({}, { resumeSessionId });
+    expect(args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(args).not.toContain('sandbox_mode="workspace-write"');
+    if (resumeSessionId) expect(args.slice(-3)).toEqual(["resume", resumeSessionId, "-"]);
+  });
+
   it("forwards GPT-6 Astra, its ultra reasoning effort, and fast mode", () => {
     const result = buildCodexExecArgs({
       model: "gpt-6-astra",
@@ -15,10 +22,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-6-astra",
       "-c",
@@ -58,10 +62,7 @@ describe("buildCodexExecArgs", () => {
       "--search",
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4",
       "-c",
@@ -84,10 +85,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "-c",
@@ -110,10 +108,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "future-codex-model",
       "-c",
@@ -135,10 +130,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       'service_tier="fast"',
       "-c",
@@ -161,10 +153,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5",
       "-",
@@ -182,10 +171,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.4-mini",
       "-",
@@ -203,11 +189,8 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
       "--skip-git-repo-check",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "-",
@@ -227,10 +210,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5.5",
       "--skip-git-repo-check",

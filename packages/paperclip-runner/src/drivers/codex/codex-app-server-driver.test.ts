@@ -1251,7 +1251,7 @@ describe("Codex app-server Codex driver", () => {
       model: "gpt-test",
       modelProvider: "openai",
       workingDirectory: TEST_WORKING_DIRECTORY,
-      approvalPolicy: "untrusted",
+      approvalPolicy: "never",
       instructionSources: [],
       instructionPolicy: {
         skillInstructions: false,
@@ -1267,7 +1267,7 @@ describe("Codex app-server Codex driver", () => {
     expect(
       transport.calls.find((call) => call.method === "thread/start")?.params,
     ).toMatchObject({
-      approvalPolicy: "untrusted",
+      approvalPolicy: "never",
       config: {
         "skills.include_instructions": false,
         include_apps_instructions: false,

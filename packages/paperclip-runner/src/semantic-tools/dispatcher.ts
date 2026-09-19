@@ -267,7 +267,7 @@ export class CapabilitySemanticDispatcher {
           (query === undefined || `${task.identifier} ${task.title} ${task.description ?? ""}`.toLowerCase().includes(query)) &&
           (statuses.length === 0 || statuses.includes(task.status)),
         ).slice(0, limit);
-        return readSuccess(state.revision, { tasks });
+        return readSuccess(state.revision, { tasks: tasks.map(task => ({ ...task, statusVersion: task.statusVersion ?? 0 })) });
       }
       case "list_approvals":
         return readSuccess(state.revision, { approvals: state.approvals });
@@ -375,12 +375,16 @@ export class CapabilitySemanticDispatcher {
       case "request_review":
         command = { kind: "request_review", taskId, summary: requiredString(input.summary) };
         break;
+      case "reassign_task":
+        command = { kind: "reassign_task", taskId, targetTaskId: requiredString(input.taskId), assigneeActorId: requiredString(input.assigneeActorId), expectedAssigneeActorId: input.expectedAssigneeActorId === null ? null : requiredString(input.expectedAssigneeActorId), expectedStatusVersion: Number(input.expectedStatusVersion), reason: requiredString(input.reason) };
+        break;
       case "set_dependencies":
         command = { kind: "set_dependencies", taskId, blockedByTaskIds: optionalStringArray(input.blockedByTaskIds) };
         break;
       case "create_task":
         command = {
           kind: "create_task",
+          status: optionalString(input.status) as "backlog" | "todo" | undefined,
           taskId,
           title: requiredString(input.title),
           description: nullableOptionalString(input.description),

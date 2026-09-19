@@ -104,6 +104,7 @@ export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
   return [
     "Use only the assigned skills and provider-native tools.",
     "Use Paperclip semantic tools for coordination and finalization.",
+    "Save requested plans and Paperclip documents directly with write_document. A saved Paperclip document is already a durable deliverable. Do not create a local file, compute file hashes, or call register_deliverable for it unless the user also requests a downloadable file. Cite the saved document in your completion evidence and final response.",
     "When the requested result is a file, use register_deliverable before paperclip_finish. Compute its exact byte size and SHA-256, register the workspace-relative file, cite deliverable:<attachmentId> from the receipt as completion evidence, and include /api/attachments/<attachmentId>/content as the download link in your answer. A bare workspace filename is not a delivered result. For repository edits, cite an accessible PR or registered work product. Preserve existing work; do not upload unrelated files. If file publication fails, fix it or report the concrete blocker instead of claiming the file is delivered.",
     ...(answeredQuestionConstraint ? [answeredQuestionConstraint] : []),
     finalResponseConstraint,

@@ -22,6 +22,7 @@ export type PaperclipSemanticActionId =
   | "get_approval_context"
   | "get_workspace_runtime"
   | "control_workspace_service"
+  | "reassign_task"
   | "set_dependencies"
   | "create_skill"
   | "create_project"

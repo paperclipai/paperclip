@@ -83,7 +83,7 @@ type RunnerTransportOptions = {
   provider?: "codex" | "opencode" | "acpx";
   opencodePermissionMode?: "allow" | "ask" | "deny";
   acpxAgent?: "claude" | "codex";
-  acpxPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  acpxPermissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
   resumeActiveTurnId?: string | null;
   resumeProviderSession?: {
     driverSessionId: string;
@@ -6475,11 +6475,13 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
-  it("does not turn an acknowledged Stop before completion into a failure or a retry", async () => {
+  it.each(["operator", "reassignment"])("does not turn an acknowledged %s Stop before completion into a failure or a retry", async (source) => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const stop: Record<string, unknown> = {};
     state.execute.mockReset().mockImplementationOnce(async () => {
-      Object.assign(stop, { cancelledByActorType: "user", cancelledByUserId: "board", nativeCancellation: {
+      Object.assign(stop, { ...(source === "operator"
+        ? { cancelledByActorType: "user", cancelledByUserId: "board" }
+        : { reassignmentStopRequested: true }), nativeCancellation: {
         schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
         dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
       } });
@@ -10065,7 +10067,7 @@ describe("runnerd provider runtime wiring", () => {
     const controllerArtifact = join(isolatedStateDirectory, "paperclip-runnerd");
     if (needsReplacement) {
       await writeFile(controllerArtifact, "fixture runner artifact");
-      state.resolveRunnerBinary.mockReturnValue(controllerArtifact);
+      state.resolveRunnerBinary.mockReturnValueOnce(controllerArtifact);
     }
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(
@@ -10141,6 +10143,7 @@ describe("runnerd provider runtime wiring", () => {
       "reached-preinstalled-codex-verification",
     );
     if (needsReplacement) {
+      expect(transport.runnerBinary).toBe(controllerArtifact);
       expect(syncIn).toHaveBeenCalledTimes(1);
       expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
         files: [expect.objectContaining({

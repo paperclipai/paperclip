@@ -197,6 +197,19 @@ function nativeProfile(input: {
   };
 }
 
+/** Chat acceptance exercises the shipped provider defaults, not full-auto fixtures. */
+function defaultPermissionProfile(profile: RunnerProfileFixture): RunnerProfileFixture {
+  if (profile.generation !== "native") return profile;
+  return {
+    ...profile,
+    buildAgent(input) {
+      const payload = profile.buildAgent(input);
+      const { codexPermissionMode: _codex, acpxPermissionMode: _acpx, ...adapterConfig } = payload.adapterConfig as Record<string, unknown>;
+      return { ...payload, adapterConfig };
+    },
+  };
+}
+
 const claudeLegacyModel = "claude-sonnet-4-6";
 if (!claudeModels.some((model) => model.id === claudeLegacyModel)) {
   throw new Error(
@@ -928,9 +941,10 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "agent-chat", label: "Persistent Agent Chat",
     description: "Task-backed conversations, session resets, and project plan handoff.",
     groups: ["chat"],
-    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
-    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 24,
-    definitionMetadata: { version: 1, resetRunsCountedSeparately: true },
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(defaultPermissionProfile),
+    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 28,
+    excludedExecutionIds: ["legacy-codex", "legacy-claude"].flatMap(profile => ["reassign-task", "create-backlog"].map(task => `agent-chat.${profile}.local.${task}`)),
+    definitionMetadata: { version: 4, resetRunsCountedSeparately: true, permissions: "production-defaults" },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {

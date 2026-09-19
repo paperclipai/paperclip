@@ -240,7 +240,7 @@ export function buildNativeExecutionInput(input: {
           kind: "acpx",
           agent: acpxProfile!.agent,
           model: input.model,
-          permissionMode: input.acpxPermissionMode ?? "approve-reads",
+          permissionMode: input.acpxPermissionMode ?? "approve-all",
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,
@@ -258,7 +258,7 @@ export function buildNativeExecutionInput(input: {
         ? {
             kind: "opencode",
             model: input.model,
-            permissionMode: input.opencodePermissionMode ?? "ask",
+            permissionMode: input.opencodePermissionMode ?? "allow",
           }
         : {
             kind: "codex",

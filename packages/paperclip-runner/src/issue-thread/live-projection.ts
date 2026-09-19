@@ -487,7 +487,7 @@ function derivedRecordItems(
     }
   }
 
-  if (operationId === "create_task" || operationId === "set_dependencies") {
+  if (operationId === "create_task" || operationId === "reassign_task" || operationId === "set_dependencies") {
     const created = refsOf("task")
       .filter((id) => id !== state.tasks[0]?.id)
       .map((ref) => state.tasks.find((candidate) => candidate.id === ref))

@@ -48,7 +48,7 @@ function dedicatedTools(method: string, path: string): string[] {
   if (/\/issues\/\{[^}]+\}\/comments$/.test(path)) return method === "GET" ? ["get_task_history"] : ["report_progress"];
   if (/\/issues\/\{[^}]+\}\/documents/.test(path)) return method === "DELETE" ? [] : method === "GET" ? ["list_documents", "read_document", "list_document_revisions"] : ["write_document"];
   if (/\/issues$/.test(path)) return method === "GET" ? ["search_tasks"] : ["create_task"];
-  if (/\/issues\/\{[^}]+\}$/.test(path)) return method === "GET" ? ["get_task_context"] : ["set_dependencies", "finish_task", "block_task", "request_review"];
+  if (/\/issues\/\{[^}]+\}$/.test(path)) return method === "GET" ? ["get_task_context"] : ["reassign_task", "set_dependencies", "finish_task", "block_task", "request_review"];
   if (/\/agents$/.test(path) && method === "GET") return ["list_agents"];
   if (/\/agents\/(me|\{[^}]+\})$/.test(path) && method === "GET") return ["get_agent"];
   if (/\/approvals$/.test(path) && method === "GET") return ["list_approvals"];
