@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { adaptiveThinkingVariantDefinitions } from "./run-args.js";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -170,12 +171,52 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     notes,
   );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
-  let nextProvider = gatewayProviders
-    ? { ...existingProvider, ...gatewayProviders }
-    : existingProvider;
+  let nextProvider: Record<string, unknown> = gatewayProviders
+    ? { ...(existingProvider as Record<string, unknown>), ...gatewayProviders }
+    : { ...(existingProvider as Record<string, unknown>) };
   if (gatewayProviders) {
     notes.push(
       `Injected ${Object.keys(gatewayProviders).length} custom OpenCode provider(s) from PAPERCLIP_OPENCODE_PROVIDERS: ${Object.keys(gatewayProviders).join(", ")}.`,
+    );
+  }
+
+  // ALAA-3794: define the paperclip_adaptive thinking variant
+  // (thinking.type.adaptive) for models whose upstream requires it. Merges with
+  // any existing opencode provider/models block (including gateway-injected or
+  // user-configured entries) without clobbering existing variants.
+  const existingOpenCodeProvider = isPlainObject(nextProvider.opencode)
+    ? (nextProvider.opencode as Record<string, unknown>)
+    : {};
+  const existingOpenCodeModels = isPlainObject(existingOpenCodeProvider.models)
+    ? (existingOpenCodeProvider.models as Record<string, unknown>)
+    : {};
+  const adaptiveModels = adaptiveThinkingVariantDefinitions();
+  const nextOpenCodeModels: Record<string, unknown> = { ...existingOpenCodeModels };
+  for (const [modelId, definition] of Object.entries(adaptiveModels)) {
+    const existingModel = isPlainObject(nextOpenCodeModels[modelId])
+      ? (nextOpenCodeModels[modelId] as Record<string, unknown>)
+      : {};
+    const existingVariants = isPlainObject(existingModel.variants)
+      ? (existingModel.variants as Record<string, unknown>)
+      : {};
+    nextOpenCodeModels[modelId] = {
+      ...existingModel,
+      variants: {
+        ...existingVariants,
+        ...definition,
+      },
+    };
+  }
+  if (Object.keys(nextOpenCodeModels).length > 0) {
+    nextProvider = {
+      ...nextProvider,
+      opencode: {
+        ...existingOpenCodeProvider,
+        models: nextOpenCodeModels,
+      },
+    };
+    notes.push(
+      "Defined the paperclip_adaptive thinking variant (thinking.type.adaptive) for models whose upstream requires it (ALAA-3794).",
     );
   }
 

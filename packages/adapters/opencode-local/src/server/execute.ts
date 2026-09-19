@@ -51,7 +51,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeStaleRequestShapeError, isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -62,6 +62,7 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
+import { buildOpenCodeRunArgs } from "./run-args.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -612,15 +613,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const printLogs = isTruthyEnvFlag(
       env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
     );
-    const buildArgs = (resumeSessionId: string | null) => {
-      const args = ["run", "--format", "json"];
-      if (printLogs) args.push("--print-logs");
-      if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
-      if (variant) args.push("--variant", variant);
-      if (extraArgs.length > 0) args.push(...extraArgs);
-      return args;
-    };
+    const buildArgs = (resumeSessionId: string | null) =>
+      buildOpenCodeRunArgs({ model, variant, extraArgs, resumeSessionId, printLogs });
 
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildArgs(resumeSessionId);
@@ -738,14 +732,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const initial = await runAttempt(sessionId);
       const initialFailed =
         !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
-      if (
-        sessionId &&
+      const sessionUnavailable =
+        sessionId != null &&
         initialFailed &&
-        isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-      ) {
+        isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr);
+      const sessionRequestShapeStale =
+        sessionId != null &&
+        initialFailed &&
+        !sessionUnavailable &&
+        isOpenCodeStaleRequestShapeError(initial.proc.stdout, initial.rawStderr);
+      if (sessionUnavailable || sessionRequestShapeStale) {
         await onLog(
           "stdout",
-          `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          sessionUnavailable
+            ? `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`
+            : `[paperclip] OpenCode session "${sessionId}" carries a stale provider request shape; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
         return toResult(retry, true);
