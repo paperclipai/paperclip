@@ -19,9 +19,9 @@ vi.mock("@/plugins/slots", () => ({
 }));
 let root: Root | undefined;
 let container: HTMLDivElement;
-function render() {
+function render(localTrusted = false) {
   if (!root) { container = document.createElement("div"); document.body.append(container); root = createRoot(container); }
-  flushSync(() => root!.render(<PluginAppShellOverlays />));
+  flushSync(() => root!.render(<PluginAppShellOverlays localTrusted={localTrusted} />));
 }
 afterEach(() => {
   if (root) flushSync(() => root!.unmount());
@@ -44,5 +44,13 @@ describe("persistent app-shell plugin lifecycle", () => {
   it("does not render during onboarding or contribution errors", () => {
     state.onboarding = true; render(); expect(state.mounts).toBe(0);
     state.onboarding = false; state.failed = true; render(); expect(container.textContent).toBe("");
+  });
+  it("clears account state when returning to the sessionless local board", () => {
+    render(true); flushSync(() => container.querySelector("button")!.click());
+    state.settled = false; render(true); expect(container.textContent).toBe(""); expect(state.disposals).toBe(1);
+    state.userId = null; state.settled = true; render(true);
+    expect(container.textContent).toBe("empty"); expect(state.mounts).toBe(2);
+    flushSync(() => container.querySelector("button")!.click());
+    state.userId = "bob"; render(true); expect(container.textContent).toBe("empty"); expect(state.disposals).toBe(2);
   });
 });

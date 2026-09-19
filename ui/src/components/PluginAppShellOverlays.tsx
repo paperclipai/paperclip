@@ -34,7 +34,10 @@ export function PluginAppShellOverlays({ localTrusted = false }: { localTrusted?
   const { userId, settled } = useAccountIdentity();
   const { selectedCompanyId, selectedCompany, loading } = useCompany();
   const { onboardingOpen } = useDialogState();
-  const identity = localTrusted ? "local-board" : settled ? userId : null;
+  // Local-trusted instances intentionally have no login requirement. Still
+  // prefer any real account and wait for identity resolution so account changes
+  // cannot reuse the prior account's in-memory plugin state.
+  const identity = settled ? userId ?? (localTrusted ? "local-board" : null) : null;
   if (!identity || loading || onboardingOpen) return null;
   return (
     <AppShellEntries
