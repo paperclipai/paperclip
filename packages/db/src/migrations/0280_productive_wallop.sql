@@ -1,0 +1,2 @@
+CREATE INDEX "environment_leases_active_updated_at_idx" ON "environment_leases" USING btree ("updated_at") WHERE "environment_leases"."status" = 'active';--> statement-breakpoint
+CREATE INDEX "environment_leases_pending_cleanup_updated_at_idx" ON "environment_leases" USING btree ("updated_at") WHERE "environment_leases"."status" = 'pending_cleanup';

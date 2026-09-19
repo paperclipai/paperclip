@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
@@ -49,5 +50,9 @@ export const environmentLeases = pgTable(
     heartbeatRunIdx: index("environment_leases_heartbeat_run_idx").on(table.heartbeatRunId),
     companyLastUsedIdx: index("environment_leases_company_last_used_idx").on(table.companyId, table.lastUsedAt),
     providerLeaseIdx: index("environment_leases_provider_lease_idx").on(table.providerLeaseId),
+    activeUpdatedAtIdx: index("environment_leases_active_updated_at_idx")
+      .on(table.updatedAt).where(sql`${table.status} = 'active'`),
+    pendingCleanupUpdatedAtIdx: index("environment_leases_pending_cleanup_updated_at_idx")
+      .on(table.updatedAt).where(sql`${table.status} = 'pending_cleanup'`),
   }),
 );
