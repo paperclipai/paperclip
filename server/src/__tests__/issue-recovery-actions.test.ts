@@ -2727,7 +2727,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .send({
         actionId: action.id,
         outcome: "restored",
-        sourceIssueStatus: "in_review",
+        sourceIssueStatus: "todo",
         resolutionNote: "Creator self-healing an unassigned board-owned action.",
       })
       .expect(200);
@@ -2758,13 +2758,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       nextAction: "Recovery owner must resolve.",
       wakePolicy: { type: "manual" },
     });
+    const runId = randomUUID();
     const app = createApp({
       type: "agent",
       agentId: coderId,
       companyId,
-      runId: randomUUID(),
+      runId,
       source: "agent_jwt",
     });
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId });
 
     const rejected = await request(app)
       .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
