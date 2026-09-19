@@ -2986,6 +2986,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   // Resolve its live identity when producing URLs, not once at service startup.
   // An explicit webhook ingress remains separate from board/identity links.
   const getPublicBaseUrl = () => runtimeCanonicalOrigin() ?? configuredPublicBaseUrl;
+  // Task links must validate the original configured URL before normalization
+  // can remove credentials or other evidence that makes it unsafe to publish.
+  const getTaskBaseUrl = () => runtimeCanonicalOrigin() ?? options.publicBaseUrl;
   const getWebhookPublicBaseUrl = () => configuredWebhookPublicBaseUrl ?? getPublicBaseUrl();
   const issuesSvc = issueService(db);
   const secrets = secretService(db);
@@ -32951,7 +32954,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
       } else if (files.length === 0) {
         const taskUrl = safeChatTaskUrl(
-          getPublicBaseUrl(),
+          getTaskBaseUrl(),
           input.publication.issueId,
         );
         if (
@@ -33109,7 +33112,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             interaction,
             questionIndex: nextQuestion ? Number(nextQuestion[2]) : 0,
             taskUrl: safeChatTaskUrl(
-              getPublicBaseUrl(),
+              getTaskBaseUrl(),
               input.publication.issueId,
             ),
             assertCurrent: promptGuard,
@@ -33397,7 +33400,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       ? typeof prepared.payload.taskUrl === "string"
         ? safeChatTaskUrl(prepared.payload.taskUrl, publication.issueId)
         : null
-      : safeChatTaskUrl(getPublicBaseUrl(), publication.issueId);
+      : safeChatTaskUrl(getTaskBaseUrl(), publication.issueId);
     if (
       prepared &&
       (prepared.kind !== "github_omission_navigation" ||
@@ -35249,7 +35252,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             noticeEndpoint.provider === attachmentFailure.provider);
         if (providerCanSendTextNotice && noticeConversation) {
           const taskUrl = safeChatTaskUrl(
-            getPublicBaseUrl(),
+            getTaskBaseUrl(),
             publication.issueId,
           );
           const noticeText =
