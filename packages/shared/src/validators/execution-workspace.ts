@@ -15,6 +15,7 @@ export const executionWorkspaceStatusSchema = z.enum([
 export const executionWorkspaceDeliveryStateSchema = z.enum([
   "merged_via_pr",
   "merged_by_ancestry",
+  "merged_by_patch_equivalence",
   "unmerged",
   "unknown",
 ]);
@@ -96,6 +97,7 @@ export const executionWorkspaceCloseGitReadinessSchema = z.object({
   aheadCount: z.number().int().nonnegative().nullable(),
   behindCount: z.number().int().nonnegative().nullable(),
   isMergedIntoBase: z.boolean().nullable(),
+  isPatchEquivalentToBase: z.boolean().nullable(),
   createdByRuntime: z.boolean(),
 }).strict();
 

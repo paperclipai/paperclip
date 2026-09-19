@@ -1150,7 +1150,7 @@ The current app also exposes V1-supporting surfaces for:
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
   bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations. Workspace reads
-  derive `deliveryState` as `merged_via_pr | merged_by_ancestry | unmerged | unknown`; terminal issue trees with a
+  derive `deliveryState` as `merged_via_pr | merged_by_ancestry | merged_by_patch_equivalence | unmerged | unknown`; patch-equivalent cherry-picks count as delivered only after comparison with the configured target ref. A code issue may enter `done` only from `in_review` under a `not_creator` or `human_only` review policy, when its primary code work product is merged, approved, healthy, carries a passing combined-regression record and reconciliation timestamp, and its clean isolated Git workspace (when present) verifies delivery. Analysis-only work may record an explicit `deliveryDisposition.kind = no_merge` with a reason on its primary non-code work product. The terminal-workspace monitor flags historical delivery drift. Terminal issue trees with a
   merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
   through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
 - task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees

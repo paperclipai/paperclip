@@ -1042,6 +1042,8 @@ export type {
   IssueWorkProductProvider,
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
+  IssueWorkProductDeliveryEvidence,
+  IssueWorkProductDeliveryDisposition,
   CompanyArtifact,
   CompanyArtifactAgentSummary,
   CompanyArtifactGroup,

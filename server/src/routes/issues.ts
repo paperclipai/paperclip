@@ -3548,6 +3548,18 @@ export function issueRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
+  const assertIssueDoneDeliveryReady = async (issueId: string, store: Db = db) => {
+    const readiness = await executionWorkspaceServiceDirect(store)
+      .getIssueDoneDeliveryReadiness(issueId);
+    if (!readiness || !readiness.required || readiness.ready) return;
+    throw conflict(
+      "Code work cannot transition to Done until review, merge delivery, health, regression, and reconciliation evidence are complete.",
+      {
+        code: "issue_delivery_not_ready",
+        reasonCodes: readiness.reasonCodes,
+      },
+    );
+  };
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const artifactReviewDocumentsSvc = artifactReviewDocumentService(db, storage);
@@ -9387,7 +9399,6 @@ export function issueRoutes(
               actor: { type: actor.actorType, id: actor.actorId },
             });
           }
-
           const updateFields: Record<string, unknown> = {
             status: sourceIssueStatus,
           };
@@ -13505,6 +13516,7 @@ export function issueRoutes(
         ...updateFields,
         actorAgentId: actor.agentId ?? null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        ...(updateFields.status === "done" ? { deliveryReadinessVerified: true } : {}),
       };
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
@@ -13559,6 +13571,9 @@ export function issueRoutes(
             actor: { type: actor.actorType, id: actor.actorId },
             reviewPolicy: lockedExisting.reviewPolicy,
           });
+        }
+        if (lockedExisting.status !== "done" && updateFields.status === "done") {
+          await assertIssueDoneDeliveryReady(lockedExisting.id, tx as unknown as Db);
         }
         return true;
       };
@@ -17641,6 +17656,8 @@ export function issueRoutes(
         const postCommitIssueActions: IssuePostCommitAction[] = [];
         try {
           txResult = await db.transaction(async (tx) => {
+            const lockedIssue = await svc.getByIdForUpdate(id, tx);
+            if (!lockedIssue) throw new AutoApprovalIssueMissingError();
             const insertedComment = await svc.addComment(
               id,
               req.body.body,

@@ -75,6 +75,15 @@ const mockWorkProductService = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockExecutionWorkspaceService = vi.hoisted(() => ({
+  getIssueDoneDeliveryReadiness: vi.fn(async () => ({
+    required: false,
+    ready: true,
+    disposition: "not_applicable",
+    reasonCodes: [],
+  })),
+}));
+
 const mockStorageService = vi.hoisted(() => ({
   provider: "local_disk",
   putFile: vi.fn(),
@@ -215,6 +224,11 @@ function registerRouteMocks() {
     RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
   }));
 
+  vi.doMock("../services/execution-workspaces.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/execution-workspaces.js")>()),
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     ISSUE_LIST_DEFAULT_LIMIT: 100,
     ISSUE_LIST_MAX_LIMIT: 500,
@@ -237,7 +251,7 @@ function registerRouteMocks() {
       ...(summary.deletions === null ? {} : { deletions: summary.deletions }),
       changedFiles: summary.changedFiles,
     } : metadata ?? null,
-    executionWorkspaceService: () => ({}),
+    executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
       saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
@@ -451,6 +465,12 @@ describe("agent issue mutation checkout ownership", () => {
     // by an earlier test.
     routeModules.value.__clearIssueListResponseCacheForTests();
     vi.clearAllMocks();
+    mockExecutionWorkspaceService.getIssueDoneDeliveryReadiness.mockResolvedValue({
+      required: false,
+      ready: true,
+      disposition: "not_applicable",
+      reasonCodes: [],
+    });
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockAccessService.canUser.mockReset();
@@ -1052,6 +1072,29 @@ describe("agent issue mutation checkout ownership", () => {
       undefined,
       expect.any(Array),
     );
+  });
+
+  it("rejects Done when code delivery readiness is incomplete", async () => {
+    mockExecutionWorkspaceService.getIssueDoneDeliveryReadiness.mockResolvedValueOnce({
+      required: true,
+      ready: false,
+      disposition: "code",
+      reasonCodes: ["primary_work_product_not_merged", "delivered_commit_not_on_target"],
+    });
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review" }));
+
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      code: "issue_delivery_not_ready",
+      details: {
+        reasonCodes: ["primary_work_product_not_merged", "delivered_commit_not_on_target"],
+      },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("denies cross-company agents before comment authorization is evaluated", async () => {
