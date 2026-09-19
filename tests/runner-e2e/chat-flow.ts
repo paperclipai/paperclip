@@ -51,7 +51,7 @@ type ChatOutputDocument = Plan & { id: string; issueId: string; key: string };
 
 export function assertChatBacklogCreation(input: {
   tasks: ChatIssue[];
-  taskRuns: ChatRun[];
+  runs: ChatRun[];
   ownerId: string;
   plan: Plan;
   marker: string;
@@ -59,7 +59,7 @@ export function assertChatBacklogCreation(input: {
 }) {
   expect(input.tasks).toHaveLength(1);
   expect(input.tasks[0]).toMatchObject({ status: "backlog", parentId: null, assigneeAgentId: input.ownerId });
-  expect(input.taskRuns).toHaveLength(0);
+  expect(input.runs.filter(run => run.contextSnapshot?.issueId === input.tasks[0]!.id)).toHaveLength(0);
   expect(input.plan.body).toContain(input.marker);
   expect(input.plan.latestRevisionId).toBeTruthy();
   const created = input.activity.filter(row => row.action === "issue.created");
@@ -512,10 +512,12 @@ export async function runChatFlow(input: {
       const plan = await api.get<Plan>(`/api/issues/${saved.id}/documents/plan`);
       await turn(`What are the current owner and status of ${saved.identifier}? Just report its saved state. Do not execute it, change its status, or create another task.`, 2);
       const observedTasks = await tasks();
-      const taskRuns = await api.get<ChatRun[]>(`/api/issues/${saved.id}/runs`);
+      // Issue activity also links the conversation run that created the task.
+      // Inspect actual run bindings to distinguish creation from execution.
+      const observedRuns = await allRuns();
       const activity = await api.get<Array<{ action: string; details?: Record<string, unknown> }>>(`/api/issues/${saved.id}/activity`);
       const persistedPlan = await api.get<Plan>(`/api/issues/${saved.id}/documents/plan`);
-      assertChatBacklogCreation({ tasks: observedTasks, taskRuns, ownerId: f.agent.id, plan: persistedPlan, marker, activity });
+      assertChatBacklogCreation({ tasks: observedTasks, runs: observedRuns, ownerId: f.agent.id, plan: persistedPlan, marker, activity });
       expect(observedTasks[0]).toMatchObject({ id: saved.id, projectId: project.id });
       expect(persistedPlan).toEqual(plan);
       expect((await comments()).filter(c => c.authorAgentId).at(-1)?.body).toMatch(/backlog/i);
@@ -523,7 +525,7 @@ export async function runChatFlow(input: {
       await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
       await expect(page.getByRole("link", { name: saved.identifier! }).first()).toBeVisible();
       await input.capture("chat-backlog", "Planned backlog task without execution", "chat-backlog.png");
-      await input.evidence("chat-backlog.json", { tasks: observedTasks, taskRuns, activity, plan: persistedPlan });
+      await input.evidence("chat-backlog.json", { tasks: observedTasks, runs: observedRuns, activity, plan: persistedPlan });
     } else if (caseId === "reassign-task") {
       const config = execution.profile.buildAgent({
         environmentId: f.environment.id, environmentFixtureId: execution.environment.id,

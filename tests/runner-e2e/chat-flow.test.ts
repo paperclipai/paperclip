@@ -391,18 +391,23 @@ describe("reassignment outcome oracle", () => {
 describe("backlog creation outcome oracle", () => {
   const evidence = () => ({
     tasks: [{ id: "held", companyId: "co", title: "Later", status: "backlog", parentId: null, assigneeAgentId: "planner" }],
-    taskRuns: [] as ChatRun[], ownerId: "planner", marker: "PLAN123",
+    runs: [] as ChatRun[], ownerId: "planner", marker: "PLAN123",
     plan: { body: "Three steps PLAN123", latestRevisionId: "revision-1", updatedAt: "2026-09-19T00:00:00Z" },
     activity: [{ action: "issue.created", details: { status: "backlog", source: "paperclip_runner_protocol" } }],
   });
   it("accepts one planned backlog task with no execution", () => {
     expect(() => assertChatBacklogCreation(evidence())).not.toThrow();
   });
+  it("does not mistake the creating conversation for task execution", () => {
+    const data = evidence();
+    data.runs.push({ id: "creator", companyId: "co", agentId: "planner", status: "succeeded", contextSnapshot: { issueId: "conversation" } });
+    expect(() => assertChatBacklogCreation(data)).not.toThrow();
+  });
   it.each(["duplicate", "status", "started-then-stopped", "corrected-after-creation", "owner", "plan"])("rejects %s", defect => {
     const data = evidence();
     if (defect === "duplicate") data.tasks.push({ ...data.tasks[0]!, id: "duplicate" });
     if (defect === "status") data.tasks[0]!.status = "todo";
-    if (defect === "started-then-stopped") data.taskRuns.push({ id: "early", companyId: "co", agentId: "planner", status: "cancelled" });
+    if (defect === "started-then-stopped") data.runs.push({ id: "early", companyId: "co", agentId: "planner", status: "cancelled", contextSnapshot: { issueId: "held" } });
     if (defect === "corrected-after-creation") data.activity[0]!.details.status = "todo";
     if (defect === "owner") data.tasks[0]!.assigneeAgentId = "other";
     if (defect === "plan") data.plan.body = "I saved a plan";

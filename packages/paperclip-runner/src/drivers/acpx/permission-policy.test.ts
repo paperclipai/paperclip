@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { capabilityCanonicalOperationsForSurface } from "../../catalog/canonical-operations.js";
 
 import {
   acpxRuntimePermissionPolicy,
@@ -7,6 +8,14 @@ import {
 } from "./permission-policy.js";
 
 describe("ACPX permission policy", () => {
+  it.each(["approve-reads", "approve-paperclip"] as const)("allows assigned canonical live reads, including approval lookup, in %s", mode => {
+    const reads = capabilityCanonicalOperationsForSurface("live").filter(action => action.sideEffectClass === "read");
+    expect(reads.some(action => action.operationId === "get_approval")).toBe(true);
+    for (const action of reads) {
+      expect(claudePaperclipPermissionRules([{ name: action.operationId }], mode)).toEqual([`mcp__paperclip__${action.operationId}`]);
+    }
+    expect(claudePaperclipPermissionRules([{ name: "get_approval" }], "deny-all")).toEqual([]);
+  });
   it("uses only catalogued reads assigned to this run, regardless of tool hints", () => {
     const tools = [
       "paperclip__get_task_context", "read_document", "write_document",

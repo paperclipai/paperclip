@@ -1,5 +1,6 @@
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import { paperclipSemanticAction } from "../../catalog/semantic-action-catalog.js";
+import { capabilityCanonicalOperation } from "../../catalog/canonical-operations.js";
 import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 
@@ -39,10 +40,16 @@ export function claudePaperclipPermissionRules(
     // or the provider's permission-request metadata. Unknown operations stay
     // subject to approval even when their names or annotations claim a read.
     const action = paperclipSemanticAction(name);
+    // The semantic catalog groups approval reads under "governance". The
+    // canonical side-effect class distinguishes those reads from decisions.
+    const liveAction = capabilityCanonicalOperation(name);
+    const isRead = liveAction
+      ? liveAction.surfaces.includes("live") && liveAction.sideEffectClass === "read"
+      : action?.effect === "read";
     // This only bypasses the provider's redundant permission prompt. The
     // authenticated bridge and controller still validate run authority,
     // company scope, claims, task mode, and governed-action approvals.
-    return action && (action.effect === "read" || (
+    return isRead || (action && (
       mode === "approve-paperclip" && AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS.has(name)
     ))
       ? [`mcp__paperclip__${name}`]
