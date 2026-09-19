@@ -436,6 +436,43 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
+  it("allows a comment-mention wake to bypass a terminal status", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueStatus: "done",
+      wakeCommentIdPresent: true,
+      wakeReason: "issue_comment_mentioned",
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("cancels a terminal assignment wake even when a comment id is present", () => {
+    // Fails against the old rule `resumeIntent || wakeCommentIdPresent`.
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueStatus: "done",
+      wakeCommentIdPresent: true,
+      wakeReason: "issue_assigned",
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_terminal_status",
+    });
+  });
+
+  it("cancels a terminal execution_review_requested wake that carries a comment id", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueStatus: "done",
+      wakeCommentIdPresent: true,
+      wakeReason: "execution_review_requested",
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_terminal_status",
+    });
+  });
+
   it("allows a non-assignee workspace-busy retry to bypass the ownership check", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),

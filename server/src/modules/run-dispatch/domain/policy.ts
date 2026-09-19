@@ -5,6 +5,19 @@
 // then packs the result into a facts object. This file only branches on
 // that facts object; it never queries a database or reads the clock.
 
+import { allowsTerminalStatusBypass } from "./queued-run-priority.js";
+
+export {
+  agedPriorityRank,
+  allowsTerminalStatusBypass,
+  compareQueuedRunClaimOrder,
+  issueRunPriorityRank,
+  queueWaitStartedAt,
+  QUEUE_PRIORITY_AGE_STEP_MS,
+  QUEUE_PRIORITY_MAX_AGE_STEPS,
+  TERMINAL_COMMENT_WAKE_REASONS,
+} from "./queued-run-priority.js";
+
 /** The retry reason a run carries, reduced to the kinds a gate cares about. */
 export type RetryReasonKind =
   | "max_turn_continuation"
@@ -609,7 +622,8 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent,
+    // wakeCommentId alone is not a terminal bypass — see allowsTerminalStatusBypass.
+    terminalBypass: allowsTerminalStatusBypass(facts),
   });
   if (statusOutcome === "terminal") {
     return {
