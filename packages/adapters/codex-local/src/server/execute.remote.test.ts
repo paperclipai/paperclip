@@ -394,10 +394,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "-",
     ]);
   });
@@ -470,10 +467,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "resume",
       "session-123",
       "-",
@@ -554,10 +548,7 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
-      "-c",
-      'sandbox_mode="workspace-write"',
-      "-c",
-      "sandbox_workspace_write.network_access=true",
+      "--dangerously-bypass-approvals-and-sandbox",
       "resume",
       "session-123",
       "-",
