@@ -5871,7 +5871,6 @@ export function recoveryService(
         id: issues.id,
         companyId: issues.companyId,
         assigneeAgentId: issues.assigneeAgentId,
-        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(
@@ -5879,6 +5878,8 @@ export function recoveryService(
           eq(issues.status, "blocked"),
           isNull(issues.hiddenAt),
           isNull(issues.assigneeUserId),
+          // Exclude issues with a human-owned wait path.
+          isNull(issues.unblockDescriptor),
           // Exclude issues that have at least one non-terminal blocker relation
           sql`NOT EXISTS (
             SELECT 1 FROM issue_relations ir
@@ -5889,51 +5890,33 @@ export function recoveryService(
               AND bi.status NOT IN ('done', 'cancelled')
               AND bi.hidden_at IS NULL
           )`,
+          // Exclude issues with an active recovery action — the board must decide.
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_recovery_actions ira
+            WHERE ira.source_issue_id = ${issues.id}
+              AND ira.company_id = ${issues.companyId}
+              AND ira.status IN ('active', 'escalated')
+          )`,
+          // Exclude issues with a pending interaction — an agent is awaiting a response.
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_thread_interactions iti
+            WHERE iti.issue_id = ${issues.id}
+              AND iti.company_id = ${issues.companyId}
+              AND iti.status = 'pending'
+          )`,
+          // Exclude issues with a pending approval linked to them.
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_approvals ia
+            INNER JOIN approvals a ON a.id = ia.approval_id
+            WHERE ia.issue_id = ${issues.id}
+              AND ia.company_id = ${issues.companyId}
+              AND a.status = 'pending'
+          )`,
         ),
       )
       .limit(50);
 
     for (const candidate of candidates) {
-      // Skip if there is an unblockDescriptor — that is a human-owned wait path.
-      if (candidate.unblockDescriptor) continue;
-
-      // Skip if there is an active recovery action — the board must decide.
-      const activeAction = await recoveryActionsSvc.getActiveForIssue(
-        candidate.companyId,
-        candidate.id,
-      );
-      if (activeAction) continue;
-
-      // Skip if there is a pending interaction or approval on this issue.
-      const [pendingInteraction, pendingApproval] = await Promise.all([
-        db
-          .select({ id: issueThreadInteractions.id })
-          .from(issueThreadInteractions)
-          .where(
-            and(
-              eq(issueThreadInteractions.companyId, candidate.companyId),
-              eq(issueThreadInteractions.issueId, candidate.id),
-              eq(issueThreadInteractions.status, "pending"),
-            ),
-          )
-          .limit(1)
-          .then((rows) => rows[0] ?? null),
-        db
-          .select({ id: approvals.id })
-          .from(issueApprovals)
-          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
-          .where(
-            and(
-              eq(issueApprovals.companyId, candidate.companyId),
-              eq(issueApprovals.issueId, candidate.id),
-              eq(approvals.status, "pending"),
-            ),
-          )
-          .limit(1)
-          .then((rows) => rows[0] ?? null),
-      ]);
-      if (pendingInteraction || pendingApproval) continue;
-
       const updated = await issuesSvc.update(candidate.id, { status: "todo" });
       if (!updated) continue;
 

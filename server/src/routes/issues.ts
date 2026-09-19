@@ -6513,12 +6513,18 @@ export function issueRoutes(
     ) {
       return true;
     }
-    // When there is no agent assignee, the issue creator is the natural fallback
-    // owner — consistent with how reconcileResolvedDependencyWakeBackstop treats
-    // null-assignee blocked tasks (wakes createdByAgentId). A board-owned
-    // recovery action on an unassigned issue should not permanently block the
-    // creator from self-healing their own task.
-    if (!issue.assigneeAgentId && issue.createdByAgentId === actorAgentId) {
+    // When there is no agent assignee and the recovery action is board-owned
+    // (null ownerAgentId), the issue creator is the natural fallback owner —
+    // consistent with how reconcileResolvedDependencyWakeBackstop treats
+    // null-assignee blocked tasks (wakes createdByAgentId). Limit this bypass
+    // to board-owned recovery actions only; agent-owned actions (Inspector,
+    // SRE, etc.) must be resolved by their owning agent or a checkout-management
+    // override to avoid violating the agent ownership boundary.
+    if (
+      !issue.assigneeAgentId &&
+      issue.createdByAgentId === actorAgentId &&
+      !activeRecoveryAction.ownerAgentId
+    ) {
       return true;
     }
     if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;

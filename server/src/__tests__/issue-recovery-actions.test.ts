@@ -2692,4 +2692,95 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  it("allows the issue creator to resolve a board-owned recovery action on an unassigned issue", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: null, createdByAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:board-owned-creator-bypass",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Board must decide.",
+      wakePolicy: { type: "board_escalation" },
+    });
+    const runId = randomUUID();
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId });
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "false_positive",
+        sourceIssueStatus: "in_progress",
+        resolutionNote: "Creator self-healing an unassigned board-owned action.",
+      })
+      .expect(200);
+
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "false_positive",
+    });
+  });
+
+  it("blocks the issue creator from resolving an agent-owned recovery action on an unassigned issue", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: null, createdByAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:agent-owned-creator-bypass-blocked",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Recovery owner must resolve.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    const rejected = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_progress",
+        resolutionNote: "Creator should not bypass an agent-owned recovery action.",
+      })
+      .expect(403);
+
+    expect(rejected.body.details?.code).toBe("recovery_source_authority_required");
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({ status: "active", outcome: null });
+  });
 });
