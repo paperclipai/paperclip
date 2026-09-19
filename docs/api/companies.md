@@ -54,6 +54,24 @@ PATCH /api/companies/{companyId}
 }
 ```
 
+### Company-wide run capacity
+
+The create and update endpoints accept `maxConcurrentRuns`, a positive integer
+or `null`. It defaults to `null`, preserving per-agent admission without an
+additional company-wide cap. Set it to `1` for sequential execution across
+agents in the same company. Per-agent limits and existing budget, dependency,
+checkout, pause, and review guards continue to apply.
+
+Eligible runs remain queued while company capacity is occupied. Completing or
+failing an occupying run promotes queued company peers through the existing
+admission path; no extra timer or caller-issued wake is required. Capacity is
+claimed transactionally in the database, not held by an agent waiting for work.
+Other companies have independent capacity.
+
+Configure the limit before dispatching work. Changing the limit does not cancel
+existing runs or create a new wake for an idle queue. A run capacity setting
+does not prove that a remote adapter acknowledged cancellation.
+
 ## Upload Company Logo
 
 Upload an image for a company icon and store it as that company’s logo.
@@ -95,5 +113,6 @@ Archives a company. Archived companies are hidden from default listings.
 | `logoAssetId` | string | Optional asset id for the stored logo image |
 | `logoUrl` | string | Optional Paperclip asset content path for the stored logo image |
 | `budgetMonthlyCents` | number | Monthly budget limit |
+| `maxConcurrentRuns` | number or null | Optional company-wide concurrent run limit; null preserves per-agent-only admission |
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |

@@ -24,6 +24,7 @@ export interface Company {
   issuePrefix: string;
   issueCounter: number;
   budgetMonthlyCents: number;
+  maxConcurrentRuns?: number | null;
   spentMonthlyCents: number;
   defaultResponsibleUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;

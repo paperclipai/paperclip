@@ -95,6 +95,7 @@ export const companiesApi = {
     name: string;
     description?: string | null;
     budgetMonthlyCents?: number;
+    maxConcurrentRuns?: number | null;
   }) =>
     api.post<Company>("/companies", data),
   update: (
@@ -106,6 +107,7 @@ export const companiesApi = {
         | "description"
         | "status"
         | "budgetMonthlyCents"
+        | "maxConcurrentRuns"
         | "requireBoardApprovalForNewAgents"
         | "interactionResolverGovernance"
         | "feedbackDataSharingEnabled"

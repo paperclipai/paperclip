@@ -6,6 +6,26 @@ instrumentation contracts; see the
 [Telemetry Data Contract](../packages/shared/src/telemetry/README.md) for the
 separate first-party event system.
 
+## Periodic recovery completion receipts
+
+The existing heartbeat recovery chain emits a local structured info log,
+`periodic heartbeat recovery completed`, only after its asynchronous stages
+have all returned successfully, including the final stale-lock sweep. The
+receipt contains an observer-lifetime UUID (`observerId`), a per-lifetime
+invocation sequence (`cycle`), `startedAt`, `completedAt`, and the configured
+`intervalMs`. It contains no issue content or credentials and requires no
+telemetry exporter. A failed chain keeps its existing error log and emits no
+completion receipt. Suppressed or disabled recovery emits no receipt either.
+
+These receipts do not schedule work, acknowledge issues, or change recovery
+policy. Correlate them with the exact running process/build when observing
+multiple cycles; process restarts create a new observer lifetime. A sequence
+number alone does not prove completion of earlier invocations, since recovery
+chains can overlap. This receipt covers the periodic heartbeat recovery chain,
+not independent execution-control queues or every task in the scheduler tick.
+
+## OpenTelemetry tracing
+
 Paperclip ships with **opt-in** OpenTelemetry auto-instrumentation for the
 server process. When activated it produces **traces only** — no metrics and no
 logs are exported by this integration.

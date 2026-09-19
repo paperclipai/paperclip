@@ -45,6 +45,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
+import { createPeriodicRecoveryObserver } from "./services/recovery-observability.js";
 import {
   StartupRefusalError,
   migrationRefusalError,
@@ -1139,6 +1140,12 @@ async function startServerWithDatabaseTeardown(
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
+  const observePeriodicRecovery = createPeriodicRecoveryObserver((receipt) => {
+    logger.info(
+      { ...receipt, intervalMs: config.heartbeatSchedulerIntervalMs },
+      "periodic heartbeat recovery completed",
+    );
+  });
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
     tracked = Promise.resolve(work)
@@ -1757,7 +1764,7 @@ async function startServerWithDatabaseTeardown(
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
+          trackHeartbeatSchedulerWork(observePeriodicRecovery(() => heartbeat
             .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
@@ -1800,7 +1807,7 @@ async function startServerWithDatabaseTeardown(
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
               }
-            })
+            }))
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));

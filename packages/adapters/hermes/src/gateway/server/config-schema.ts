@@ -41,6 +41,17 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default.",
       },
       {
+        key: "resultHandoff",
+        label: "Result handoff",
+        type: "select",
+        default: "none",
+        options: [
+          { value: "none", label: "Worker manages disposition" },
+          { value: "review", label: "Submit result to configured reviewer" },
+        ],
+        hint: "Opt-in for output-only workers. Requires an independent agent review stage on the issue. A completed gateway result is submitted for review, never automatically accepted or marked done.",
+      },
+      {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",

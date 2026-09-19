@@ -25,6 +25,7 @@ export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  maxConcurrentRuns: z.number().int().min(1).max(2_147_483_647).nullable().optional(),
   defaultResponsibleUserId: z.string().min(1).nullable().optional(),
 });
 

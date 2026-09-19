@@ -890,7 +890,18 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run).not.toBeNull();
     await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
 
-    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+    const executeCallCount = countExecuteCallsForRun(run!.id);
+    if (executeCallCount === 0) {
+      const [persisted] = await db.select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+      }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+      console.error("Generic timer adapter dispatch did not arrive", persisted);
+    }
+    expect(executeCallCount).toBe(1);
   });
 
   it("allows legacy generic timer wakes by default when no skip policy is set", async () => {

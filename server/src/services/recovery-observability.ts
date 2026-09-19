@@ -1,6 +1,28 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+
+export type PeriodicRecoveryReceipt = {
+  observerId: string;
+  cycle: number;
+  startedAt: string;
+  completedAt: string;
+};
+
+/** Observe existing recovery work; never schedule, retry, or swallow failures. */
+export function createPeriodicRecoveryObserver(
+  onCompleted: (receipt: PeriodicRecoveryReceipt) => void,
+) {
+  const observerId = randomUUID();
+  let cycle = 0;
+  return async function observe<T>(work: () => Promise<T>): Promise<T> {
+    const started = { observerId, cycle: ++cycle, startedAt: new Date().toISOString() };
+    const result = await work();
+    onCompleted({ ...started, completedAt: new Date().toISOString() });
+    return result;
+  };
+}
 
 // Default alert threshold: the recovery rate that a regression like the 07-06
 // week (3.26% of runs) blew past while nobody noticed by feel. See the plan on

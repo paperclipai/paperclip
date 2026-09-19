@@ -13,6 +13,7 @@ export const companies = pgTable(
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
     issueCounter: integer("issue_counter").notNull().default(0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
+    maxConcurrentRuns: integer("max_concurrent_runs"),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     defaultResponsibleUserId: text("default_responsible_user_id"),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")

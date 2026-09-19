@@ -144,6 +144,37 @@ This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
 with `POST /v1/runs/{run_id}/stop`.
 
+### Output-only gateway workers
+
+For a gateway worker that returns results but has no Paperclip write credential,
+set `adapterConfig.resultHandoff` to `"review"`. The default, `"none"`, preserves
+worker-managed disposition. This option applies to `hermes_gateway` only.
+Enable it on the persisted agent configuration; an issue-level adapter override
+cannot grant the capability. An override may still disable it for one task.
+
+Before assigning the task, configure an independent agent review stage in the
+issue's `executionPolicy.stages`. A completed, nonempty gateway result is eligible
+only while the source Paperclip run still owns that issue's assignment, checkout,
+and execution lock. Both native run and session identities must be present.
+The server records an explicitly unaccepted source report, retaining source-trust
+metadata and run attribution without pretending that the worker called the API.
+It uses the existing review transition and assignment-wake queue to hand the issue
+to its configured reviewer. It does not infer a reviewer from an organization
+chart, grant worker permissions, approve the result, or mark the issue done.
+
+The transition, fresh source report, producing-run binding and audit entry commit
+together. If delivery is interrupted afterward, the existing queue-recovery pass
+resumes that intent through the normal assignment queue. Persisted wake receipts
+prevent duplicate delivery; a changed review round, final issue state or revoked
+source opt-in prevents stale replay. No additional scheduler is installed.
+
+The reviewer must inspect the source report and make the normal `approve` or
+`request_changes` decision. Existing review/rework policies remain in force.
+Missing policy, stale ownership, empty or incomplete results do not authorize a
+handoff; this option does not disable normal recovery for unresolved work.
+Use an optional company `maxConcurrentRuns` limit when all agents must execute
+serially. Neither option adds gateway skill synchronization or cwd transfer.
+
 ### Compatibility with the old gateway package
 
 `@paperclipai/adapter-hermes-gateway` remains as a deprecated compatibility shim
