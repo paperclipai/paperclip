@@ -55,7 +55,7 @@ export function distributionPluginActivationGuard(
   selectedKeys: readonly string[] | null,
 ) {
   const root = distributionPluginsRoot(catalogRoot);
-  return (input: { pluginKey?: string; packageRoot: string; manifest?: PaperclipPluginManifestV1; previousManifest?: PaperclipPluginManifestV1 }) => {
+  return (input: { pluginKey?: string; packageRoot: string; installedPackagePath?: string | null; manifest?: PaperclipPluginManifestV1; previousManifest?: PaperclipPluginManifestV1 }) => {
     let packageRoot: string;
     try { packageRoot = fs.realpathSync(input.packageRoot); }
     catch (error) {
@@ -65,7 +65,12 @@ export function distributionPluginActivationGuard(
     const entry = entries.find((candidate) => input.pluginKey ? candidate.pluginKey === input.pluginKey : candidate.localPath === packageRoot);
     const relative = path.relative(root, packageRoot);
     const inside = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-    if (!inside && !entry) return;
+    // A missing image directory can make package resolution fall back to npm.
+    // Retain the persisted image-path provenance even when that directory no
+    // longer exists; the resolved fallback is not an ordinary installation.
+    const installedRelative = input.installedPackagePath ? path.relative(root, path.resolve(input.installedPackagePath)) : null;
+    const installedInside = installedRelative !== null && (installedRelative === "" || (!installedRelative.startsWith("..") && !path.isAbsolute(installedRelative)));
+    if (!inside && !installedInside && !entry) return;
     if (!entry || (selectedKeys !== null && !selectedKeys.includes(entry.key)) || packageRoot !== entry.localPath) {
       throw new Error("Distribution plugin is absent or not selected in this deployment");
     }

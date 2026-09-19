@@ -273,6 +273,8 @@ export interface PluginLoaderOptions {
   assertPackageActivation?: (input: {
     pluginKey?: string;
     packageRoot: string;
+    /** Persisted source path, even when package resolution used a fallback. */
+    installedPackagePath?: string | null;
     manifest?: PaperclipPluginManifestV1;
     /** Persisted grants, supplied before a runtime manifest refresh is saved. */
     previousManifest?: PaperclipPluginManifestV1;
@@ -1393,7 +1395,7 @@ export function pluginLoader(
       );
     }
 
-    assertPackageActivation?.({ packageRoot, pluginKey: plugin.pluginKey, manifest, previousManifest: plugin.manifestJson });
+    assertPackageActivation?.({ packageRoot, installedPackagePath: plugin.packagePath, pluginKey: plugin.pluginKey, manifest, previousManifest: plugin.manifestJson });
     if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
       return plugin;
     }
@@ -2263,10 +2265,10 @@ export function pluginLoader(
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
       const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
-      assertPackageActivation?.({ pluginKey, packageRoot });
+      assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
       manifest = activePlugin.manifestJson;
-      assertPackageActivation?.({ pluginKey, packageRoot, manifest });
+      assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
       const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
 
       // ------------------------------------------------------------------

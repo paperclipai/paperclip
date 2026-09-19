@@ -181,4 +181,30 @@ describe("pluginLoader.loadAll error retry", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("does not import an npm fallback for a removed distribution install", async () => {
+    const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "distribution-removal-")));
+    try {
+      const packageRoot = path.join(root, "node_modules/@example/broken-plugin");
+      mkdirSync(packageRoot, { recursive: true });
+      const plugin = createPluginRecord({ status: "ready", packagePath: path.join(root, "distribution/removed") });
+      writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ name: plugin.packageName, type: "module", paperclipPlugin: { manifest: "manifest.js" } }));
+      writeFileSync(path.join(packageRoot, "manifest.js"), "throw new Error('fallback manifest must never import');");
+      const runtime = createRuntimeServices();
+      const startWorker = vi.fn();
+      runtime.workerManager.startWorker = startWorker;
+      mockRegistry.getById.mockResolvedValue(plugin);
+      const loader = pluginLoader({} as Db, {
+        localPluginDir: root,
+        assertPackageActivation: distributionPluginActivationGuard(root, [], []),
+      }, runtime);
+      const result = await loader.loadSingle(plugin.id);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Distribution plugin is absent or not selected");
+      expect(mockRegistry.update).not.toHaveBeenCalled();
+      expect(startWorker).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

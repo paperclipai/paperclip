@@ -5,7 +5,8 @@
 // reloads parked tabs onto the fresh bundle. Left as the literal placeholder in
 // dev, where HMR (not the worker) drives refreshes.
 const BUILD_ID = "__PAPERCLIP_BUILD_ID__";
-const CACHE_NAME = `paperclip-${BUILD_ID}`;
+// Separate this allowlisted cache from older workers that cached arbitrary URLs.
+const CACHE_NAME = `paperclip-public-assets-${BUILD_ID}`;
 const privateRequests = new Set();
 const privateCacheControl = /(?:^|,)\s*(?:no-store|private)(?:\s*(?:,|=)|\s*$)/i;
 
@@ -32,6 +33,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
+  // Only immutable Vite build assets have a public offline-cache contract.
+  // Never infer that application/extension responses are public from absent
+  // headers, or from an in-memory classification lost when this worker restarts.
+  const publicAsset = url.origin === self.location.origin && !url.search &&
+    /^\/assets\/[^/]+-[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9.]+$/.test(url.pathname);
 
   // Explicitly private requests must bypass BOTH cache writes and offline
   // fallback, including extension endpoints outside the host /api namespace.
@@ -44,7 +50,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Network-first for everything — cache is only an offline fallback
+  // Network-first; only public build assets can use an offline fallback.
   event.respondWith(
     fetch(request)
       .then(async (response) => {
@@ -54,7 +60,7 @@ self.addEventListener("fetch", (event) => {
           // if storage is unavailable so offline fallback still fails closed.
           privateRequests.add(request.url);
           await evictRequest(request).catch(() => {});
-        } else if (response.ok && url.origin === self.location.origin && !privateRequests.has(request.url)) {
+        } else if (response.ok && publicAsset && !privateRequests.has(request.url)) {
           const clone = response.clone();
           await caches.open(CACHE_NAME).then(async (cache) => {
             await cache.put(request, clone);
@@ -66,16 +72,14 @@ self.addEventListener("fetch", (event) => {
       })
       .catch(async () => {
         if (privateRequests.has(request.url)) return Response.error();
-        // caches.match() resolves undefined on a miss (and the promise itself
-        // is always truthy, so `||` can never supply a fallback). respondWith
-        // must always receive a real Response — resolving undefined breaks
-        // the navigation with "Failed to convert value to 'Response'" instead
-        // of showing anything.
-        if (request.mode === "navigate") {
-          if (privateRequests.has(new URL("/", self.location.origin).href)) return new Response("Offline", { status: 503 });
-          return (await caches.match("/")) ?? new Response("Offline", { status: 503 });
-        }
-        return (await caches.match(request)) ?? Response.error();
+        if (!publicAsset) return request.mode === "navigate" ? new Response("Offline", { status: 503 }) : Response.error();
+        // Restrict lookup to this policy's cache; old arbitrary-response caches
+        // must not become fallback candidates if activation cleanup fails.
+        try {
+          const cached = await (await caches.open(CACHE_NAME)).match(request);
+          if (cached && !privateCacheControl.test(cached.headers.get("cache-control") ?? "")) return cached;
+        } catch { /* Unavailable cache storage is an offline miss. */ }
+        return Response.error();
       })
   );
 });

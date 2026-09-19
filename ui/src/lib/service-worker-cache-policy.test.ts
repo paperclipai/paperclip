@@ -11,11 +11,11 @@ function worker() {
   const fetch = vi.fn().mockResolvedValue(new Response("public asset"));
   vm.runInNewContext(readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8"), {
     self: { location: { origin: "https://example.test" }, addEventListener: (type: string, fn: (event: unknown) => void) => handlers.set(type, fn) },
-    URL, Response, fetch, caches: { keys: async () => ["paperclip-old", "paperclip-current"], open: async () => ({ put, delete: remove }), match },
+    URL, Response, fetch, caches: { keys: async () => ["paperclip-old", "paperclip-current"], open: async () => ({ put, delete: remove, match }), match },
   });
-  const request = (cache: RequestCache = "default") => {
+  const request = (cache: RequestCache = "default", pathname = "/extension/history") => {
     const respondWith = vi.fn();
-    handlers.get("fetch")!({ request: new Request("https://example.test/extension/history", { cache }), respondWith, waitUntil: vi.fn() });
+    handlers.get("fetch")!({ request: new Request(`https://example.test${pathname}`, { cache }), respondWith, waitUntil: vi.fn() });
     return respondWith;
   };
   return { request, fetch, put, match, remove };
@@ -38,8 +38,11 @@ describe("service worker privacy boundaries", () => {
   });
   it("keeps public asset offline caching", async () => {
     const w = worker();
-    await w.request().mock.calls[0]![0];
+    await w.request("default", "/assets/index-AbCd1234.js").mock.calls[0]![0];
     expect(w.put).toHaveBeenCalledOnce();
+    w.fetch.mockRejectedValue(new Error("offline"));
+    w.match.mockResolvedValue(new Response("cached build asset"));
+    expect(await (await w.request("default", "/assets/index-AbCd1234.js").mock.calls[0]![0]).text()).toBe("cached build asset");
   });
   it.each(["private", "no-store"])("evicts stale entries when a response becomes %s and blocks offline reuse", async directive => {
     const w = worker();
@@ -59,5 +62,26 @@ describe("service worker privacy boundaries", () => {
     w.fetch.mockRejectedValue(new Error("offline"));
     expect((await w.request().mock.calls[0]![0]).type).toBe("error");
     expect(w.match).not.toHaveBeenCalled();
+  });
+
+  it.each(["/extension/history", "/extensions/support/messages", "/", "/assets/avatar.png", "/assets/index-AbCd1234.js?user=1"])("never caches or falls back to uncertain resource %s after a worker restart", async pathname => {
+    const previous = worker();
+    previous.remove.mockRejectedValue(new Error("storage unavailable"));
+    previous.fetch.mockResolvedValue(new Response("personal content", { headers: { "cache-control": "private" } }));
+    await previous.request("default", pathname).mock.calls[0]![0];
+    const restarted = worker();
+    restarted.match.mockResolvedValue(new Response("stale personal content"));
+    await restarted.request("default", pathname).mock.calls[0]![0];
+    expect(restarted.put).not.toHaveBeenCalled();
+    restarted.fetch.mockRejectedValue(new Error("offline"));
+    expect((await restarted.request("default", pathname).mock.calls[0]![0]).type).toBe("error");
+    expect(restarted.match).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cached asset explicitly marked private even after restart", async () => {
+    const w = worker();
+    w.match.mockResolvedValue(new Response("personal content", { headers: { "cache-control": "private" } }));
+    w.fetch.mockRejectedValue(new Error("offline"));
+    expect((await w.request("default", "/assets/index-AbCd1234.js").mock.calls[0]![0]).type).toBe("error");
   });
 });

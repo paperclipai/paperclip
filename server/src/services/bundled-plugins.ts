@@ -278,7 +278,8 @@ async function reconcileBundledPluginManifest(
       requiresApproval = bundleManifest.capabilities.some((capability) => !approved.has(capability));
     }
     const rebindPackage = install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
-    if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval) return;
+    const refreshDistribution = install.distribution && JSON.stringify(bundleManifest) !== JSON.stringify(existing.manifestJson);
+    if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval && !refreshDistribution) return;
     await deps.registry.update(existing.id, {
       version: bundleManifest.version,
       manifest: bundleManifest,

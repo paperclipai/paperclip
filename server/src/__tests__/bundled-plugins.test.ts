@@ -483,6 +483,21 @@ describe("ensureBundledPlugins", () => {
     expect(installPlugin).not.toHaveBeenCalled();
   });
 
+  it("refreshes a same-version rollback while retaining the pending operator decision", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const pending = { ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read", "issues.update"] };
+    const { deps, loadManifest, update, updateStatus } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "upgrade_pending", packagePath: localPath, manifestJson: pending } } });
+    // A smaller capability set is not proof that every remaining capability
+    // was approved, or that the plugin was enabled before the pending upgrade.
+    const rollback = { ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read" as const] };
+    loadManifest.mockResolvedValue(rollback);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { version: "0.1.0", manifest: rollback });
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(deps.lifecycle.load).not.toHaveBeenCalled();
+  });
+
   it("swallows a reconcile error and continues boot", async () => {
     const { deps, update } = makeDeps({
       rows: {

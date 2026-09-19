@@ -62,10 +62,19 @@ saved atomically in `upgrade_pending`, even for same-version bundles. It cannot
 activate until an operator reviews the manifest and enables it through the normal
 plugin lifecycle. Invalid capability declarations are rejected before persistence.
 Runtime refreshes also reject unapproved capability additions before starting code.
+Rolling back an unapproved replacement refreshes the displayed manifest but
+retains `upgrade_pending`. Review the rollback manifest and explicitly enable it
+to resume. A smaller capability set alone cannot prove prior approval: it may
+retain an unapproved permission, and the plugin may originally have been disabled.
+Ordinary upgrades/downgrades of an approved, ready plugin continue automatically.
 
 Keep each key's directory stable across releases. The activation guard also
 covers persisted installs: a plugin removed from the image catalog, or no
 longer selected in managed configuration, cannot activate on restart. Its
+stored image path remains the source marker if the directory disappears; package
+resolution cannot substitute an npm copy. Keep the catalog root stable as well.
+An explicit operator reinstall changes a package's source; editing database rows
+or replacing the catalog root is outside this image-selection contract. Plugin
 database records remain for rollback. Plugin data migrations must themselves
 support the intended rollback window; removing a bundle does not undo them.
 
@@ -96,3 +105,7 @@ UI code is trusted browser code. Host context is display context, never proof
 of server authorization. A distribution backend must independently validate
 the signed-in session and enforce company, tenant and user access rules for
 every read and mutation. Keep provider secrets out of plugin UI and manifests.
+The service worker's offline cache accepts only same-origin, hashed build assets
+under `/assets/`. It does not store or replay application HTML, extension routes
+or API data. This policy remains in effect after worker restarts and does not read
+the arbitrary-response caches created by older workers.

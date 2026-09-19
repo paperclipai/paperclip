@@ -60,6 +60,7 @@ describe("image-owned plugin catalogs", () => {
     expect(() => distributionPluginActivationGuard(root, entries, [])({ packageRoot: localPath })).toThrow(/not selected/);
     expect(() => distributionPluginActivationGuard(root, entries, [])(input)).toThrow(/not selected/);
     expect(() => distributionPluginActivationGuard(root, [], [])(input)).toThrow(/absent/);
+    expect(() => distributionPluginActivationGuard(root, [], [])({ ...input, packageRoot: path.join(root, "node_modules/acme"), installedPackagePath: localPath })).toThrow(/absent/);
     expect(() => distributionPluginActivationGuard(root, [], [])({ pluginKey: "ordinary.plugin", packageRoot: path.join(root, "ordinary") })).not.toThrow();
   });
   it("rejects dangling catalog symlinks instead of treating them as absent", () => {

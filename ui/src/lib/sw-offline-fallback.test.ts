@@ -76,7 +76,7 @@ describe("sw.js offline fallback", () => {
     expect(await response!.text()).toBe("Offline");
   });
 
-  it("serves the cached shell for a failed navigation when one exists", async () => {
+  it("does not replay a legacy cached shell for a failed navigation", async () => {
     const shell = new Response("<html>app shell</html>", { status: 200 });
     const listener = loadServiceWorkerFetchListener({
       fetch: () => Promise.reject(new TypeError("network down")),
@@ -89,7 +89,8 @@ describe("sw.js offline fallback", () => {
       mode: "navigate",
     });
 
-    expect(response).toBe(shell);
+    expect(response!.status).toBe(503);
+    expect(await response!.text()).toBe("Offline");
   });
 
   it("returns a network-error Response for a failed asset with no cache entry", async () => {
