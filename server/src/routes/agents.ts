@@ -3122,22 +3122,45 @@ export function agentRoutes(
     requestedConfig: Record<string, unknown>,
     existingConfig: Record<string, unknown>,
   ): Record<string, unknown> {
+    let restored: Record<string, unknown> = { ...requestedConfig };
+
+    // 1) env.* bindings (existing behavior + plain-string sentinel, so a
+    // round-tripped GET -> PATCH never persists the placeholder).
     const requestedEnv = asRecord(requestedConfig.env);
     const existingEnv = asRecord(existingConfig.env);
-    if (!requestedEnv || !existingEnv) return requestedConfig;
+    if (requestedEnv && existingEnv) {
+      const restoredEnv = { ...requestedEnv };
+      for (const [key, value] of Object.entries(requestedEnv)) {
+        const binding = asRecord(value);
+        const isRedacted = value === REDACTED_EVENT_VALUE
+          || (binding?.type === "plain" && binding.value === REDACTED_EVENT_VALUE);
+        if (
+          isRedacted
+          && Object.prototype.hasOwnProperty.call(existingEnv, key)
+        ) {
+          restoredEnv[key] = existingEnv[key];
+        }
+      }
+      restored = { ...restored, env: restoredEnv };
+    }
 
-    const restoredEnv = { ...requestedEnv };
-    for (const [key, value] of Object.entries(requestedEnv)) {
+    // 2) Top-level adapter secret fields (e.g. apiKey). GET redacts them to
+    // "***REDACTED***" via redactAgentAdapterConfig, so a round-tripped save
+    // must restore the stored binding instead of persisting the placeholder
+    // (normalizeSchemaSecretFieldForPersistence refuses the sentinel).
+    for (const [key, value] of Object.entries(requestedConfig)) {
+      if (key === "env") continue;
       const binding = asRecord(value);
-      if (
-        binding?.type === "plain"
-        && binding.value === REDACTED_EVENT_VALUE
-        && Object.prototype.hasOwnProperty.call(existingEnv, key)
-      ) {
-        restoredEnv[key] = existingEnv[key];
+      const isRedacted = value === REDACTED_EVENT_VALUE
+        || (binding?.type === "plain" && binding.value === REDACTED_EVENT_VALUE);
+      if (!isRedacted) continue;
+      if (Object.prototype.hasOwnProperty.call(existingConfig, key)) {
+        restored[key] = existingConfig[key];
+      } else {
+        delete restored[key];
       }
     }
-    return { ...requestedConfig, env: restoredEnv };
+    return restored;
   }
 
   function redactRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
