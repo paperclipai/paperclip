@@ -1,5 +1,8 @@
 import { auditSectionHref, type AuditSection } from "./audit/audit-navigation";
 
+/** A detail tab contributed by a plugin, keyed by plugin key and slot id. */
+export type AgentPluginDetailView = `plugin:${string}`;
+
 export type AgentDetailView =
   | "overview"
   | "instructions"
@@ -11,9 +14,13 @@ export type AgentDetailView =
   | "permissions"
   | "api-keys"
   | "revisions"
+  | AgentPluginDetailView
   | "run-detail";
 
-export type AgentLocalDetailView = Exclude<AgentDetailView, "run-detail">;
+export type AgentLocalDetailView = Exclude<AgentDetailView, "run-detail" | AgentPluginDetailView>;
+
+/** Views the contextual sidebar can link to, built-in or plugin-contributed. */
+export type AgentNavigableDetailView = AgentLocalDetailView | AgentPluginDetailView;
 
 export const AGENT_DETAIL_NAVIGATION: ReadonlyArray<{
   label: string;
@@ -46,7 +53,12 @@ export const AGENT_DETAIL_NAVIGATION: ReadonlyArray<{
   },
 ] as const;
 
-export function parseAgentDetailView(value: string | null): AgentLocalDetailView {
+export function isAgentPluginDetailView(value: string | null | undefined): value is AgentPluginDetailView {
+  return typeof value === "string" && value.startsWith("plugin:");
+}
+
+export function parseAgentDetailView(value: string | null): AgentNavigableDetailView {
+  if (isAgentPluginDetailView(value)) return value;
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "skills") return "skills";
   if (value === "runtime" || value === "configure" || value === "configuration") return "runtime";
@@ -59,7 +71,7 @@ export function parseAgentDetailView(value: string | null): AgentLocalDetailView
   return "overview";
 }
 
-export function agentDetailHref(agentRef: string, view: AgentLocalDetailView = "overview") {
+export function agentDetailHref(agentRef: string, view: AgentNavigableDetailView = "overview") {
   return `/agents/${agentRef}/${view}`;
 }
 

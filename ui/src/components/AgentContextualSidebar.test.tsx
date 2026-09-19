@@ -3,12 +3,18 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentContextualSidebar } from "./AgentContextualSidebar";
 import { queryKeys } from "@/lib/queryKeys";
 
+const pluginDetailSlots = vi.hoisted(() => ({ value: [] as Array<Record<string, unknown>> }));
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
+}));
+
+vi.mock("@/plugins/slots", () => ({
+  usePluginSlots: () => ({ slots: pluginDetailSlots.value, isLoading: false, errorMessage: null }),
 }));
 
 vi.mock("./ContextualSidebarFrame", () => ({
@@ -34,6 +40,38 @@ vi.mock("./SidebarNavItem", () => ({
 }));
 
 describe("AgentContextualSidebar", () => {
+  afterEach(() => {
+    pluginDetailSlots.value = [];
+  });
+
+  it("links the agent detail tabs contributed by plugins", () => {
+    pluginDetailSlots.value = [{ id: "insights", pluginKey: "acme", displayName: "Acme insights" }];
+    const queryClient = new QueryClient();
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/agents/codexcoder/overview"]}>
+          <AgentContextualSidebar agentRef="codexcoder" agentId="agent-1" agentName="Codex Coder" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Acme insights");
+    expect(markup).toContain('href="/agents/codexcoder/plugin:acme:insights"');
+  });
+
+  it("omits the plugin section when no plugin contributes an agent detail tab", () => {
+    const queryClient = new QueryClient();
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/agents/codexcoder/overview"]}>
+          <AgentContextualSidebar agentRef="codexcoder" agentId="agent-1" agentName="Codex Coder" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(markup).not.toContain("Plugins");
+  });
+
   it.each([false, true])("shows agent Channels only when chat connectors are enabled (%s)", (enabled) => {
     const client = new QueryClient();
     client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: enabled });

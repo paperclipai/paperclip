@@ -32,6 +32,7 @@ import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   AGENT_DETAIL_NAVIGATION,
+  isAgentPluginDetailView,
   parseAgentDetailView,
   type AgentLocalDetailView,
 } from "@/pages/agent-detail-navigation";
@@ -138,9 +139,11 @@ export function AgentSettingsPreview({
 
 function SettingsPage() {
   const location = useLocation();
-  const view = parseAgentDetailView(
+  const parsedView = parseAgentDetailView(
     location.pathname.split("/").pop() ?? "overview",
   );
+  // The prototype ships no plugin host, so plugin detail tabs stay unreachable.
+  const view: AgentLocalDetailView = isAgentPluginDetailView(parsedView) ? "overview" : parsedView;
   const queryClient = useQueryClient();
   const { data: agent } = useQuery({
     queryKey: queryKeys.agents.detail(ID),
