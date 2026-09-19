@@ -47,6 +47,28 @@ describe("buildCodexLocalConfig", () => {
     expect(buildCodexLocalConfig(makeValues({ codexEngine: "acp" }))).toMatchObject({ engine: "acp" });
   });
 
+  it("persists quota watcher handoff only for an explicitly selected ACP engine", () => {
+    expect(
+      buildCodexLocalConfig(
+        makeValues({
+          codexEngine: "acp",
+          codexAcpQuotaRotationWaitSec: 75,
+        }),
+      ),
+    ).toMatchObject({
+      engine: "acp",
+      quotaRotationWaitSec: 75,
+    });
+    expect(
+      buildCodexLocalConfig(
+        makeValues({
+          codexEngine: "cli",
+          codexAcpQuotaRotationWaitSec: 75,
+        }),
+      ),
+    ).not.toHaveProperty("quotaRotationWaitSec");
+  });
+
   it("persists the fastMode toggle into adapter config", () => {
     const config = buildCodexLocalConfig(
       makeValues({
