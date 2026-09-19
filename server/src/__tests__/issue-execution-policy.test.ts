@@ -466,6 +466,140 @@ describe("issue execution policy transitions", () => {
     });
   });
 
+  describe("review precondition return", () => {
+    const policy = twoStagePolicy();
+    const reviewStageId = policy.stages[0].id;
+
+    function pendingReviewIssue(stateOverrides: Record<string, unknown> = {}) {
+      return {
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          changesRequestedCount: 0,
+          ...stateOverrides,
+        },
+      };
+    }
+
+    it("REVIEW_EVIDENCE_NOT_GREEN restores the return assignee without a native decision", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: pendingReviewIssue(),
+        policy,
+        requestedStatus: "todo",
+        requestedAssigneePatch: { assigneeAgentId: coderAgentId },
+        actor: { agentId: qaAgentId },
+        commentBody: [
+          "## REVIEW_EVIDENCE_NOT_GREEN",
+          "",
+          "Exact-head review precondition is not met; no verdict was consumed.",
+        ].join("\n"),
+      });
+
+      expect(result.decision).toBeUndefined();
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "precondition_returned",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+      });
+    });
+
+    it("REVIEW_ENVIRONMENT_BLOCKED is the same non-verdict return", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: pendingReviewIssue({ changesRequestedCount: 2 }),
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "REVIEW_ENVIRONMENT_BLOCKED\nProvider quota exhausted.",
+      });
+
+      expect(result.decision).toBeUndefined();
+      expect(result.patch.executionState).toMatchObject({
+        status: "precondition_returned",
+        lastDecisionOutcome: null,
+        changesRequestedCount: 2,
+      });
+    });
+
+    it("does not treat a later mention of the token as a precondition return", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: pendingReviewIssue(),
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Please fix the tests. Do not send REVIEW_EVIDENCE_NOT_GREEN next time.",
+      });
+
+      expect(result.decision).toMatchObject({ outcome: "changes_requested" });
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        lastDecisionOutcome: "changes_requested",
+        changesRequestedCount: 1,
+      });
+    });
+
+    it("resubmits the same exact-head stage without duplicating a verdict", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "precondition_returned",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            changesRequestedCount: 0,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Required CI is green; resubmitting the unchanged head.",
+      });
+
+      expect(result.decision).toBeUndefined();
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.assigneeAgentId).toBe(qaAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+      });
+    });
+  });
+
   describe("review-only policy (no approval stage)", () => {
     const policy = reviewOnlyPolicy();
     const reviewStageId = policy.stages[0].id;

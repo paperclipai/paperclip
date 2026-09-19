@@ -44,6 +44,7 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     for (const wakeReason of [
       "execution_review_requested",
       "execution_changes_requested",
+      "execution_precondition_returned",
     ] as const) {
       expect(shouldResetTaskSessionForWake({ wakeReason })).toBe(false);
     }
@@ -103,6 +104,7 @@ describe("PF-4 describeSessionResetReason", () => {
   it("does not report review/change-request handoffs as reset reasons", () => {
     expect(describeSessionResetReason({ wakeReason: "execution_review_requested" })).toBeNull();
     expect(describeSessionResetReason({ wakeReason: "execution_changes_requested" })).toBeNull();
+    expect(describeSessionResetReason({ wakeReason: "execution_precondition_returned" })).toBeNull();
   });
 
   it("returns the forceFreshSession message when explicitly requested", () => {
@@ -128,6 +130,7 @@ describe("PF-4 describeSessionResetReason", () => {
       { wakeReason: "execution_approval_requested" },
       { wakeReason: "execution_review_participant_recovery" },
       { wakeReason: "execution_changes_requested" },
+      { wakeReason: "execution_precondition_returned" },
       { forceFreshSession: true },
       { wakeReason: "issue_commented" },
       { wakeReason: "transient_failure_retry" },
