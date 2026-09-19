@@ -203,4 +203,3 @@ export function WebhookReview({ signingMode = "bearer", state = "configured", pr
     </PluginLauncherProvider>
   );
 }
-
