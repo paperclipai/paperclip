@@ -1,4 +1,4 @@
-import type { ExecutionWorkspace, Issue, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace } from "@paperclipai/shared";
 
 type ProjectWorkspaceLike = Pick<Project, "workspaces" | "primaryWorkspace">;
 
@@ -12,6 +12,19 @@ export type ProjectWorkspaceLinkedIssue = Pick<Issue, "id" | "identifier" | "tit
   originKind?: Issue["originKind"];
   originId?: string | null;
 };
+
+export type WorkspaceTargetKind = "repository" | "remote_operator" | "artifact_only" | "unconfigured";
+
+export interface WorkspaceTargetProvenance {
+  kind: WorkspaceTargetKind;
+  authoritativePath: string | null;
+  checkoutRoot: string | null;
+  deliveryMethod: string;
+  fingerprint: string | null;
+  lastAttestation: string | null;
+  configurationIncomplete: boolean;
+  repairHref: string;
+}
 
 export interface ProjectWorkspaceSummary {
   key: string;
@@ -31,6 +44,116 @@ export interface ProjectWorkspaceSummary {
   hasRuntimeConfig: boolean;
   linkedIssueCount: number;
   issues: ProjectWorkspaceLinkedIssue[];
+  target?: WorkspaceTargetProvenance;
+}
+
+// repoUrl/providerRef/remoteWorkspaceRef are typed as unrestricted strings with no runtime
+// shape validation, so there's no fixed set of "credential patterns" to deny — any opaque
+// value could in principle be a raw secret. Rather than trying to deny known-bad shapes
+// (which can never be complete), allow only known-safe non-URL shapes through verbatim and
+// redact everything else by default.
+const SCP_STYLE_REMOTE = /^[\w.-]+@[\w.-]+:.+$/; // e.g. git@github.com:org/repo.git
+const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\/|~\/)/; // e.g. /mnt/artifacts/run-42, C:\work, ~/work
+// A bare alnum/dash/dot/underscore string is structurally indistinguishable from a raw
+// secret token (e.g. a GitHub PAT) — shape alone can't vouch for it. Only trust this shape
+// verbatim when the caller confirms the value came from a platform-managed provider
+// reference (sandbox/environment ids the system itself generates), never from a
+// user-suppliable field like a plain repoUrl.
+const OPAQUE_TOKEN_ID = /^[A-Za-z0-9._-]+$/;
+
+function redactRemote(value: string | null | undefined, options?: { allowOpaqueToken?: boolean }): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const url = new URL(trimmed);
+    if (url.host) {
+      // A real authority component means the WHATWG parser already split out
+      // username/password separately from host; reconstructing protocol+host+pathname
+      // can't carry them forward.
+      return `${url.protocol}//${url.host}${url.pathname}`;
+    }
+    // Opaque-path form (no "//" authority, e.g. a bare "scheme:user:secret@host/path" git
+    // remote) — the parser accepts this but never decomposes userinfo, leaving it sitting
+    // unchanged in pathname, so fall through to the allowlist check below instead of
+    // trusting this as already-safe.
+  } catch {
+    // Not URL-shaped at all — same fallthrough.
+  }
+
+  if (SCP_STYLE_REMOTE.test(trimmed) || ABSOLUTE_PATH.test(trimmed)) {
+    return trimmed;
+  }
+  if (options?.allowOpaqueToken && OPAQUE_TOKEN_ID.test(trimmed)) {
+    return trimmed;
+  }
+  // Doesn't match any known-safe shape — could be an arbitrary credential-bearing value,
+  // so redact it rather than trust it by default.
+  return "(redacted)";
+}
+
+// Project workspaces are only "unconfigured" when they're the primary workspace on a
+// local_path source with no remote declared — a project owner must still pick a target.
+// Non-primary local_path workspaces without a remote are treated as artifact-only, since
+// they're expected to hold generated/derived content rather than an authoritative checkout.
+function targetForProjectWorkspace(workspace: ProjectWorkspace): WorkspaceTargetProvenance {
+  const hasRemote = Boolean(workspace.repoUrl || workspace.remoteWorkspaceRef);
+  const hasRepository = workspace.sourceType === "git_repo" || (workspace.sourceType === "local_path" && hasRemote);
+  const configurationIncomplete = workspace.isPrimary && workspace.sourceType === "local_path" && !hasRemote;
+  return {
+    kind: hasRepository ? "repository" : workspace.sourceType === "remote_managed" ? "remote_operator" : configurationIncomplete ? "unconfigured" : "artifact_only",
+    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.remoteWorkspaceRef, {
+      allowOpaqueToken: workspace.sourceType === "remote_managed",
+    }),
+    checkoutRoot: workspace.cwd,
+    deliveryMethod: workspace.sourceType === "remote_managed" ? "remote/operator" : hasRepository ? "repository checkout" : "artifact-only",
+    fingerprint: null,
+    lastAttestation: null,
+    configurationIncomplete,
+    repairHref: "",
+  };
+}
+
+export type ExecutionWorkspaceTargetSource = Pick<
+  ExecutionWorkspace,
+  "strategyType" | "repoUrl" | "cwd" | "providerType" | "providerRef"
+>;
+
+// Execution workspaces derive "repository" from strategyType alone for git_worktree (the
+// worktree checkout root itself proves the target), but non-worktree strategies (e.g.
+// project_primary, cloud_sandbox) still need a repository/provider ref check because they
+// can be backed by a repo checkout without using the worktree strategy. adapter_managed
+// providers are "remote_operator" targets even without a repoUrl, since the operator/sandbox
+// reference is the authoritative identity — a providerRef on any *other* provider type isn't
+// established as authoritative for anything (the `kind` derivation below doesn't treat it as
+// one), so it must not count towards "has a reference" either; otherwise a workspace can be
+// marked configured while `kind` still resolves to `artifact_only`, hiding the case the
+// completeness check exists to catch. project_primary is the execution-workspace analog of a
+// project workspace's primary folder (it operates directly on shared/primary content rather
+// than an isolated worktree or sandbox), so — mirroring targetForProjectWorkspace's isPrimary
+// check — a project_primary workspace with no repository and no adapter-managed provider is
+// genuinely unconfigured and must warn, even though it will almost always still have a cwd.
+// Non-primary strategies (e.g. cloud_sandbox) without either are legitimately artifact-only
+// by design and don't need a repair prompt.
+export function targetForExecutionWorkspace(
+  workspace: ExecutionWorkspaceTargetSource,
+  repairHref: string,
+): WorkspaceTargetProvenance {
+  const hasRepository = workspace.strategyType === "git_worktree" || Boolean(workspace.repoUrl);
+  const isOperatorManaged = workspace.providerType === "adapter_managed";
+  const hasAnyReference = hasRepository || isOperatorManaged;
+  const configurationIncomplete = workspace.strategyType === "project_primary" && !hasAnyReference;
+  return {
+    kind: hasRepository ? "repository" : isOperatorManaged ? "remote_operator" : configurationIncomplete ? "unconfigured" : "artifact_only",
+    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.providerRef, { allowOpaqueToken: isOperatorManaged }),
+    checkoutRoot: workspace.cwd,
+    deliveryMethod: hasRepository ? "repository checkout" : isOperatorManaged ? "remote/operator" : "artifact-only",
+    fingerprint: null,
+    lastAttestation: null,
+    configurationIncomplete,
+    repairHref,
+  };
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -137,6 +260,7 @@ export function buildProjectWorkspaceSummaries(input: {
         ),
         linkedIssueCount: nextIssues.length,
         issues: nextIssues,
+        target: targetForExecutionWorkspace(executionWorkspace, `/execution-workspaces/${executionWorkspace.id}/configuration`),
       });
       continue;
     }
@@ -166,6 +290,7 @@ export function buildProjectWorkspaceSummaries(input: {
       hasRuntimeConfig: Boolean(projectWorkspace.runtimeConfig?.workspaceRuntime),
       linkedIssueCount: nextIssues.length,
       issues: nextIssues,
+      target: targetForProjectWorkspace(projectWorkspace),
     });
   }
 
@@ -193,6 +318,7 @@ export function buildProjectWorkspaceSummaries(input: {
       hasRuntimeConfig: Boolean(projectWorkspace.runtimeConfig?.workspaceRuntime),
       linkedIssueCount: 0,
       issues: [],
+      target: targetForProjectWorkspace(projectWorkspace),
     });
   }
 
