@@ -1,173 +1,132 @@
 // @vitest-environment jsdom
-
-import { useState } from "react";
-import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RoutineDetail, RoutineTrigger } from "@paperclipai/shared";
+import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
+import { queryKeys } from "@/lib/queryKeys";
 import { TriggersSection } from "./editable-sections";
-import {
-  RoutineDetailContext,
-  createDefaultNewTrigger,
-  type NewTriggerDraft,
-  type RoutineDetailContextValue,
-  type SecretMessage,
-} from "./context";
+import { RoutineDetailContext, type RoutineDetailContextValue, type SecretMessage } from "./context";
 
-(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+const api = vi.hoisted(() => ({ get: vi.fn(), createTrigger: vi.fn(), updateTrigger: vi.fn() }));
+vi.mock("@/api/routines", () => ({ routinesApi: api }));
+vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false, setSidebarOpen: vi.fn() }) }));
+vi.mock("../MarkdownEditor", () => ({ MarkdownEditor: () => null }));
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-vi.mock("../MarkdownEditor", () => ({
-  MarkdownEditor: () => null,
-}));
-
-function act(callback: () => void) {
-  flushSync(callback);
+let container: HTMLDivElement;
+let root: Root;
+let client: QueryClient;
+let routine: RoutineDetail;
+function button(label: string) {
+  const found = [...container.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent?.trim() === label);
+  if (!found) throw new Error(`Button not found: ${label}`);
+  return found;
 }
-
-function buttonByText(container: HTMLElement, label: string): HTMLButtonElement {
-  const button = [...container.querySelectorAll("button")].find(
-    (candidate) => candidate.textContent?.trim() === label,
-  );
-  if (!button) throw new Error(`Button not found: ${label}`);
-  return button as HTMLButtonElement;
+async function click(label: string) { await act(async () => button(label).click()); }
+async function choose(label: string) {
+  const option = [...container.querySelectorAll("label")].find((item) => item.textContent?.includes(label));
+  expect(option).toBeTruthy();
+  await act(async () => option!.click());
 }
-
-function typeCron(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-  setter?.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
+function Harness({ secretMessage }: { secretMessage?: SecretMessage }) {
+  const { data } = useQuery({ queryKey: queryKeys.routines.detail(routine.id), queryFn: api.get });
+  const value = { routine: data ?? routine, routineId: routine.id, companyId: routine.companyId, secretMessage, setSecretMessage: vi.fn() } as unknown as RoutineDetailContextValue;
+  return <RoutineDetailContext.Provider value={value}><TriggersSection /></RoutineDetailContext.Provider>;
 }
-
-function Harness({ createMutate, secretMessage }: { createMutate: ReturnType<typeof vi.fn>; secretMessage?: SecretMessage }) {
-  const [newTrigger, setNewTrigger] = useState<NewTriggerDraft>({
-    ...createDefaultNewTrigger(),
-    cronExpression: "0 8-18/2 * * 1-5",
+async function render(secretMessage?: SecretMessage) {
+  await act(async () => root.render(<MemoryRouter initialEntries={["/routines/routine-1/triggers"]}>
+    <QueryClientProvider client={client}><BreadcrumbProvider><Harness secretMessage={secretMessage} /></BreadcrumbProvider></QueryClientProvider>
+  </MemoryRouter>));
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  sessionStorage.clear();
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  routine = { id: "routine-1", companyId: "company-1", title: "Verify deployment", status: "active", triggers: [] } as unknown as RoutineDetail;
+  api.get.mockImplementation(async () => routine);
+  api.createTrigger.mockImplementation(async (_id, input) => {
+    const trigger = { id: "trigger-1", enabled: true, webhookUrl: "https://paperclip.example/api/routine-triggers/public/0123456789abcdef01234567/fire", ...input } as RoutineTrigger;
+    routine = { ...routine, triggers: [...routine.triggers, trigger] };
+    return { trigger, secretMaterial: { webhookUrl: trigger.webhookUrl, webhookSecret: "one-time-secret" } };
   });
-
-  const value = {
-    routine: {
-      id: "routine-1",
-      triggers: [],
-    },
-    newTrigger,
-    setNewTrigger,
-    secretMessage,
-    copySecretValue: vi.fn(),
-    setSecretMessage: vi.fn(),
-    createTrigger: {
-      isPending: false,
-      mutate: createMutate,
-    },
-    updateTrigger: { mutate: vi.fn() },
-    deleteTrigger: { mutate: vi.fn() },
-    rotateTrigger: { mutate: vi.fn() },
-  } as unknown as RoutineDetailContextValue;
-
-  return (
-    <RoutineDetailContext.Provider value={value}>
-      <TriggersSection />
-    </RoutineDetailContext.Provider>
-  );
-}
+  api.updateTrigger.mockImplementation(async (id, patch) => {
+    routine = { ...routine, triggers: routine.triggers.map((trigger) => trigger.id === id ? { ...trigger, ...patch } : trigger) };
+    return routine.triggers.find((trigger) => trigger.id === id);
+  });
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  client.clear();
+  container.remove();
+});
 
 describe("TriggersSection", () => {
-  let container: HTMLDivElement;
-
-  beforeEach(() => {
-    container = document.createElement("div");
-    document.body.appendChild(container);
+  it("offers schedule and webhook choices before creating a trigger", async () => {
+    await render();
+    await click("Add trigger");
+    expect(button("Continue").disabled).toBe(true);
+    expect(container.textContent).toContain("On a schedule");
+    await choose("When another app sends a webhook");
+    expect(button("Continue").disabled).toBe(false);
+    expect(api.createTrigger).not.toHaveBeenCalled();
   });
 
-  afterEach(() => {
-    container.remove();
-    document.body.innerHTML = "";
+  it("creates a pending webhook, shows credentials, and activates only when setup finishes", async () => {
+    await render();
+    await click("Add trigger");
+    await choose("When another app sends a webhook");
+    await click("Continue");
+    expect(api.createTrigger).toHaveBeenCalledWith("routine-1", { kind: "webhook", signingMode: "bearer", setupPending: true });
+    expect(container.textContent).toContain("Bearer one-time-secret");
+    expect(button("Copy for your agent")).toBeTruthy();
+    expect(JSON.stringify(Object.values(sessionStorage))).not.toContain("one-time-secret");
+    await click("Check connection");
+    expect(container.textContent).toContain("This won’t start the routine");
+    expect(api.updateTrigger).not.toHaveBeenCalled();
+    await click("Finish without checking");
+    expect(api.updateTrigger).toHaveBeenCalledWith("trigger-1", { setupPending: false });
+    expect(button("Add trigger")).toBeTruthy();
+    expect(container.textContent).not.toContain("one-time-secret");
   });
 
-  it("offers an enabled webhook option in the trigger picker", () => {
-    const root = createRoot(container);
-    act(() => root.render(<Harness createMutate={vi.fn()} />));
-    act(() => buttonByText(container, "New trigger").click());
-    const kind = container.querySelector('[role="combobox"]')!;
-    act(() => kind.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
-    const webhook = [...document.querySelectorAll('[role="option"]')].find((option) => option.textContent === "webhook");
-    expect(webhook).toBeTruthy();
-    expect(webhook?.getAttribute("aria-disabled")).not.toBe("true");
-    act(() => root.unmount());
+  it("shows restored one-time credentials on the triggers screen", async () => {
+    await render({ title: "Webhook key restored", entries: [{ webhookUrl: "https://paperclip.example/webhook", webhookSecret: "restored-secret" }] });
+    expect(container.textContent).toContain("restored-secret");
+    expect(container.querySelector('[aria-label="Copy Secret key"]')).not.toBeNull();
+    expect(button("Done")).toBeTruthy();
   });
 
-  it("shows one-time webhook credentials on the trigger setup screen", () => {
-    const root = createRoot(container);
-    act(() => root.render(<Harness createMutate={vi.fn()} secretMessage={{
-      title: "Webhook trigger created",
-      entries: [{ webhookUrl: "https://paperclip.example/api/routine-triggers/public/test/fire", webhookSecret: "one-time-secret" }],
-    }} />));
-    expect((container.querySelector('input[aria-label="New webhook secret"]') as HTMLInputElement).value).toBe("one-time-secret");
-    expect(container.textContent).toContain("Save this now");
-    expect(buttonByText(container, "Done")).toBeTruthy();
-    act(() => root.unmount());
+  it("creates a schedule on confirmation and starts a fresh wizard afterward", async () => {
+    await render();
+    await click("Add trigger");
+    await choose("On a schedule");
+    await click("Continue");
+    await click("Review schedule");
+    expect(api.createTrigger).not.toHaveBeenCalled();
+    await click("Add schedule");
+    expect(api.createTrigger).toHaveBeenCalledWith("routine-1", expect.objectContaining({ kind: "schedule", cronExpression: "0 9 * * 1-5" }));
+    await click("Add trigger");
+    expect(button("Continue").disabled).toBe(true);
   });
 
-  it("closes the add-trigger composer and resets the draft after a successful create", () => {
-    const createMutate = vi.fn((_variables, options?: { onSuccess?: () => void }) => {
-      options?.onSuccess?.();
-    });
-    const root = createRoot(container);
-
-    act(() => {
-      root.render(<Harness createMutate={createMutate} />);
-    });
-
-    act(() => {
-      buttonByText(container, "New trigger").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(container.querySelector('input[aria-label="Cron expression"]')).not.toBeNull();
-
-    act(() => {
-      buttonByText(container, "Add trigger").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(createMutate).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('input[aria-label="Cron expression"]')).toBeNull();
-    expect(buttonByText(container, "New trigger")).not.toBeNull();
-
-    act(() => {
-      buttonByText(container, "New trigger").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(container.querySelector('input[aria-label="Cron expression"]')).toBeNull();
-    expect(container.textContent).toContain("Every day");
-
-    act(() => root.unmount());
-  });
-
-  it("disables add trigger while the custom cron draft is invalid locally", () => {
-    const createMutate = vi.fn();
-    const root = createRoot(container);
-
-    act(() => {
-      root.render(<Harness createMutate={createMutate} />);
-    });
-
-    act(() => {
-      buttonByText(container, "New trigger").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const input = container.querySelector<HTMLInputElement>('input[aria-label="Cron expression"]');
+  it("blocks saving an invalid custom cron in the inline schedule editor", async () => {
+    routine.triggers = [{ id: "schedule-1", kind: "schedule", enabled: true, cronExpression: "0 8-18/2 * * 1-5", timezone: "UTC" }] as RoutineTrigger[];
+    await render();
+    await click("Edit schedule");
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Cron expression"]')!;
     expect(input).not.toBeNull();
-    expect(buttonByText(container, "Add trigger").disabled).toBe(false);
-
-    act(() => {
-      typeCron(input!, "0 8-18/2 *");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "0 8-18/2 *");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-
-    expect(input?.value).toBe("0 8-18/2 *");
     expect(container.textContent).toContain("Use exactly 5 fields");
-    expect(buttonByText(container, "Add trigger").disabled).toBe(true);
-
-    act(() => {
-      buttonByText(container, "Add trigger").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(createMutate).not.toHaveBeenCalled();
-
-    act(() => root.unmount());
+    expect(button("Save schedule").disabled).toBe(true);
+    expect(api.updateTrigger).not.toHaveBeenCalled();
   });
 });
