@@ -57,6 +57,8 @@ export interface CostByAgent {
   outputTokens: number;
   apiRunCount: number;
   subscriptionRunCount: number;
+  creditRunCount: number;
+  otherRunCount: number;
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
@@ -73,6 +75,8 @@ export interface CostByProviderModel {
   outputTokens: number;
   apiRunCount: number;
   subscriptionRunCount: number;
+  creditRunCount: number;
+  otherRunCount: number;
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
@@ -86,6 +90,8 @@ export interface CostByBiller {
   outputTokens: number;
   apiRunCount: number;
   subscriptionRunCount: number;
+  creditRunCount: number;
+  otherRunCount: number;
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
