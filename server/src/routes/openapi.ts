@@ -3013,6 +3013,31 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/me/issues",
+  tags: ["agents"],
+  summary: "List issues visible to the current agent key",
+  description:
+    "Returns a paginated issue list. For task_bridge keys, project and assignee filters are intersected with the key scope; requests outside either boundary return 403.",
+  request: {
+    query: z.object({
+      assigneeAgentId: z.union([z.literal("null"), z.string().uuid()]).optional(),
+      projectId: z.string().uuid().optional(),
+      status: z.string().optional(),
+      q: z.string().min(1).max(500).optional(),
+      limit: z.coerce.number().int().positive().max(1000).optional(),
+      offset: z.coerce.number().int().nonnegative().optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
 const AgentSecretListResponseSchema = z.object({
   secrets: z.array(
     z.object({

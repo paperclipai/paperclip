@@ -83,6 +83,7 @@ import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } f
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { agentScopedIssueListRoute } from "./agent-scoped-issue-list.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
@@ -4171,6 +4172,11 @@ export function agentRoutes(
       })),
     );
   });
+
+  // GET /api/agents/me/issues — the scoped issue list for agent keys, and the
+  // only listing surface a `task_bridge` key may use. It lives in its own
+  // module so the fence can be exercised without constructing this router.
+  router.use(agentScopedIssueListRoute(db));
 
   router.get("/agents/me/inbox/mine", async (req, res) => {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
