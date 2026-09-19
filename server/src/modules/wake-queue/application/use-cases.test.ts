@@ -32,11 +32,15 @@ const RUN: RunSnapshot = {
   configurationIncompletePayload: null,
 };
 
+const TERMINAL_AT = new Date("2026-09-01T12:00:00.000Z");
+
 const ISSUE: IssueSnapshot = {
   id: "issue-1",
   companyId: "company-1",
   identifier: "ISSUE-1",
   status: "in_progress",
+  completedAt: null,
+  cancelledAt: null,
   assigneeAgentId: "finishing-agent",
   assigneeUserId: null,
   hiddenAt: null,
@@ -102,7 +106,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     findNextDeferredWake: vi.fn(async () => null),
     getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [], containedSelfAuthoredComment: false })),
     cancelDeferredWake: vi.fn(async () => true),
-    normalizeDeferredWakeCommentIds: vi.fn(async (input) => wakeCandidate({ id: input.wakeId, queuedCommentIds: input.liveCommentIds })),
+    normalizeDeferredWakeCommentIds: vi.fn(async (input) => wakeCandidate({ id: input.wakeId, queuedCommentIds: input.liveCommentIds, deferredCommentIds: input.liveCommentIds })),
     failDeferredWake: vi.fn(async () => true),
     getPauseHoldFacts: vi.fn(async () => ({
       activePauseHold: false,
@@ -113,7 +117,11 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       reason: null,
       releasePolicy: null,
     })),
-    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    getCommentReopenFacts: vi.fn(async () => ({
+      allSelfAuthored: false,
+      referencedCommentsComplete: true,
+      hasLiveNonSelfCommentAfterTerminalAt: true,
+    })),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
@@ -521,7 +529,7 @@ describe("releaseIssueExecution", () => {
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });
     const release = createReleaseIssueExecution({
-      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: "done" }),
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: "done", completedAt: TERMINAL_AT }),
       recovery: createFakeRecovery(),
     });
 
@@ -531,6 +539,71 @@ describe("releaseIssueExecution", () => {
     expect(transaction.reopenIssue).toHaveBeenCalledTimes(1);
     expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
     expect(result.outcome.kind).toBe("promoted");
+  });
+
+  it.each([
+    ["pre-terminal human comment", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: false }, true, false],
+    ["post-terminal human comment", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true }, false, true],
+    ["coalesced old and post-terminal comments", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true }, false, true],
+    ["deleted post-terminal comment", { allSelfAuthored: false, referencedCommentsComplete: false, hasLiveNonSelfCommentAfterTerminalAt: false }, true, false],
+    ["mixed deleted and live post-terminal comments", { allSelfAuthored: false, referencedCommentsComplete: false, hasLiveNonSelfCommentAfterTerminalAt: true }, true, false],
+    ["self-authored post-terminal comment", { allSelfAuthored: true, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: false }, true, false],
+    ["missing terminal timestamp", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true }, true, false],
+  ] as const)("gates terminal reopen chronology: %s", async (scenario, reopenFacts, shouldCancel, shouldReopen) => {
+    const commentIds = scenario.startsWith("coalesced") || scenario.startsWith("mixed deleted") ? ["old-comment", "fresh-comment"] : ["comment-1"];
+    const queue = [wakeCandidate({
+      agentId: ISSUE.assigneeAgentId!, requestedByActorType: "user",
+      queuedCommentIds: commentIds, deferredCommentIds: commentIds,
+    })];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: scenario.startsWith("mixed deleted") ? ["fresh-comment"] : commentIds, containedSelfAuthoredComment: false })),
+      normalizeDeferredWakeCommentIds: vi.fn(async (input) => wakeCandidate({ id: input.wakeId, agentId: ISSUE.assigneeAgentId!, requestedByActorType: "user", queuedCommentIds: input.liveCommentIds, deferredCommentIds: input.liveCommentIds })),
+      getCommentReopenFacts: vi.fn(async ({ commentIds: observedIds }) => scenario.startsWith("mixed deleted") && observedIds.length < commentIds.length ? { ...reopenFacts, referencedCommentsComplete: true } : reopenFacts),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+    });
+    const issue = {
+      ...ISSUE, status: "done",
+      completedAt: scenario === "missing terminal timestamp" ? null : TERMINAL_AT,
+    };
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, issue), recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(shouldCancel ? 1 : 0);
+    expect(transaction.reopenIssue).toHaveBeenCalledTimes(shouldReopen ? 1 : 0);
+    expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(shouldReopen ? 1 : 0);
+    expect(result.outcome.kind).toBe(shouldReopen ? "promoted" : "released");
+    expect(transaction.getCommentReopenFacts).toHaveBeenCalledTimes(scenario === "missing terminal timestamp" ? 0 : 1);
+  });
+
+  it("uses the status-specific terminal timestamp for done and cancelled issues", async () => {
+    const completedAt = new Date("2026-09-01T12:00:00.000Z");
+    const cancelledAt = new Date("2026-09-02T12:00:00.000Z");
+    for (const status of ["done", "cancelled"] as const) {
+      const queue = [wakeCandidate({
+        agentId: ISSUE.assigneeAgentId!, requestedByActorType: "user",
+        queuedCommentIds: ["fresh-comment"], deferredCommentIds: ["fresh-comment"],
+      })];
+      const getCommentReopenFacts = vi.fn(async () => ({
+        allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true,
+      }));
+      const transaction = createFakeTransaction({
+        findNextDeferredWake: vi.fn(async () => queue.shift() ?? null), getCommentReopenFacts,
+        getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: ["fresh-comment"], containedSelfAuthoredComment: false })),
+        reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+      });
+      const release = createReleaseIssueExecution({
+        issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status, completedAt, cancelledAt }),
+        recovery: createFakeRecovery(),
+      });
+      expect((await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() })).outcome.kind).toBe("promoted");
+      expect(getCommentReopenFacts).toHaveBeenCalledWith(expect.objectContaining({
+        terminalAt: status === "done" ? completedAt : cancelledAt,
+      }));
+    }
   });
 
   it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
@@ -550,11 +623,20 @@ describe("releaseIssueExecution", () => {
         liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
         containedSelfAuthoredComment: scenario === "done_self",
       })),
-      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
+      getCommentReopenFacts: vi.fn(async () => ({
+        allSelfAuthored: scenario === "done_self",
+        referencedCommentsComplete: true,
+        hasLiveNonSelfCommentAfterTerminalAt: scenario !== "done_self",
+      })),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });
     const release = createReleaseIssueExecution({
-      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: scenario === "cancelled_live" ? "cancelled" : "done" }),
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, {
+        ...ISSUE,
+        status: scenario === "cancelled_live" ? "cancelled" : "done",
+        completedAt: TERMINAL_AT,
+        cancelledAt: TERMINAL_AT,
+      }),
       recovery: createFakeRecovery(),
     });
 
@@ -574,7 +656,7 @@ describe("releaseIssueExecution", () => {
   });
 
   it("never reopens the issue when the promotion claim loses the race, and moves on to the next wake", async () => {
-    const doneIssue: IssueSnapshot = { ...ISSUE, status: "done" };
+    const doneIssue: IssueSnapshot = { ...ISSUE, status: "done", completedAt: TERMINAL_AT };
     const queue = [
       // Carries a comment that would reopen the done issue, but the
       // promotion claim below loses the race before that reopen can run.

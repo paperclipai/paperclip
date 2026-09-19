@@ -267,6 +267,7 @@ async function runReleaseDrain(
       continue;
     }
 
+    const reopenCommentIds = candidate.deferredCommentIds;
     let workingCandidate = candidate;
     if (commentAction.kind === "normalize") {
       const normalized = await ports.transaction.normalizeDeferredWakeCommentIds({
@@ -304,7 +305,7 @@ async function runReleaseDrain(
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
 
-    const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
+    const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, reopenCommentIds, deferredAgent, pauseHold, postCommitEffects, input);
     if (!promoted) continue;
     return promoted;
   }
@@ -322,6 +323,7 @@ async function promoteDeferredWake(
   run: RunSnapshot,
   issue: IssueSnapshot,
   workingCandidate: DeferredWakeCandidate,
+  reopenCommentIds: string[],
   invokableAgent: InvokableAgentSnapshot,
   pauseHold: PauseHoldFacts,
   postCommitEffects: PostCommitEffect[],
@@ -331,24 +333,31 @@ async function promoteDeferredWake(
   let shouldReopen = false;
   if (
     !workingCandidate.authorizedFailedChatRetry &&
-    workingCandidate.deferredCommentIds.length > 0 &&
+    reopenCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
-    const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
-      companyId: run.companyId,
-      issueId: currentIssue.id,
-      finishingRunId: run.id,
-      commentIds: workingCandidate.deferredCommentIds,
-    });
-    shouldReopen =
-      !selfAuthorship.allSelfAuthored &&
+    const terminalAt = currentIssue.status === "done" ? currentIssue.completedAt : currentIssue.cancelledAt;
+    const reopenFacts = terminalAt
+      ? await ports.transaction.getCommentReopenFacts({
+          companyId: run.companyId,
+          issueId: currentIssue.id,
+          finishingRunId: run.id,
+          commentIds: reopenCommentIds,
+          terminalAt,
+        })
+      : null;
+    shouldReopen = Boolean(
+      reopenFacts?.referencedCommentsComplete &&
+      reopenFacts.hasLiveNonSelfCommentAfterTerminalAt &&
+      !reopenFacts.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
         (currentIssue.status === "done" &&
           workingCandidate.agentId === currentIssue.assigneeAgentId &&
           workingCandidate.requestedByActorType === "agent" &&
           workingCandidate.deferredContextSeed.resumeIntent === true &&
-          workingCandidate.queuedCommentIds.length > 0));
+          workingCandidate.queuedCommentIds.length > 0)),
+    );
   }
 
   // Agent continuations can outlive the work they addressed. Live,
