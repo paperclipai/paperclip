@@ -1087,6 +1087,12 @@ that classification finishes.
 - A verified live runner re-registers its existing PRP authority and reconnects
   with the same operating-system PID. Paperclip does not spawn a competing
   runner.
+- For a running sandbox session, recovery checks the original provider lease,
+  remote workspace, durable runner identity, and process marker inside that
+  sandbox. Remote PIDs are never interpreted as controller-local PIDs. The
+  runner must authenticate to its existing PRP authority; reconnection neither
+  launches another provider nor consumes a provider retry. A replacement
+  sandbox or mismatched identity blocks adoption without overwriting evidence.
 - A verified dead runner starts a replacement from the same durable root and
   resumes the same provider checkpoint. Only the operating-system PID changes.
 - A runner that died before its first authenticated connection can restart on

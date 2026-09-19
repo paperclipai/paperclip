@@ -4343,6 +4343,9 @@ async function migrateRunnerdStateRootForExecution(input: {
   ) {
     await recoverQuiescentRunnerdState({ ...input, scoped });
   }
+  if (input.restartRecovery?.kind === "reattach_remote_runner" && !existsSync(scoped)) {
+    throw new Error("runner_state_identity_mismatch");
+  }
   if (existsSync(scoped)) {
     if (!isSafeNativeStateDirectory(scoped)) {
       throw new Error("runner_state_directory_unsafe");
@@ -4357,13 +4360,15 @@ async function migrateRunnerdStateRootForExecution(input: {
     await assertCleanupActivationCommitted(input.db, scoped, input.execution);
     const identity = readRunnerdDurableIdentity(scoped);
     if (!identity) {
-      if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+      if (input.restartRecovery?.kind !== "reattach_existing_runner" &&
+          input.restartRecovery?.kind !== "reattach_remote_runner") {
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
       }
       throw new Error("runner_state_identity_mismatch");
     }
     if (!durableIdentityMatchesSession(identity, input.execution)) {
-      if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+      if (input.restartRecovery?.kind !== "reattach_existing_runner" &&
+          input.restartRecovery?.kind !== "reattach_remote_runner") {
         quarantineRunnerdStateRoot(scoped, "identity_mismatch");
       }
       throw new Error("runner_state_identity_mismatch");
@@ -4377,6 +4382,13 @@ async function migrateRunnerdStateRootForExecution(input: {
       // from a partially-persisted provider bootstrap. Only the durable PRP
       // root can authorize a fresh bootstrap; anything else stays fail-closed.
       throw new Error("runner_state_identity_mismatch");
+    }
+    if (input.restartRecovery?.kind === "reattach_remote_runner") {
+      await verifyRemoteRunnerReattachment({
+        claim: input.restartRecovery, target: input.runnerExecutionTarget, identity,
+        runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
+      });
+      return;
     }
     if (durableIdentityMatchesExecution(identity, input.execution)) {
       if (
@@ -9556,6 +9568,112 @@ export function parseRemoteRunnerProcessIdentity(
   return { pid, startedAt };
 }
 
+/** Verify remote ownership before exposing the transport's authenticated adoption path. */
+export async function verifyRemoteRunnerReattachment(input: {
+  claim: Extract<
+    NativeRestartRecoveryClaim,
+    { kind: "reattach_remote_runner" }
+  >;
+  target: AdapterExecutionTarget | null | undefined;
+  identity: Record<string, unknown>;
+  runId: string;
+  normalizedSessionId: string;
+}) {
+  const { claim, target, identity } = input;
+  if (
+    target?.kind !== "remote" ||
+    target.transport !== "sandbox" ||
+    !target.runner ||
+    claim.runId !== input.runId ||
+    identity.runId !== input.runId ||
+    identity.normalizedSessionId !== input.normalizedSessionId ||
+    claim.remote.providerLeaseId !==
+      target.sandboxLeaseAcquisition?.providerLeaseId ||
+    target.sandboxLeaseAcquisition.outcome === "replacement" ||
+    claim.remote.remoteCwd !== target.remoteCwd
+  ) {
+    throw new Error("native_remote_recovery_lease_mismatch");
+  }
+  const runner = target.runner;
+  const stateDirectory = posix.join(
+    target.remoteCwd,
+    ".paperclip-runtime",
+    "paperclip-runner",
+    "sessions",
+    createHash("sha256").update(input.normalizedSessionId).digest("hex"),
+    "runner",
+  );
+  const runnerState = await readRemoteRunnerState({ runner, stateDirectory });
+  for (const field of [
+    "runId",
+    "normalizedSessionId",
+    "runnerInstanceId",
+    "environmentLeaseId",
+    "turnId",
+    "itemId",
+  ]) {
+    if (
+      typeof identity[field] !== "string" ||
+      !identity[field] ||
+      runnerState[field] !== identity[field]
+    ) {
+      throw new Error("runner_remote_recovery_identity_mismatch");
+    }
+  }
+  const identityPath = posix.join(stateDirectory, "runner-process.identity");
+  const marker = await runner.execute({
+    command: "sh",
+    args: [
+      "-c",
+      'test -f "$1" && test ! -L "$1" && cat -- "$1"',
+      "paperclip-runner-recovery-identity",
+      identityPath,
+    ],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  });
+  const nonce = marker.stdout.split("\n")[0] ?? "";
+  const runnerInstanceId = identity.runnerInstanceId as string;
+  const processIdentity =
+    marker.exitCode === 0 && !marker.timedOut && /^[a-zA-Z0-9_-]+$/.test(nonce)
+      ? parseRemoteRunnerProcessIdentity(marker.stdout, {
+          nonce,
+          runnerInstanceId,
+        })
+      : null;
+  if (!processIdentity)
+    throw new Error("runner_remote_process_identity_unavailable");
+  const check = async (signal?: NodeJS.Signals) => {
+    const result = await runner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT +
+          (signal ? '; kill -"$5" "$pid"' : ""),
+        "paperclip-runner-recovery-check",
+        identityPath,
+        nonce,
+        runnerInstanceId,
+        String(processIdentity.pid),
+        ...(signal ? [signal.slice(3)] : []),
+      ],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    return result.exitCode === 0 && !result.timedOut;
+  };
+  if (!(await check()))
+    throw new Error("runner_remote_process_identity_unavailable");
+  // These checks authorize an attempt to reconnect, not the task itself. The
+  // transport still requires authentication against the exact durable PRP key.
+  return {
+    ...processIdentity,
+    processGroupId: null,
+    isAlive: () => check(),
+    signal: check,
+  };
+}
+
 async function waitForRemoteRunnerProcessIdentity(input: {
   runner: CommandManagedRuntimeRunner;
   identityPath: string;
@@ -10398,6 +10516,15 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return;
     selectedRemoteMode = requiredMode;
+    if (input.restartRecovery?.kind === "reattach_remote_runner") {
+      await verifyRemoteRunner(requiredMode);
+      if (requiresRemoteProviderPack && stagedRemoteProviderPackRoot) {
+        await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
+        activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      }
+      remotePrepared = true;
+      return;
+    }
     let usedPreinstalledRunner = false;
     const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
     if (mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
@@ -11577,11 +11704,31 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     remotePrepared = false;
   };
-  const adoptedProcess =
-    target.kind === "local" &&
+  const localRecoveryProcess =
     input.restartRecovery?.kind === "reattach_existing_runner"
       ? input.restartRecovery.process
       : null;
+  const adoptedProcess =
+    input.restartRecovery?.kind === "reattach_remote_runner"
+      ? await verifyRemoteRunnerReattachment({
+          claim: input.restartRecovery,
+          target,
+          identity: durableIdentity ?? {},
+          runId: input.execution.binding.runId,
+          normalizedSessionId: nativeSessionKey(input.execution),
+        })
+      : target.kind === "local" && localRecoveryProcess
+        ? {
+            ...localRecoveryProcess,
+            isAlive: () => verifiedRecoveryProcessIsAlive(localRecoveryProcess),
+            signal: (signal: NodeJS.Signals) =>
+              signalVerifiedRecoveryProcess(localRecoveryProcess, signal),
+          }
+        : undefined;
+  if (adoptedProcess && remoteTarget) {
+    const markSpawned = resolveRemoteRunnerProcessSpawned as (() => void) | null;
+    markSpawned?.();
+  }
   const executeCurrentToolAuthority = (
     call: Parameters<SessionToolAuthorityEpoch["execute"]>[0],
   ) => {
@@ -11735,14 +11882,7 @@ async function createRunnerdBackendWithinSessionClaim(
           : undefined,
         runnerProcessLauncher: remoteProcessLauncher,
         runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,
-        adoptExistingRunner: adoptedProcess
-          ? {
-              ...adoptedProcess,
-              isAlive: () => verifiedRecoveryProcessIsAlive(adoptedProcess),
-              signal: (signal) =>
-                signalVerifiedRecoveryProcess(adoptedProcess, signal),
-            }
-          : undefined,
+        adoptExistingRunner: adoptedProcess,
         environment: effectiveRunnerEnvironment,
         onDiagnostic: (message) => {
           void input.onLog?.(

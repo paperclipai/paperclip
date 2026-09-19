@@ -73,6 +73,7 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
+  adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
   stateDirectory?: string;
   runnerBinary?: string;
   prpIdentity?: {
@@ -269,6 +270,7 @@ import {
   nativeUsageCostUsd,
   normalizeNativeUsage,
   parseRemoteRunnerProcessIdentity,
+  verifyRemoteRunnerReattachment,
   readRemoteProviderPackManifest,
   providerSessionIdentityFromDurableProviderState,
   providerSessionIdentityTransitionIsAllowed,
@@ -294,6 +296,184 @@ beforeEach(() => {
   state.resolveCurrentWakeCommentsBinding.mockReset().mockResolvedValue(null);
   state.assertCurrentWakeCommentsRead.mockReset().mockResolvedValue(undefined);
 });
+
+describe("remote controller restart adoption", () => {
+  const identity = {
+    runId: "run",
+    normalizedSessionId: "session",
+    runnerInstanceId: "runner",
+    environmentLeaseId: "lease",
+    turnId: "turn",
+    itemId: "item",
+  };
+  const claim = {
+    kind: "reattach_remote_runner" as const,
+    runId: "run",
+    leaseOwner: "controller",
+    controllerGeneration: 2,
+    providerAttempt: 1,
+    restartKind: "graceful" as const,
+    recoveryRequestId: null,
+    remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" },
+  };
+  function fixture(overrides: Record<string, unknown> = {}) {
+    const execute = vi.fn(async (request: { args: string[] }) => {
+      const script = request.args[1];
+      const stdout = script.includes("base64")
+        ? Buffer.from(
+            JSON.stringify({ ...identity, lifecycle: "running", ...overrides }),
+          ).toString("base64")
+        : script.includes("cat --")
+          ? "nonce\n123\n2026-09-19T10:00:00.000Z\nrunner\n"
+          : "";
+      return { stdout, stderr: "", exitCode: 0, timedOut: false };
+    });
+    const target = {
+      kind: "remote" as const,
+      transport: "sandbox" as const,
+      remoteCwd: "/workspace",
+      providerKey: "daytona",
+      leaseId: "lease",
+      sandboxLeaseAcquisition: {
+        outcome: "resumed" as const,
+        providerLeaseId: "sandbox",
+      },
+      runner: { execute },
+    };
+    return { execute, target };
+  }
+  it("adopts the exact live sandbox process without spawning or copying state", async () => {
+    const { execute, target } = fixture();
+    const adopted = await verifyRemoteRunnerReattachment({
+      claim,
+      target: target as never,
+      identity,
+      runId: "run",
+      normalizedSessionId: "session",
+    });
+    expect(adopted.pid).toBe(123);
+    expect(await adopted.isAlive()).toBe(true);
+    expect(
+      execute.mock.calls.every(
+        ([request]) => !request.args.join(" ").match(/nohup|mkdir|rm -|mv -/),
+      ),
+    ).toBe(true);
+    execute.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "",
+      exitCode: 4,
+      timedOut: false,
+    });
+    expect(await adopted.isAlive()).toBe(false);
+  });
+  it.each([
+    "runId",
+    "normalizedSessionId",
+    "runnerInstanceId",
+    "environmentLeaseId",
+    "turnId",
+    "itemId",
+  ])("rejects a changed remote %s", async (field) => {
+    const { execute, target } = fixture({ [field]: "different" });
+    await expect(
+      verifyRemoteRunnerReattachment({
+        claim,
+        target: target as never,
+        identity,
+        runId: "run",
+        normalizedSessionId: "session",
+      }),
+    ).rejects.toThrow("runner_remote_recovery_identity_mismatch");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+  it("wires remote adoption when only controller state survived on the host", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-remote-reattach-"),
+    );
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const current = {
+      ...execution,
+      binding: { ...execution.binding, runId: "run" },
+      session: { ...execution.session, normalizedSessionId: "session" },
+    };
+    const { target } = fixture();
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(current),
+        execution: current,
+        runnerInstanceId: "runner",
+        runnerExecutionTarget: target as never,
+      });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(identity)),
+      );
+      await createRunnerdBackend({
+        db: leaseDb(current),
+        execution: current,
+        runnerInstanceId: "runner",
+        runnerExecutionTarget: target as never,
+        restartRecovery: claim,
+      });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      expect(
+        state.createTransport.mock.calls.at(-1)![0].adoptExistingRunner?.pid,
+      ).toBe(123);
+      expect(await readdir(root)).toContain("control-plane");
+      expect(await readdir(root)).not.toContain("runner");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+  it("rejects a replaced sandbox before reading or mutating it", async () => {
+    const { execute, target } = fixture();
+    target.sandboxLeaseAcquisition.providerLeaseId = "replacement";
+    await expect(
+      verifyRemoteRunnerReattachment({
+        claim,
+        target: target as never,
+        identity,
+        runId: "run",
+        normalizedSessionId: "session",
+      }),
+    ).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it("rejects a stale process marker", async () => {
+    const { execute, target } = fixture();
+    execute
+      .mockResolvedValueOnce({
+        stdout: Buffer.from(JSON.stringify(identity)).toString("base64"),
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      })
+      .mockResolvedValueOnce({
+        stdout: "nonce\n123\n2026-09-19T10:00:00Z\nother-runner\n",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      });
+    await expect(
+      verifyRemoteRunnerReattachment({
+        claim,
+        target: target as never,
+        identity,
+        runId: "run",
+        normalizedSessionId: "session",
+      }),
+    ).rejects.toThrow("runner_remote_process_identity_unavailable");
+  });
+});
+
 
 describe("remote runner process supervision", () => {
   it.each(["delivered", "sandbox_missing", "logging_failed"] as const)(

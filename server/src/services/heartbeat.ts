@@ -14839,6 +14839,7 @@ export function heartbeatService(
     const claims = dispositions.filter(
       (disposition): disposition is NativeRestartRecoveryClaim =>
         disposition.kind === "reattach_existing_runner" ||
+        disposition.kind === "reattach_remote_runner" ||
         disposition.kind === "resume_dead_runner" ||
         disposition.kind === "bootstrap_incomplete",
     );
@@ -14847,6 +14848,7 @@ export function heartbeatService(
       if (run) {
         const isClaim =
           disposition.kind === "reattach_existing_runner" ||
+          disposition.kind === "reattach_remote_runner" ||
           disposition.kind === "resume_dead_runner" ||
           disposition.kind === "bootstrap_incomplete";
         await appendRunEvent(run, {
@@ -14854,7 +14856,8 @@ export function heartbeatService(
           stream: "system",
           level: disposition.kind === "blocked" ? "warn" : "info",
           message:
-            disposition.kind === "reattach_existing_runner"
+            disposition.kind === "reattach_existing_runner" ||
+            disposition.kind === "reattach_remote_runner"
               ? "Recovering the existing native runner process after server restart"
               : disposition.kind === "resume_dead_runner"
                 ? "Resuming the durable native provider session after runner process loss"
@@ -19903,7 +19906,8 @@ export function heartbeatService(
     if (
       runOptions.nativeLeaseOwner &&
       run.runtimeMode === "native" &&
-      runOptions.nativeRestartRecovery?.kind !== "reattach_existing_runner"
+      runOptions.nativeRestartRecovery?.kind !== "reattach_existing_runner" &&
+      runOptions.nativeRestartRecovery?.kind !== "reattach_remote_runner"
     ) {
       // A numeric PID or process-group ID is a liveness signal, never an
       // ownership capability: the OS may have recycled it after the service
