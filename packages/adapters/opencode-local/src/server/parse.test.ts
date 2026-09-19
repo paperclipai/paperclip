@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
@@ -73,5 +73,47 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  it("tracks structured telemetry counters", () => {
+    const base = { sessionID: "s1" };
+    const t0 = "2026-01-01T00:00:00.000Z";
+    const t1 = "2026-01-01T00:00:01.000Z";
+    const t2 = "2026-01-01T00:00:02.000Z";
+    const t3 = "2026-01-01T00:00:03.000Z";
+    const t4 = "2026-01-01T00:00:04.000Z";
+    const stdout = [
+      JSON.stringify({ ...base, type: "step_start", ts: t0 }),
+      JSON.stringify({ ...base, type: "tool_use", ts: t1, part: { tool: "grep", state: { status: "completed" } } }),
+      JSON.stringify({ ...base, type: "tool_use", ts: t2, part: { tool: "write", state: { status: "completed" } } }),
+      JSON.stringify({ ...base, type: "tool_use", ts: t3, part: { tool: "bash", state: { status: "error", error: "fail" } } }),
+      JSON.stringify({ ...base, type: "tool_use", ts: t4, part: { tool: "vitest", state: { status: "completed" } } }),
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    const t = parsed.telemetry;
+    expect(t.toolCalls).toBe(4);
+    expect(t.failedToolCalls).toBe(1);
+    expect(t.searchCalls).toBe(1);
+    expect(t.fileWrites).toBe(1);
+    expect(t.bashCalls).toBe(1);
+    expect(t.testCalls).toBe(1);
+    expect(t.stepCount).toBe(1);
+    expect(t.timeToFirstWriteMs).toBe(2000);
+    expect(t.timeToFirstTestMs).toBe(4000);
+    expect(t.firstEventAt).toBe(t0);
+    expect(t.lastEventAt).toBe(t4);
+  });
+
+  it("returns null timeToFirstWriteMs when no write tools used", () => {
+    const stdout = [
+      JSON.stringify({ sessionID: "s1", type: "tool_use", ts: "2026-01-01T00:00:00.000Z", part: { tool: "grep", state: { status: "completed" } } }),
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.telemetry.timeToFirstWriteMs).toBeNull();
+    expect(parsed.telemetry.timeToFirstTestMs).toBeNull();
+    expect(parsed.telemetry.toolCalls).toBe(1);
+    expect(parsed.telemetry.searchCalls).toBe(1);
   });
 });
