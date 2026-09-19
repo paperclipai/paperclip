@@ -20,6 +20,17 @@ const packageRoot = resolve(
 );
 
 describe("semantic action catalog", () => {
+  it("advertises only icons accepted by the project API on both tool surfaces", async () => {
+    const { PROJECT_ICON_NAMES } = await import("../../../shared/src/constants.js");
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    for (const schema of [createProjectAction.live.descriptor.inputSchema, paperclipSemanticAction("create_project")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      const input = { name: "Onboarding", idempotencyKey: "onboarding" };
+      for (const icon of [...PROJECT_ICON_NAMES, null]) expect(validate({ ...input, icon }), String(icon)).toBe(true);
+      expect(validate({ ...input, icon: "users" })).toBe(false);
+    }
+  });
+
   it("limits project repository URLs to HTTPS GitHub repository paths on both tool surfaces", () => {
     const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
     for (const schema of [createProjectAction.live.descriptor.inputSchema, paperclipSemanticAction("create_project")!.inputSchema]) {

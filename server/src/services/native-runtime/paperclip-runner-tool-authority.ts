@@ -368,26 +368,38 @@ export class PaperclipRunnerToolAuthority {
         const { operationId, ...response } = record(await this.#callApi(call.callId, call.arguments));
         return { ...response, apiOperationId: operationId };
       }
-      case "get_task_context": return {
-        company: { id: this.binding.companyId },
-        actor: redactedActor(context.actor),
-        activeTask: redactedTask(context.issue),
-        run: {
-          id: this.binding.runId,
-          status: context.run.status,
-          invocationSource: context.run.invocationSource,
-        },
-        connectionGuidance: CONNECTION_INTENT_AGENT_GUIDANCE,
-        acceptedPlan: await this.#acceptedPlan(context.run.contextSnapshot),
-        sourcePlanApproval: await handoffPlanContext(this.db, context.issue),
-        childReviewOutcomes: await childReviewOutcomes(this.db, this.binding.companyId, this.binding.issueId),
-        ...(this.binding.nativeReview ? {
-          assignedReview: (await getNativeReviewAssignment(this.db, {
-            ...this.binding, contextSnapshot: this.binding.nativeReview,
-            allowResolvedByRunId: this.binding.runId,
-          }))?.interaction,
-        } : {}),
-      };
+      case "get_task_context": {
+        const childTasks = await this.db.select().from(issues)
+          .where(and(
+            eq(issues.companyId, this.binding.companyId),
+            eq(issues.parentId, this.binding.issueId),
+          ))
+          .orderBy(desc(issues.createdAt), desc(issues.id))
+          .limit(101);
+        return {
+          company: { id: this.binding.companyId },
+          actor: redactedActor(context.actor),
+          activeTask: redactedTask(context.issue),
+          childTasks: childTasks.slice(0, 100).map(redactedTask),
+          childTasksTruncated: childTasks.length > 100,
+          delegationGuidance: "Reuse existing child tasks for delegated work. Inspect a completed child's comments and documents before creating another task for the same deliverable. Use search_tasks if the child task list is truncated.",
+          run: {
+            id: this.binding.runId,
+            status: context.run.status,
+            invocationSource: context.run.invocationSource,
+          },
+          connectionGuidance: CONNECTION_INTENT_AGENT_GUIDANCE,
+          acceptedPlan: await this.#acceptedPlan(context.run.contextSnapshot),
+          sourcePlanApproval: await handoffPlanContext(this.db, context.issue),
+          childReviewOutcomes: await childReviewOutcomes(this.db, this.binding.companyId, this.binding.issueId),
+          ...(this.binding.nativeReview ? {
+            assignedReview: (await getNativeReviewAssignment(this.db, {
+              ...this.binding, contextSnapshot: this.binding.nativeReview,
+              allowResolvedByRunId: this.binding.runId,
+            }))?.interaction,
+          } : {}),
+        };
+      }
       case "get_task_history": {
         const limit = boundedLimit(input.limit);
         const comments = await this.db.select({

@@ -5714,6 +5714,7 @@ export function agentRoutes(
     }
 
     let wakePayload = req.body.payload ?? null;
+    let retryConversationContext: Record<string, unknown> = {};
     if (req.body.failedRunId) {
       assertBoard(req);
       if (
@@ -5759,6 +5760,22 @@ export function agentRoutes(
         });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
         if (issue.assigneeAgentId !== agent.id) throw conflict("The task is no longer assigned to this agent.");
+        if (issue.conversationAgentId) {
+          // Agent Chat has no task description to replay. Recover the exact
+          // request from the selected server-owned run, never caller markers.
+          // Hydration will read the current comments under the task boundary.
+          const commentIds = [...new Set([
+            ...(Array.isArray(failedContext.wakeCommentIds) ? failedContext.wakeCommentIds : []),
+            failedContext.wakeCommentId,
+            failedContext.commentId,
+          ].filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
+          if (commentIds.length > 0) {
+            retryConversationContext = {
+              wakeCommentIds: commentIds,
+              wakeCommentId: commentIds[commentIds.length - 1],
+            };
+          }
+        }
       }
       const chatBinding = issueId
         ? await db
@@ -5837,6 +5854,7 @@ export function agentRoutes(
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
+        ...retryConversationContext,
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
         responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,

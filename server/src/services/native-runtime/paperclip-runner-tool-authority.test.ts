@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -156,6 +156,39 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: {},
       }),
     ).rejects.toThrow("paperclip_runner_tool_not_advertised");
+  });
+
+  it("exposes existing child tasks on continuation without crossing company boundaries", async () => {
+    const completedChildId = randomUUID();
+    const activeChildId = randomUUID();
+    const unrelatedId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const foreignChildId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTHER" });
+    await db.insert(issues).values([
+      { id: completedChildId, companyId, parentId: issueId, title: "Existing completed draft", status: "done", assigneeAgentId: agentId },
+      { id: activeChildId, companyId, parentId: issueId, title: "Existing active review", status: "in_progress", assigneeAgentId: agentId },
+      { id: unrelatedId, companyId, title: "Unrelated task", status: "todo" },
+      // Even inconsistent imported data cannot expose another company's task.
+      { id: foreignChildId, companyId: otherCompanyId, parentId: issueId, title: "Foreign child", status: "todo" },
+    ]);
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const context = await authority.execute({ tool: "get_task_context", callId: "context-existing-children", arguments: {} });
+      expect(context).toMatchObject({
+        childTasks: expect.arrayContaining([
+          expect.objectContaining({ id: completedChildId, status: "done", parentId: issueId }),
+          expect.objectContaining({ id: activeChildId, status: "in_progress", assigneeAgentId: agentId }),
+        ]),
+        childTasksTruncated: false,
+        delegationGuidance: expect.stringContaining("Reuse existing child tasks"),
+      });
+      expect(JSON.stringify(context)).not.toContain(foreignChildId);
+      expect(JSON.stringify(context)).not.toContain(unrelatedId);
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId]));
+      await db.delete(companies).where(eq(companies.id, otherCompanyId));
+    }
   });
 
   it("preserves direct-chat file tools across the guarded API rollout", () => {

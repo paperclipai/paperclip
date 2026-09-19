@@ -3409,6 +3409,9 @@ fn classify_notification_thread(
             | "configWarning"
             | "guardianWarning"
             | "deprecationNotice"
+            // Child MCP startup can precede thread/started and its lineage.
+            // It is diagnostic information, not root execution authority.
+            | "mcpServer/startupStatus/updated"
     ) {
         return Ok(NotificationThread::UnrelatedInformation);
     }
@@ -4942,6 +4945,40 @@ mod notification_identity_tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn child_mcp_startup_before_lineage_has_no_execution_authority() {
+        let params =
+            json!({"threadId": "not-yet-known-child", "name": "paperclip", "status": "starting"});
+        assert_eq!(
+            classify_notification_thread(
+                "mcpServer/startupStatus/updated",
+                "root",
+                &BTreeSet::new(),
+                &params
+            )
+            .unwrap(),
+            NotificationThread::UnrelatedInformation
+        );
+        assert!(
+            classify_notification_thread("turn/completed", "root", &BTreeSet::new(), &params)
+                .is_err()
+        );
+        assert!(classify_notification_thread(
+            "paperclip/runResult",
+            "root",
+            &BTreeSet::new(),
+            &params
+        )
+        .is_err());
+        assert!(classify_notification_thread(
+            "mcpServer/startupStatus/updated",
+            "root",
+            &BTreeSet::new(),
+            &json!({"threadId": "child", "thread": {"id": "different"}}),
+        )
+        .is_err());
     }
 
     #[test]

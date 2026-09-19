@@ -5454,7 +5454,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "PRP semantic tool call no longer belongs to an admitted turn",
       );
     }
-    return unwrapToolResponse(
+    const outcome = unwrapToolResponse(
       await this.#handler({
         id: call.callId,
         method: "item/tool/call",
@@ -5475,6 +5475,29 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           : {}),
       }),
     );
+    if (call.operationId === "call_api") {
+      const result = record(outcome.result);
+      if (
+        result.operationId !== call.operationId ||
+        result.callId !== call.callId
+      ) {
+        // HTTP receipts also contain `ok` and `operationId` (the HTTP route).
+        // Bind that application value inside a real semantic envelope so the
+        // runner cannot mistake the route for the provider tool's identity.
+        return {
+          ...outcome,
+          result: {
+            ok: !outcome.isError,
+            operationId: call.operationId,
+            callId: call.callId,
+            ...(outcome.isError
+              ? { error: outcome.result }
+              : { result: outcome.result }),
+          },
+        };
+      }
+    }
+    return outcome;
   }
 
   async #startTurn(

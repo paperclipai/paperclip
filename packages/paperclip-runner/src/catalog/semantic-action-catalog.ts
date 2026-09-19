@@ -7,7 +7,7 @@ import type {
 import { createSkillAction } from "../protocol-actions/create-skill.js";
 import { searchApiAction } from "../protocol-actions/search-api.js";
 import { callApiAction } from "../protocol-actions/call-api.js";
-import { projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
+import { projectIconSchema, projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
@@ -460,7 +460,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       },
       workspace: openObject, status: { enum: ["backlog", "planned", "in_progress", "completed", "cancelled"] },
       goalId: nullableText("Goal ID."), goalIds: stringArray("Goal IDs."), leadAgentId: nullableText("Lead agent ID."),
-      targetDate: nullableText("Target date."), color: nullableText("Project color."), icon: nullableText("Project icon."),
+      targetDate: nullableText("Target date."), color: nullableText("Project color."), icon: projectIconSchema,
       env: openObject, executionWorkspacePolicy: openObject, archivedAt: nullableText("Archive timestamp."),
     }, ["idempotencyKey", "name"]),
     outputSchema: openObject,

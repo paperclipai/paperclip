@@ -1030,6 +1030,33 @@ describe("agent live run routes", () => {
       }));
     });
 
+    it("preserves an Agent Chat request on retry using only the selected run's comments", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: {
+        issueId: failedChatIssueId,
+        wakeCommentIds: ["first-comment", "original-comment"],
+        wakeCommentId: "original-comment",
+      } });
+      mockIssueService.getById.mockResolvedValue({
+        id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
+        conversationAgentId: routeAgentId, conversationUserId: "local-board",
+        status: "in_review", conversationState: "waiting",
+      });
+      const res = await requestApp(await createApp(fixture.db), url =>
+        request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+          ...retryBody, payload: { commentId: "forged-comment", wakeCommentIds: ["forged-comment"] },
+        }));
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+        payload: { issueId: failedChatIssueId },
+        contextSnapshot: expect.objectContaining({
+          wakeCommentIds: ["first-comment", "original-comment"],
+          wakeCommentId: "original-comment",
+        }),
+      }));
+      expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
+    });
+
     it.each(["viewer", "missing", "other-company", "reassigned", "other-chat-owner"])(
       "rejects a %s task retry without dispatching or requiring agent creation", async (fault) => {
         const fixture = createFailedChatRetryDb(false);
