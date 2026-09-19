@@ -5,10 +5,8 @@ import {
   inferBindModeFromHost,
   isAllInterfacesHost,
   isLoopbackHost,
-  type BindMode,
-  type DeploymentExposure,
-  type DeploymentMode,
-} from "@paperclipai/shared";
+} from "@paperclipai/shared/network-bind";
+import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared/constants";
 import type { AuthConfig, ServerConfig } from "./schema.js";
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
