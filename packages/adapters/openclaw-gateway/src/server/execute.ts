@@ -1043,6 +1043,24 @@ function extractResultText(value: unknown): string | null {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  // PHA-3517: pre-hook adapterConfig capture. Logs the size and top-level
+  // keys of the adapterConfig this run is about to consume. When the openclaw
+  // wedge fires, this line shows the wedge in flight (empty config, keyCount=0)
+  // and pairs with the post-hook line below so the wedge is observable from
+  // the run log alone.
+  const preConfigRecord = parseObject(ctx.config);
+  const preConfigKeyCount = preConfigRecord
+    ? Object.keys(preConfigRecord).length
+    : 0;
+  const preConfigTopLevelKeys = preConfigRecord
+    ? Object.keys(preConfigRecord).sort().join(",")
+    : "<n/a>";
+  await ctx.onLog(
+    "stdout",
+    `[openclaw-gateway:hook] pre agent=${ctx.agent.id} runId=${ctx.runId} ` +
+      `adapterConfigKeyCount=${preConfigKeyCount} adapterConfigKeys=${preConfigTopLevelKeys}\n`,
+  );
+
   const urlValue = asString(ctx.config.url, "").trim();
   if (!urlValue) {
     return {
@@ -1519,6 +1537,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : "openclaw_gateway_request_failed",
         resultJson: asRecord(latestResultPayload),
       };
+      // PHA-3517: post-hook adapterConfig capture. Pairs with the pre-hook
+      // line at the top of execute(). For a wedged run, pre and post both
+      // report keyCount=0; for a healthy run, both report the populated
+      // key set. Used to detect the wedge from run logs alone.
+      // Note: ctx.config is unchanged at the post-hook point — the adapter
+      // does not mutate the config — but we log it again so a single run
+      // shows a paired snapshot for wedge diagnosis.
+      const postConfigRecord = parseObject(ctx.config);
+      const postConfigKeyCount = postConfigRecord
+        ? Object.keys(postConfigRecord).length
+        : 0;
+      const postConfigTopLevelKeys = postConfigRecord
+        ? Object.keys(postConfigRecord).sort().join(",")
+        : "<n/a>";
+      await ctx.onLog(
+        "stdout",
+        `[openclaw-gateway:hook] post agent=${ctx.agent.id} runId=${ctx.runId} ` +
+          `adapterConfigKeyCount=${postConfigKeyCount} adapterConfigKeys=${postConfigTopLevelKeys}\n`,
+      );
     } finally {
       client.close();
     }
