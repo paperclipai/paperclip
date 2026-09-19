@@ -298,7 +298,7 @@ describe("agent live run routes", () => {
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
-      executionRunId: "run-1",
+      executionRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       assigneeAgentId: "agent-1",
       status: "in_progress",
     });
@@ -329,7 +329,7 @@ describe("agent live run routes", () => {
       currentStatusUpdatedAt: null,
     }));
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
@@ -346,20 +346,20 @@ describe("agent live run routes", () => {
     );
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       logStore: "local_file",
-      logRef: "logs/run-1.ndjson",
+      logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
     });
     mockHeartbeatService.readLog.mockResolvedValue({
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       store: "local_file",
-      logRef: "logs/run-1.ndjson",
+      logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
       content: "chunk",
       nextOffset: 5,
     });
     mockHeartbeatService.wakeup.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "queued",
@@ -367,7 +367,7 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
     });
     mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "succeeded",
@@ -375,7 +375,7 @@ describe("agent live run routes", () => {
     mockWorkspaceOperationService.getById.mockResolvedValue({
       id: "operation-1",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     });
     mockQueueRuntimeRequestResolution.mockReturnValue({
       commandId: "command-resolution-1",
@@ -394,6 +394,82 @@ describe("agent live run routes", () => {
     });
   });
 
+  describe("heartbeat run ID validation", () => {
+    const routes = [
+      ["get", ""],
+      ["post", "/cancel"],
+      ["post", "/runtime-requests/approval-1/resolve"],
+      ["post", "/watchdog-decisions"],
+      ["get", "/provider-trace"],
+      ["post", "/provider-trace/reproject-workspace-diffs"],
+      ["post", "/provider-trace/frames/1/reveal"],
+      ["get", "/provider-trace/download"],
+      ["delete", "/provider-trace"],
+      ["get", "/events"],
+      ["get", "/log"],
+      ["get", "/workspace-operations"],
+    ] as const;
+
+    it.each(["undefined", "null", "not-a-uuid", " aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa "])(
+      "rejects malformed run ID %j before any run lookup",
+      async (runId) => {
+        const app = await createApp();
+        for (const [method, suffix] of routes) {
+          const response = await requestApp(app, (url) =>
+            request(url)[method](`/api/heartbeat-runs/${encodeURIComponent(runId)}${suffix}`).send({}),
+          );
+          expect(response.status, `${method} ${suffix}: ${JSON.stringify(response.body)}`).toBe(400);
+          expect(response.body).toEqual({ error: "Invalid heartbeat run ID" });
+        }
+        expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.getRunLogAccess).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+        expect(mockProviderTraceStore.inspect).not.toHaveBeenCalled();
+        expect(mockLogActivity).not.toHaveBeenCalled();
+      },
+    );
+
+    it("accepts uppercase UUIDs without changing the lookup value", async () => {
+      const runId = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+      const response = await requestApp(await createApp(), (url) =>
+        request(url).get(`/api/heartbeat-runs/${runId}/log`),
+      );
+      expect(response.status).toBe(200);
+      expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith(runId);
+    });
+
+    it.each(["get", "log"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
+      const lookup = kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
+      const suffix = kind === "log" ? "/log" : "";
+      const app = await createApp({}, {
+        type: "board", userId: "test-user", source: "session", companyIds: ["company-1"],
+      });
+      for (const result of [null, { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-2" }]) {
+        lookup.mockResolvedValueOnce(result);
+        const response = await requestApp(app, (url) =>
+          request(url).get(`/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa${suffix}`),
+        );
+        expect(response.status).toBe(404);
+        expect(response.body).toEqual({ error: "Heartbeat run not found" });
+      }
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+    });
+
+    it("keeps board and instance-admin checks ahead of malformed-ID validation", async () => {
+      const app = await createApp({}, { type: "agent", companyId: "company-1", agentId: routeAgentId });
+      for (const [method, suffix] of routes.filter(([, suffix]) =>
+        suffix === "/cancel" || suffix === "/runtime-requests/approval-1/resolve" || suffix.startsWith("/provider-trace"),
+      )) {
+        const response = await requestApp(app, (url) =>
+          request(url)[method](`/api/heartbeat-runs/undefined${suffix}`).send({}),
+        );
+        expect(response.status, `${method} ${suffix}`).toBe(403);
+      }
+      expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    });
+  });
+
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),
@@ -402,10 +478,10 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
-      "run-1",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
     expect(res.body).toMatchObject({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
@@ -440,7 +516,7 @@ describe("agent live run routes", () => {
       issueId: "issue-2",
     });
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
@@ -457,13 +533,13 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
-      "run-1",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
     expect(
       mockHeartbeatService.getActiveRunIssueSummaryForAgent,
     ).toHaveBeenCalledWith("agent-1");
     expect(res.body).toMatchObject({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       issueId: "issue-1",
       agentId: "agent-1",
       agentName: "Builder",
@@ -487,11 +563,11 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.decorateActiveRunStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", issueId: "issue-1" }),
       { companyId: "company-1", issueId: "issue-1" },
     );
     expect(mockExecutionProjection.executionProjectionForRun).toHaveBeenCalledWith(
-      expect.anything(), "company-1", "run-1",
+      expect.anything(), "company-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
     expect(res.body).toMatchObject({
       execution: null,
@@ -506,18 +582,18 @@ describe("agent live run routes", () => {
   it("uses narrow run log metadata lookups for log polling", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
-        "/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64",
       ),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     expect(mockHeartbeatService.readLog).toHaveBeenCalledWith(
       {
-        id: "run-1",
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId: "company-1",
         logStore: "local_file",
-        logRef: "logs/run-1.ndjson",
+        logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
       },
       {
         offset: 12,
@@ -525,9 +601,9 @@ describe("agent live run routes", () => {
       },
     );
     expect(res.body).toEqual({
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       store: "local_file",
-      logRef: "logs/run-1.ndjson",
+      logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
       content: "chunk",
       nextOffset: 5,
     });
@@ -557,10 +633,10 @@ describe("agent live run routes", () => {
       const paths = [
         "/api/companies/company-1/heartbeat-runs",
         "/api/companies/company-1/live-runs",
-        "/api/heartbeat-runs/run-1",
-        "/api/heartbeat-runs/run-1/events",
-        "/api/heartbeat-runs/run-1/log",
-        "/api/heartbeat-runs/run-1/workspace-operations",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations",
         "/api/workspace-operations/operation-1/log",
       ];
 
@@ -1407,7 +1483,7 @@ describe("agent live run routes", () => {
 
   it("does not let an ordinary member downgrade a persisted approval into a question", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "running",
@@ -1420,7 +1496,7 @@ describe("agent live run routes", () => {
           schema: "paperclip.prp.event.v1",
           eventType: "runtime_request.created",
           sourceKind: "runner",
-          runId: "run-1",
+          runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           turnId: "canonical-turn",
           payload: {
             request: {
@@ -1442,7 +1518,7 @@ describe("agent live run routes", () => {
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .post("/api/heartbeat-runs/run-1/runtime-requests/approval-1/resolve")
+      .post("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/runtime-requests/approval-1/resolve")
       .send({
         requestKind: "runtime",
         turnId: "attacker-turn",
@@ -1455,7 +1531,7 @@ describe("agent live run routes", () => {
 
   it("queues an admin resolution with canonical request and actor bindings", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       agentId: "agent-1",
       status: "running",
@@ -1468,7 +1544,7 @@ describe("agent live run routes", () => {
           schema: "paperclip.prp.event.v1",
           eventType: "runtime_request.created",
           sourceKind: "runner",
-          runId: "run-1",
+          runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           turnId: "canonical-turn",
           payload: {
             request: {
@@ -1490,7 +1566,7 @@ describe("agent live run routes", () => {
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .post("/api/heartbeat-runs/run-1/runtime-requests/approval-1/resolve")
+      .post("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/runtime-requests/approval-1/resolve")
       .send({
         requestKind: "user_input",
         turnId: "attacker-turn",
@@ -1500,10 +1576,10 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(mockQueueRuntimeRequestResolution).toHaveBeenCalledWith({
       companyId: "company-1",
-      runId: "run-1",
+      runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       pendingRequest: {
         companyId: "company-1",
-        runId: "run-1",
+        runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         requestId: "approval-1",
         requestKind: "permission_approval",
         turnId: "canonical-turn",
@@ -1519,11 +1595,11 @@ describe("agent live run routes", () => {
   });
 
   it.each([
-    ["get", "/api/companies/company-1/provider-traces?runIds=run-1"],
-    ["get", "/api/heartbeat-runs/run-1/provider-trace"],
-    ["post", "/api/heartbeat-runs/run-1/provider-trace/frames/1/reveal"],
-    ["get", "/api/heartbeat-runs/run-1/provider-trace/download"],
-    ["delete", "/api/heartbeat-runs/run-1/provider-trace"],
+    ["get", "/api/companies/company-1/provider-traces?runIds=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+    ["get", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace"],
+    ["post", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/frames/1/reveal"],
+    ["get", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/download"],
+    ["delete", "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace"],
   ] as const)(
     "requires instance administration to %s %s",
     async (method, path) => {
@@ -1551,7 +1627,7 @@ describe("agent live run routes", () => {
       {
         schema: "paperclip.provider_trace_metadata.v1",
         id: "trace-1",
-        runId: "run-1",
+        runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId: "company-1",
         status: "complete",
         provider: "codex",
@@ -1568,14 +1644,14 @@ describe("agent live run routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
-        "/api/companies/company-1/provider-traces?runIds=run-1",
+        "/api/companies/company-1/provider-traces?runIds=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       ),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockProviderTraceStore.listMetadataForRuns).toHaveBeenCalledWith(
       "company-1",
-      ["run-1"],
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
     );
     expect(res.body[0]).not.toHaveProperty("rawBase64");
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -1600,7 +1676,7 @@ describe("agent live run routes", () => {
       ],
     });
     const res = await requestApp(await createApp(), (baseUrl) =>
-      request(baseUrl).get("/api/heartbeat-runs/run-1/provider-trace"),
+      request(baseUrl).get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace"),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -1634,7 +1710,7 @@ describe("agent live run routes", () => {
 
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).post(
-        "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs",
       ),
     );
 
@@ -1644,7 +1720,7 @@ describe("agent live run routes", () => {
       expect.anything(),
       expect.objectContaining({
         traceId: "trace-1",
-        runId: "run-1",
+        runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId: "company-1",
         agentId: "agent-1",
         projection,
@@ -1688,7 +1764,7 @@ describe("agent live run routes", () => {
 
       const res = await requestApp(await createApp(), (baseUrl) =>
         request(baseUrl).post(
-          "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+          "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs",
         ),
       );
 
@@ -1711,13 +1787,13 @@ describe("agent live run routes", () => {
           type: "agent",
           agentId: "agent-1",
           companyId: "company-1",
-          runId: "run-1",
+          runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           source: "agent_key",
         },
       ),
       (baseUrl) =>
         request(baseUrl).post(
-          "/api/heartbeat-runs/run-1/provider-trace/reproject-workspace-diffs",
+          "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs",
         ),
     );
 
