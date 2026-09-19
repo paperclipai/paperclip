@@ -1263,6 +1263,8 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
     for (const dependentId of dependentIds) {
       const dependentTask = this.#task(dependentId);
       this.#assertCompany(completedTask.companyId, dependentTask.companyId);
+      // Dependency completion must not release an operator's backlog hold.
+      if (dependentTask.status === "backlog") continue;
       const unresolved = this.#state.blockers.filter(
         (blocker) => {
           if (blocker.taskId !== dependentId) return false;
