@@ -147,7 +147,7 @@ describe("Paperclip Runner native provider configuration", () => {
     },
   );
 
-  it("applies the safe provider permission default from adapter config", () => {
+  it("applies the full-auto provider permission default from adapter config", () => {
     expect(
       resolvePaperclipRunnerNativeProviderInput({
         backend: "opencode_server",
@@ -159,7 +159,7 @@ describe("Paperclip Runner native provider configuration", () => {
     ).toEqual({
       provider: "opencode",
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      opencodePermissionMode: "ask",
+      opencodePermissionMode: "allow",
     });
   });
 
