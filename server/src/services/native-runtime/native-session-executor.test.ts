@@ -324,7 +324,7 @@ describe("remote controller restart adoption", () => {
             JSON.stringify({ ...identity, lifecycle: "running", ...overrides }),
           ).toString("base64")
         : script.includes("cat --")
-          ? "nonce\n123\n2026-09-19T10:00:00.000Z\nrunner\n"
+          ? "nonce\n123\n2026-09-19T10:00:00.000Z\nrunner\nlinux:abcd-1234:100\n"
           : "";
       return { stdout, stderr: "", exitCode: 0, timedOut: false };
     });
@@ -446,6 +446,54 @@ describe("remote controller restart adoption", () => {
       }),
     ).rejects.toThrow("native_remote_recovery_lease_mismatch");
     expect(execute).not.toHaveBeenCalled();
+  });
+  it("rejects a marker that cannot prove its process generation", async () => {
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => request.args[2] === "paperclip-runner-recovery-identity"
+      ? { stdout: "nonce\n123\n2026-09-19T10:00:00.000Z\nrunner\n", stderr: "", exitCode: 0, timedOut: false }
+      : original(request));
+    await expect(verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }))
+      .rejects.toThrow("runner_remote_process_identity_unavailable");
+  });
+  it.each(["start ticks", "boot identity"])("rejects PID reuse after the live %s changes", async (change) => {
+    const root = await mkdtemp(join(tmpdir(), "remote-generation-"));
+    const proc = join(root, "proc");
+    const markerPath = join(root, "runner-process.identity");
+    const pid = process.pid;
+    const marker = `nonce\n${pid}\n2026-09-19T10:00:00.000Z\nrunner\nlinux:abcd-1234:100\n`;
+    const stat = (ticks: number) => `${pid} (runner (child)) ${["S", ...Array(18).fill("0"), ticks].join(" ")}\n`;
+    const { target, execute } = fixture();
+    const original = execute.getMockImplementation()!;
+    try {
+      await mkdir(join(proc, String(pid)), { recursive: true });
+      await mkdir(join(proc, "sys/kernel/random"), { recursive: true });
+      await writeFile(join(proc, String(pid), "stat"), stat(100));
+      await writeFile(join(proc, String(pid), "cmdline"), "runner\0--runner-id\0runner\0");
+      await writeFile(join(proc, "sys/kernel/random/boot_id"), "abcd-1234\n");
+      await writeFile(markerPath, marker);
+      execute.mockImplementation(async request => {
+        if (request.args[2] === "paperclip-runner-recovery-identity") {
+          return { stdout: marker, stderr: "", exitCode: 0, timedOut: false };
+        }
+        if (request.args[2] !== "paperclip-runner-recovery-check") return original(request);
+        // Run the actual ownership shell against controlled Linux proc files.
+        // kill -0 still checks a real live PID; only its generation changes.
+        const args = [...request.args];
+        args[1] = args[1].replaceAll("/proc/", `${proc}/`);
+        args[3] = markerPath;
+        let exitCode = 0;
+        try { execFileSync("sh", args, { stdio: "pipe" }); } catch { exitCode = 4; }
+        return { stdout: "", stderr: "", exitCode, timedOut: false };
+      });
+      const adopted = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" });
+      expect(await adopted.isAlive()).toBe(true);
+      if (change === "start ticks") await writeFile(join(proc, String(pid), "stat"), stat(101));
+      else await writeFile(join(proc, "sys/kernel/random/boot_id"), "abcd-5678\n");
+      expect(await adopted.isAlive()).toBe(false);
+      await expect(verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" }))
+        .rejects.toThrow("runner_remote_process_identity_unavailable");
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("rejects a stale process marker", async () => {
     const { execute, target } = fixture();
