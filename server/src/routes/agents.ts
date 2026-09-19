@@ -4909,16 +4909,62 @@ export function agentRoutes(
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
-    if (req.actor.type !== "board") {
-      throw forbidden("Only board-authenticated callers can manage instructions path or bundle configuration");
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Only board-authenticated callers or the agent itself can manage instructions path or bundle configuration");
     }
 
     const id = req.params.id as string;
+
+    // Agents can only update their own instructions path
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      throw forbidden("Agents can only manage their own instructions path");
+    }
+
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
 
     await assertCanManageInstructionsPath(req, existing);
     assertExternalInstructionsAdmin(req, existing);
+
+    // Agents may only set instructions-path-related adapter config keys and managed paths
+    if (req.actor.type === "agent") {
+      const requestedKey = asNonEmptyString(req.body.adapterConfigKey);
+      const defaultKey = resolveInstructionsPathKey(existing.adapterType);
+      const effectiveKey = requestedKey ?? defaultKey;
+      if (effectiveKey && !KNOWN_INSTRUCTIONS_PATH_KEYS.has(effectiveKey)) {
+        throw forbidden(
+          "Agents can only update instructions-path-related adapter configuration",
+        );
+      }
+      // Reject absolute paths — agents may only use relative managed paths
+      if (req.body.path && path.isAbsolute(req.body.path)) {
+        throw forbidden(
+          "Agents can only set managed (relative) instructions paths",
+        );
+      }
+      // Reject path traversal — resolved path must stay within the managed instructions directory
+      if (req.body.path && typeof req.body.path === "string") {
+        const rawCwd = asNonEmptyString(existing.adapterConfig?.cwd ?? (asRecord(existing.adapterConfig) ?? {}).cwd);
+        if (rawCwd) {
+          // Canonicalize cwd: resolve to absolute, normalize, and strip trailing separator
+          const cwd = path.resolve(rawCwd);
+          // Decode URI-encoded segments to catch encoded traversal (%2e%2e, etc.)
+          let candidatePath: string;
+          try {
+            candidatePath = decodeURIComponent(req.body.path);
+          } catch {
+            candidatePath = req.body.path;
+          }
+          const resolvedCandidate = path.resolve(cwd, candidatePath);
+          // Check containment: resolved path must be exactly cwd or start with cwd/
+          if (resolvedCandidate !== cwd && !resolvedCandidate.startsWith(cwd + path.sep)) {
+            throw forbidden(
+              "Path traversal detected: resolved path escapes the managed instructions directory",
+            );
+          }
+        }
+      }
+    }
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
