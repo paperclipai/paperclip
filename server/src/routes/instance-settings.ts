@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { activityLog, type Db } from "@paperclipai/db";
 import {
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
@@ -7,6 +9,7 @@ import {
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
+import { retryOnTransientDbConnectionError } from "../middleware/auth.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
@@ -112,11 +115,223 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
+// The scheduled call that stops every cancellable run for the opt-in
+// termination option. `clearTimeout` cannot revoke a callback the event
+// loop already queued (a timer that fires in the same tick a stop
+// executes), so this variable only lets a later POST or a DELETE cancel a
+// callback that has not fired yet. The generation check inside
+// runTaskDrainTermination, below, is the actual control against a callback
+// that already fired.
+let taskDrainTerminationTimer: ReturnType<typeof setTimeout> | null = null;
+
+// The initiating actor of an armed termination, held immutable from arm
+// time through to the outcome record. The operator who armed the
+// termination is the actor of the outcome, even though the outcome record
+// writes later, on a timer, with no request in flight.
+type TaskDrainActorSnapshot = {
+  actorType: "agent" | "user";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+  agentApiKeyId: string | null;
+  actorSource: string;
+  cloudControlRequestId: string | null;
+};
+
+// The termination the current timer is armed for, mirrored next to the
+// timer handle above. A drain replacement (POST) or a drain deletion
+// (DELETE) clears the timer before it knows whether its own replacement
+// will succeed. If a later step in that same request then fails, the
+// request re-arms the deadline from this snapshot, so a failed
+// replacement or a failed stop never leaves a live drain with no timer.
+//
+// `generation` and `terminationId` answer two different questions.
+// `generation` comes from the process-local counter in the heartbeat
+// service, resets to 0 on every restart, and only proves whether this
+// timer's callback still names the live in-memory drain. `terminationId`
+// is a UUID minted once, when this termination is armed, and stays
+// unique across process restarts, so the audit dedup key below can use
+// it safely: an old activity row from before a restart can carry the
+// same `generation` number as a new termination, but never the same
+// `terminationId`.
+type ArmedTaskDrainTermination = {
+  generation: number;
+  terminationId: string;
+  initiatingActor: TaskDrainActorSnapshot;
+  terminateAt: Date;
+};
+let armedTaskDrainTermination: ArmedTaskDrainTermination | null = null;
+
+function clearTaskDrainTerminationTimer() {
+  if (taskDrainTerminationTimer !== null) {
+    clearTimeout(taskDrainTerminationTimer);
+    taskDrainTerminationTimer = null;
+  }
+  armedTaskDrainTermination = null;
+}
+
+function buildTaskDrainActorSnapshot(req: Request): TaskDrainActorSnapshot {
+  const actor = getActorInfo(req);
+  return {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
+    // getActorInfo folds every source it does not name into "session", so a
+    // Cloud-initiated request needs its own check here to keep the true
+    // source on the durable record.
+    actorSource: req.actor?.source === "cloud_control" ? "cloud_control" : actor.actorSource,
+    cloudControlRequestId: req.cloudControlRequestId ?? null,
+  };
+}
+
 export function instanceSettingsRoutes(db: Db) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
   const heartbeat = heartbeatService(db);
+
+  // Stop every cancellable run for the task-drain termination option, and
+  // write one outcome activity row for every company — including a company
+  // with no active run, so an operator can always tell the termination
+  // ran. Runs inside withTaskDrainTransition, and its first step tests the
+  // drain generation it was armed for: `clearTimeout` cannot revoke a
+  // callback the event loop already queued, so this check is the actual
+  // control against a stale callback (one a stop or a later start made
+  // obsolete after the event loop had already queued it).
+  async function runTaskDrainTermination(
+    generation: number,
+    terminationId: string,
+    initiatingActor: TaskDrainActorSnapshot,
+    terminateAt: Date,
+  ) {
+    await withTaskDrainTransition(async () => {
+      if (!heartbeat.isTaskDrainGenerationLive(generation)) return;
+      const executedAt = new Date();
+      const outcomesByCompany = await heartbeat.terminateActiveRunsForTaskDrain(
+        "Stopped by the task drain termination deadline",
+      );
+      // The runs above are already cancelled. There is no undo for that
+      // step, so a transient database failure here must not lose the
+      // outcome. Retry the company list read and the audit write together
+      // on a transient connection drop.
+      //
+      // A dropped connection can happen after the server commits the
+      // transaction but before the driver reports success. So a retry
+      // cannot assume the first attempt never landed. `terminationId`
+      // names this exact execution and never repeats — not even across a
+      // process restart, unlike the in-memory generation number — so each
+      // retry uses it as a key: it checks for an existing row first, and
+      // writes only when that check finds none. This stops a retry after
+      // an ambiguous failure from duplicating the row or its publication,
+      // and it stops a termination after a restart from matching an old
+      // row left by an unrelated termination that reused the same
+      // generation number.
+      //
+      // If every retry still fails, log the full outcome. An operator can
+      // then recover it from the application log even though the audit
+      // table write did not land.
+      const terminationEntityId = `task-drain-termination:${terminationId}`;
+      try {
+        await retryOnTransientDbConnectionError(async () => {
+          const alreadyRecorded = await db
+            .select({ id: activityLog.id })
+            .from(activityLog)
+            .where(and(
+              eq(activityLog.action, "instance.task_drain.active_tasks_terminated"),
+              eq(activityLog.entityType, "instance_settings"),
+              eq(activityLog.entityId, terminationEntityId),
+            ))
+            .limit(1);
+          if (alreadyRecorded.length > 0) return;
+
+          const companyIds = await svc.listCompanyIds();
+          const postCommitActivityPublications: ActivityPublication[] = [];
+          await db.transaction((tx) =>
+            Promise.all(
+              companyIds.map((companyId) => {
+                const outcome = outcomesByCompany.get(companyId) ?? {
+                  attemptedRunIds: [] as string[],
+                  cancelledRunIds: [] as string[],
+                  failedRunIds: [] as string[],
+                };
+                return logActivity(tx as unknown as Db, {
+                  companyId,
+                  actorType: initiatingActor.actorType,
+                  actorId: initiatingActor.actorId,
+                  agentId: initiatingActor.agentId,
+                  runId: initiatingActor.runId,
+                  agentApiKeyId: initiatingActor.agentApiKeyId,
+                  action: "instance.task_drain.active_tasks_terminated",
+                  entityType: "instance_settings",
+                  entityId: terminationEntityId,
+                  details: {
+                    terminateAt,
+                    executedAt,
+                    initiatingActor,
+                    attemptedRunIds: outcome.attemptedRunIds,
+                    attemptedRunCount: outcome.attemptedRunIds.length,
+                    cancelledRunIds: outcome.cancelledRunIds,
+                    cancelledRunCount: outcome.cancelledRunIds.length,
+                    failedRunIds: outcome.failedRunIds,
+                    failedRunCount: outcome.failedRunIds.length,
+                  },
+                }, postCommitActivityPublications);
+              }),
+            ),
+          );
+          publishActivitiesBestEffort(
+            postCommitActivityPublications,
+            "instance.task_drain.active_tasks_terminated",
+          );
+        });
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            generation,
+            terminationId,
+            terminateAt,
+            executedAt,
+            initiatingActor,
+            outcomesByCompany: Object.fromEntries(outcomesByCompany),
+          },
+          "task drain termination ran but its audit record failed to write; recover the outcome from this log entry",
+        );
+      }
+    });
+  }
+
+  // Arm the termination timer for the given deadline, and mirror it in
+  // armedTaskDrainTermination so a later failed replacement or failed stop
+  // can re-arm the same deadline instead of leaving a live drain with no
+  // timer.
+  function scheduleTaskDrainTermination(armed: ArmedTaskDrainTermination) {
+    armedTaskDrainTermination = armed;
+    const delayMs = Math.max(0, armed.terminateAt.getTime() - Date.now());
+    taskDrainTerminationTimer = setTimeout(() => {
+      // Only clear the shared snapshot when it still names this exact
+      // callback. A callback the event loop already queued before a
+      // later request replaced it (see the comment above
+      // taskDrainTerminationTimer) must not clear a newer request's
+      // timer out from under it; isTaskDrainGenerationLive, inside
+      // runTaskDrainTermination, is what decides whether this callback
+      // still gets to act.
+      if (armedTaskDrainTermination === armed) {
+        taskDrainTerminationTimer = null;
+        armedTaskDrainTermination = null;
+      }
+      runTaskDrainTermination(
+        armed.generation,
+        armed.terminationId,
+        armed.initiatingActor,
+        armed.terminateAt,
+      ).catch((err) => {
+        logger.error({ err }, "task drain termination failed");
+      });
+    }, delayMs);
+  }
 
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);
@@ -300,9 +515,10 @@ export function instanceSettingsRoutes(db: Db) {
     validate(startTaskDrainRequestSchema),
     async (req, res) => {
       assertCanManageInstanceSettings(req);
-      const actor = getActorInfo(req);
+      const initiatingActor = buildTaskDrainActorSnapshot(req);
       const companyIds = await svc.listCompanyIds();
       const ttlMs = req.body.ttlMs ?? null;
+      const terminateActiveTasks = req.body.terminateActiveTasks ?? false;
       // The whole read-audit-apply sequence runs as one queued transition
       // (see withTaskDrainTransition above), so an overlapping start or
       // stop cannot commit its audit row, or apply its live state, out of
@@ -310,43 +526,72 @@ export function instanceSettingsRoutes(db: Db) {
       // startedAt reflects the moment this request actually took effect,
       // not the moment it arrived and was queued behind another transition.
       const drain = await withTaskDrainTransition(async () => {
-        const computed = heartbeat.computeTaskDrain({ ttlMs });
-        // One transaction for every company's audit row, so a write that
-        // succeeds for one company and fails for another never leaves a
-        // partial activity history behind — either every company gets the
-        // record, or none does. The drain mutation below runs only after
-        // this transaction commits, so a failed write leaves the live
-        // drain untouched and there is no partial state to roll back.
-        const postCommitActivityPublications: ActivityPublication[] = [];
-        await db.transaction((tx) =>
-          Promise.all(
-            companyIds.map((companyId) =>
-              logActivity(tx as unknown as Db, {
-                companyId,
-                actorType: actor.actorType,
-                actorId: actor.actorId,
-                agentId: actor.agentId,
-                runId: actor.runId,
-                agentApiKeyId: actor.agentApiKeyId,
-                action: "instance.task_drain.started",
-                entityType: "instance_settings",
-                entityId: "default",
-                details: {
-                  startedAt: computed.startedAt,
-                  expiresAt: computed.expiresAt,
-                },
-              }, postCommitActivityPublications),
+        // A repeated start replaces whatever termination the prior drain
+        // armed. Clear it before this turn computes and applies the new
+        // drain, so a stale timer can never fire alongside — or instead
+        // of — the one this turn arms below. Keep a snapshot of what this
+        // clear just disarmed: if a later step in this same request then
+        // fails, the catch block below re-arms it from the snapshot, so a
+        // failed replacement never leaves the prior, still-live drain with
+        // no timer.
+        const previousArmedTermination = armedTaskDrainTermination;
+        clearTaskDrainTerminationTimer();
+        try {
+          const computed = heartbeat.computeTaskDrain({ ttlMs, terminateActiveTasks });
+          // One transaction for every company's audit row, so a write that
+          // succeeds for one company and fails for another never leaves a
+          // partial activity history behind — either every company gets the
+          // record, or none does. The drain mutation below runs only after
+          // this transaction commits, so a failed write leaves the live
+          // drain untouched and there is no partial state to roll back.
+          const postCommitActivityPublications: ActivityPublication[] = [];
+          await db.transaction((tx) =>
+            Promise.all(
+              companyIds.map((companyId) =>
+                logActivity(tx as unknown as Db, {
+                  companyId,
+                  actorType: initiatingActor.actorType,
+                  actorId: initiatingActor.actorId,
+                  agentId: initiatingActor.agentId,
+                  runId: initiatingActor.runId,
+                  agentApiKeyId: initiatingActor.agentApiKeyId,
+                  action: "instance.task_drain.started",
+                  entityType: "instance_settings",
+                  entityId: "default",
+                  details: {
+                    terminateActiveTasks: computed.terminateActiveTasks,
+                    startedAt: computed.startedAt,
+                    expiresAt: computed.expiresAt,
+                    terminateAt: computed.terminateAt,
+                    initiatingActor,
+                  },
+                }, postCommitActivityPublications),
+              ),
             ),
-          ),
-        );
-        heartbeat.applyTaskDrain(computed);
-        // The audit record already committed, so a failure to publish it
-        // here is not a reason to undo the drain: reverting the in-memory
-        // state at this point would desync it from the committed row.
-        // Swallow a publish failure so it cannot turn a committed mutation
-        // into a false 500.
-        publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.started");
-        return computed;
+          );
+          const generation = heartbeat.applyTaskDrain(computed);
+          // The audit record already committed, so a failure to publish it
+          // here is not a reason to undo the drain: reverting the in-memory
+          // state at this point would desync it from the committed row.
+          // Swallow a publish failure so it cannot turn a committed mutation
+          // into a false 500.
+          publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.started");
+          const terminateAt = computed.terminateAt;
+          if (terminateAt) {
+            scheduleTaskDrainTermination({
+              generation,
+              terminationId: randomUUID(),
+              initiatingActor,
+              terminateAt,
+            });
+          }
+          return computed;
+        } catch (err) {
+          if (previousArmedTermination) {
+            scheduleTaskDrainTermination(previousArmedTermination);
+          }
+          throw err;
+        }
       });
       res.json(drain);
     },
@@ -363,42 +608,56 @@ export function instanceSettingsRoutes(db: Db) {
     // its live-state mutation always land in the same order as every other
     // queued transition.
     const wasActive = await withTaskDrainTransition(async () => {
-      const priorStatus = heartbeat.getTaskDrainStatus();
-      // Read wasActive once, here, and use this same value for the audit
-      // detail and the response body below. A TTL that expires between two
-      // separate reads would otherwise make the two values disagree.
-      const wasActive = priorStatus.draining;
-      // See the POST handler above for why this is one transaction, and why
-      // the drain mutation runs only after it commits.
-      const postCommitActivityPublications: ActivityPublication[] = [];
-      await db.transaction((tx) =>
-        Promise.all(
-          companyIds.map((companyId) =>
-            logActivity(tx as unknown as Db, {
-              companyId,
-              actorType: actor.actorType,
-              actorId: actor.actorId,
-              agentId: actor.agentId,
-              runId: actor.runId,
-              agentApiKeyId: actor.agentApiKeyId,
-              action: "instance.task_drain.stopped",
-              entityType: "instance_settings",
-              entityId: "default",
-              details: {
-                wasActive,
-              },
-            }, postCommitActivityPublications),
+      // A stop must cancel a termination the current drain armed, before
+      // the timer's own generation check would otherwise have to catch it.
+      // Keep a snapshot of what this clear just disarmed: see the POST
+      // handler above for why a later step's failure re-arms it from the
+      // snapshot instead of leaving the still-live drain with no timer.
+      const previousArmedTermination = armedTaskDrainTermination;
+      clearTaskDrainTerminationTimer();
+      try {
+        const priorStatus = heartbeat.getTaskDrainStatus();
+        // Read wasActive once, here, and use this same value for the audit
+        // detail and the response body below. A TTL that expires between two
+        // separate reads would otherwise make the two values disagree.
+        const wasActive = priorStatus.draining;
+        // See the POST handler above for why this is one transaction, and why
+        // the drain mutation runs only after it commits.
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        await db.transaction((tx) =>
+          Promise.all(
+            companyIds.map((companyId) =>
+              logActivity(tx as unknown as Db, {
+                companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                agentApiKeyId: actor.agentApiKeyId,
+                action: "instance.task_drain.stopped",
+                entityType: "instance_settings",
+                entityId: "default",
+                details: {
+                  wasActive,
+                },
+              }, postCommitActivityPublications),
+            ),
           ),
-        ),
-      );
-      heartbeat.stopTaskDrain();
-      // See the POST handler above for why a publish failure here is
-      // swallowed instead of failing the route: the audit record already
-      // committed, so a publish failure here must not undo a drain-stop
-      // that is already correct in the database, and must not report the
-      // stop as failed when it succeeded.
-      publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
-      return wasActive;
+        );
+        heartbeat.stopTaskDrain();
+        // See the POST handler above for why a publish failure here is
+        // swallowed instead of failing the route: the audit record already
+        // committed, so a publish failure here must not undo a drain-stop
+        // that is already correct in the database, and must not report the
+        // stop as failed when it succeeded.
+        publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
+        return wasActive;
+      } catch (err) {
+        if (previousArmedTermination) {
+          scheduleTaskDrainTermination(previousArmedTermination);
+        }
+        throw err;
+      }
     });
     res.json({ wasActive });
   });

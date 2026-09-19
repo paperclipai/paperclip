@@ -6039,7 +6039,7 @@ registry.registerPath({
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary:
-    "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
+    "Get the task-drain status for this process only, including the optional terminateActiveTasks and terminateAt fields; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -6048,7 +6048,7 @@ registry.registerPath({
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary:
-    "Start a task drain, so new run admission holds until active runs finish",
+    "Start a task drain, so new run admission holds until active runs finish. Set terminateActiveTasks to also stop each active run one grace period (PAPERCLIP_TASK_DRAIN_TERMINATION_GRACE_PERIOD_SECONDS, default 30s) before ttlMs expires; terminateActiveTasks requires a positive ttlMs",
   request: { body: jsonBody(startTaskDrainRequestSchema) },
   responses: {
     200: r.ok(),

@@ -40,8 +40,9 @@ export function cloudControlMiddleware(): RequestHandler {
       res.status(400).json({ error: "cloud_control_wrong_endpoint" });
       return;
     }
+    let claims;
     try {
-      verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
+      claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
     } catch (error) {
       logger.warn({ err: error }, "Rejected Cloud control assertion");
       res.status(401).json({ error: "invalid_cloud_control_assertion" });
@@ -55,6 +56,9 @@ export function cloudControlMiddleware(): RequestHandler {
       isInstanceAdmin: true,
       source: "cloud_control",
     };
+    // An audit value only. It names which verified Cloud request armed a
+    // mutation; it makes no authorization decision.
+    req.cloudControlRequestId = claims.requestId;
     next();
   };
 }
