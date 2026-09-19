@@ -486,9 +486,10 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     // was cleared by releaseIssueExecutionAndPromote, but checkoutRunId stayed
     // pinned to the dead run. The new agent's POST /checkout would 409 forever
     // without the clearCheckoutRunIfTerminal helper in svc.checkout.
-    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const { companyId, failedRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
     const otherAgentId = randomUUID();
+    const currentRunId = randomUUID();
     await db.insert(agents).values({
       id: otherAgentId,
       companyId,
@@ -499,6 +500,14 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: currentRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
     });
     await db.insert(issues).values({
       id: issueId,
