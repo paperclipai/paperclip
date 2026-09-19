@@ -1357,7 +1357,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    // Transient upstream retry (rate-limit 429 / overloaded 503-529 / try-again).
+    // auth and provider_quota are already excluded by isClaudeTransientUpstreamError.
+    const maxTransientRetries = Math.max(0, asNumber(config.transientRetryMaxAttempts, 2));
+    const transientRetryBaseDelayMs = Math.max(0, asNumber(config.transientRetryBaseDelayMs, 2_000));
+    let lastAttempt = initial;
+    for (let retryCount = 0; retryCount < maxTransientRetries; retryCount++) {
+      const { proc, parsed } = lastAttempt;
+      if (
+        proc.timedOut ||
+        (proc.exitCode ?? 0) === 0 ||
+        !isClaudeTransientUpstreamError({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: parseFallbackErrorMessage(proc),
+        })
+      ) {
+        break;
+      }
+      const delayMs = Math.min(transientRetryBaseDelayMs * 2 ** retryCount, 30_000);
+      await onLog(
+        "stdout",
+        `[paperclip] Transient upstream error; retrying in ${Math.round(delayMs / 1000)}s (attempt ${retryCount + 1}/${maxTransientRetries}).\n`,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      lastAttempt = await runAttempt(lastAttempt.parsedStream.sessionId ?? sessionId ?? null);
+    }
+
+    return toAdapterResult(lastAttempt, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();
