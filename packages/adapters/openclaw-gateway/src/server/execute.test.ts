@@ -1,5 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+import {
+  accumulateAssistantStreamText,
+  buildAgentParams,
+  resolveClaimedApiKeyPath,
+  resolveSessionKey,
+} from "./execute.js";
+
+describe("accumulateAssistantStreamText", () => {
+  it("stores one intact reply when stream snapshots and the final chunk are replayed", () => {
+    const update = "I’m running the prescribed briefing and ground-truth checks now.";
+    const events = [
+      { text: update, delta: update },
+      { text: update, delta: update },
+      { text: update, delta: update, phase: "final_answer" },
+    ];
+
+    expect(events.reduce(accumulateAssistantStreamText, "")).toBe(update);
+  });
+
+  it("uses cumulative snapshots while preserving genuine incremental deltas", () => {
+    const events = [
+      { text: "Hello", delta: "Hello" },
+      { text: "Hello world", delta: " world" },
+      { delta: "!" },
+    ];
+
+    expect(events.reduce(accumulateAssistantStreamText, "")).toBe("Hello world!");
+  });
+
+  it("honors replacement snapshots", () => {
+    expect(
+      accumulateAssistantStreamText("coordination draft", {
+        text: "final answer",
+        delta: "",
+        replace: true,
+      }),
+    ).toBe("final answer");
+  });
+});
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
