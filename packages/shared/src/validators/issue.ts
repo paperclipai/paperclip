@@ -854,7 +854,7 @@ export const updateIssueSchema = objectWithoutDefaults(
   .extend({
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
-    comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+    comment: multilineTextSchema.pipe(z.string().trim().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
@@ -1018,7 +1018,7 @@ export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
   clientRequestId: z.string().uuid().optional(),
-  body: multilineTextSchema.pipe(z.string().min(1)),
+  body: multilineTextSchema.pipe(z.string().trim().min(1)),
   attachmentIds: issueCommentAttachmentIdsSchema.optional(),
   onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
   authorType: issueCommentAuthorTypeSchema.optional(),
