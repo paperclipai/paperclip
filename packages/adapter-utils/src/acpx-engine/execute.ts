@@ -93,6 +93,8 @@ import {
   type AcpRuntimeUsageCost,
   type AcpSessionStore,
 } from "acpx/runtime";
+import { enforceCodexShellSnapshotPolicy } from "./codex-shell-snapshot.js";
+import { ensureRestrictedDir } from "./restricted-files.js";
 import {
   ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS,
   ACPX_HANDSHAKE_TIMEOUT_MS,
@@ -1292,6 +1294,14 @@ async function prepareCodexSkillRuntime(input: {
       targetHome: managedCodexHome,
       onLog: input.onLog,
     });
+  // Codex writes the provider launch environment — this run's bound credentials
+  // included — into `$CODEX_HOME/shell_snapshots/*.sh` as plaintext `declare -x`
+  // lines. Pin the policy off on every run, not only on the seed: the managed
+  // home is seeded once from the operator's `~/.codex/config.toml`, and an
+  // operator-supplied `CODEX_HOME` is never seeded at all. Runs on both.
+  for (const line of await enforceCodexShellSnapshotPolicy(effectiveCodexHome)) {
+    await input.onLog("stdout", `${line}\n`);
+  }
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
@@ -4208,6 +4218,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         processIdentitySink.current = ctx.onSpawn;
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
+        // ACPX's own `FileSessionStore` creates `<stateDir>/sessions` and writes
+        // each record with no mode argument — 0755 and 0644 under the usual
+        // umask — and both calls live inside the vendored package, so the record
+        // files cannot be created at 0600 from here. Creating the directory at
+        // 0700 first is what is reachable: `ensureDir()` in the store is
+        // `mkdir(recursive)`, which leaves an existing directory's mode alone, so
+        // this wins the race by running before any load or save. Narrowing, not
+        // a control — see restricted-files.ts.
+        for (const line of await ensureRestrictedDir(path.join(prepared.stateDir, "sessions"))) {
+          await ctx.onLog("stderr", `${line}\n`);
+        }
         const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
         const runtimeStore: AcpSessionStore = {
           async load(id) {
