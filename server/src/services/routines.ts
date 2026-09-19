@@ -1571,6 +1571,107 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
+  async function cancelStrandedPredecessorIssues(input: {
+    routine: typeof routines.$inferSelect;
+    executor: Db;
+    issueOriginKind: string;
+    issueOriginId: string;
+    dispatchFingerprint: string;
+    supersedingRunId: string;
+    supersededAt: Date;
+  }) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(input.dispatchFingerprint);
+    const predecessors = await input.executor
+      .select({
+        issueId: issues.id,
+        runId: routineRuns.id,
+      })
+      .from(issues)
+      .innerJoin(
+        routineRuns,
+        and(
+          eq(routineRuns.companyId, issues.companyId),
+          sql`cast(${routineRuns.id} as text) = ${issues.originRunId}`,
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, input.routine.companyId),
+          eq(routineRuns.routineId, input.routine.id),
+          eq(issues.originKind, input.issueOriginKind),
+          eq(issues.originId, input.issueOriginId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          visibleIssueCondition(),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      );
+
+    for (const predecessor of predecessors) {
+      const lockedIssue = await input.executor
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          status: issues.status,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, predecessor.issueId),
+            eq(issues.companyId, input.routine.companyId),
+            eq(issues.originKind, input.issueOriginKind),
+            eq(issues.originId, input.issueOriginId),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+            ...(fingerprintCondition ? [fingerprintCondition] : []),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) continue;
+
+      const liveRun = await input.executor
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, input.routine.companyId),
+            inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
+            or(
+              ...(lockedIssue.executionRunId ? [eq(heartbeatRuns.id, lockedIssue.executionRunId)] : []),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${lockedIssue.id}`,
+            ),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (liveRun) continue;
+
+      await issueSvc.update(lockedIssue.id, { status: "cancelled" }, input.executor);
+      await finalizeRun(predecessor.runId, {
+        status: "failed",
+        failureReason: `Superseded by newer routine run ${input.supersedingRunId}`,
+        completedAt: input.supersededAt,
+      }, input.executor);
+      await logActivity(input.executor, {
+        companyId: input.routine.companyId,
+        actorType: "system",
+        actorId: "routine-dispatch",
+        action: "routine.predecessor_cancelled",
+        entityType: "issue",
+        entityId: lockedIssue.id,
+        details: {
+          identifier: lockedIssue.identifier,
+          routineId: input.routine.id,
+          predecessorRunId: predecessor.runId,
+          supersedingRunId: input.supersedingRunId,
+          reason: "cancel_previous",
+        },
+      });
+    }
+
+    return predecessors.length;
+  }
+
   async function createWebhookSecret(
     companyId: string,
     routineId: string,
@@ -1850,6 +1951,17 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
+        if (input.routine.concurrencyPolicy === "cancel_previous") {
+          await cancelStrandedPredecessorIssues({
+            routine: input.routine,
+            executor: txDb,
+            issueOriginKind,
+            issueOriginId,
+            dispatchFingerprint,
+            supersedingRunId: createdRun.id,
+            supersededAt: triggeredAt,
+          });
+        }
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
