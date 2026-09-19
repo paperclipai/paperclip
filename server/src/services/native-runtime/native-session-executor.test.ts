@@ -40,6 +40,7 @@ import {
   NativeSessionCleanupQuarantinedError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
+  defaultCapabilityRunnerdBinary,
 } from "../../vendor/paperclip-runner/index.js";
 import * as issueServiceModule from "../issues.js";
 import {
@@ -167,18 +168,22 @@ const state = vi.hoisted(() => ({
   release: null as null | (() => void),
 }));
 
-vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
-  ...(await importOriginal<
+vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => {
+  const original = await importOriginal<
     typeof import("../../vendor/paperclip-runner/index.js")
-  >()),
-  createNativeSessionBackend: state.createBackend,
-  createRunnerdCodexTransport: state.createTransport,
-  executeNativeSession: state.execute,
-  settleRetainedRunnerdSession: state.cleanup,
-  retainedRunnerdMaintenanceIsIdle: state.maintenanceIdle,
-  completeRetainedNativeSessionCleanup: state.retireCleanup,
-  parsePaperclipQuestionSet: (value: unknown) => value,
-}));
+  >();
+  return {
+    ...original,
+    defaultCapabilityRunnerdBinary: vi.fn(original.defaultCapabilityRunnerdBinary),
+    createNativeSessionBackend: state.createBackend,
+    createRunnerdCodexTransport: state.createTransport,
+    executeNativeSession: state.execute,
+    settleRetainedRunnerdSession: state.cleanup,
+    retainedRunnerdMaintenanceIsIdle: state.maintenanceIdle,
+    completeRetainedNativeSessionCleanup: state.retireCleanup,
+    parsePaperclipQuestionSet: (value: unknown) => value,
+  };
+});
 
 vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => ({
   ...(await importOriginal<
@@ -9631,6 +9636,13 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each([false, true])("uses shared Codex and replaces only a stale runner image (stale=%s)", async (staleRunner) => {
+    // The mocked remote executes metadata probes; artifact staging only needs bytes.
+    // Keep this regression independent of a locally compiled Rust runner binary.
+    const controllerArtifact = join(isolatedStateDirectory, "paperclip-runnerd");
+    if (staleRunner) {
+      await writeFile(controllerArtifact, "fixture runner artifact");
+      vi.mocked(defaultCapabilityRunnerdBinary).mockReturnValueOnce(controllerArtifact);
+    }
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(
       async (command: { command: string; args?: string[] }) => {
@@ -9707,7 +9719,10 @@ describe("runnerd provider runtime wiring", () => {
     if (staleRunner) {
       expect(syncIn).toHaveBeenCalledTimes(1);
       expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
-        files: [expect.objectContaining({ targetPath: "/workspace/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd" })],
+        files: [expect.objectContaining({
+          sourcePath: controllerArtifact,
+          targetPath: "/workspace/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd",
+        })],
       })]);
     } else {
       expect(syncIn).not.toHaveBeenCalled();
