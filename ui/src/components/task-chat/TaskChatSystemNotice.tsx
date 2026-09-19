@@ -17,7 +17,7 @@ import {
 } from "@/components/SystemNotice";
 import { humanizeSystemNotice } from "@/lib/system-notice-humanizer";
 import { mapCommentMetadataToSystemNoticeSections } from "@/lib/system-notice-comment";
-import { timeAgo } from "@/lib/timeAgo";
+import { formatRelativeTimestamp } from "@/lib/relative-time";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
 const TONE_ICON: Record<SystemNoticeTone, LucideIcon> = {
@@ -70,7 +70,7 @@ export function TaskChatSystemNotice({
     sections.some((section) => section.title?.trim().toLowerCase() === "workspace");
   const showBody = !isStructuredWorkspaceReadyNotice;
   const ToneIcon = TONE_ICON[tone];
-  const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
+  const relative = item.createdAtIso ? formatRelativeTimestamp(item.createdAtIso) : undefined;
   const showTryAgain =
     Boolean(onTryAgainNoLiveExecutionPath) &&
     (item.presentation?.title?.trim() === "No live execution path" ||

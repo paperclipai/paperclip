@@ -5,7 +5,7 @@ import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type { TaskChatMarkerItem } from "./task-chat-model";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/lib/router";
-import { timeAgo } from "@/lib/timeAgo";
+import { formatRelativeTimestamp } from "@/lib/relative-time";
 
 const VARIANT_ICON = {
   session_start: CircleDot,
@@ -32,7 +32,7 @@ export function TaskChatMarker({
   const streamlined = useStreamlinedTaskChatPresentation();
   const Icon = item.tone === "neutral" ? Square : VARIANT_ICON[item.variant];
   const interrupted = item.variant === "interrupted" && item.tone !== "neutral";
-  const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
+  const relative = item.createdAtIso ? formatRelativeTimestamp(item.createdAtIso) : undefined;
   const handleTryAgain = () => {
     void Promise.resolve()
       .then(() => onTryAgain?.())
