@@ -49,7 +49,7 @@ const mockBudgetService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelActiveForAgent: vi.fn(),
-  repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({

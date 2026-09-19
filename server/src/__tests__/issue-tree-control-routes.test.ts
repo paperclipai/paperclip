@@ -26,7 +26,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   wakeup: vi.fn(),
-  repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 
 vi.mock("../services/index.js", () => ({

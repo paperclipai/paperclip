@@ -21,7 +21,7 @@ const mockEnvironmentService = vi.hoisted(() => ({ getById: vi.fn() }));
 const mockSecretService = vi.hoisted(() => ({ normalizeEnvBindingsForPersistence: vi.fn() }));
 const mockProjectService = vi.hoisted(() => ({ getById: vi.fn() }));
 const mockHeartbeatService = vi.hoisted(() => ({
-  repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());

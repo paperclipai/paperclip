@@ -62,7 +62,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: mockWakeup,
     reportRunActivity: vi.fn(async () => undefined),
-    repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+    repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
   instanceSettingsService: () => ({

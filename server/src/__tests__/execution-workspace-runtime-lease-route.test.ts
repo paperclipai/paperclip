@@ -46,7 +46,7 @@ vi.mock("../services/index.js", async () => {
     accessService: () => mockAccessService,
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     heartbeatService: () => ({
-      repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+      repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
     }),
     logActivity: mockLogActivity,
     workspaceOperationService: () => mockWorkspaceOperationService,

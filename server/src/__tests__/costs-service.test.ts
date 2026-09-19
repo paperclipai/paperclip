@@ -63,7 +63,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelBudgetScopeWork: vi.fn().mockResolvedValue(undefined),
-  repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());

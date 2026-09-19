@@ -64,7 +64,7 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     heartbeatService: () => ({
       wakeup: mockHeartbeatWakeup,
-      repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+      repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
     }),
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,

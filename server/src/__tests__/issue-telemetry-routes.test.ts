@@ -90,7 +90,7 @@ function registerModuleMocks() {
     heartbeatService: () => ({
       wakeup: vi.fn(async () => undefined),
       reportRunActivity: vi.fn(async () => undefined),
-      repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+      repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),

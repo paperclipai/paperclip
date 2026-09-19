@@ -87,7 +87,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
   cancelRun: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
-  repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({

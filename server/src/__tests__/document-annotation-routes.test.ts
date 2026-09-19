@@ -39,7 +39,7 @@ const mockIssueReferenceService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  repairBlockedWithNoBlockers: async () => ({ repaired: 0, issueIds: [] }),
+  repairBlockedWithNoBlockers: vi.fn(async () => ({ repaired: 0, issueIds: [] })),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
