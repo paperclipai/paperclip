@@ -525,7 +525,7 @@ describe("remote controller restart adoption", () => {
 
 
 describe("remote runner launch fingerprint compatibility", () => {
-  it.each([true, false])("launches with shell builtins when boot identity is available: %s", async (hasBootIdentity) => {
+  it.each([true, false])("launches with the guaranteed Node runtime when boot identity is available: %s", async (hasBootIdentity) => {
     const root = await mkdtemp(join(tmpdir(), "remote-launch-generation-"));
     try {
       // The mocked proc stat is independent of the launch shell's PID.
@@ -533,11 +533,12 @@ describe("remote runner launch fingerprint compatibility", () => {
       await writeFile(join(root, "stat"), `123 (runner) ${["S", ...Array(18).fill("0"), 1234].join(" ")}\n`);
       if (hasBootIdentity) await writeFile(join(root, "sys/kernel/random/boot_id"), "abcd-1234\n");
       const script = REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT
-        .replaceAll("/proc/$pid/stat", `${root}/stat`)
+        .replaceAll('"/proc/"+process.argv[1]+"/stat"', JSON.stringify(`${root}/stat`))
         .replaceAll("/proc/sys/kernel/random/boot_id", `${root}/sys/kernel/random/boot_id`);
-      // Allow existing launch utilities, but no awk or other new dependencies.
+      // Node is part of the remote runtime contract; awk is not required.
       const bin = join(root, "bin");
       await mkdir(bin);
+      await symlink(process.execPath, join(bin, "node"));
       for (const name of ["mkdir", "chmod", "date", "mv"]) await symlink(execFileSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim(), join(bin, name));
       const marker = join(root, "identity");
       const result = execFileSync("/bin/sh", ["-c", script, "launch", marker, "nonce", "runner", join(root, "diagnostics"), "/bin/sh", "-c", "printf launched"], { env: { ...process.env, PATH: bin }, encoding: "utf8" });
