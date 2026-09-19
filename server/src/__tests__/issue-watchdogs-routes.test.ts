@@ -370,10 +370,58 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     expect(rows).toHaveLength(1);
 
     const activityRows = await db
-      .select({ action: activityLog.action })
+      .select({ action: activityLog.action, details: activityLog.details })
       .from(activityLog)
       .where(eq(activityLog.entityId, res.body.id));
     expect(activityRows.map((row) => row.action)).toContain("issue.watchdog_created");
+    expect(
+      activityRows.find((row) => row.action === "issue.watchdog_created")
+        ?.details,
+    ).toMatchObject({
+      watchdogId: rows[0].id,
+      watchdogAgentId: agentId,
+      source: "issue.create",
+    });
+  });
+
+  it("records the durable watchdog identity for child issue creation", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const parentId = await seedIssue(companyId, { title: "Parent issue" });
+    const app = createApp(companyId);
+
+    const res = await request(app)
+      .post(`/api/issues/${parentId}/children`)
+      .send({
+        title: "Child with watchdog",
+        watchdog: {
+          agentId,
+          instructions: "Confirm the child reaches a terminal state.",
+        },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const [watchdog] = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(eq(issueWatchdogs.issueId, res.body.id));
+    expect(watchdog).toBeDefined();
+
+    const [activity] = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.entityId, res.body.id),
+          eq(activityLog.action, "issue.watchdog_created"),
+        ),
+      );
+    expect(activity?.details).toMatchObject({
+      watchdogId: watchdog.id,
+      watchdogAgentId: agentId,
+      source: "issue.child_create",
+      parentId,
+    });
   });
 
   it("does not create an immediate watchdog review for a newly assigned issue", async () => {

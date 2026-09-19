@@ -843,6 +843,7 @@ export interface Issue {
   liveDescendantCount?: number;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
+  postCommitWarnings?: IssuePostCommitWarning[];
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;
@@ -863,6 +864,11 @@ export interface Issue {
   archivedByRunId?: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssuePostCommitWarning {
+  code: string;
+  message: string;
 }
 
 export type CompactIssue = Pick<

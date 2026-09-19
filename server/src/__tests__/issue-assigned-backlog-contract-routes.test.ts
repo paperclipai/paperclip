@@ -185,23 +185,40 @@ describe("assigned backlog creation contract", () => {
       status: "blocked",
       assigneeAgentId,
     }));
-    mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) =>
-      makeIssue({
+    mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => {
+      const issue = makeIssue({
         id: String(data.id),
         title: String(data.title),
         status: String(data.status),
         assigneeAgentId: data.assigneeAgentId as string | null | undefined,
-      }));
-    mockIssueService.createChild.mockImplementation(async (_parentId: string, data: Record<string, unknown>) => ({
-      issue: makeIssue({
+      });
+      const activityInputFactory = data.activityInputFactory as
+        | ((createdIssue: ReturnType<typeof makeIssue>, dbOrTx: unknown) => unknown[] | Promise<unknown[]>)
+        | undefined;
+      for (const input of await activityInputFactory?.(issue, {}) ?? []) {
+        await mockLogActivity({}, input);
+      }
+      return issue;
+    });
+    mockIssueService.createChild.mockImplementation(async (_parentId: string, data: Record<string, unknown>) => {
+      const issue = makeIssue({
         id: "child-1",
         title: String(data.title),
         status: String(data.status),
         parentId: "parent-1",
         assigneeAgentId: data.assigneeAgentId as string | null | undefined,
-      }),
-      parentBlockerAdded: Boolean(data.blockParentUntilDone),
-    }));
+      });
+      const activityInputFactory = data.activityInputFactory as
+        | ((createdIssue: ReturnType<typeof makeIssue>, dbOrTx: unknown) => unknown[] | Promise<unknown[]>)
+        | undefined;
+      for (const input of await activityInputFactory?.(issue, {}) ?? []) {
+        await mockLogActivity({}, input);
+      }
+      return {
+        issue,
+        parentBlockerAdded: Boolean(data.blockParentUntilDone),
+      };
+    });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);

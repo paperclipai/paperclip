@@ -58,6 +58,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useOptionalToastActions } from "../context/ToastContext";
 import { ApiError } from "../api/client";
 import { companiesApi } from "../api/companies";
 import { useCompanyListQuery } from "../api/companies-query";
@@ -95,6 +96,7 @@ import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { restoreOnboardingState } from "../lib/onboarding-state";
+import { issuePostCommitWarningBody } from "../lib/issue-post-commit-warnings";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
@@ -481,6 +483,7 @@ function OnboardingWizardInner({
   } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
   const queryClient = useQueryClient();
+  const toastActions = useOptionalToastActions();
   const navigate = useNavigate();
   const location = useLocation();
   const { companyPrefix: matchedCompanyPrefix } = useParams<{ companyPrefix?: string }>();
@@ -1714,6 +1717,14 @@ function OnboardingWizardInner({
           })
         );
         issueRef = issue.identifier ?? issue.id;
+        const warning = issuePostCommitWarningBody(issue);
+        if (warning) {
+          toastActions?.pushToast({
+            title: `Created ${issueRef} with warnings`,
+            body: warning,
+            tone: "warn",
+          });
+        }
         if (stillTheSameCompany(createdCompanyId)) setCreatedIssueRef(issueRef);
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)
