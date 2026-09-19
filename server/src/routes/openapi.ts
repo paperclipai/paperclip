@@ -2561,10 +2561,11 @@ registry.registerPath({
   tags: ["chat-channels", "issues"],
   summary: "Get a task's external chat binding",
   description:
-    "Returns the task's current external conversation binding, or `null` when it has none. A binding in another company is reported as not found.",
+    "Returns the task's current external conversation binding, or `null` when it has none. Requires a task UUID; synthetic agent-chat view IDs are invalid. A binding in another company is reported as not found.",
   request: { params: z.object({ issueId: z.string().uuid() }) },
   responses: {
     200: r.ok(externalChannelBindingResponseSchema.nullable()),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,

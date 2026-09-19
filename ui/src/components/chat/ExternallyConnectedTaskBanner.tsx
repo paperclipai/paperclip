@@ -110,14 +110,15 @@ const filePhaseLabels: Record<ChatFileTransferPhase, string> = {
 
 export function useIssueChatBinding(companyId: string, issueId: string) {
   const { enabled } = useChatConnectorsEnabled();
+  const queryEnabled = enabled && Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const query = useQuery({
     queryKey: ["issue-chat-binding", companyId, issueId],
     queryFn: () => chatEndpointsApi.getIssueBinding(issueId),
-    enabled: enabled && Boolean(companyId && issueId),
+    enabled: queryEnabled,
   });
   return {
-    binding: enabled ? (query.data ?? null) : null,
-    isLoading: enabled && query.isLoading,
+    binding: queryEnabled ? (query.data ?? null) : null,
+    isLoading: queryEnabled && query.isLoading,
   };
 }
 

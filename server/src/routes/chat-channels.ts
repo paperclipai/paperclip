@@ -436,7 +436,11 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 
   router.get("/issues/:issueId/chat-binding", async (req, res) => {
     assertBoard(req);
-    const binding = await service.getIssueBinding(req.params.issueId as string);
+    const issueId = req.params.issueId as string;
+    if (issueId !== issueId.trim() || !isUuidLike(issueId)) {
+      throw badRequest("Task ID must be a UUID");
+    }
+    const binding = await service.getIssueBinding(issueId);
     if (binding) {
       const endpoint = await getAccessibleResource(
         req,
