@@ -22,6 +22,8 @@ import { LATE_REQUIREMENT, SLUGIFY_REVISION, requiresEverydayArtifactOracle } fr
 import {
   isActiveStoryRun,
   isStoryWorkspaceDeferral,
+  isExpectedStoryInterruption,
+  storyUnexpectedRunFailure,
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
@@ -304,11 +306,7 @@ export async function runEverydayFlow(input: Input) {
           )),
       reject: (state) => {
         if (state.runs.length > 12) return "bounded execution count exceeded";
-        const bad = state.runs.find(
-          (r) =>
-            ["failed", "timed_out"].includes(r.status) &&
-            !ev.allowedInterruptedRuns.includes(r.id),
-        );
+        const bad = storyUnexpectedRunFailure(state.runs, ev.allowedInterruptedRuns);
         if (bad)
           return `native execution failed ${bad.errorCode ?? ""}: ${bad.error ?? bad.status}`;
         if (
@@ -1387,7 +1385,7 @@ export async function runEverydayFlow(input: Input) {
         .filter(
           (r) =>
             !isStoryWorkspaceDeferral(r) &&
-            !ev.allowedInterruptedRuns.includes(r.id),
+            !isExpectedStoryInterruption(r, ev.allowedInterruptedRuns),
         )
         .every(
           (r) =>

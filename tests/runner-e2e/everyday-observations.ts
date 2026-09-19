@@ -208,6 +208,27 @@ export function isStoryWorkspaceDeferral(run: StoryRun) {
     !run.processPid
   );
 }
+/** Exempt the injected stop itself, never a later recovery/provider failure on that run. */
+export function isExpectedStoryInterruption(
+  run: StoryRun,
+  allowedRunIds: readonly string[],
+): boolean {
+  if (!allowedRunIds.includes(run.id)) return false;
+  return (
+    (run.status === "cancelled" && (!run.errorCode || run.errorCode === "cancelled")) ||
+    (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
+    (run.status === "failed" && run.errorCode === "process_lost")
+  );
+}
+
+export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: readonly string[]) {
+  return runs.find((run) =>
+    ["failed", "timed_out", "cancelled", "interrupted"].includes(run.status) &&
+    !isStoryWorkspaceDeferral(run) &&
+    !isExpectedStoryInterruption(run, allowedRunIds),
+  );
+}
+
 export function storyLifecycleChecks(input: {
   issues: StoryIssue[];
   runs: StoryRun[];
@@ -216,7 +237,7 @@ export function storyLifecycleChecks(input: {
   allowedInterruptedRuns?: string[];
 }): StoryCheck[] {
   const executed = input.runs.filter((r) => !isStoryWorkspaceDeferral(r));
-  const allowed = new Set(input.allowedInterruptedRuns ?? []);
+  const allowed = input.allowedInterruptedRuns ?? [];
   const check = (id: string, passed: boolean, detail: string): StoryCheck => ({
     id,
     passed,
@@ -244,8 +265,8 @@ export function storyLifecycleChecks(input: {
     ),
     check(
       "successful-runs",
-      executed.every((r) => r.status === "succeeded" || allowed.has(r.id)),
-      "Only explicitly interrupted runs may have a non-success terminal state.",
+      executed.every((r) => r.status === "succeeded" || isExpectedStoryInterruption(r, allowed)),
+      "Only the expected stop or process-loss outcome of an injected interruption is exempt.",
     ),
     check(
       "bounded-work",

@@ -4,6 +4,7 @@ import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import {
   isStoryWorkspaceDeferral,
+  storyUnexpectedRunFailure,
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
@@ -273,6 +274,28 @@ describe("lifecycle oracle calibrated failures", () => {
       ["run"],
     );
     expect(checks.find((c) => c.id === "successful-runs")?.passed).toBe(false);
+  });
+  it.each(["adapter_failed", "tool_validation_error", "timed_out"])(
+    "does not excuse a later %s on the same deliberately interrupted run",
+    (errorCode) => {
+      const checks = score(
+        [{ ...run, status: "failed", errorCode }],
+        [parent],
+        [run.id],
+      );
+      expect(checks.find((c) => c.id === "successful-runs")?.passed).toBe(false);
+      const failed = { ...run, status: "failed", errorCode };
+      expect(storyUnexpectedRunFailure([failed], [run.id])).toBe(failed);
+    },
+  );
+  it.each([
+    ["cancelled", "cancelled"],
+    ["interrupted", "server_shutdown_interrupted"],
+    ["failed", "process_lost"],
+  ])("accepts an injected interruption with %s / %s", (status, errorCode) => {
+    const checks = score([{ ...run, status, errorCode }], [parent], [run.id]);
+    expect(checks.find((c) => c.id === "successful-runs")?.passed).toBe(true);
+    expect(storyUnexpectedRunFailure([{ ...run, status, errorCode }], [run.id])).toBeUndefined();
   });
   it("excludes a proven pre-dispatch workspace deferral without hiding executed failures", () => {
     const deferred: StoryRun = {

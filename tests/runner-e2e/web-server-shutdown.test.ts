@@ -19,7 +19,7 @@ it("lets Playwright reap a restarted server through the production bounded shutd
   const pidsPath = path.join(root, "pids.json");
   const configPath = path.join(root, "playwright.config.cjs");
   const testModule = require.resolve("@playwright/test");
-  const cli = path.join(path.dirname(require.resolve("playwright/package.json")), "cli.js");
+  const cli = require.resolve("@playwright/test/cli");
   let child: ReturnType<typeof spawn> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let reservationReleased = false;
