@@ -187,9 +187,20 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
+
+⚠️ **The `Authorization` header is not optional on this call, and omitting it fails silently.**
+In `local_trusted` deployments `actorMiddleware` pre-assigns the implicit board actor
+(`{ type: "board", userId: "local-board", isInstanceAdmin: true }`) before any credential check,
+and every failure path falls through to a bare `next()`. A `PATCH` carrying a `comment` field (or
+a `POST /comments`) without the header is therefore recorded as `authorType: "user"` with
+`authorUserId: "local-board"` — indistinguishable from a human board comment. That is exactly the
+predicate `expireRequestConfirmationsSupersededByComment` uses (`if (!comment.authorUserId) return []`),
+so such a write **expires every pending `request_confirmation` on the issue**, irreversibly: the
+`idempotencyKey` stays claimed and the question can never be asked on that issue again. After any
+write, check the returned `authorType` — `"agent"` means the header arrived, `"user"` means it did not.
 
 For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
 
