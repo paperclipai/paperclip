@@ -46,7 +46,7 @@ import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
-import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { pluginLifecycleManager, type PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
   getPluginUiContributionMetadata,
   listMissingDeclaredPluginEntrypoints,
@@ -445,6 +445,14 @@ export interface PluginRouteBridgeDeps {
 
 export interface PluginRouteToolGatewayDeps {
   toolGateway: ToolGatewayService;
+  /**
+   * Shared lifecycle manager. When provided, route handlers drive plugin
+   * state transitions through this instance instead of constructing a private
+   * one, so the events they emit (plugin.enabled/disabled/unloaded) reach the
+   * tool dispatcher, which subscribes to the same instance. Omitted only by
+   * callers (e.g. unit tests) that don't need dispatcher coordination.
+   */
+  lifecycleManager?: PluginLifecycleManager;
 }
 
 interface PluginScopedApiRequest {
@@ -536,7 +544,11 @@ export function pluginRoutes(
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
-  const lifecycle = pluginLifecycleManager(db, {
+  // Prefer a shared lifecycle manager injected by the composition root so that
+  // state transitions triggered here reach the tool dispatcher (which listens
+  // on the same instance). Fall back to a private instance for callers that
+  // don't wire one (e.g. unit tests).
+  const lifecycle = toolGatewayDeps?.lifecycleManager ?? pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
