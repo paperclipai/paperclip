@@ -435,7 +435,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         workingDirectory: input.workingDirectory,
         agent: this.#options.agent ?? "codex",
         model: this.#options.model,
-        permissionMode: this.#options.permissionMode ?? "approve-paperclip",
+        permissionMode: this.#options.permissionMode ?? "approve-all",
         systemInstructions: this.#options.systemInstructions,
         environment: this.#options.environment,
         managedCodexCredentialSourcePath:

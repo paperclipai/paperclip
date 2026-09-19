@@ -68,7 +68,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   opencode: {
     configurable: true,
     configKey: "opencodePermissionMode",
-    defaultMode: "ask",
+    defaultMode: "allow",
     description:
       "Controls OpenCode tool permissions inside the assigned Paperclip environment.",
     options: [
@@ -106,7 +106,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
-    defaultMode: "approve-paperclip",
+    defaultMode: "approve-all",
     description:
       "Controls ACPX agent operations inside the assigned Paperclip environment.",
     options: [

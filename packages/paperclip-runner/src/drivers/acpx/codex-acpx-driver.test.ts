@@ -21,6 +21,17 @@ import type {
 import type { AcpxRecoveryWorkspaceLease } from "./runtime-sandbox.js";
 
 describe("Codex ACPX harness driver", () => {
+  it.each([
+    ["claude", "claude-sonnet-5"], ["codex", "gpt-5.6-sol"],
+  ] as const)("launches %s in full auto when no mode is supplied", async (agent, model) => {
+    const fixture = driverFixture({ agent, model, permissionMode: undefined });
+    const session = await fixture.driver.openSession({
+      runId: "run-default-permissions", normalizedSessionId: "session-1", workingDirectory: "/workspace",
+    });
+    expect(fixture.hostOptions?.permissionMode).toBe("approve-all");
+    await session.close({ reason: "default permission verified" });
+  });
+
   it("rejects a pre-aborted open before starting host admission", async () => {
     const fixture = driverFixture();
     const controller = new AbortController();

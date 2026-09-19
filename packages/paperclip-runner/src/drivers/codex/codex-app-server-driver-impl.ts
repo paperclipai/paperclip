@@ -271,7 +271,7 @@ export class CodexAppServerDriver implements HarnessDriver {
             this.#options.includeSkillInstructions ?? false,
             this.#options.environment,
           ),
-          approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
+          approvalPolicy: this.#options.approvalPolicy ?? "never",
           ...(this.#options.model ? { model: this.#options.model } : {}),
           ...(this.#direct()
             ? {}
@@ -404,7 +404,7 @@ export class CodexAppServerDriver implements HarnessDriver {
             this.#options.environment,
           ),
           baseInstructions: this.#direct() ? "" : this.#baseInstructions(),
-          approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
+          approvalPolicy: this.#options.approvalPolicy ?? "never",
           ...(this.#options.model ? { model: this.#options.model } : {}),
           dynamicTools: this.#providerDynamicTools(),
           persistExtendedHistory: false,
@@ -851,7 +851,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         approvalPolicy: boundedCodexValue(
           response.approvalPolicy ??
             this.#options.approvalPolicy ??
-            "untrusted",
+            "never",
         ),
         baseInstructions: this.#baseInstructions(),
         instructionSources: Array.isArray(response.instructionSources)

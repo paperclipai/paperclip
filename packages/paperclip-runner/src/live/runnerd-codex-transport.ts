@@ -3084,7 +3084,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
       PAPERCLIP_OPENCODE_PERMISSION_MODE:
-        input.options.opencodePermissionMode ?? "ask",
+        input.options.opencodePermissionMode ?? "allow",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
         input.options.opencodeRuntimeDirectory ??
         resolve(input.options.stateDirectory ?? tmpdir(), "opencode"),
@@ -3155,7 +3155,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
 export function resolveRunnerdAcpxPermissionMode(
   configured: CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"],
 ): NonNullable<CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"]> {
-  return configured ?? "approve-paperclip";
+  return configured ?? "approve-all";
 }
 
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([

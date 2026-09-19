@@ -110,7 +110,7 @@ export function validateAcpxDriverConfig(
     "permissionMode",
   )
     ? text(config.permissionMode)
-    : "approve-paperclip";
+    : "approve-all";
   if (!isPermissionMode(permissionMode)) {
     return invalid(
       "permissionMode",

@@ -451,6 +451,8 @@ describe("native execution input external-chat framing", () => {
     { provider: "codex", resumedSession: true },
     { provider: "acpx", resumedSession: false },
     { provider: "acpx", resumedSession: true },
+    { provider: "opencode", resumedSession: false },
+    { provider: "opencode", resumedSession: true },
   ] as const)("keeps question documentation in the tool on $provider (resumed: $resumedSession)", ({ provider, resumedSession }) => {
     const input = buildNativeExecutionInput({
       companyId: "10000000-0000-4000-8000-000000000001",
@@ -462,7 +464,7 @@ describe("native execution input external-chat framing", () => {
       normalizedSessionId: resumedSession ? "60000000-0000-4000-8000-000000000006" : null,
       provider, resumedSession,
       acpxAgent: "claude",
-      model: provider === "acpx" ? "claude-sonnet-5" : "gpt-5.6-sol",
+      model: provider === "acpx" ? "claude-sonnet-5" : provider === "opencode" ? "openai/gpt-5.5" : "gpt-5.6-sol",
       completionContract: {
         id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
         contract: { revision: "1", objective: "Write a welcome after the user's answer", criteria: [{ id: "objective", requirement: "Use the selected tone" }] },
@@ -470,7 +472,8 @@ describe("native execution input external-chat framing", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     });
     expect(input.provider).toMatchObject(provider === "acpx"
-      ? { kind: "acpx", permissionMode: "approve-paperclip" }
+      ? { kind: "acpx", permissionMode: "approve-all" }
+      : provider === "opencode" ? { kind: "opencode", permissionMode: "allow" }
       : { kind: "codex", approvalPolicy: "never" });
     expect(input.task.prompt).not.toContain("## Questions that need a user response");
     expect(input.task.prompt).toContain("Use Paperclip's request_human_input for durable task questions.");

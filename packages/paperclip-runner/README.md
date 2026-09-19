@@ -69,25 +69,19 @@ alias during selection and verification. Users can keep selecting models from
 the normal Claude catalog or entering custom IDs; unavailable models still fail
 at the provider rather than silently falling back.
 
-ACPX Claude defaults to `approve-paperclip`, shown as **Automatic Paperclip
-actions**. The host intersects the run's assigned public tools with the known
-Paperclip read catalog and an explicit planning/task action allowlist, then
-writes exact MCP permission rules into isolated Claude settings. Plans, task
-creation, reassignment, and the listed task workflow actions
-can execute without a second provider permission prompt. The controller still
-checks company access, action claims, task modes, and governed approvals on every
-call. A tool's presence does not grant permission to act on another company's data.
+ACPX Claude defaults to `approve-all`, shown as **Full auto (approve all)**.
+OpenCode defaults to `allow`; native Codex defaults to `never` (no approval
+pauses). These defaults cover all assigned tools and connections, including
+provider-native operations. Full auto is resolved consistently for agent
+creation, adapter conversion, direct driver launches, and fresh/resumed turns.
+Explicitly stored restrictive modes still apply.
 
-The `paperclip` connection is always the runner's authenticated tool bridge;
-ambient MCP configuration is excluded. Tool hints and provider permission
-metadata cannot grant access. Unassigned tools, external connections, and
-provider-native shell or filesystem operations receive no automatic permission. Governance decisions, generic API
-calls, skill creation, and workspace controls are outside the default allowlist.
-New catalog mutations need an explicit allowlist review before they can become
-automatic.
-Explicit `approve-reads` (**Allow Paperclip reads**) and `deny-all` settings retain
-their restrictive behavior. Existing saved settings are not migrated. Protocol
-completion and task-delivery controls keep their separate allowance.
+The runner's authenticated bridge and controller still enforce company access,
+action claims, task modes, and governed approvals. Provider permission defaults
+do not change workspace isolation or grant credentials or connection access.
+`approve-paperclip` remains an optional narrower mode for assigned planning and
+task tools; `approve-reads` allows assigned reads; `deny-all` rejects requests.
+None of these restrictive modes is the default.
 
 This runtime has no interactive permission handler. An operation that still
 requires approval stops the turn with `approval_required`. The server marks the
