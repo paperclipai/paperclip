@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
+import { paperclipCurlLauncherSource } from "./paperclip-api-pipe.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -1722,6 +1723,7 @@ export async function prepareGitHubOperationLaunchers(input: {
     // so an enclosing project's "type": "module" cannot reinterpret require().
     ["package.json", '{"type":"commonjs"}\n'],
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
+    ["curl", paperclipCurlLauncherSource()],
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
   if (remote) {
@@ -1735,7 +1737,7 @@ export async function prepareGitHubOperationLaunchers(input: {
         timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
       });
     }
-    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
+    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh ${shellQuote(directory)}/curl && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
     if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
   } else {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });

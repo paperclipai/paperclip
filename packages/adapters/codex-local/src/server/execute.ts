@@ -107,6 +107,7 @@ import {
   createCodexAcpExecutor,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
+import { withCodexPaperclipApiBridge } from "./paperclip-api-bridge.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
@@ -568,6 +569,10 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  return withCodexPaperclipApiBridge(ctx, executeWithEngine);
+}
+
+async function executeWithEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
     return {

@@ -417,6 +417,7 @@ describe("GitHub launcher lifecycle", () => {
       await cleanupGitHubOperationLaunchers(first);
       await expect(access(a.PAPERCLIP_GITHUB_LAUNCHER_DIR)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(`${b.PAPERCLIP_GITHUB_LAUNCHER_DIR}/git`, "utf8")).toContain("PAPERCLIP_GITHUB_BROKER_URL");
+      expect(await readFile(`${b.PAPERCLIP_GITHUB_LAUNCHER_DIR}/curl`, "utf8")).toContain("PAPERCLIP_API_BROKER_PIPE");
       await cleanupGitHubOperationLaunchers(first); // teardown replay is harmless
     } finally {
       await cleanupGitHubOperationLaunchers(first);
