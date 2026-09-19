@@ -2403,6 +2403,32 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 
+  it("refreshes overdue schedule triggers when reactivating a routine", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", cronExpression: "* * * * *", timezone: "UTC" },
+      {},
+    );
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, trigger.id));
+
+    await svc.update(routine.id, { status: "paused" }, {});
+    const activationClock = new Date();
+    await svc.update(routine.id, { status: "active" }, {});
+
+    const reactivatedTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]);
+    expect(reactivatedTrigger?.nextRunAt?.getTime()).toBeGreaterThan(activationClock.getTime());
+
+    expect(await svc.tickScheduledTriggers(activationClock)).toEqual({ triggered: 0 });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id))).toHaveLength(0);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(0);
+  });
+
   it("records suppressed automatic runs when worktree execution is disabled while allowing manual runs", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
     const { companyId, routine, svc } = await seedFixture({ runtimeEnv });

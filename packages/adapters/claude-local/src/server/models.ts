@@ -53,28 +53,45 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]);
 }
 
-function resolveAnthropicApiKey(): string | null {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-  return apiKey && apiKey.length > 0 ? apiKey : null;
+type AnthropicCredential = {
+  kind: "api-key" | "auth-token";
+  value: string;
+};
+
+function resolveAnthropicCredential(env: Record<string, unknown> = process.env): AnthropicCredential | null {
+  const apiKey = typeof env.ANTHROPIC_API_KEY === "string" ? env.ANTHROPIC_API_KEY.trim() : "";
+  if (apiKey) return { kind: "api-key", value: apiKey };
+
+  const authToken = typeof env.ANTHROPIC_AUTH_TOKEN === "string" ? env.ANTHROPIC_AUTH_TOKEN.trim() : "";
+  return authToken ? { kind: "auth-token", value: authToken } : null;
 }
 
-function resolveAnthropicBaseUrl(): string {
-  const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
+function resolveAnthropicBaseUrl(env: Record<string, unknown> = process.env): string {
+  const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL.trim() : "";
   return baseUrl && baseUrl.length > 0 ? baseUrl.replace(/\/+$/, "") : "https://api.anthropic.com";
 }
 
-async function fetchAnthropicModels(apiKey: string, baseUrl: string): Promise<AdapterModel[]> {
+type AnthropicModelsResult = {
+  models: AdapterModel[];
+  reachable: boolean;
+};
+
+async function fetchAnthropicModels(
+  credential: AnthropicCredential,
+  baseUrl: string,
+): Promise<AnthropicModelsResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ANTHROPIC_MODELS_TIMEOUT_MS);
   try {
     const response = await fetch(`${baseUrl}${ANTHROPIC_MODELS_ENDPOINT}`, {
       headers: {
         "anthropic-version": ANTHROPIC_API_VERSION,
-        "x-api-key": apiKey,
+        ...(credential.kind === "api-key" ? { "x-api-key": credential.value } : {}),
+        Authorization: `Bearer ${credential.value}`,
       },
       signal: controller.signal,
     });
-    if (!response.ok) return [];
+    if (!response.ok) return { models: [], reachable: false };
 
     const payload = (await response.json()) as { data?: unknown };
     const data = Array.isArray(payload.data) ? payload.data : [];
@@ -92,12 +109,12 @@ async function fetchAnthropicModels(apiKey: string, baseUrl: string): Promise<Ad
         label: displayName,
       });
     }
-    return dedupeModels(models);
+    return { models: dedupeModels(models), reachable: true };
   } catch (error) {
     console.warn("[paperclip] Claude model discovery failed", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return [];
+    return { models: [], reachable: false };
   } finally {
     clearTimeout(timeout);
   }
@@ -107,12 +124,12 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
   if (isBedrockEnv()) return dedupeModels(BEDROCK_MODELS);
 
   const fallback = dedupeModels(DIRECT_MODELS);
-  const apiKey = resolveAnthropicApiKey();
-  if (!apiKey) return fallback;
+  const credential = resolveAnthropicCredential();
+  if (!credential) return fallback;
 
   const now = Date.now();
   const baseUrl = resolveAnthropicBaseUrl();
-  const keyFingerprint = fingerprint(apiKey);
+  const keyFingerprint = fingerprint(credential.value);
   if (
     options?.forceRefresh !== true &&
     cached &&
@@ -123,9 +140,9 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
     return cached.models;
   }
 
-  const fetched = await fetchAnthropicModels(apiKey, baseUrl);
-  if (fetched.length > 0) {
-    const merged = mergedWithFallback(fetched);
+  const fetched = await fetchAnthropicModels(credential, baseUrl);
+  if (fetched.models.length > 0) {
+    const merged = mergedWithFallback(fetched.models);
     cached = {
       keyFingerprint,
       baseUrl,
@@ -153,6 +170,34 @@ export async function listClaudeModels(): Promise<AdapterModel[]> {
 
 export async function refreshClaudeModels(): Promise<AdapterModel[]> {
   return loadClaudeModels({ forceRefresh: true });
+}
+
+export type ClaudeModelRouteStatus =
+  | "available"
+  | "unavailable"
+  | "fallback-only"
+  | "credentials-missing"
+  | "provider-unavailable";
+
+/** Read-only provider catalog check for custom Anthropic-compatible gateways. */
+export async function probeClaudeModelRoute(
+  model: string,
+  env: Record<string, unknown>,
+): Promise<ClaudeModelRouteStatus | null> {
+  const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? env.ANTHROPIC_BASE_URL.trim() : "";
+  if (!baseUrl) return null;
+
+  const credential = resolveAnthropicCredential(env);
+  if (!credential) return "credentials-missing";
+
+  const fetched = await fetchAnthropicModels(credential, resolveAnthropicBaseUrl(env));
+  if (fetched.models.length === 0) {
+    if (!fetched.reachable) {
+      return DIRECT_MODELS.some((entry) => entry.id === model) ? "fallback-only" : "provider-unavailable";
+    }
+    return DIRECT_MODELS.some((entry) => entry.id === model) ? "fallback-only" : "unavailable";
+  }
+  return fetched.models.some((entry) => entry.id === model) ? "available" : "unavailable";
 }
 
 export function resetClaudeModelsCacheForTests() {
