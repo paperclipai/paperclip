@@ -132,10 +132,12 @@ import {
 } from "./services/plugin-loader.js";
 import {
   SELF_HOSTED_AUTO_INSTALL_KEYS,
+  BUNDLED_PLUGIN_CATALOG,
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
 } from "./services/bundled-plugins.js";
+import { readDistributionPluginCatalog, distributionPluginActivationGuard } from "./services/distribution-plugin-catalog.js";
 import {
   createPluginWorkerManager,
   type PluginWorkerManager,
@@ -596,12 +598,14 @@ export async function createApp(
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
+  const distributionPlugins = readDistributionPluginCatalog(bundledCatalogRoot, BUNDLED_PLUGIN_CATALOG);
   const bundledPluginInstalls = resolveBundledPluginInstalls(
     managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
     {
       catalogRoot: bundledCatalogRoot,
       env: process.env,
       enforceCatalogRoot: managedAutoInstallKeys !== null,
+      distributionPlugins,
     },
   );
   const managedBundledPluginKeys =
@@ -869,6 +873,7 @@ export async function createApp(
     {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
       migrationDb: opts.pluginMigrationDb,
+      assertPackageActivation: distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
     },
     {
       workerManager,

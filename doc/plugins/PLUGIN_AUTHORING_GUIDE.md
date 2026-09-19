@@ -368,6 +368,7 @@ Mount surfaces currently wired in the host include:
 - `taskDetailView`
 - `projectSidebarItem`
 - `globalToolbarButton`
+- `appShellOverlay` (persistent, signed-in application shell)
 - `toolbarButton`
 - `contextMenuItem`
 - `commentAnnotation`
@@ -613,3 +614,6 @@ pnpm -r typecheck
 pnpm test:run
 pnpm build
 ```
+
+For image-supplied plugins and the persistent shell lifecycle, see
+[Distribution plugins](DISTRIBUTION-PLUGINS.md).

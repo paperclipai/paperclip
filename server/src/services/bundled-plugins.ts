@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
 /**
  * Bundled plugin auto-provisioning.
@@ -123,6 +124,8 @@ export interface ResolvedBundledPlugin {
   pluginKey: string;
   /** Absolute path handed to `loader.installPlugin({ localPath })`. */
   localPath: string;
+  /** Image-owned entries require exact manifest identity/version matching. */
+  distribution?: DistributionPlugin;
 }
 
 /**
@@ -161,16 +164,23 @@ export function resolveBundledPluginInstalls(
     catalogRoot: string;
     env: Record<string, string | undefined>;
     enforceCatalogRoot: boolean;
+    distributionPlugins?: readonly DistributionPlugin[];
   },
 ): ResolvedBundledPlugin[] {
   const resolved: ResolvedBundledPlugin[] = [];
   const seen = new Set<string>();
   const canonicalRoot = canonicalize(opts.catalogRoot);
+  const distributionPlugins = opts.distributionPlugins ?? readDistributionPluginCatalog(opts.catalogRoot, BUNDLED_PLUGIN_CATALOG);
   for (const key of keys) {
     if (seen.has(key)) continue;
     seen.add(key);
     const entry = BUNDLED_PLUGIN_CATALOG.find((candidate) => candidate.key === key);
     if (!entry) {
+      const distribution = distributionPlugins.find((candidate) => candidate.key === key);
+      if (distribution) {
+        resolved.push({ key, pluginKey: distribution.pluginKey, localPath: distribution.localPath, distribution });
+        continue;
+      }
       const known = BUNDLED_PLUGIN_CATALOG.map((candidate) => candidate.key).join(", ");
       throw new Error(
         `bundled plugin auto-install key "${key}" is not in the bundled catalog (known keys: ${known}); refusing to start`,
@@ -357,6 +367,12 @@ export async function ensureBundledPlugins(
   const bundleManifestExists = deps.bundleManifestExists ?? defaultBundleManifestExists;
   for (const install of installs) {
     try {
+      if (install.distribution) {
+        const manifest = await deps.loader.loadManifest(install.localPath);
+        if (manifest?.id !== install.pluginKey || manifest.version !== install.distribution.version) {
+          throw new Error("Distribution manifest does not match its catalog identity/version");
+        }
+      }
       const existing = await deps.registry.getByKey(install.pluginKey);
       if (existing && (existing.status !== "uninstalled" || !opts.reinstallUninstalled)) {
         // The bundle ships with the release image, so its manifest is the

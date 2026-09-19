@@ -1,4 +1,5 @@
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
+import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
   useCallback,
   useEffect,
@@ -785,6 +786,7 @@ export function Layout() {
           onOpenChange={setShortcutsOpen}
         />
         <ToastViewport />
+        <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
     </GeneralSettingsProvider>
     </ChatSetupSidebarProvider>

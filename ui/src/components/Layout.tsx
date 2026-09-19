@@ -21,6 +21,7 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { AnnouncementWell } from "./AnnouncementWell";
+import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
@@ -788,6 +789,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
       <AnnouncementWell health={health} />
+      <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
     </GeneralSettingsProvider>
     </ChatSetupSidebarProvider>

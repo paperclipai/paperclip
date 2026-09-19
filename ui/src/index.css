@@ -3085,3 +3085,27 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --agent-cap-v1-muted-dream-a: #a6aaad;
   --agent-cap-v1-muted-dream-b: #44464a;
 }
+
+/* Persistent plugin surface. The host reserves mobile navigation/safe-area
+   space; each extension owns its accessible panel and focus lifecycle. */
+:root {
+  --plugin-shell-gap: calc(var(--spacing) * 3);
+  --plugin-shell-inset: calc(var(--spacing) * 4);
+  --plugin-shell-mobile-bottom: calc(var(--sz-calc-14) + var(--sz-safe-bottom) + var(--plugin-shell-inset));
+}
+.plugin-app-shell-overlays {
+  position: fixed;
+  inset-inline-end: max(var(--plugin-shell-inset), env(safe-area-inset-right));
+  bottom: max(var(--plugin-shell-inset), var(--sz-safe-bottom));
+  z-index: var(--z-20);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--plugin-shell-gap);
+  max-width: calc(100vw - var(--plugin-shell-inset) * 2);
+  pointer-events: none;
+}
+.plugin-app-shell-overlay { pointer-events: auto; }
+@media (max-width: 767px) {
+  .plugin-app-shell-overlays { bottom: var(--plugin-shell-mobile-bottom); }
+}
