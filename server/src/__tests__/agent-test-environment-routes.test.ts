@@ -261,6 +261,37 @@ describe("agent test-environment route", () => {
     expect(mockReleaseRunLease).toHaveBeenCalled();
   });
 
+  it.each([
+    { selection: "omitted", environmentId: undefined, expectedId: "22222222-2222-4222-8222-222222222222" },
+    { selection: "cleared", environmentId: null, expectedId: "11111111-1111-4111-8111-111111111111" },
+    { selection: "replaced", environmentId: "33333333-3333-4333-8333-333333333333", expectedId: "33333333-3333-4333-8333-333333333333" },
+  ])("resolves the saved agent environment when the request selection is $selection", async ({ environmentId, expectedId }) => {
+    const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId, companyId: "company-1", adapterType: "external_test",
+      adapterConfig: {}, runtimeConfig: {}, defaultEnvironmentId: "22222222-2222-4222-8222-222222222222",
+    });
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    mockEnvironmentService.getById.mockImplementation(async (id) => ({
+      id, name: "Selected sandbox", driver: "sandbox", status: "active", config: { provider: "fake-plugin" },
+    }));
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "daytona", runner: { execute: vi.fn() } };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ agentId, adapterConfig: {}, ...(environmentId === undefined ? {} : { environmentId }) });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({ id: expectedId }),
+    }));
+    expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
+      "company-1", {}, expect.objectContaining({ consumerType: "environment", consumerId: expectedId }),
+      expect.any(Object),
+    );
+    expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target }));
+  });
+
   it("keeps an explicit local override ahead of the instance sandbox default", async () => {
     mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
     mockEnvironmentService.getById.mockResolvedValue({ id: "33333333-3333-4333-8333-333333333333", name: "Local", driver: "local", status: "active", config: {} });

@@ -3384,9 +3384,22 @@ export function agentRoutes(
       const aiBinding = req.body.aiConnection ? aiConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+      const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
+      const savedAgent = savedAgentId
+        ? await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found")
+        : null;
+      if (savedAgentId) {
+        if (!savedAgent) return;
+        if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, savedAgent);
+      }
       const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
         companyId,
-        asNonEmptyString(req.body?.environmentId),
+        // Omission tests the saved selection. Explicit null tests a prospective
+        // change back to the instance default.
+        req.body.environmentId === undefined
+          ? savedAgent?.defaultEnvironmentId
+          : asNonEmptyString(req.body.environmentId),
       );
       // Fail closed on a foreign environment before any secret resolution, env
       // merge, target resolution, sandbox lease, or adapter test runs.
@@ -3397,13 +3410,8 @@ export function agentRoutes(
       // agent test, restore those display-only placeholders from the
       // server-side config before validating or resolving secrets; otherwise
       // the probe treats "***REDACTED***" as a value to persist.
-      const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
       let adapterConfigForTest = inputAdapterConfig;
-      if (savedAgentId) {
-        const savedAgent = await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found");
-        if (!savedAgent) return;
-        if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
-        await assertCanUpdateAgent(req, savedAgent);
+      if (savedAgent) {
         const providerAdapter = savedAgent.adapterType === "paperclip_runner"
           ? inputAdapterConfig.provider === "codex"
             ? "codex_local"
