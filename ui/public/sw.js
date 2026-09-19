@@ -24,8 +24,9 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Skip non-GET requests and API calls
-  if (request.method !== "GET" || url.pathname.startsWith("/api")) {
+  // Explicitly private requests must bypass BOTH cache writes and offline
+  // fallback, including extension endpoints outside the host /api namespace.
+  if (request.method !== "GET" || url.pathname.startsWith("/api") || request.cache === "no-store") {
     return;
   }
 
@@ -33,7 +34,8 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     fetch(request)
       .then((response) => {
-        if (response.ok && url.origin === self.location.origin) {
+        const cacheControl = response.headers.get("cache-control") ?? "";
+        if (response.ok && url.origin === self.location.origin && !/(?:^|,)\s*(?:no-store|private)(?:\s*(?:,|=)|\s*$)/i.test(cacheControl)) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
         }
