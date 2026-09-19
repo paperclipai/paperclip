@@ -3690,6 +3690,7 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("run_ids"))).toBe(true);
 
     harness.simulateSessionEvent(result.sessionId, {
+      companyId: COMPANY_ID,
       runId: result.runId,
       seq: 1,
       eventType: "chunk",
@@ -3698,6 +3699,7 @@ Duplicate headings receive stable suffixes.
       payload: null,
     });
     harness.simulateSessionEvent(result.sessionId, {
+      companyId: COMPANY_ID,
       runId: result.runId,
       seq: 2,
       eventType: "done",
