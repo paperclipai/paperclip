@@ -459,6 +459,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "./execution-workspace-policy.js";
+import { inspectWorkspaceGitReadiness } from "./workspace-path-readiness.js";
 import {
   instanceSettingsService,
   resolveWorktreeRunExecutionActivation,
@@ -2866,15 +2867,6 @@ export function isConfigurationIncompleteFailedRun(
   );
 }
 
-async function hasGitMetadata(cwd: string | null | undefined) {
-  const normalized = readNonEmptyString(cwd);
-  if (!normalized) return false;
-  return fs
-    .lstat(path.resolve(normalized, ".git"))
-    .then((entry) => entry.isDirectory() || entry.isFile())
-    .catch(() => false);
-}
-
 async function isGitCheckout(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
@@ -3244,15 +3236,14 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     );
   }
 
-  if (
-    workspaceExpectation &&
-    effectiveCwd &&
-    !(await hasGitMetadata(effectiveCwd))
-  ) {
-    fail(
-      "missing_git_metadata",
-      `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
-    );
+  if (workspaceExpectation && effectiveCwd) {
+    const readiness = await inspectWorkspaceGitReadiness(effectiveCwd);
+    if (!readiness.ok) {
+      fail(
+        readiness.reason,
+        `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" ${readiness.detail}.`,
+      );
+    }
   }
 
   const expectedManagedBranchName =
@@ -3833,6 +3824,56 @@ export function prioritizeProjectWorkspaceCandidatesForRun<
     ...rows.slice(0, preferredIndex),
     ...rows.slice(preferredIndex + 1),
   ];
+}
+
+/**
+ * Source types that can never win an *implicit* anchor election. A
+ * `non_git_path` workspace is a declared local folder with no repository in it:
+ * a legitimate target when something points at it on purpose, never something
+ * a git run should inherit by accident.
+ */
+const IMPLICITLY_INELIGIBLE_WORKSPACE_SOURCE_TYPES = new Set(["non_git_path"]);
+
+type ProjectWorkspaceSourceCandidate = ProjectWorkspaceCandidate & {
+  sourceType?: string | null;
+};
+
+/**
+ * The workspaces the anchor resolver may elect from, which is narrower than the
+ * workspaces it may report as hints.
+ *
+ * When a run names a project workspace and that workspace belongs to the
+ * project, it is the *only* candidate. Falling through to a sibling when the
+ * named workspace's cwd is unusable is what produced LUN-7697: thirteen
+ * execution workspaces were persisted carrying the named git workspace's id
+ * together with a sibling `non_git_path` workspace's cwd, and the runs died
+ * before starting on a "no .git metadata" that described a folder nobody had
+ * asked for. A named workspace that cannot be used has to fail saying so.
+ *
+ * With no named workspace, order is preserved except that source types which
+ * cannot satisfy a git run sort last, so a real repository workspace always
+ * wins the default. They stay in the list: a project whose only workspace is a
+ * plain folder is still allowed to run there.
+ */
+export function selectAnchorWorkspaceCandidatesForRun<
+  T extends ProjectWorkspaceSourceCandidate,
+>(rows: T[], preferredWorkspaceId: string | null | undefined): T[] {
+  const preferred = preferredWorkspaceId
+    ? rows.find((row) => row.id === preferredWorkspaceId)
+    : undefined;
+  if (preferred) return [preferred];
+  const eligible: T[] = [];
+  const deprioritized: T[] = [];
+  for (const row of rows) {
+    if (
+      IMPLICITLY_INELIGIBLE_WORKSPACE_SOURCE_TYPES.has(row.sourceType ?? "")
+    ) {
+      deprioritized.push(row);
+    } else {
+      eligible.push(row);
+    }
+  }
+  return [...eligible, ...deprioritized];
 }
 
 /**
@@ -12234,6 +12275,11 @@ export function heartbeatService(
       unorderedProjectWorkspaceRows,
       preferredProjectWorkspaceId,
     );
+    // Hints describe every workspace on the project; only these may be elected.
+    const anchorCandidateRows = selectAnchorWorkspaceCandidatesForRun(
+      projectWorkspaceRows,
+      preferredProjectWorkspaceId,
+    );
 
     const workspaceHints = projectWorkspaceRows.map((workspace) => ({
       workspaceId: workspace.id,
@@ -12255,7 +12301,7 @@ export function heartbeatService(
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning = `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
-      for (const workspace of projectWorkspaceRows) {
+      for (const workspace of anchorCandidateRows) {
         let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
         try {
@@ -12309,7 +12355,10 @@ export function heartbeatService(
           };
         }
         if (preferredWorkspace?.id === workspace.id) {
-          preferredWorkspaceWarning = `Selected project workspace path "${projectCwd}" is not available yet.`;
+          const readiness = await inspectWorkspaceGitReadiness(projectCwd);
+          preferredWorkspaceWarning = readiness.ok
+            ? `Selected project workspace "${workspace.name}" resolves to "${projectCwd}", which is not available yet.`
+            : `Selected project workspace "${workspace.name}" resolves to "${projectCwd}", which ${readiness.detail}.`;
         }
         missingProjectCwds.push(projectCwd);
       }
@@ -12327,9 +12376,10 @@ export function heartbeatService(
         cwd: fallbackCwd,
         source: "project_primary" as const,
         projectId: resolvedProjectId,
-        workspaceId: projectWorkspaceRows[0]?.id ?? null,
-        repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
-        repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
+        // The workspace this run was *for*, not whichever row sorted first.
+        workspaceId: anchorCandidateRows[0]?.id ?? null,
+        repoUrl: anchorCandidateRows[0]?.repoUrl ?? null,
+        repoRef: anchorCandidateRows[0]?.repoRef ?? null,
         workspaceHints,
         warnings,
         baseCwdFallback: true,

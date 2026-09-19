@@ -31,6 +31,7 @@ import {
   resolveExecutionWorkspaceReuseRequestForIssue,
   resolveExecutionWorkspaceReuseProvisioningPolicy,
   resolveNextSessionState,
+  selectAnchorWorkspaceCandidatesForRun,
   resolveTaskSessionConfigFreshness,
   isWorkspaceSyncConflictFailure,
   requiresPushCapabilityPreflight,
@@ -421,26 +422,76 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     }
   });
 
-  it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
+  // LUN-7697: these three used to share the "has no .git metadata" wording, so
+  // an unplugged external disk and a deleted folder both read as a repository
+  // problem. Each cause now names itself.
+  function buildValidationInputForCwd(cwd: string) {
     const input = buildWorkspaceValidationInput();
-    const cwd = "/tmp/paperclip-workspace-without-git-metadata";
+    return buildWorkspaceValidationInput({
+      resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+      executionWorkspace: {
+        ...input.executionWorkspace,
+        baseCwd: cwd,
+        cwd,
+      },
+      persistedExecutionWorkspace: {
+        ...input.persistedExecutionWorkspace!,
+        cwd,
+      },
+    });
+  }
+
+  it("rejects a workspace-linked issue when adapter cwd exists but has no git metadata", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "pc-no-git-"));
+    try {
+      await expectWorkspaceValidationFailure(
+        buildValidationInputForCwd(cwd),
+        "missing_git_metadata",
+        "has no .git metadata",
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a missing adapter cwd as missing, not as a repository without git metadata", async () => {
+    const cwd = path.join(
+      os.tmpdir(),
+      "pc-workspace-that-was-never-created-7697",
+    );
+    await fs.rm(cwd, { recursive: true, force: true });
 
     await expectWorkspaceValidationFailure(
-      buildWorkspaceValidationInput({
-        resolvedWorkspace: buildResolvedWorkspace({ cwd }),
-        executionWorkspace: {
-          ...input.executionWorkspace,
-          baseCwd: cwd,
-          cwd,
-        },
-        persistedExecutionWorkspace: {
-          ...input.persistedExecutionWorkspace!,
-          cwd,
-        },
-      }),
-      "missing_git_metadata",
-      "has no .git metadata",
+      buildValidationInputForCwd(cwd),
+      "missing_workspace_path",
+      "does not exist",
     );
+  });
+
+  it("reports an adapter cwd behind an unmounted external volume as an unmounted volume", async () => {
+    // The real shape of the trap: ~/dev/<repo> is a symlink onto an external
+    // disk, so the entry point exists as a link while its target's whole volume
+    // is absent. Only the link target names the volume.
+    const linkParent = await fs.mkdtemp(path.join(os.tmpdir(), "pc-volume-"));
+    const cwd = path.join(linkParent, "repo-on-external-disk");
+    const absentVolume = `${path.sep}Volumes${path.sep}pc-absent-volume-7697`;
+    try {
+      expect(
+        await fs
+          .stat(absentVolume)
+          .then(() => true)
+          .catch(() => false),
+      ).toBe(false);
+      await fs.symlink(path.join(absentVolume, "dev", "repo"), cwd);
+
+      await expectWorkspaceValidationFailure(
+        buildValidationInputForCwd(cwd),
+        "workspace_volume_not_mounted",
+        `is on external volume "${absentVolume}", which is not mounted`,
+      );
+    } finally {
+      await fs.rm(linkParent, { recursive: true, force: true });
+    }
   });
 
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
@@ -3028,6 +3079,57 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
     expect(
       prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
     ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("selectAnchorWorkspaceCandidatesForRun", () => {
+  // LUN-7697: an issue pinned to the git_repo workspace was handed the cwd of
+  // the project's other workspace, a non_git_path assets folder that happened
+  // to exist, and the run died before starting.
+  const rows = [
+    { id: "git-repo", sourceType: "git_repo", cwd: "/dev/repo" },
+    { id: "assets", sourceType: "non_git_path", cwd: "/Desktop/assets" },
+  ];
+
+  it("elects only the workspace the run named, never a sibling", () => {
+    expect(
+      selectAnchorWorkspaceCandidatesForRun(rows, "git-repo").map(
+        (row) => row.id,
+      ),
+    ).toEqual(["git-repo"]);
+  });
+
+  it("does not fall through to a sibling when the named workspace is a plain folder", () => {
+    expect(
+      selectAnchorWorkspaceCandidatesForRun(rows, "assets").map(
+        (row) => row.id,
+      ),
+    ).toEqual(["assets"]);
+  });
+
+  it("never lets a non_git_path workspace win an implicit election", () => {
+    expect(
+      selectAnchorWorkspaceCandidatesForRun(
+        [rows[1]!, rows[0]!],
+        null,
+      ).map((row) => row.id),
+    ).toEqual(["git-repo", "assets"]);
+  });
+
+  it("still allows a project whose only workspace is a plain folder", () => {
+    expect(
+      selectAnchorWorkspaceCandidatesForRun([rows[1]!], null).map(
+        (row) => row.id,
+      ),
+    ).toEqual(["assets"]);
+  });
+
+  it("ignores a named workspace that does not belong to the project", () => {
+    expect(
+      selectAnchorWorkspaceCandidatesForRun(rows, "workspace-9").map(
+        (row) => row.id,
+      ),
+    ).toEqual(["git-repo", "assets"]);
   });
 });
 
