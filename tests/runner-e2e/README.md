@@ -791,3 +791,8 @@ Everyday restart and Stop scenarios exempt only their recorded cancellation,
 graceful-shutdown interruption, or process-loss outcome. A later adapter error
 on that same run still fails immediately and fails the lifecycle grader. The
 run ID alone is not an exemption from recovery failures.
+
+The review-handoff case also requires proof that the parent was blocked before
+the review wake. If all tasks finish without that ordering, the harness fails
+promptly with an unexercised-boundary diagnostic. Successful work alone does not
+prove that this recovery path was tested.

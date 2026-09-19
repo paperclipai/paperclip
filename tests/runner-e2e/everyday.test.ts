@@ -5,6 +5,7 @@ import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import {
   isStoryWorkspaceDeferral,
   storyUnexpectedRunFailure,
+  storyUnexercisedReviewBoundary,
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
@@ -51,6 +52,21 @@ describe("everyday workflow grader and review timing", () => {
         false,
       ),
     ).toBe(false);
+  });
+});
+
+describe("unexercised review boundary diagnostics", () => {
+  const done = { id: "parent", companyId: "company", title: "task", status: "done" };
+  const completed = { id: "run", companyId: "company", agentId: "lead", status: "succeeded" };
+  it("fails promptly when all work finishes without the required review ordering", () => {
+    expect(storyUnexercisedReviewBoundary([done], [completed])).toContain("not exercised");
+  });
+  it("does not preempt in-flight finalization, recovery, or unfinished work", () => {
+    expect(storyUnexercisedReviewBoundary([done], [{ ...completed, status: "running" }])).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([{ ...done, scheduledRetry: {} }], [completed])).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([{ ...done, activeRecoveryAction: {} }], [completed])).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([{ ...done, status: "blocked" }], [completed])).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([], [])).toBeUndefined();
   });
 });
 

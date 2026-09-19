@@ -229,6 +229,19 @@ export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: reado
   );
 }
 
+/** Called only after the required review boundary did not match. */
+export function storyUnexercisedReviewBoundary(
+  issues: StoryIssue[],
+  runs: StoryRun[],
+): string | undefined {
+  if (issues.length === 0 || runs.length === 0) return;
+  if (!issues.every((issue) =>
+    issue.status === "done" && !issue.scheduledRetry && !issue.activeRecoveryAction,
+  )) return;
+  if (!runs.every((run) => run.status === "succeeded")) return;
+  return "Review handoff boundary not exercised: all tasks finished without evidence of a blocked parent before the review wake.";
+}
+
 export function storyLifecycleChecks(input: {
   issues: StoryIssue[];
   runs: StoryRun[];

@@ -24,6 +24,7 @@ import {
   isStoryWorkspaceDeferral,
   isExpectedStoryInterruption,
   storyUnexpectedRunFailure,
+  storyUnexercisedReviewBoundary,
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
@@ -693,7 +694,7 @@ export async function runEverydayFlow(input: Input) {
           );
           return failed
             ? `Review handoff prerequisite failed: ${failed.errorCode}: ${failed.error}`
-            : undefined;
+            : storyUnexercisedReviewBoundary(state.issues, state.runs);
         },
       });
       const child = boundary.issues.find((issue) => issue.parentId === parent!.id)!;
