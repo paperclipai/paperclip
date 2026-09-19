@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { cn } from "@/lib/utils";
 import { AgentInstructions, CopyField } from "./WebhookFields";
+import { WebhookUrlWarning } from "./WebhookUrlWarning";
 
 export type TriggerDraft = {
   kind: "choose" | "schedule" | "webhook";
@@ -228,6 +229,7 @@ export function RoutineTriggerWizard({
           <h1 className="text-xl font-bold">{title}</h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
+        {!schedule && draft.step > 0 && <WebhookUrlWarning url={webhookUrl} />}
         {draft.step === 0 && (
           <fieldset className="space-y-3">
             <legend className="sr-only">Trigger type</legend>

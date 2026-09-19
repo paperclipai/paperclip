@@ -14,7 +14,7 @@ import { storybookAgents, storybookIssues } from "./paperclipData";
 const now = new Date("2026-09-18T15:00:00Z");
 const routineId = "routine-webhook-story";
 const companyId = "company-storybook";
-const webhookUrl = "https://acme.paperclip.example/api/routine-triggers/public/0123456789abcdef01234567/fire";
+const defaultWebhookUrl = "https://acme.paperclip.example/api/routine-triggers/public/0123456789abcdef01234567/fire";
 const demoSecret = "storybook-demo-secret-not-a-real-credential";
 const actorFields = {
   createdByAgentId: null, createdByUserId: null,
@@ -22,7 +22,7 @@ const actorFields = {
   createdAt: now, updatedAt: now,
 };
 
-function webhook(signingMode: string, index = 1): RoutineTrigger {
+function webhook(signingMode: string, index = 1, webhookUrl = defaultWebhookUrl): RoutineTrigger {
   return {
     ...actorFields, id: `webhook-${index}`, companyId, routineId,
     kind: "webhook", label: "Deployment completed", enabled: true,
@@ -94,12 +94,13 @@ const routineActivity: ActivityEvent[] = [
 
 type Props = {
   preview?: ReactNode;
+  webhookUrl?: string;
   signingMode: "bearer" | "hmac_sha256" | "github_hmac" | "none";
   state: "setup" | "credentials" | "configured" | "failure" | "overview" | "list" | "runs" | "activity";
 };
 
 /** The actual application shell and route pages, backed by an in-memory API. */
-export function WebhookReview({ signingMode = "bearer", state = "configured", preview }: Props) {
+export function WebhookReview({ signingMode = "bearer", state = "configured", preview, webhookUrl = defaultWebhookUrl }: Props) {
   const navigate = useNavigate();
   const { setSelectedCompanyId } = useCompany();
   const [ready, setReady] = useState(false);
@@ -112,7 +113,7 @@ export function WebhookReview({ signingMode = "bearer", state = "configured", pr
       lastTriggeredAt: fresh ? null : now,
       recentRuns: fresh ? [] : [completedRun],
       triggers: fresh ? [] : [{
-        ...webhook(signingMode),
+        ...webhook(signingMode, 1, webhookUrl),
         lastWebhookDelivery: { status: state === "failure" ? "rejected" : "received", receivedAt: now.toISOString(), test: false },
         lastResult: state === "failure"
           ? "Failed to create task: no default agent assigned"
@@ -149,7 +150,7 @@ export function WebhookReview({ signingMode = "bearer", state = "configured", pr
     routinesApi.update = async (_id, patch) => (routine = { ...routine, ...patch });
     routinesApi.createTrigger = async (_id, input) => {
       const trigger: RoutineTrigger = {
-        ...webhook(String(input.signingMode ?? "bearer"), routine.triggers.length + 1), ...input,
+        ...webhook(String(input.signingMode ?? "bearer"), routine.triggers.length + 1, webhookUrl), ...input,
         lastFiredAt: null, lastResult: null,
       };
       routine = { ...routine, triggers: [...routine.triggers, trigger] };
@@ -189,7 +190,7 @@ export function WebhookReview({ signingMode = "bearer", state = "configured", pr
       issuesApi.listCompact = originalCompactList;
       window.fetch = previousFetch;
     };
-  }, [signingMode, state]);
+  }, [signingMode, state, webhookUrl]);
 
   if (!ready) return null;
   return (

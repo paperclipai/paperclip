@@ -95,6 +95,22 @@ describe("TriggersSection", () => {
     expect(container.textContent).not.toContain("one-time-secret");
   });
 
+  it("warns about private URLs without blocking webhook setup or completion", async () => {
+    routine.triggers = [{ id: "trigger-1", kind: "webhook", enabled: true, setupPending: true, signingMode: "bearer", webhookUrl: "https://paperclip.internal/webhook" }] as RoutineTrigger[];
+    await render();
+    await click("Resume setup");
+    expect(container.textContent).toContain("This webhook URL appears to be private");
+    expect(container.querySelector('a[href="https://docs.paperclip.ing/reference/deploy/https/"]')).not.toBeNull();
+    expect(button("Check connection").disabled).toBe(false);
+    await click("Check connection");
+    expect(container.textContent).toContain("This webhook URL appears to be private");
+    expect(button("Finish without checking").disabled).toBe(false);
+    await click("Finish without checking");
+    expect(api.updateTrigger).toHaveBeenCalledWith("trigger-1", { setupPending: false });
+    await click("Edit webhook");
+    expect(container.textContent).toContain("This webhook URL appears to be private");
+  });
+
   it("shows polled connection results even when routine context is stale", async () => {
     routine.triggers = [{ id: "trigger-1", kind: "webhook", enabled: true, setupPending: true, signingMode: "bearer", webhookUrl: "https://paperclip.example/webhook" }] as RoutineTrigger[];
     await render(undefined, routine);

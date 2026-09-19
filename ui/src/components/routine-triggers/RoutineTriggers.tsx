@@ -26,6 +26,7 @@ import {
   type TriggerDraft,
 } from "./TriggerWizard";
 import { AgentInstructions, CopyField } from "./WebhookFields";
+import { WebhookUrlWarning } from "./WebhookUrlWarning";
 
 function readDraft(key: string): TriggerDraft | null {
   try {
@@ -521,6 +522,7 @@ function WebhookSettings({
     checkBaseline !== null && delivery && delivery.receivedAt !== checkBaseline;
   return (
     <div className="space-y-4">
+      <WebhookUrlWarning url={trigger.webhookUrl ?? ""} />
       {secret && (github || trigger.signingMode === "bearer") && (
         <AgentInstructions
           value={webhookAgentInstructions(

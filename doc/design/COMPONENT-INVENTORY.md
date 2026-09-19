@@ -428,3 +428,5 @@ Independently addressable examples live under `Connections/In-task connections` 
 ## Shared setup wizard (2026-09-19)
 
 `ui/src/components/SetupWizard.tsx` extracts the Slack setup navigation into reusable numbered steps, a portal sidebar, an optional section-menu takeover outlet, and a single-row footer. `SetupWizardSidebarProvider` owns the portal target and takeover lifecycle. Chat exports retain their existing names and defaults for compatibility. The Design Guide demonstrates the components. The production routine trigger wizard and its Storybook previews share the sidebar takeover, navigation, and footer. `routine-triggers/TriggerWizard.tsx`, `TriggerCard.tsx`, and `WebhookFields.tsx` provide the shared trigger setup, compact editable cards, copyable credentials, and agent instructions.
+
+`routine-triggers/WebhookUrlWarning.tsx` uses `InlineBanner` for non-blocking localhost, private-network, Tailscale, and HTTP guidance. Setup and saved webhook editors share it; the Design Guide shows each warning. URL classification is heuristic, not a public reachability test.
