@@ -6,6 +6,7 @@ import type {
 } from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
+import { isBlockedUnstartedWake } from "./non-execution-wake.js";
 import { chatMarker } from "./chat-cases.js";
 
 // Public API observations only: this driver never fabricates provider results or writes DB state.
@@ -36,7 +37,7 @@ export interface ChatRun {
   resultJson?: Record<string, unknown>;
   sessionIdBefore?: string | null;
   sessionIdAfter?: string | null;
-  startedAt?: string;
+  startedAt?: string | null;
 }
 type Comment = {
   id: string;
@@ -212,7 +213,7 @@ export async function collectChatRunEvidence(
 ) {
   return {
     runId: run.id,
-    log: isResetRun(run)
+    log: isResetRun(run) || isBlockedUnstartedWake({ ...run })
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
     events: await api.get(`/api/heartbeat-runs/${run.id}/events?limit=1000`),

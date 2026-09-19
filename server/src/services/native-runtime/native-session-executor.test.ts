@@ -4125,8 +4125,24 @@ describe("native governed waits", () => {
       schemaVersion: 1,
       priority: 0 as const,
       emittedAt: "2026-08-31T00:00:00.000Z",
-      payload: {},
+      payload: { kind: "dynamicToolCall" },
     };
+
+    // A failed tool is terminal too, even when its error event omits kind.
+    // It must not block the later approval tool from parking this run.
+    await observation.observe({ ...replayedEvent, eventType: "item.started", itemId: "failed-command", payload: { kind: "commandExecution" } }, false);
+    await observation.observe({ ...replayedEvent, eventType: "item.failed", itemId: "failed-command", payload: { error: "Command exited with status 1" } }, false);
+
+    // A usage event must not park while the card-creation response is held.
+    await observation.observe({ ...replayedEvent, eventType: "item.started", itemId: "approval-tool" }, false);
+    const usage = { ...replayedEvent, payload: { kind: "usage" } };
+    await observation.observe(usage, true);
+    expect(observation.consume(usage)).toBeNull();
+    const other = { ...replayedEvent, itemId: "other-tool" };
+    await observation.observe(other, true);
+    expect(observation.consume(other)).toBeNull();
+    await observation.observe({ ...replayedEvent, itemId: "approval-tool" }, true);
+    expect(observation.consume({ ...replayedEvent, itemId: "approval-tool" })).toEqual(waitResult);
 
     await observation.observe(replayedEvent, true);
     expect(observation.consume(replayedEvent)).toEqual(waitResult);
@@ -4237,6 +4253,7 @@ function leaseDb(
       const query = {
         then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
         where: () => query,
+        orderBy: () => query,
         for: () => query,
         limit: () => Promise.resolve(rows),
       };
@@ -4841,7 +4858,7 @@ describe("native runtime request resolution", () => {
     snapshot.mockReset().mockResolvedValue({ activeTurnId: "provider-turn-1" });
     resolveRuntimeRequest.mockReset().mockResolvedValue(undefined);
     state.execute.mockReset().mockImplementation(async (options) => {
-      options.onSession?.({
+      await options.onSession?.({
         capabilities,
         snapshot,
         resolveRuntimeRequest,
@@ -4850,7 +4867,7 @@ describe("native runtime request resolution", () => {
       await new Promise<void>((resolve) => {
         state.release = resolve;
       });
-      options.onSession?.(null);
+      await options.onSession?.(null);
       return {
         result: { summary: "completed" },
         terminal: { runTerminalState: "succeeded" },

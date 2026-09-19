@@ -1353,6 +1353,25 @@ describe("Codex app-server Codex driver", () => {
     },
   );
 
+  it.each([false, true])("requires trusted continuation metadata before omitting task context (%s)", async (continuation) => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], {
+      skillInputs: [{ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" }],
+    }).openSession({ runId: "run-delta", normalizedSessionId: "session-delta", workingDirectory: TEST_WORKING_DIRECTORY });
+    const text = JSON.stringify({ schema: "paperclip.native-continuation.v1", events: '{"messages":[{"body":"Go ahead"}]}', completion: { revision: "2", criterionIds: ["comment"] } });
+    await session.startTurn({ message: { role: "user", text }, ...(continuation ? { continuation: true as const } : {}) });
+    const params = transport.calls.find((call) => call.method === "turn/start")!.params;
+    if (continuation) {
+      expect(params.input).toEqual([{ type: "text", text, text_elements: [] }]);
+      expect(JSON.stringify(params.input)).not.toContain("constraints");
+      expect(JSON.stringify(params.input)).not.toContain("first-task");
+    } else {
+      expect(JSON.stringify(params.input)).toContain("constraints");
+      expect(params.input).toContainEqual({ type: "skill", name: "first-task", path: "/skills/first-task/SKILL.md" });
+    }
+    await session.close({ reason: "test complete" });
+  });
+
   it("allows eval fixtures to opt out of Codex collaboration instructions", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport], {

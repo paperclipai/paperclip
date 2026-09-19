@@ -2598,9 +2598,10 @@ describe("buildNativeExecutionInput wake projection", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     });
 
-    expect(input.task.prompt.includes("Execution contract:")).toBe(!conversationMode);
-    expect(input.task.prompt.includes("Use child issues")).toBe(!conversationMode);
-    expect(input.task.prompt).toContain("## Paperclip Resume Delta");
+    expect(input.task.prompt).not.toContain("Execution contract:");
+    expect(input.task.prompt).not.toContain("Use child issues");
+    // Full bootstrap stays available if provider recovery fails after admission.
+    expect(input.task.prompt).toContain("## Paperclip Wake Payload");
     expect(input.task.prompt).toContain("reason: issue_children_completed");
     expect(input.task.prompt).toContain("DOT-147 Build utility (done)");
     expect(input.task.prompt).toContain(

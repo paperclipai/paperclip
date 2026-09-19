@@ -237,6 +237,15 @@ describe("chat acceptance contracts", () => {
       "Run log not found",
     );
   });
+  it("retains events for an unstarted dependency-blocked wake without asking for a nonexistent log", async () => {
+    const get = vi.fn().mockResolvedValue([]);
+    const suppressed = { ...run, status: "cancelled", errorCode: "issue_dependencies_blocked", startedAt: null };
+    expect((await collectChatRunEvidence({ get }, suppressed)).log).toBeNull();
+    expect(get).toHaveBeenCalledTimes(1);
+    get.mockRejectedValue(new Error("Run log not found"));
+    await expect(collectChatRunEvidence({ get }, { ...suppressed, startedAt: "2026-09-18T00:00:00Z" })).rejects.toThrow("Run log not found");
+    await expect(collectChatRunEvidence({ get }, { ...suppressed, errorCode: "provider_transport_failed" })).rejects.toThrow("Run log not found");
+  });
   it("waits for a newly running provider's log file without swallowing server failures", async () => {
     const get = vi.fn().mockResolvedValue({ status: () => 404 });
     const api = { request: { get } } as unknown as Pick<RunnerApi, "request">;

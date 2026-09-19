@@ -112,7 +112,8 @@
       "@chat-adapter/slack@4.39.0": "patches/@chat-adapter__slack@4.39.0.patch",
       "@chat-adapter/discord@4.39.0": "patches/@chat-adapter__discord@4.39.0.patch",
       "@chat-adapter/github@4.39.0": "patches/@chat-adapter__github@4.39.0.patch",
-      "@discordjs/ws@1.2.3": "patches/@discordjs__ws@1.2.3.patch"
+      "@discordjs/ws@1.2.3": "patches/@discordjs__ws@1.2.3.patch",
+      "postgres@3.4.9": "patches/postgres@3.4.9.patch"
     },
     "overrides": {
       "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.153.4",

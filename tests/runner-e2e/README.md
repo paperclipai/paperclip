@@ -17,8 +17,9 @@ The vocabulary is: a **campaign** is one workflow invocation against one SHA; a
 environments × cases; an **execution/cell** is one parallel job; and an
 **attempt** is one isolated harness run, including an infrastructure retry.
 
-The browser creates and assigns the task. The harness does not call a private
-runner hook or write fixtures directly to the database.
+The browser creates and assigns the task; fixtures use public APIs. The
+`accept-while-running` case additionally holds the committed card’s creation
+response in the test server until browser acceptance, to exercise real overlap.
 
 The launcher always sets `PAPERCLIP_ANNOUNCEMENTS_ENABLED=false` for its isolated
 instances so announcement panels do not obscure screenshot evidence. No shell
@@ -167,7 +168,7 @@ Both suites save and restore experimental settings. Browser E2E always starts a
 throwaway instance; never point the authenticated suite at the running demo.
 Missing provider credentials fail paid preflight and are not passing coverage.
 
-The default `--all` selection is 166 cells (143 local and 23 Daytona) and 362
+The default `--all` selection is 167 cells (144 local and 23 Daytona) and 363
 expected paid agent turns. The explicit-only everyday suite adds 35 catalog cells
 and is excluded from `--all`. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
@@ -454,7 +455,7 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100). The 166-cell default selection takes more than
+integer from 1–100 on AWS (default 100). The 167-cell default selection takes more than
 one wave at that limit; use suite selectors for smaller campaigns. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
@@ -723,7 +724,7 @@ resolver projections. This is a regression sample, not an exhaustive injection
 or authorization evaluation.
 
 The native-only `question-tool-documentation` case adds two cells (Runner Codex
-and Runner ACPX Claude), for 22 continuation cells total. It asks for a clickable
+and Runner ACPX Claude), for 23 continuation cells total. It asks for a clickable
 Morning/Afternoon question, followed by an open text question, then a saved note
 using both real answers. The user prompt contains no tool names or payload recipes.
 Checks inspect actual forms, ordered UI answers, the saved document, and every
@@ -742,3 +743,31 @@ pnpm test:e2e:runner:browser-support
 # To use an installed Chrome instead of Playwright's Chromium:
 PAPERCLIP_PLAYWRIGHT_CHANNEL=chrome pnpm test:e2e:runner:browser-support
 ```
+
+### Native provider continuity
+
+The first-task `task-reply-accept` and `task-card-accept` journeys also verify that
+ordinary native follow-ups retain the parent task's workspace, native session,
+and provider session identities. A generic `sessionReused` flag is insufficient.
+The check excludes child runs and applies only to native profiles.
+
+For ordinary native comment and child-completion wakes, a verified provider resume
+receives only new attributed messages, the current authenticated interaction result,
+actual task edits, child results, and completion-report identifiers. The provider
+retains conversation history. Paperclip retains task state and authorization. A new
+or replacement session still receives the full bootstrap; specialized recovery,
+review, external-chat and planning paths retain their existing context. Legacy
+adapter prompts are unchanged.
+
+The ACPX Claude-only `provider-question-bridge` case exercises the provider’s built-in question tool, verifies that its card appears in Paperclip, answers it in the browser, and requires the same paused run to finish with the selected fact. The `accept-while-running` fixture holds the committed card’s creation response until browser acceptance, making the overlap deterministic without changing production behavior.
+
+Local Legacy Claude cells qualify Claude Code `2.1.277` before starting the server.
+If the ambient CLI differs, the harness installs the exact version under the
+attempt's temporary root and prepends that private bin directory to the server's
+PATH. It does not change the developer's global installation. The old workflow
+pin, `2.1.19`, did not discover `.claude/skills` supplied through `--add-dir`;
+a provider-free CLI probe reproduced the missing skill on that version and
+confirmed discovery on `2.1.277`. The workflow pin and local qualifier are checked
+together. This change applies to local cells; Daytona images remain separately pinned.
+Continuation question flows also wait for the submitted interaction's durable
+`answered` state before considering the next checkpoint ready.

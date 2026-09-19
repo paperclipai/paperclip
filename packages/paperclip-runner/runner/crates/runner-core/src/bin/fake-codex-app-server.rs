@@ -1633,6 +1633,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if emit_post_completion_passive_statuses {
                         for notification in [
                             json!({
+                                "method": "thread/tokenUsage/updated",
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id,
+                                    "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12},
+                                        "last": {"inputTokens": 20, "outputTokens": 2}}}
+                            }),
+                            json!({
                                 "method": "remoteControl/status/changed",
                                 "params": {"status": "disabled", "environmentId": null}
                             }),

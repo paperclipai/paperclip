@@ -5,6 +5,16 @@ summary: Claude Code local adapter setup and configuration
 
 The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports session persistence, skills injection, and structured output parsing.
 
+## Quota waits
+
+Claude ACP runs that end with a typed provider-quota error retain the quota
+classification and any parsed reset time. Recovery waits until that time, or
+uses its existing one-hour quota backoff when no reset time is available.
+The adapter inspects the terminal provider message in memory; the run result
+and run log retain only the generic failure message, recovery labels, and reset
+timestamp. Context, turn, rate, and configured budget limits are not treated as
+subscription quota exhaustion merely because ACP labels them `limit`.
+
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)

@@ -863,7 +863,7 @@ async function awaitAdoptedRunnerAuthentication(input: {
   }
 }
 
-function bridgedCodexQuestionParams(
+export function bridgedCodexQuestionParams(
   request: Record<string, unknown>,
   method: string,
   threadId: string,
@@ -884,6 +884,12 @@ function bridgedCodexQuestionParams(
         ? request.itemId
         : String(request.requestId ?? "runtime-input"),
   };
+  // ACPX has already normalized and bound these IDs in Rust. Reconstructing a
+  // Codex form here would change option IDs and break the answer's return path.
+  if (method === "elicitation/create") {
+    return { ...common, questionSet, origin: request.origin,
+      message: questionSet.description ?? questionSet.title ?? "A tool needs your input" };
+  }
   if (method === "mcpServer/elicitation/request") {
     const required: string[] = [];
     const properties = Object.fromEntries(
@@ -5889,7 +5895,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           params &&
           (method === "item/tool/requestUserInput" ||
             method === "tool/requestUserInput" ||
-            method === "mcpServer/elicitation/request") &&
+            method === "mcpServer/elicitation/request" ||
+            method === "elicitation/create") &&
           !this.#bridgedRuntimeInputs.has(requestId)
         ) {
           this.#bridgedRuntimeInputs.set(requestId, {

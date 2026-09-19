@@ -56,7 +56,7 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
   // A renderer failure (render, resize, context loss) hands the hero to the
   // still portrait — and releases both canvases, observers and contexts, which
   // otherwise stay allocated behind the fallback until the wizard unmounts.
-  const fail = () => { clearTimers(); destroy("overlay"); destroy("base"); setFailed(true); };
+  const fail = () => { clearTimers(); destroy("overlay"); destroy("base"); setReady(false); setFailed(true); };
   // Note: after a wake the live player sits in the overlay span; `mount` clears both spans.
   const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -84,12 +84,14 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     const animation = next === "asleep" ? lib.sequences.asleep : lib.sequences.awake;
     const leadIn = sequenceLeadIn(lib.definition, animation);
     const player = lib.create(base.current, colorOnboardingDefinition(lib.definition, identity, next === "asleep"), { animation, ...FOLLOW, onError: fail });
-    player.seek(leadIn);
     players.current.base = player;
+    player.seek(leadIn);
+    if (players.current.base !== player) return;
     if (next === "asleep") {
       const twin = lib.create(overlay.current, colorOnboardingDefinition(lib.definition, identity, false), { animation, ...FOLLOW, onError: fail });
-      twin.seek(leadIn);
       players.current.overlay = twin;
+      twin.seek(leadIn);
+      if (players.current.overlay !== twin) return;
     }
     phase.current = next; setColored(next === "awake");
   }
@@ -105,7 +107,13 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     const seconds = Math.max(0, sequenceDuration(lib.definition, lib.sequences.wake) - leadIn);
     setWakeSeconds(seconds);
     // Same tick, same offset: the two canvases stay in lock-step for the fade.
-    for (const player of [gray, twin]) { player.setAnimation(lib.sequences.wake); player.seek(leadIn); player.play(); }
+    for (const player of [gray, twin]) {
+      player.setAnimation(lib.sequences.wake);
+      if (players.current.base !== gray) return;
+      player.seek(leadIn);
+      if (players.current.base !== gray) return;
+      player.play();
+    }
     phase.current = "awake";
     // Next frame, so the fade transitions from the twin's opacity 0.
     timers.current.push(window.setTimeout(() => setColored(true), 0));
@@ -132,11 +140,11 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
       const definition = exported.PAPERCLIP_CHARACTER;
       library.current = { create: runtime.createCharacter, definition, sequences: resolveOnboardingSequences(definition) };
       mount(phase.current);
-      setReady(true);
+      if (players.current.base) setReady(true);
     }).catch((error: unknown) => {
       if (disposed) return;
       console.warn("Onboarding character unavailable, showing the still portrait.", error);
-      setFailed(true);
+      fail();
     });
     return () => { disposed = true; clearTimers(); destroy("overlay"); destroy("base"); library.current = null; setReady(false); };
     // Mount once; later prop changes are transitions handled below.
@@ -150,14 +158,17 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
       if (next === "awake") wake(); else mount("asleep");
     } catch (error) {
       console.warn("Onboarding character transition failed, showing the still portrait.", error);
-      setFailed(true);
+      fail();
     }
   }, [awake, ready]);
 
   // A palette change while awake (a re-hire) recolours in place; asleep is gray regardless.
   useEffect(() => {
     if (!ready || phase.current !== "awake" || !library.current) return;
-    mount("awake");
+    try { mount("awake"); } catch (error) {
+      console.warn("Onboarding character palette change failed, showing the still portrait.", error);
+      fail();
+    }
   }, [identity.paletteId]);
 
   const live = ready && !failed;

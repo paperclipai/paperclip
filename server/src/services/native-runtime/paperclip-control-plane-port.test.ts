@@ -1053,7 +1053,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       backendKind: "mock",
       sourceInstanceId: runnerInstanceId,
     });
-    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }, { kind: "review" as const, summary: "Review release notes", ownerClass: "agent" as const, targetAgentId: reviewerAgentId }] };
+    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: "phase6-v1" }, reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }, { kind: "review" as const, summary: "Review release notes", ownerClass: "agent" as const, targetAgentId: reviewerAgentId }] };
     await expect(nativeCompletionFeedback(db, runId, { ...result, attentionRequests: [] }))
       .rejects.toThrow("needs_review requires");
     await expect(nativeCompletionFeedback(db, runId, {
@@ -1062,6 +1062,10 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(nativeCompletionFeedback(db, runId, {
       ...result, attentionRequests: [{ kind: "review", summary: "Review work", ownerClass: "agent", targetAgentId: "99999999-9999-4999-8999-999999999999" }],
     })).rejects.toThrow("not available in this company");
+    await expect(nativeCompletionFeedback(db, runId, {
+      ...result,
+      completionClaim: { ...result.completionClaim, contractRevision: "stale-first-turn" },
+    })).rejects.toThrow(/contractRevision.*phase6-v1/);
     await expect(nativeCompletionFeedback(db, runId, result)).resolves.toContain("Completion report accepted");
     await port.completeRun({
       result,

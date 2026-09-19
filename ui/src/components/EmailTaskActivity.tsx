@@ -17,11 +17,14 @@ export function EmailTaskActivity({
 }) {
   const cache = useQueryClient();
   const threadKey = ["email-thread", companyId, issueId];
+  const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const thread = useQuery({
     queryKey: threadKey,
     queryFn: () => emailApi.thread(companyId, issueId),
+    enabled: queryEnabled,
     refetchInterval: 3000,
   });
+  if (!queryEnabled) return null;
   const data = thread.data;
   const messages = data?.messages.filter((m) => !m.commentId) ?? [];
   const publications = data?.publications.filter(

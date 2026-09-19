@@ -105,6 +105,40 @@ async function stageDashboardEvidence(
         .catch(() => false);
       if (didCopy) copied.push(segments.join("/"));
     }
+    // Playwright renames attachment files with a content hash, while runner
+    // results retain the stable screenshot basename used by the dashboard and
+    // history publisher. Materialize each declared screenshot under that
+    // basename when its hashed attachment is present in the evidence manifest.
+    // The source is still restricted to manifest-listed files, so this cannot
+    // expand the evidence set beyond what the test recorded.
+    for (const screenshot of entry.result.screenshots ?? []) {
+      if (copied.includes(screenshot.file)) continue;
+      const stem = screenshot.file.replace(/\.png$/i, "");
+      const escapedStem = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const hashedAttachment = new RegExp(
+        `^${escapedStem}-[0-9a-f]{8,128}\\.png$`,
+        "i",
+      );
+      const candidates = (entry.evidence?.files ?? []).filter((relative) => {
+        const basename = path.posix.basename(relative);
+        return (
+          basename === screenshot.file ||
+          hashedAttachment.test(basename)
+        );
+      });
+      if (candidates.length !== 1) continue;
+      const segments = safeEvidenceRelative(candidates[0]!);
+      if (!segments) continue;
+      const source = path.join(entry.directory, ...segments);
+      const destination = path.join(output, ...baseSegments, screenshot.file);
+      const didCopy = await mkdir(path.dirname(destination), {
+        recursive: true,
+      })
+        .then(() => copyFile(source, destination))
+        .then(() => true)
+        .catch(() => false);
+      if (didCopy) copied.push(screenshot.file);
+    }
     staged.set(entry.result.executionId, {
       baseHref: baseSegments.join("/"),
       files: copied,

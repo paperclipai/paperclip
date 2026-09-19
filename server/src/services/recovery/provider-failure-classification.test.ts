@@ -7,6 +7,36 @@ import {
 import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("uses a typed ACP quota reset without needing the provider's original message", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "ACP agent reported a terminal limit failure.",
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-07-15T21:30:00.000Z",
+        providerQuotaRetryNotBefore: "2026-07-15T21:30:00.000Z",
+      },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-07-15T21:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("uses the existing backoff for a typed ACP quota failure with no reset timestamp", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "ACP agent reported a terminal limit failure.",
+      resultJson: { errorFamily: "provider_quota" },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("classifies usage-limit messages and parses the provider reset time", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope, AskUserQuestionsInteraction } from "@paperclipai/shared";
 
 import { formatDurableQuestionResponseSummary } from "../question-response-delivery.js";
+import { buildNativeCompletionContract } from "./completion-contracts.js";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
@@ -472,4 +474,42 @@ describe("native execution input external-chat framing", () => {
     expect(input.task.prompt).not.toContain("payload.questionSet");
   });
 
+});
+
+
+describe("follow-up context size", () => {
+  it("keeps old messages out of resume deltas while retaining scoped human answers", () => {
+    const message = (id: string, body: string) => ({
+      id, body, authorType: "user", authorId: "board", createdAt: "2026-09-17T00:00:00Z",
+      updatedAt: "2026-09-17T00:00:00Z", deleted: false, sourceTrust: null,
+    });
+    const oldBody = "PREVIOUS_TASK_TEXT ".repeat(1000);
+    const newBody = "Actually, save the plan first.";
+    const answerText = "No budget. Wait for my approval.";
+    const continuation: ExecutionContinuationEnvelope = {
+      version: 1, companyId: "company", issueId: "issue", objective: "Welcome",
+      trigger: { reason: "issue_commented", interactionId: "answer-id", sourceRunId: null },
+      originCommentIds: ["new"], messages: [message("old", oldBody), message("new", newBody)],
+      resumeDelta: { baseRunId: "previous-run", messages: [message("new", newBody)] },
+      humanResponses: [{ id: "answer-id", kind: "ask_user_questions", status: "answered",
+        resolvedByUserId: "board", resolvedAt: "2026-09-17T00:01:00Z",
+        result: { answers: [{ questionId: "scope", optionIds: [], otherText: answerText }] } }],
+      interactionOutcomes: [], completedWork: null, unresolvedInteractionIds: [],
+      coverage: { kind: "full_task_history", throughCommentId: "new", summaryThroughCommentId: null },
+    };
+    const wake = { executionContinuation: continuation };
+    const fresh = renderPaperclipWakePrompt(wake);
+    const resumed = renderPaperclipWakePrompt(wake, { resumedSession: true });
+    const contract = buildNativeCompletionContract({ title: "Welcome", description: oldBody }, {
+      immediateRequest: newBody, humanResponseId: "answer-id",
+    });
+    expect(fresh).toContain(oldBody);
+    expect(resumed).not.toContain("PREVIOUS_TASK_TEXT");
+    expect(resumed.split(newBody)).toHaveLength(2);
+    expect(resumed.split(answerText)).toHaveLength(2);
+    expect(resumed).toContain("earlier history remains in this session");
+    expect(JSON.stringify(contract)).not.toContain(oldBody);
+    expect(JSON.stringify(contract)).not.toContain(answerText);
+    expect(resumed.length + JSON.stringify(contract).length).toBeLessThan(fresh.length);
+  });
 });

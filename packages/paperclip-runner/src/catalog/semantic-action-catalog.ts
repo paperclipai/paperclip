@@ -478,7 +478,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         ...idempotency,
         title: text("Task title.", 500),
         projectId: nullableText("Project identifier for the new task."),
-        initialPlan: nullableText("Relevant markdown plan to persist on the new task before it starts."),
+        initialPlan: nullableText("Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate."),
         description: nullableText("Child task description."),
         assigneeActorId: nullableText("Optional actor assignee.", 200),
         priority: { enum: ["critical", "high", "medium", "low"] },

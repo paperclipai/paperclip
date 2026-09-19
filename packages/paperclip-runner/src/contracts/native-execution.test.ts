@@ -96,6 +96,18 @@ describe("NativeExecutionInputV1", () => {
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", model: null, approvalPolicy: "on-request" },
     });
+    const withDelta = parseNativeExecutionInput({ ...current, continuationPrompt: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}' });
+    // No checkpoint / failed provider recovery must retain full bootstrap input.
+    expect(buildNativeModelEnvelope(withDelta)).toEqual(buildNativeModelEnvelope(current));
+    const delta = buildNativeModelEnvelope(withDelta, { resumedSession: true });
+    expect(delta).toEqual({
+      schema: "paperclip.native-continuation.v1",
+      events: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}',
+      completion: { revision: "1", criterionIds: ["objective"] },
+    });
+    expect(JSON.stringify(delta)).not.toContain(input.task.title);
+    expect(JSON.stringify(delta)).not.toContain(input.completionContract.contract.objective);
+    expect(JSON.stringify(delta)).not.toContain("opaque-binding");
     expect(current).toMatchObject({
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", approvalPolicy: "on-request" },

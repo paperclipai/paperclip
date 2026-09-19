@@ -41,7 +41,7 @@ async function handleRequest(request) {
       const sessionFailure = {
         id: `${request.params.sessionId}:error`,
         revision: 1,
-        category: "request",
+        category: process.env.PAPERCLIP_ACPX_TYPED_FAILURE_CATEGORY ?? "request",
         severity: "error",
         title: typedFailureCanary,
         actions: [],

@@ -1260,6 +1260,9 @@ impl CodexProvider {
                             | "thread/goal/updated"
                             | "thread/goal/cleared"
                             | "thread/tokenUsage/updated"
+                            // poll() normalizes usage from this settled turn.
+                            // It remains an accounting snapshot, not new work.
+                            | "paperclip/resumeUsageSnapshot"
                             | "thread/status/changed"
                             | "turn/diff/updated"
                             | "turn/plan/updated"
@@ -3986,6 +3989,31 @@ done
             }
         }
         provider
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warm_attachment_accepts_normalized_usage_for_the_completed_turn() {
+        let mut provider = completion_tail_provider();
+        provider
+            .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
+            .unwrap();
+        provider.active_provider_turn_id = None;
+        provider
+            .pending_messages
+            .push_back(BufferedProviderMessage {
+                value: json!({
+                    "method": "thread/tokenUsage/updated",
+                    "params": {"threadId": "reader-tail-thread", "turnId": "reader-tail-1",
+                        "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12}}}
+                }),
+                trace_frame_id: None,
+            });
+        // poll() normalizes settled-turn usage to paperclip/resumeUsageSnapshot.
+        // That accounting fact is not new work and must not force replacement.
+        let result = provider.drain_completed_turn_tail_for_warm_attachment();
+        provider.shutdown().unwrap();
+        result.expect("historical usage must not break provider continuity");
     }
 
     #[cfg(unix)]

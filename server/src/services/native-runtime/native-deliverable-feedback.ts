@@ -71,6 +71,9 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
     const fileObject = [...output.matchAll(file)].some(match => {
       const prefix = output.slice(0, match.index);
       const suffix = output.slice(match.index + match[0].length);
+      // "Create no files" is a prohibition, even though it contains a creation
+      // verb. Negate this object only; another explicit output can still count.
+      if (/\b(?:no|zero|without(?:\s+any)?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
       // "Write a summary of this PDF" names input, not a requested file.
       // Explicit export destinations still count after such input references.
       const destination = /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu.test(prefix);

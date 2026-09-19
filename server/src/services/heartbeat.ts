@@ -8735,7 +8735,7 @@ export function buildPaperclipTaskMarkdown(input: {
     lines.push(
       "",
       "Follow-up directive:",
-      "The latest wake comment is the immediate request for this run. Address it directly. Do not repeat an earlier requested output from the issue description unless the latest comment asks you to.",
+      "Apply the latest wake comment to the current task. Later direction replaces conflicting scope; preserve other requirements and approval gates. Clarification is not approval. Reuse completed work rather than repeating it.",
       "",
       "Latest wake comment:",
       fenceTaskText(effectiveWakeComments[0]!.body),
@@ -8745,7 +8745,7 @@ export function buildPaperclipTaskMarkdown(input: {
     lines.push(
       "",
       "Follow-up directive:",
-      "The pending wake comments below are the immediate requests for this run. Address every comment in order. You may answer them together, but do not silently omit any comment.",
+      "Apply the pending wake comments in order to the current task. Later direction replaces conflicting scope; preserve other requirements and approval gates. Clarification is not approval. Address every comment without repeating completed work.",
       "",
       "Pending wake comments (oldest to newest):",
     );
@@ -21642,6 +21642,11 @@ export function heartbeatService(
         selectedEnvironmentForConfig?.driver === "sandbox" &&
         selectedEnvironmentConfigForFingerprint.reuseLease === true &&
         selectedEnvironmentConfigForFingerprint.runnerLifecycleMode === "warm";
+      // Native provider checkpoints bind to the workspace row, including ordinary
+      // local shared workspaces. Persist that binding independently of the opt-in
+      // isolated-workspace UI, just as warm sandbox continuity already does.
+      const nativeSharedWorkspace = agent.adapterType === "paperclip_runner" &&
+        requestedExecutionWorkspaceMode === "shared_workspace";
       const bindIssueToPersistedExecutionWorkspace = async (
         workspace: ExecutionWorkspace | null,
       ) => {
@@ -21655,7 +21660,7 @@ export function heartbeatService(
           issueRef?.executionWorkspacePreference === "reuse_existing" ||
           requestedExecutionWorkspaceMode === "isolated_workspace" ||
           requestedExecutionWorkspaceMode === "operator_branch" ||
-          warmReusableExecutionWorkspace;
+          warmReusableExecutionWorkspace || nativeSharedWorkspace;
         const nextIssuePatch: Record<string, unknown> = {};
         if (issueExecutionWorkspaceIdForRun !== workspace.id) {
           nextIssuePatch.executionWorkspaceId = workspace.id;
@@ -21684,7 +21689,7 @@ export function heartbeatService(
             db,
             undefined,
             undefined,
-            { bindRuntimeSharedWorkspace: warmReusableExecutionWorkspace && workspace.mode === "shared_workspace" },
+            { bindRuntimeSharedWorkspace: (warmReusableExecutionWorkspace || nativeSharedWorkspace) && workspace.mode === "shared_workspace" },
           );
           issueExecutionWorkspaceIdForRun = workspace.id;
           issueProjectWorkspaceIdForRun =
@@ -22907,6 +22912,13 @@ export function heartbeatService(
                 .limit(1)
                 .then((rows) => rows[0] ?? null)
             : null;
+          // Only a server-verified human resolution may supply a current answer
+          // reference. Tool/agent results and generated summaries stay evidence.
+          const currentHumanResponseId = !nativeReviewRequest
+            ? executionContinuation?.humanResponses?.find(
+                (response) => response.id === executionContinuation.trigger.interactionId,
+              )?.id
+            : undefined;
           // Rebuilding a default contract is not a change in user direction.
           // In particular, an upgraded checkpoint may have an intentionally
           // authored contract and no continuation envelope yet.
@@ -22922,9 +22934,10 @@ export function heartbeatService(
                   issue: issueRef,
                   actorId: agent.id,
                   immediateRequest:
-                    nativeReviewRequest ?? executionContinuation?.objective ??
-                    safeWakeCommentContext?.body ??
-                    null,
+                    nativeReviewRequest ?? (currentHumanResponseId
+                      ? null
+                      : executionContinuation?.objective ?? safeWakeCommentContext?.body ?? null),
+                  humanResponseId: currentHumanResponseId,
                   immediateRequests: (() => {
                     if (nativeReviewRequest) return [nativeReviewRequest];
                     const requests = nativeCompletionRequestsForComments(
@@ -23286,7 +23299,7 @@ export function heartbeatService(
                     taskPrompt: [
                       nativeReviewRequest ?? readNonEmptyString(
                         selectPaperclipTaskMarkdown(context, {
-                          resumedSession,
+                          resumedSession: false,
                         }),
                       ) ??
                       `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`,
@@ -23296,6 +23309,18 @@ export function heartbeatService(
                     ].filter(Boolean).join("\n\n"),
                     wakePayload: context.paperclipWake,
                     resumedSession,
+                    previousTurn: (() => {
+                      if (!previousNativeRun || nativeReviewRequest) return null;
+                      try {
+                        return {
+                          runId: previousNativeRun.id,
+                          task: parseNativeExecutionInput(parseObject(previousNativeRun.runnerProfileJson).nativeExecutionInput).task,
+                        };
+                      } catch {
+                        // An invalid prior snapshot must use the fresh bootstrap.
+                        return null;
+                      }
+                    })(),
                     conversationMode: context.conversationMode === true,
                     agentId: agent.id,
                     workspace: {

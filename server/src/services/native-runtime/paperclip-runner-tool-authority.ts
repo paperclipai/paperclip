@@ -1,3 +1,4 @@
+import { handoffPlanContext } from "./handoff-plan-context.js";
 import { callCreateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
@@ -378,6 +379,7 @@ export class PaperclipRunnerToolAuthority {
         },
         connectionGuidance: CONNECTION_INTENT_AGENT_GUIDANCE,
         acceptedPlan: await this.#acceptedPlan(context.run.contextSnapshot),
+        sourcePlanApproval: await handoffPlanContext(this.db, context.issue),
         childReviewOutcomes: await childReviewOutcomes(this.db, this.binding.companyId, this.binding.issueId),
         ...(this.binding.nativeReview ? {
           assignedReview: (await getNativeReviewAssignment(this.db, {
@@ -1349,7 +1351,7 @@ export class PaperclipRunnerToolAuthority {
             }
           : null;
         if (targetRevisionId !== null && suppliedPayload.target === undefined && inferredPlanningTarget === null) {
-          throw new Error("paperclip_runner_interaction_target_incomplete");
+          throw new Error('paperclip_runner_interaction_target_incomplete: targetRevisionId also requires payload.target = { type: "issue_document", key: "plan", revisionId: targetRevisionId }. Use the actual document key. If the source plan already authorized this scope, do not request approval again merely because the execution task has a new plan document.');
         }
         const normalizedPayload = inferredPlanningTarget !== null
           ? { ...suppliedPayload, target: inferredPlanningTarget }

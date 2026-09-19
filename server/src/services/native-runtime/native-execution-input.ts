@@ -1,3 +1,4 @@
+import { buildNativeContinuationPrompt } from "./native-continuation.js";
 import type {
   NativeAcpxAgent,
   NativeAcpxPermissionMode,
@@ -45,6 +46,7 @@ export function buildNativeExecutionInput(input: {
    */
   wakePayload?: unknown;
   resumedSession?: boolean;
+  previousTurn?: { runId: string; task: { title: string; description: string | null } } | null;
   conversationMode?: boolean;
   agentId: string;
   workspace: {
@@ -146,7 +148,7 @@ export function buildNativeExecutionInput(input: {
         }
       : input.wakePayload;
   const wakePrompt = renderPaperclipWakePrompt(wakePayload, {
-    resumedSession: input.resumedSession === true,
+    resumedSession: false,
     conversationMode: input.conversationMode === true,
     suppressIssueDescription: input.taskPrompt.trim().length > 0,
     nativeWakeReaderAvailable: true,
@@ -168,6 +170,14 @@ export function buildNativeExecutionInput(input: {
     .join("\n\n");
   return parseNativeExecutionInput({
     schema: "paperclip.native-execution-input.v4",
+    ...(input.resumedSession && input.previousTurn && !input.conversationMode ? {
+      continuationPrompt: buildNativeContinuationPrompt({
+        wakePayload: input.wakePayload,
+        previousRunId: input.previousTurn.runId,
+        previousIssue: input.previousTurn.task,
+        issue: input.issue,
+      }),
+    } : {}),
     executionMode,
     planningContext: input.planningContext ?? null,
     binding: {
