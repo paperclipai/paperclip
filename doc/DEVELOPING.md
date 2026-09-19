@@ -1091,8 +1091,10 @@ that classification finishes.
   remote workspace, durable runner identity, and process marker inside that
   sandbox. The process marker must include the Linux boot ID and start ticks;
   recovery compares them with the live process before adoption and signaling.
-  Older markers without that proof remain blocked. Remote PIDs are never
-  interpreted as controller-local PIDs. The runner must authenticate to its existing PRP authority; reconnection neither
+  Collection uses shell builtins and is optional for fresh launches. Older
+  markers or images without that proof remain blocked for recovery. Remote
+  PIDs are never interpreted as controller-local PIDs. The runner must
+  authenticate to its existing PRP authority; reconnection neither
   launches another provider nor consumes a provider retry. A replacement
   sandbox or mismatched identity blocks adoption without overwriting evidence.
 - Shutdown waits up to 30 seconds for an in-progress native startup to reach
