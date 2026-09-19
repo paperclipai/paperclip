@@ -62,7 +62,6 @@ import {
   acpxRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
-  defaultCapabilityRunnerdBinary,
   executeNativeSession,
   applyNativeSessionGoalControl,
   inspectWarmRunTransition,
@@ -10624,7 +10623,7 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     if (!usedPreinstalledRunner) {
       const sourceBinary =
-        explicitRemoteBinary ?? defaultCapabilityRunnerdBinary();
+        explicitRemoteBinary ?? resolvePaperclipRunnerBinary();
       if (!existsSync(sourceBinary)) {
         throw new Error("runner_remote_artifact_unavailable");
       }

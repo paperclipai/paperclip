@@ -53,6 +53,10 @@ runner instead; it can still reuse the image's compatible provider CLI. Explicit
 remote runner artifacts undergo the same checks. This metadata gate does not
 change the PRP version or invalidate existing durable session manifests.
 
+The replacement artifact uses the controller's server-owned binary resolver,
+including the vendored binary in packaged deployments. It must not depend on a
+source checkout or a local Rust build directory being present on the server.
+
 For a controller deployed before this capability check, operators can set
 `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` in the **server process environment** to a
 current runner binary built for the sandbox's OS and architecture. This bypasses
