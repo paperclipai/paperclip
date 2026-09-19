@@ -80,16 +80,17 @@ elif [[ ! -t 0 ]]; then
   comment="$(cat)"
 fi
 
-require_command jq
+require_command node
 
 payload="$(
-  jq -nc \
-    --arg status "$status" \
-    --arg comment "$comment" \
-    '
-      (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
-    '
+  node -e "
+    const status = process.argv[1];
+    const comment = process.argv[2];
+    const payload = {};
+    if (status) payload.status = status;
+    if (comment) payload.comment = comment;
+    console.log(JSON.stringify(payload));
+  " "$status" "$comment"
 )"
 
 if [[ "$dry_run" == "1" ]]; then

@@ -7,7 +7,7 @@ pnpm dev --bind lan
 ```
 Then verify:
 ```bash
-curl -sS http://127.0.0.1:3100/api/health | jq
+curl -sS http://127.0.0.1:3100/api/health | node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync(0,'utf-8')),null,2))"
 ```
 
 2. Start a clean/stock OpenClaw Docker.
@@ -43,7 +43,20 @@ Security/control note:
 - If you can run API checks with board auth:
 ```bash
 AGENT_ID="<newly-created-agent-id>"
-curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | jq '{adapterType,adapterConfig:{url:.adapterConfig.url,tokenLen:(.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // "" | length),disableDeviceAuth:(.adapterConfig.disableDeviceAuth // false),hasDeviceKey:(.adapterConfig.devicePrivateKeyPem // "" | length > 0)}}'
+curl -sS -H "Cookie: $PAPERCLIP_COOKIE" "http://127.0.0.1:3100/api/agents/$AGENT_ID" | node -e "
+const data = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+const token = data.adapterConfig?.headers?.['x-openclaw-token'] || data.adapterConfig?.headers?.['x-openclaw-auth'] || '';
+const deviceKey = data.adapterConfig?.devicePrivateKeyPem || '';
+console.log(JSON.stringify({
+  adapterType: data.adapterType,
+  adapterConfig: {
+    url: data.adapterConfig?.url,
+    tokenLen: token.length,
+    disableDeviceAuth: data.adapterConfig?.disableDeviceAuth || false,
+    hasDeviceKey: deviceKey.length > 0
+  }
+}, null, 2));
+"
 ```
 - Expected: `adapterType=openclaw_gateway`, `tokenLen >= 16`, `hasDeviceKey=true`, and `disableDeviceAuth=false`.
 
