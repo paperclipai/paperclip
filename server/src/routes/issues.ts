@@ -176,6 +176,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { assertShippedGate } from "../services/shipped-gate.js";
 import {
   runnerGoalService,
   RunnerGoalActionError,
@@ -9417,6 +9418,9 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+          if (updateFields.status === "done" && lockedIssue.status !== "done") {
+            await assertShippedGate({ workProducts: await workProductsSvc.listForIssue(lockedIssue.id) });
+          }
             if (transition.decision) {
               const decisionId = randomUUID();
               const nextExecutionState = updateFields.executionState;
@@ -13188,6 +13192,9 @@ export function issueRoutes(
       Object.assign(updateFields, transition.patch);
 
       const nextStatus = updateFields.status ?? existing.status;
+    if (nextStatus === "done" && existing.status !== "done") {
+      await assertShippedGate({ workProducts: await workProductsSvc.listForIssue(existing.id) });
+    }
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
         throw unprocessable("unblockDescriptor requires blocked status");
       }
@@ -17621,6 +17628,9 @@ export function issueRoutes(
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
+      if (updatePatch.status === "done" && currentIssue.status !== "done") {
+        await assertShippedGate({ workProducts: await workProductsSvc.listForIssue(currentIssue.id) });
+      }
 
         const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
         const commentOptions = {
