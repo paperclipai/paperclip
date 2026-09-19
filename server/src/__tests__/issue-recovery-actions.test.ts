@@ -2726,8 +2726,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
       .send({
         actionId: action.id,
-        outcome: "false_positive",
-        sourceIssueStatus: "in_progress",
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
         resolutionNote: "Creator self-healing an unassigned board-owned action.",
       })
       .expect(200);
@@ -2735,7 +2735,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(resolved.body.recoveryAction).toMatchObject({
       id: action.id,
       status: "resolved",
-      outcome: "false_positive",
+      outcome: "restored",
     });
   });
 
@@ -2771,7 +2771,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .send({
         actionId: action.id,
         outcome: "restored",
-        sourceIssueStatus: "in_progress",
+        sourceIssueStatus: "todo",
         resolutionNote: "Creator should not bypass an agent-owned recovery action.",
       })
       .expect(403);
