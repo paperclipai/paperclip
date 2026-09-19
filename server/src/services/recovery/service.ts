@@ -5899,6 +5899,96 @@ export function recoveryService(
     return result;
   }
 
+  // Repair sweep: an issue in `blocked` with no first-class blocker relations,
+  // no unblockDescriptor, no pending interaction or approval, and no active
+  // recovery action is an invalid stuck state — no automation (blockers_resolved,
+  // recovery action, interaction poller) can ever unblock it. Move it to `todo`
+  // so the assignee is re-invoked. An active recovery action is the board's
+  // continuation path and must not be overridden here; a non-empty blocker
+  // relation is a valid wait so it is excluded too.
+  async function repairBlockedWithNoBlockers() {
+    const result = { repaired: 0, issueIds: [] as string[] };
+
+    // Find `blocked` issues that have no first-class blocker relations.
+    const candidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          isNull(issues.hiddenAt),
+          isNull(issues.assigneeUserId),
+          // Exclude issues with a human-owned wait path.
+          isNull(issues.unblockDescriptor),
+          // Exclude issues that have at least one non-terminal blocker relation
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_relations ir
+            INNER JOIN issues bi ON bi.id = ir.issue_id AND bi.company_id = ${issues.companyId}
+            WHERE ir.related_issue_id = ${issues.id}
+              AND ir.company_id = ${issues.companyId}
+              AND ir.type = 'blocks'
+              AND bi.status NOT IN ('done', 'cancelled')
+              AND bi.hidden_at IS NULL
+          )`,
+          // Exclude issues with an active recovery action — the board must decide.
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_recovery_actions ira
+            WHERE ira.source_issue_id = ${issues.id}
+              AND ira.company_id = ${issues.companyId}
+              AND ira.status IN ('active', 'escalated')
+          )`,
+          // Exclude issues with a pending interaction — an agent is awaiting a response.
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_thread_interactions iti
+            WHERE iti.issue_id = ${issues.id}
+              AND iti.company_id = ${issues.companyId}
+              AND iti.status = 'pending'
+          )`,
+          // Exclude issues with a pending approval linked to them.
+          sql`NOT EXISTS (
+            SELECT 1 FROM issue_approvals ia
+            INNER JOIN approvals a ON a.id = ia.approval_id
+            WHERE ia.issue_id = ${issues.id}
+              AND ia.company_id = ${issues.companyId}
+              AND a.status = 'pending'
+          )`,
+        ),
+      )
+      .limit(50);
+
+    for (const candidate of candidates) {
+      const updated = await issuesSvc.update(candidate.id, { status: "todo" });
+      if (!updated) continue;
+
+      await issuesSvc.addComment(
+        candidate.id,
+        "Auto-repaired from `blocked` to `todo`: no first-class blockers, " +
+          "no unblockDescriptor, no pending interaction or approval, and no " +
+          "active recovery action were found — this state was unresolvable by " +
+          "automation. If the block was intentional, re-block with a valid " +
+          "`blockedByIssueIds` or `unblockDescriptor`.",
+        {},
+      );
+
+      result.repaired += 1;
+      result.issueIds.push(candidate.id);
+      logger.warn(
+        {
+          issueId: candidate.id,
+          companyId: candidate.companyId,
+          assigneeAgentId: candidate.assigneeAgentId,
+        },
+        "repaired blocked-with-no-blockers issue to todo",
+      );
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -5907,6 +5997,7 @@ export function recoveryService(
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
+    repairBlockedWithNoBlockers,
     reconcileResolvedDependencyWakeBackstop,
     readRecoveryTimerIntervalMs,
   };
