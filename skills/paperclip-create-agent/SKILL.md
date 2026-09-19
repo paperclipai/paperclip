@@ -77,10 +77,12 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - icon (required in practice; pick from `/llms/agent-icons.txt`)
 - reporting line (`reportsTo`)
 - adapter type
+- trigger type (`triggerType`: `manual`, `schedule`, `webhook`, or `event`)
 - `desiredSkills` from the company skill library when this role needs installed skills on day one
 - if any `desiredSkills` or adapter settings expand browser access, external-system reach, filesystem scope, or secret-handling capability, justify each one in the hire comment
 - adapter and runtime config aligned to this environment
 - leave timer heartbeats off by default; only set `runtimeConfig.heartbeat.enabled=true` with an `intervalSec` when the role genuinely needs scheduled recurring work or the user explicitly asked for it
+- keep trigger/runtime config consistent: `triggerType=schedule` requires `runtimeConfig.heartbeat.enabled=true` with non-zero `intervalSec` or a bound routine; `triggerType=webhook` is blocked at hire time until the inbound-webhook receiver lands; `triggerType=event` requires naming the event source(s) in the hire comment
 - if the role may handle private advisories or sensitive disclosures, confirm a confidential workflow exists first (dedicated skill or documented manual process)
 - capabilities
 - managed instructions bundle (`AGENTS.md`) for adapters that support it; avoid durable `promptTemplate` config
@@ -108,6 +110,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "capabilities": "Owns technical roadmap, architecture, staffing, execution",
     "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
     "adapterType": "codex_local",
+    "triggerType": "manual",
     "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
     "instructionsBundle": {"files": {"AGENTS.md": "You are the CTO..."}},
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
