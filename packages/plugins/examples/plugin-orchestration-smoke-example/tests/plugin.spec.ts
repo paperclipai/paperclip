@@ -102,14 +102,18 @@ describe("orchestration smoke plugin", () => {
     expect(harness.dbExecutes[0]?.sql).toContain(".smoke_runs");
     expect(harness.dbQueries.some((entry) => entry.sql.includes("JOIN public.issues"))).toBe(true);
 
-    const relations = await harness.ctx.issues.relations.get(result.childIssueId, companyId);
+    // Driven straight off `ctx`, outside any host invocation, so the assertion
+    // has to say which company it reads as.
+    const relations = await harness.withCompanyScope(companyId, () =>
+      harness.ctx.issues.relations.get(result.childIssueId, companyId));
     expect(relations.blockedBy).toEqual([
       expect.objectContaining({
         id: result.blockerIssueId,
         status: "done",
       }),
     ]);
-    const docs = await harness.ctx.issues.documents.list(result.childIssueId, companyId);
+    const docs = await harness.withCompanyScope(companyId, () =>
+      harness.ctx.issues.documents.list(result.childIssueId, companyId));
     expect(docs).toEqual([
       expect.objectContaining({
         key: "orchestration-smoke",
@@ -135,7 +139,10 @@ describe("orchestration smoke plugin", () => {
     });
     await plugin.definition.setup(harness.ctx);
 
-    await expect(plugin.definition.onApiRequest?.({
+    // The host mints an invocation scope from `ApiRequestParams.companyId`
+    // before it dispatches an API route, so a test that calls the hook directly
+    // has to stand in for that.
+    await expect(harness.withCompanyScope(companyId, async () => await plugin.definition.onApiRequest?.({
       routeKey: "initialize",
       method: "POST",
       path: `/issues/${rootIssueId}/smoke`,
@@ -151,7 +158,7 @@ describe("orchestration smoke plugin", () => {
       },
       companyId,
       headers: {},
-    })).resolves.toMatchObject({
+    }))).resolves.toMatchObject({
       status: 201,
       body: expect.objectContaining({
         rootIssueId,
