@@ -14335,7 +14335,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ nextAttemptAt: null })
       .where(eq(chatDeliveries.endpointId, endpoint.id));
 
-    const processing = service.processPendingDeliveries();
+    // This suite shares its database. Drain only this fixture's conversation;
+    // a global recovery pass can renew unrelated retained deliveries with this
+    // test's failure hook and make its ownership assertion depend on test order.
+    const [firstDelivery] = await db
+      .select({ id: chatDeliveries.id })
+      .from(chatDeliveries)
+      .where(and(
+        eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.providerEventId, `${thread.thread.id}:${first.id}`),
+      ));
+    if (!firstDelivery) throw new Error("Expected first delivery");
+    const processing = service.processPendingDeliveries(25, firstDelivery.id);
     await firstDeliveryEntered;
     await renewalAttempted;
     releaseFirstDelivery();
