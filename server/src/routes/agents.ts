@@ -1156,6 +1156,25 @@ export function agentRoutes(
     return rows.filter((_, index) => decisions[index]?.allowed);
   }
 
+  // A null agent override inherits the instance default, just like dispatch.
+  // Resolve this before secrets or probes so a default remote environment can
+  // never accidentally validate the account on the control-plane host.
+  async function resolveAdapterTestEnvironmentId(companyId: string, environmentId: string | null | undefined) {
+    if (environmentId) return environmentId;
+    const settings = await instanceSettings.get();
+    if (settings.defaultEnvironmentId) return settings.defaultEnvironmentId;
+    if ((await instanceSettings.getExperimental()).enableManagedSandboxOnly === true) {
+      const managed = await environmentsSvc.findManagedSandboxEnvironment(companyId);
+      if (!managed) {
+        throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", {
+          code: "managed_sandbox_unavailable",
+        });
+      }
+      return managed.id;
+    }
+    return null;
+  }
+
   /**
    * Resolve the execution target the adapter should run its test probes against.
    *
@@ -3334,14 +3353,18 @@ export function agentRoutes(
     });
     if (!selection) return undefined;
     if (test) {
-      if (environmentId) await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
-      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: environmentId ?? null });
+      const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
+      if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId);
+      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: testEnvironmentId });
       let managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
       try {
-        if (!target.executionTarget && target.fallbackChecks.some(check => check.level === "error")) throw unprocessable("The agent environment is not available for adoption");
+        if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
         const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding);
-        if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment");
+        if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
+          code: "ai_connection_validation_failed",
+          checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
+        });
         if (selection.connection.config.aiLegacyAdoption === true) await db.update(toolConnections).set({ healthStatus: "ok", config: { ...selection.connection.config, aiLegacyAdoption: false }, updatedAt: new Date() }).where(eq(toolConnections.id, selection.connection.id));
       } finally { try { await managed?.cleanup(); } finally { await target.release("released"); } }
     }
@@ -3361,10 +3384,10 @@ export function agentRoutes(
       const aiBinding = req.body.aiConnection ? aiConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
-      const requestedEnvironmentId =
-        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-          ? (req.body.environmentId as string)
-          : null;
+      const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
+        companyId,
+        asNonEmptyString(req.body?.environmentId),
+      );
       // Fail closed on a foreign environment before any secret resolution, env
       // merge, target resolution, sandbox lease, or adapter test runs.
       if (requestedEnvironmentId) {
@@ -3380,6 +3403,7 @@ export function agentRoutes(
         const savedAgent = await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found");
         if (!savedAgent) return;
         if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, savedAgent);
         const providerAdapter = savedAgent.adapterType === "paperclip_runner"
           ? inputAdapterConfig.provider === "codex"
             ? "codex_local"
@@ -3387,11 +3411,18 @@ export function agentRoutes(
               ? "claude_local"
               : null
           : null;
-        if (savedAgent.adapterType !== type && providerAdapter !== type) {
-          throw unprocessable("Saved agent is not compatible with the adapter being tested");
+        const canRestoreEnv = savedAgent.adapterType === type || providerAdapter === type;
+        // Permit testing a prospective adapter switch, but do not transfer
+        // hidden values from the saved adapter into an unrelated harness.
+        if (!canRestoreEnv && Object.values(parseObject(inputAdapterConfig.env)).some(value => {
+          const binding = asRecord(value);
+          return binding?.type === "plain" && binding.value === REDACTED_EVENT_VALUE;
+        })) {
+          throw unprocessable("Re-enter environment values when testing a different adapter");
         }
-        await assertCanUpdateAgent(req, savedAgent);
-        adapterConfigForTest = restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig);
+        adapterConfigForTest = canRestoreEnv
+          ? restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig)
+          : inputAdapterConfig;
       }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,

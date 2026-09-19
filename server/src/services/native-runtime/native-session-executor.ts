@@ -9059,6 +9059,17 @@ export function assertRemoteRunnerBuildMetadata(
   ) {
     throw new Error("runner_remote_artifact_contract_incompatible");
   }
+  // Older sandbox images share binary contract v2, but reject the zero
+  // lifetime now used by the controller and cannot renew connection leases.
+  // Reject them before launch so preparation stages the bundled runner instead.
+  const sessionCapabilities = Array.isArray(metadata.durableSessionCapabilities)
+    ? metadata.durableSessionCapabilities
+    : [];
+  for (const capability of ["unlimited_runtime", "connection_lease_renewal"]) {
+    if (!sessionCapabilities.includes(capability)) {
+      throw new Error(`runner_remote_session_capability_missing:${capability}`);
+    }
+  }
   const modes = Array.isArray(metadata.prpTransportModes)
     ? metadata.prpTransportModes
     : [];

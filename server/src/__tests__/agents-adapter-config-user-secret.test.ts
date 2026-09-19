@@ -53,6 +53,7 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn(async () => null));
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
   getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));

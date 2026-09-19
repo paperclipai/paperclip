@@ -90,6 +90,11 @@ save a healthy connection. Reconnect preserves the connection ID, bindings,
 customized name, and access settings. A completed connection remains even if
 subsequent agent creation fails or is cancelled.
 
+Account adoption during Save and the agent runtime test use the selected agent
+environment, or the instance default when no override is set. An unavailable
+remote environment blocks validation rather than probing the server host. The
+runtime test accepts the form’s prospective adapter selection before it is saved.
+
 ## Runtime isolation
 
 `prepareManagedAiRuntime` is shared by runs, environment tests, and adoption.
