@@ -200,6 +200,7 @@ export function pluginRegistryService(db: Db) {
       data: {
         packageName?: string;
         packagePath?: string;
+        status?: "upgrade_pending";
         version?: string;
         manifest?: PaperclipPluginManifestV1;
       },
@@ -212,6 +213,10 @@ export function pluginRegistryService(db: Db) {
       };
       if (data.packageName !== undefined) setClause.packageName = data.packageName;
       if (data.packagePath !== undefined) setClause.packagePath = data.packagePath;
+      if (data.status !== undefined) {
+        setClause.status = data.status;
+        setClause.lastError = null;
+      }
       if (data.version !== undefined) setClause.version = data.version;
       if (data.manifest !== undefined) {
         setClause.manifestJson = data.manifest;

@@ -56,7 +56,12 @@ The manifest's worker and optional UI entrypoints must match the verified
 
 At boot, selected distribution entries adopt the current image's package path
 even when a previous npm or local install has the same version. Reconciliation
-keeps the registry ID, configuration, stored state and operator-disabled status.
+keeps the registry ID, configuration and stored state. With unchanged permissions,
+operator-disabled status is retained. A replacement that adds capabilities is
+saved atomically in `upgrade_pending`, even for same-version bundles. It cannot
+activate until an operator reviews the manifest and enables it through the normal
+plugin lifecycle. Invalid capability declarations are rejected before persistence.
+Runtime refreshes also reject unapproved capability additions before starting code.
 
 Keep each key's directory stable across releases. The activation guard also
 covers persisted installs: a plugin removed from the image catalog, or no

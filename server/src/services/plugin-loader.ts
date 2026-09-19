@@ -274,6 +274,8 @@ export interface PluginLoaderOptions {
     pluginKey?: string;
     packageRoot: string;
     manifest?: PaperclipPluginManifestV1;
+    /** Persisted grants, supplied before a runtime manifest refresh is saved. */
+    previousManifest?: PaperclipPluginManifestV1;
   }) => void;
   /**
    * Path to the local plugin directory to scan.
@@ -1391,7 +1393,7 @@ export function pluginLoader(
       );
     }
 
-    assertPackageActivation?.({ packageRoot, pluginKey: plugin.pluginKey, manifest });
+    assertPackageActivation?.({ packageRoot, pluginKey: plugin.pluginKey, manifest, previousManifest: plugin.manifestJson });
     if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
       return plugin;
     }

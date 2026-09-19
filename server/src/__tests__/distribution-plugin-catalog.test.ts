@@ -81,7 +81,7 @@ describe("image-owned plugin catalogs", () => {
     const { root, localPath } = fixture();
     const entries = readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG);
     const guard = distributionPluginActivationGuard(root, entries, ["acme.widget"]);
-    const manifest = { id: "acme.widget", version: "1.0.0", entrypoints: { worker: "dist/worker.js", ui: "./dist/ui" } } as PaperclipPluginManifestV1;
+    const manifest = { id: "acme.widget", version: "1.0.0", capabilities: [], entrypoints: { worker: "dist/worker.js", ui: "./dist/ui" } } as unknown as PaperclipPluginManifestV1;
     expect(() => guard({ packageRoot: localPath, manifest })).not.toThrow();
     for (const name of ["worker", "ui"] as const) {
       for (const value of ["/outside/worker.js", "../outside", "dist/../worker.js", "C:/outside", "dist\\worker.js", "dist/other", "", undefined]) {
@@ -96,9 +96,20 @@ describe("image-owned plugin catalogs", () => {
     writeFileSync(path.join(localPath, "package.json"), JSON.stringify({ version: "1.0.0", paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" } }));
     save([{ ...entry, digest: distributionBundleDigest(localPath) }]);
     const guard = distributionPluginActivationGuard(root, readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG), null);
-    const manifest = { id: "acme.widget", version: "1.0.0", entrypoints: { worker: "./dist/worker.js" } } as PaperclipPluginManifestV1;
+    const manifest = { id: "acme.widget", version: "1.0.0", capabilities: [], entrypoints: { worker: "./dist/worker.js" } } as unknown as PaperclipPluginManifestV1;
     expect(() => guard({ packageRoot: localPath, manifest })).not.toThrow();
     manifest.entrypoints.ui = "./dist/ui";
     expect(() => guard({ packageRoot: localPath, manifest })).toThrow(/verified package/);
+  });
+
+  it("rejects inconsistent capabilities and unapproved runtime refreshes", () => {
+    const { root, localPath } = fixture();
+    const guard = distributionPluginActivationGuard(root, readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG), null);
+    const previousManifest = { id: "acme.widget", version: "1.0.0", capabilities: [], entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" } } as unknown as PaperclipPluginManifestV1;
+    const manifest = { ...previousManifest, capabilities: ["issues.read" as const] };
+    expect(() => guard({ packageRoot: localPath, manifest, previousManifest })).toThrow(/require approval/);
+    expect(() => guard({ packageRoot: localPath, manifest, previousManifest: manifest })).not.toThrow();
+    previousManifest.ui = { slots: [{ type: "appShellOverlay", id: "overlay", displayName: "Overlay", exportName: "Overlay" }] };
+    expect(() => guard({ packageRoot: localPath, manifest: previousManifest })).toThrow(/missing required capabilities: ui.action.register/);
   });
 });

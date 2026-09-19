@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 
 const segment = z.string().regex(/^[a-z][a-z0-9.-]{0,99}$/);
 export const distributionPluginCatalogSchema = z.object({
@@ -30,6 +31,13 @@ function bundleEntrypoint(declared: unknown): string {
   return relative;
 }
 
+export function assertDistributionManifestCapabilities(manifest: PaperclipPluginManifestV1): void {
+  const result = pluginCapabilityValidator().validateManifestCapabilities(manifest);
+  if (!result.allowed) {
+    throw new Error(`Distribution manifest is missing required capabilities: ${result.missing.join(", ")}`);
+  }
+}
+
 export function distributionPluginsRoot(catalogRoot: string): string {
   // Match canonical paths persisted by local-path installs (for example,
   // macOS /tmp -> /private/tmp), without permitting a symlinked catalog itself.
@@ -47,7 +55,7 @@ export function distributionPluginActivationGuard(
   selectedKeys: readonly string[] | null,
 ) {
   const root = distributionPluginsRoot(catalogRoot);
-  return (input: { pluginKey?: string; packageRoot: string; manifest?: PaperclipPluginManifestV1 }) => {
+  return (input: { pluginKey?: string; packageRoot: string; manifest?: PaperclipPluginManifestV1; previousManifest?: PaperclipPluginManifestV1 }) => {
     let packageRoot: string;
     try { packageRoot = fs.realpathSync(input.packageRoot); }
     catch (error) {
@@ -65,6 +73,12 @@ export function distributionPluginActivationGuard(
       throw new Error("Distribution manifest does not match its catalog identity/version");
     }
     if (input.manifest) {
+      assertDistributionManifestCapabilities(input.manifest);
+      if (input.previousManifest) {
+        const approved = new Set(input.previousManifest.capabilities);
+        const added = input.manifest.capabilities.filter((capability) => !approved.has(capability));
+        if (added.length) throw new Error(`Distribution plugin capabilities require approval: ${added.join(", ")}`);
+      }
       const worker = bundleEntrypoint(input.manifest.entrypoints.worker);
       const ui = input.manifest.entrypoints.ui === undefined ? undefined : bundleEntrypoint(input.manifest.entrypoints.ui);
       if (worker !== entry.entrypoints.worker || ui !== entry.entrypoints.ui) {

@@ -1272,7 +1272,8 @@ export async function createApp(
     { registry: pluginRegistry, loader, lifecycle, logger },
     // Managed mode reinstalls soft-uninstalled bundles (the control plane
     // owns provisioning); self-hosted leaves an operator's uninstall alone.
-    // Operator-DISABLED plugins are never touched in either mode.
+    // Disabled plugins never start automatically. Added distribution permissions
+    // still enter upgrade_pending so enabling them requires an operator decision.
     { reinstallUninstalled: managedAutoInstallKeys !== null },
   )
     .then(() => loader.loadAll())

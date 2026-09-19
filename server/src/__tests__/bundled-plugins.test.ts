@@ -221,7 +221,7 @@ type LooseRow = {
 // Build a minimal manifest for a persisted row or a shipped bundle. The reconcile
 // step compares the bundle version with the persisted version.
 function makeManifest(pluginKey: string, version: string) {
-  return { id: pluginKey, apiVersion: 1, version } as unknown as import("@paperclipai/shared").PaperclipPluginManifestV1;
+  return { id: pluginKey, apiVersion: 1, version, capabilities: [] } as unknown as import("@paperclipai/shared").PaperclipPluginManifestV1;
 }
 
 function makeDeps(overrides?: {
@@ -435,6 +435,40 @@ describe("ensureBundledPlugins", () => {
     await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
     expect(update).not.toHaveBeenCalled();
     expect(updateStatus).not.toHaveBeenCalled();
+    expect(deps.logger.error).toHaveBeenCalled();
+  });
+
+  it.each(["ready", "error", "disabled"])("gates same-version distribution capability additions from %s atomically", async (status) => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const oldManifest = makeManifest("acme.widget", "0.1.0");
+    const { deps, loadManifest, update, updateStatus, installPlugin } = makeDeps({
+      rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status, packagePath: localPath, manifestJson: { ...oldManifest } } },
+    });
+    const replacement = { ...oldManifest, capabilities: ["issues.read" as const] };
+    loadManifest.mockResolvedValue(replacement);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { version: "0.1.0", manifest: replacement, status: "upgrade_pending" });
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(deps.lifecycle.load).not.toHaveBeenCalled();
+
+    // A later boot must leave the approval gate in place.
+    vi.mocked(deps.registry.getByKey).mockResolvedValue({ id: "row-widget", pluginKey: "acme.widget", status: "upgrade_pending", version: "0.1.0", packagePath: localPath, manifestJson: replacement });
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(updateStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not save an inconsistent distribution manifest", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "ready", packagePath: localPath } } });
+    const manifest = makeManifest("acme.widget", "0.1.0");
+    manifest.ui = { slots: [{ type: "appShellOverlay", id: "overlay", displayName: "Overlay", exportName: "Overlay" }] };
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).not.toHaveBeenCalled();
     expect(deps.logger.error).toHaveBeenCalled();
   });
 

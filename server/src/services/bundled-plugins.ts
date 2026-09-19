@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
-import { readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
+import { assertDistributionManifestCapabilities, readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
 /**
  * Bundled plugin auto-provisioning.
@@ -217,7 +217,7 @@ export interface BundledPluginProvisionerDeps {
     getByKey(pluginKey: string): Promise<RegistryPluginRow | null>;
     update(
       id: string,
-      data: { version?: string; manifest?: PaperclipPluginManifestV1; packagePath?: string },
+      data: { version?: string; manifest?: PaperclipPluginManifestV1; packagePath?: string; status?: "upgrade_pending" },
     ): Promise<unknown>;
     updateStatus(id: string, input: { status: "ready"; lastError: string | null }): Promise<unknown>;
   };
@@ -263,17 +263,26 @@ async function reconcileBundledPluginManifest(
   deps: BundledPluginProvisionerDeps,
   bundleManifestExists: (localPath: string) => boolean,
   verifiedManifest?: PaperclipPluginManifestV1,
-): Promise<void> {
+): Promise<"upgrade_pending" | undefined> {
   try {
     if (!verifiedManifest && !bundleManifestExists(install.localPath)) return;
     const bundleManifest = verifiedManifest ?? await deps.loader.loadManifest(install.localPath);
     if (!bundleManifest) return;
+    let requiresApproval = false;
+    if (install.distribution) {
+      assertDistributionManifestCapabilities(bundleManifest);
+      const approved = new Set(existing.manifestJson.capabilities ?? []);
+      requiresApproval = bundleManifest.capabilities.some((capability) => !approved.has(capability));
+    }
     const rebindPackage = install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
-    if (bundleManifest.version === existing.version && !rebindPackage) return;
+    if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval) return;
     await deps.registry.update(existing.id, {
       version: bundleManifest.version,
       manifest: bundleManifest,
       ...(rebindPackage ? { packagePath: install.localPath } : {}),
+      // Persist the replacement and its approval gate in one write. A crash
+      // between separate manifest/status updates must never grant capabilities.
+      ...(requiresApproval ? { status: "upgrade_pending" as const } : {}),
     });
     deps.logger.info(
       {
@@ -284,6 +293,7 @@ async function reconcileBundledPluginManifest(
       },
       "reconciled bundled plugin manifest to the shipped bundle version",
     );
+    if (requiresApproval) return "upgrade_pending";
   } catch (err) {
     deps.logger.error(
       { err, pluginKey: install.pluginKey },
@@ -391,7 +401,8 @@ export async function ensureBundledPlugins(
         // existing install, because the auto-install below skips a present
         // plugin. Distribution entries also replace a legacy/npm package path
         // before loadAll resolves the worker. Configuration and status stay put.
-        await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists, verifiedManifest);
+        const reconciledStatus = await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists, verifiedManifest);
+        if (reconciledStatus === "upgrade_pending") continue;
         if (existing.status === "error") {
           await reenableErroredBundledPlugin(existing, install, deps);
           continue;
