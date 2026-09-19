@@ -522,10 +522,10 @@ export function routineRoutes(
       agentId: actor.agentId,
       runId: actor.runId,
       agentApiKeyId: actor.agentApiKeyId,
-      action: "routine.trigger_updated",
-      entityType: "routine_trigger",
-      entityId: trigger.id,
-      details: { routineId: routine.id, kind: updated?.trigger.kind ?? trigger.kind },
+      action: req.body.archived === true ? "routine.trigger_removed" : req.body.archived === false ? "routine.trigger_restored" : req.body.setupPending === false ? "routine.trigger_setup_finished" : "routine.trigger_updated",
+      entityType: "routine",
+      entityId: routine.id,
+      details: { triggerId: trigger.id, kind: updated?.trigger.kind ?? trigger.kind },
     });
     if (updated) {
       await logRoutineRevisionCreated(req, {
@@ -665,7 +665,7 @@ export function routineRoutes(
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),
       timestampHeader: req.header("x-paperclip-timestamp"),
-      idempotencyKey: req.header("idempotency-key"),
+      idempotencyKey: req.header("idempotency-key") ?? req.header("x-github-delivery"),
       rawBody: (req as { rawBody?: Buffer }).rawBody ?? null,
       payload: typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : null,
     });

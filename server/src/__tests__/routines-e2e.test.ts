@@ -316,6 +316,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       if (signingMode !== "none") {
         const rotated = await request(board).post(`/api/routine-triggers/${trigger.id}/rotate-secret`).send({});
         expect(rotated.status).toBe(200);
+        expect(rotated.body.trigger.lastWebhookDelivery).toBeNull();
         expect((await delivery()).status).toBe(401);
         expect((await delivery(rotated.body.secretMaterial.webhookSecret)).status).toBe(202);
       }
@@ -326,6 +327,64 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       expect((await delivery()).status).toBe(409);
     },
   );
+
+  it("keeps setup deliveries out of runs, persists test receipts, and restores removed triggers", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+      projectId, assigneeAgentId: agentId, title: "Verify deployment", description: "Inspect deployment", concurrencyPolicy: "always_enqueue",
+    });
+    expect(created.status).toBe(201);
+    const routineId = created.body.id;
+    const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer", setupPending: true });
+    expect(configured.status).toBe(201);
+    const { trigger, secretMaterial } = configured.body;
+    const path = new URL(secretMaterial.webhookUrl).pathname;
+    const publicApp = await createApp({ type: "none" });
+    const deliver = (key: string, secret = secretMaterial.webhookSecret) => request(publicApp).post(path).set("Authorization", `Bearer ${secret}`).set("Idempotency-Key", key).send({ event: "deployment.completed" });
+    await request(board).patch(`/api/routines/${routineId}`).send({ status: "paused" });
+    expect((await deliver("bad", "wrong")).status).toBe(401);
+    let detail = await request(board).get(`/api/routines/${routineId}`);
+    expect(detail.body.triggers[0]).toMatchObject({ setupPending: true, lastWebhookDelivery: { status: "rejected", test: true } });
+    const tested = await deliver("setup-event");
+    expect(tested.status, JSON.stringify(tested.body)).toBe(202);
+    expect(tested.body).toMatchObject({ status: "test_received", routineStarted: false, linkedIssueId: null });
+    expect(await db.select().from(routineRuns)).toHaveLength(0);
+    expect(await db.select().from(issues)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    // Read through a fresh app instance to prove the state is database-backed.
+    const reopened = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    detail = await request(reopened).get(`/api/routines/${routineId}`);
+    expect(detail.body.triggers[0]).toMatchObject({ setupPending: true, lastWebhookDelivery: { status: "received", test: true } });
+    expect(JSON.stringify(detail.body)).not.toContain(secretMaterial.webhookSecret);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: false })).status).toBe(200);
+    await request(board).patch(`/api/routines/${routineId}`).send({ status: "active" });
+    expect((await deliver("setup-event")).body.status).toBe("test_received");
+    expect(await db.select().from(routineRuns)).toHaveLength(0);
+    const live = await deliver("live-event");
+    expect(live.status, JSON.stringify(live.body)).toBe(202);
+    expect(live.body.status).toBe("issue_created");
+    expect(await db.select().from(issues)).toHaveLength(1);
+    expect((await deliver("live-event")).body.id).toBe(live.body.id);
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "routine.run_triggered"))).toHaveLength(1);
+    expect(await db.select().from(issues)).toHaveLength(1);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(400);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ archived: true })).status).toBe(200);
+    expect((await deliver("removed-event")).status).toBe(404);
+    expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(0);
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ archived: false })).status).toBe(200);
+    detail = await request(board).get(`/api/routines/${routineId}`);
+    expect(detail.body.triggers[0].webhookUrl).toBe(secretMaterial.webhookUrl);
+    expect((await deliver("restored-event")).status).toBe(202);
+    const schedule = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" });
+    expect(schedule.status).toBe(201);
+    await request(board).patch(`/api/routine-triggers/${schedule.body.trigger.id}`).send({ archived: true });
+    expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(1);
+    await request(board).patch(`/api/routine-triggers/${schedule.body.trigger.id}`).send({ archived: false });
+    expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(2);
+  });
 
   it("supports creating, scheduling, and manually running a routine through the API", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
