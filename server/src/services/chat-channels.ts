@@ -1,3 +1,4 @@
+import { runtimeCanonicalOrigin } from "./cloud-runtime-identity.js";
 import { takePhotonCompanion } from "./photon/attachments.js";
 import { writePhotonCheckpoint } from "./photon/receiver.js";
 import { PhotonState } from "./photon/state.js";
@@ -2979,10 +2980,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   >();
   const persistence = createChatSdkStatePersistence(db);
   const fetchImpl = options.fetch ?? globalThis.fetch;
-  const publicBaseUrl = absoluteBaseUrl(options.publicBaseUrl);
-  const webhookPublicBaseUrl =
-    parseChatWebhookPublicBaseUrl(options.webhookPublicBaseUrl) ??
-    publicBaseUrl;
+  const configuredPublicBaseUrl = absoluteBaseUrl(options.publicBaseUrl);
+  const configuredWebhookPublicBaseUrl = parseChatWebhookPublicBaseUrl(options.webhookPublicBaseUrl);
+  // A warm Cloud instance is constructed before it receives its signed claim.
+  // Resolve its live identity when producing URLs, not once at service startup.
+  // An explicit webhook ingress remains separate from board/identity links.
+  const getPublicBaseUrl = () => runtimeCanonicalOrigin() ?? configuredPublicBaseUrl;
+  const getWebhookPublicBaseUrl = () => configuredWebhookPublicBaseUrl ?? getPublicBaseUrl();
   const issuesSvc = issueService(db);
   const secrets = secretService(db);
   const questionResponses = questionResponseDeliveryService(db, {
@@ -5829,7 +5833,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       setup: {
         ...providerSetupState(
           endpoint,
-          webhookPublicBaseUrl,
+          getWebhookPublicBaseUrl(),
           row.assignedAgentName,
         ),
         ...(endpoint.provider === "github"
@@ -9460,7 +9464,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ) {
       throw unprocessable("Unsupported chat endpoint setup action");
     }
-    if (!webhookPublicBaseUrl && endpoint.provider !== "discord" && endpoint.provider !== "imessage-photon") {
+    if (!getWebhookPublicBaseUrl() && endpoint.provider !== "discord" && endpoint.provider !== "imessage-photon") {
       throw unprocessable(
         `A public HTTPS Paperclip URL is required before connecting ${PROVIDER_LABELS[endpoint.provider]}`,
       );
@@ -9468,7 +9472,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (
       endpoint.provider === "telegram" &&
       (input.action === "configure" || input.action === "reconnect") &&
-      !isSupportedTelegramWebhookBaseUrl(webhookPublicBaseUrl)
+      !isSupportedTelegramWebhookBaseUrl(getWebhookPublicBaseUrl())
     ) {
       throw unprocessable(
         "Telegram webhooks require PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL to use HTTPS on port 443, 80, 88, or 8443",
@@ -9774,7 +9778,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         await resyncGitHubAppWebhook({
           fetch: fetchImpl,
           appToken: githubAppJwt(credentials.appId, credentials.privateKey),
-          webhookUrl: `${webhookPublicBaseUrl}/api/chat-webhooks/${endpoint.publicId}/github`,
+          webhookUrl: `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/github`,
           webhookSecret: credentials.webhookSecret,
         });
         await auditWebhookSync("chat_endpoint.webhook_synced");
@@ -9786,8 +9790,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         waitForDiscordOwnership: next.endpoint.provider === "discord",
       });
 
-      if (endpoint.provider === "telegram" && webhookPublicBaseUrl) {
-        const webhookUrl = `${webhookPublicBaseUrl}/api/chat-webhooks/${endpoint.publicId}/telegram`;
+      if (endpoint.provider === "telegram" && getWebhookPublicBaseUrl()) {
+        const webhookUrl = `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/telegram`;
         const infoResponse = await fetchImpl(
           `https://api.telegram.org/bot${encodeURIComponent(credentials.botToken)}/getWebhookInfo`,
           { signal: AbortSignal.timeout(PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS) },
@@ -23290,8 +23294,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           await tx.update(chatActions).set({ payload: {
             version: 1, channelId: event.event.channel.id, userId: event.event.user.userId, identityLinkHash: tokenHash,
           } }).where(eq(chatActions.id, inserted[0].id));
-          const url = `${publicBaseUrl}/chat-identity/confirm?token=${encodeURIComponent(token)}`;
-          notice = publicBaseUrl
+          const url = `${getPublicBaseUrl()}/chat-identity/confirm?token=${encodeURIComponent(token)}`;
+          notice = getPublicBaseUrl()
             ? `[Connect your Paperclip account](${url}) — sign in and confirm this Slack identity. This private link expires in 15 minutes and works once. You can also confirm in the setup wizard. No agent work has started.`
             : "Return to the Paperclip setup wizard to confirm your Slack account. No agent work has started.";
         }
@@ -24737,7 +24741,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             fence.generation !== context.generation ||
             fence.credentialFingerprint !== context.credentialFingerprint ||
             fence.webhookUrl !==
-              `${webhookPublicBaseUrl}/api/chat-webhooks/${currentEndpoint.publicId}/github` ||
+              `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${currentEndpoint.publicId}/github` ||
             !original?.payload?.comment ||
             original.event !== eventType ||
             incoming?.action !== "created" ||
@@ -25409,7 +25413,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     limit = 5,
     onlyEndpointId?: string,
   ) {
-    if (shuttingDown || !webhookPublicBaseUrl?.startsWith("https://")) return 0;
+    if (shuttingDown || !getWebhookPublicBaseUrl()?.startsWith("https://")) return 0;
     const now = new Date();
     const rows = await db
       .select({ endpoint: chatEndpoints })
@@ -25442,7 +25446,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             // the superseded epoch was rate limited for several hours.
             sql`${chatSdkState.value}->>'generation' is distinct from coalesce(${chatEndpoints.setup}->>'runtimeGeneration', '0')`,
             sql`${chatSdkState.value}->>'appId' is distinct from ${chatEndpoints.botExternalId}`,
-            sql`${chatSdkState.value}->>'webhookUrl' is distinct from (${webhookPublicBaseUrl} || '/api/chat-webhooks/' || ${chatEndpoints.publicId} || '/github')`,
+            sql`${chatSdkState.value}->>'webhookUrl' is distinct from (${getWebhookPublicBaseUrl()} || '/api/chat-webhooks/' || ${chatEndpoints.publicId} || '/github')`,
             sql`(${chatSdkState.value}->>'nextScanAt')::timestamptz <= ${now.toISOString()}::timestamptz`,
           ),
         ),
@@ -25453,7 +25457,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const record = await endpointRecord(endpoint.id);
       if (!record || !record.endpoint.botExternalId) continue;
       const context = runtimeContextForRecord(record);
-      const webhookUrl = `${webhookPublicBaseUrl}/api/chat-webhooks/${endpoint.publicId}/github`;
+      const webhookUrl = `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/github`;
       const scope = { companyId: endpoint.companyId, endpointId: endpoint.id };
       const stored = await persistence.read(scope, GITHUB_RECOVERY_STATE_KEY);
       const previous = githubRecoveryWindow(stored?.value);
@@ -26388,7 +26392,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 errorCode: "slack_session_stopped",
                 issueId: issue.id,
                 milestone: "failed",
-                publicBaseUrl,
+                publicBaseUrl: getPublicBaseUrl(),
               }),
             }),
             principalId: principal.id,
@@ -26506,7 +26510,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           },
         },
       );
-      await enqueueChatRunMilestones(db, { publicBaseUrl });
+      await enqueueChatRunMilestones(db, { publicBaseUrl: getPublicBaseUrl() });
       const authoritativeRun = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -27944,7 +27948,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
     const path = `/chat-identity/confirm?token=${encodeURIComponent(token)}`;
     return {
-      confirmationUrl: publicBaseUrl ? `${publicBaseUrl}${path}` : path,
+      confirmationUrl: getPublicBaseUrl() ? `${getPublicBaseUrl()}${path}` : path,
       expiresAt: expiresAt.toISOString(),
     };
   }
@@ -32213,12 +32217,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (
       endpoint.provider !== "telegram" ||
       !endpoint.botExternalId ||
-      !webhookPublicBaseUrl
+      !getWebhookPublicBaseUrl()
     )
       return null;
     const webhookUrlSha256 = createHash("sha256")
       .update(
-        `${webhookPublicBaseUrl}/api/chat-webhooks/${endpoint.publicId}/telegram`,
+        `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/telegram`,
       )
       .digest("hex");
     return {
@@ -32468,7 +32472,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       String(identity.id) !== scope.botUserId
     )
       throw reject();
-    const url = `${webhookPublicBaseUrl}/api/chat-webhooks/${endpoint.publicId}/telegram`;
+    const url = `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/telegram`;
     const plan = telegramStopSubscriptionPlan(
       await request("getWebhookInfo"),
       url,
@@ -32947,7 +32951,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
       } else if (files.length === 0) {
         const taskUrl = safeChatTaskUrl(
-          options.publicBaseUrl,
+          getPublicBaseUrl(),
           input.publication.issueId,
         );
         if (
@@ -33105,7 +33109,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             interaction,
             questionIndex: nextQuestion ? Number(nextQuestion[2]) : 0,
             taskUrl: safeChatTaskUrl(
-              options.publicBaseUrl,
+              getPublicBaseUrl(),
               input.publication.issueId,
             ),
             assertCurrent: promptGuard,
@@ -33393,7 +33397,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       ? typeof prepared.payload.taskUrl === "string"
         ? safeChatTaskUrl(prepared.payload.taskUrl, publication.issueId)
         : null
-      : safeChatTaskUrl(options.publicBaseUrl, publication.issueId);
+      : safeChatTaskUrl(getPublicBaseUrl(), publication.issueId);
     if (
       prepared &&
       (prepared.kind !== "github_omission_navigation" ||
@@ -35245,7 +35249,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             noticeEndpoint.provider === attachmentFailure.provider);
         if (providerCanSendTextNotice && noticeConversation) {
           const taskUrl = safeChatTaskUrl(
-            options.publicBaseUrl,
+            getPublicBaseUrl(),
             publication.issueId,
           );
           const noticeText =

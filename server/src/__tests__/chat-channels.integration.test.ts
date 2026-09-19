@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
 import {
   createHash,
   createHmac,
@@ -12754,6 +12755,65 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await service.shutdown();
   });
+
+  it.each([undefined, "https://ingress.example"])(
+    "uses a live Cloud claim after chat service startup (ingress: %s)",
+    async (webhookPublicBaseUrl) => {
+      const poolOrigin = "https://pool-fixture.staging.paperclip.app";
+      const claimedOrigin = "https://claimed-fixture.staging.paperclip.app";
+      const canonicalOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimeCanonicalOrigin").mockReturnValue(null);
+      const fixture = await seedCompany();
+      const { service } = createService(new FakeChatSdkRuntime(), fakeSlackFetch(), {
+        publicBaseUrl: poolOrigin,
+        webhookPublicBaseUrl,
+      });
+      try {
+        const endpoints = [];
+        for (const provider of ["slack", "github", "microsoft-teams", "telegram"] as const) {
+          endpoints.push(await service.create(fixture.companyId, {
+            provider,
+            assignedAgentId: fixture.assignedAgentId,
+          }, "owner-user"));
+        }
+        expect(endpoints[0].setup.webhookUrl).toBe(
+          `${webhookPublicBaseUrl ?? poolOrigin}/api/chat-webhooks/${endpoints[0].publicId}/slack`,
+        );
+
+        // The warm process is already serving; applying a signed claim changes
+        // the trusted identity provider without constructing another service.
+        canonicalOrigin.mockReturnValue(claimedOrigin);
+        for (const endpoint of endpoints) {
+          const updated = await service.get(endpoint.id);
+          const callback = `${webhookPublicBaseUrl ?? claimedOrigin}/api/chat-webhooks/${endpoint.publicId}/${endpoint.provider}`;
+          expect(updated.setup).toMatchObject(endpoint.provider === "microsoft-teams"
+            ? { messagingEndpoint: callback }
+            : { webhookUrl: callback });
+          const [principal] = await db.insert(chatExternalPrincipals).values({
+            companyId: fixture.companyId,
+            provider: endpoint.provider,
+            providerAccountId: "",
+            externalId: randomUUID(),
+            kind: "user",
+            isBot: false,
+          }).returning();
+          const intent = await service.createLinkIntent(endpoint.id, principal.id, 1800);
+          expect(intent.confirmationUrl).toMatch(
+            /^https:\/\/claimed-fixture\.staging\.paperclip\.app\/chat-identity\/confirm\?token=/,
+          );
+        }
+        const fresh = await service.create(fixture.companyId, {
+          provider: "slack",
+          assignedAgentId: fixture.assignedAgentId,
+        }, "owner-user");
+        expect(fresh.setup.webhookUrl).toBe(
+          `${webhookPublicBaseUrl ?? claimedOrigin}/api/chat-webhooks/${fresh.publicId}/slack`,
+        );
+      } finally {
+        await service.shutdown();
+        canonicalOrigin.mockRestore();
+      }
+    },
+  );
 
   it("separates verified webhook ingress from board identity links for every webhook provider", async () => {
     const fixture = await seedCompany();

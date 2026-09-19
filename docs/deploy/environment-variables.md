@@ -47,6 +47,13 @@ only `POST /api/chat-webhooks/*` from that host. Provider signatures still gate
 ingress; this variable does not expose routes or grant provider access.
 Never forward the private `local_trusted` board through a public tunnel.
 
+In Paperclip Cloud, chat callback URLs and account-linking URLs follow the
+instance's signed canonical origin after a warm instance is claimed, without
+requiring a restart. An explicit `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` still takes
+precedence for provider callbacks only; board links follow the claimed origin.
+Existing provider-side callback settings must be updated if they were created
+with an old URL.
+
 Task links in external messages require an externally safe HTTPS board URL.
 Local/private board URLs are omitted with instructions to open the task in
 Paperclip; the public webhook host is never substituted for the board. Identity
