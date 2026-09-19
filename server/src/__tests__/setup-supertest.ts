@@ -51,8 +51,11 @@ if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
       throw new Error("Expected Supertest server to listen on a TCP port");
     }
 
+    // Node may report the unspecified IPv6 listener (`::`) even when IPv6
+    // loopback is disabled. Use IPv4 in that case so Supertest can reach the
+    // in-memory server on hosts that intentionally disable IPv6.
     const host = listeningAddress.address === "::"
-      ? "[::1]"
+      ? "127.0.0.1"
       : listeningAddress.address === "0.0.0.0"
         ? "127.0.0.1"
         : listeningAddress.address;
