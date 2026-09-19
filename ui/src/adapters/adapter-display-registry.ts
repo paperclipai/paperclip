@@ -140,6 +140,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     disabledLabel: "Invite external agents from the add-agent modal",
     hideFromVisualSelection: true,
   },
+  bob_shell: {
+    label: "IBM Bob",
+    description: "IBM Bob CLI harness",
+    icon: Bot,
+  },
   process: {
     label: "Process",
     description: "Internal process adapter",

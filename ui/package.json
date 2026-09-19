@@ -47,6 +47,7 @@
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
+    "@paperclipai/adapter-bob-shell": "workspace:*",
     "@paperclipai/hermes-paperclip-adapter": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "@radix-ui/react-slot": "^1.3.3",

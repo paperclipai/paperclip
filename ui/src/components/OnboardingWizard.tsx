@@ -1496,6 +1496,7 @@ function OnboardingWizardInner({
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
+    bob_shell: "bob",
   };
   const effectiveAdapterCommand =
     command.trim() ||

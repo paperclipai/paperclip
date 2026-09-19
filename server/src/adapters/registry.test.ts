@@ -54,6 +54,7 @@ describe("built-in adapter login capabilities", () => {
 describe("built-in runtime connection tool delivery", () => {
   const expectedStrategies = new Map([
     ["acpx_local", "environment"],
+    ["bob_shell", "environment"],
     ["claude_local", "native_mcp"],
     ["codex_local", "native_mcp"],
     ["cursor_cloud", "invocation_context"],

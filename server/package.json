@@ -65,6 +65,7 @@
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",
+    "@paperclipai/adapter-bob-shell": "workspace:*",
     "@paperclipai/hermes-paperclip-adapter": "workspace:*",
     "@paperclipai/plugin-sdk": "workspace:*",
     "@paperclipai/shared": "workspace:*",
