@@ -2519,7 +2519,7 @@ describe("buildNativeExecutionInput wake projection", () => {
       },
     });
     expect(defaultOpenCode).toMatchObject({
-      provider: { kind: "opencode", permissionMode: "ask" },
+      provider: { kind: "opencode", permissionMode: "allow" },
     });
     expect(defaultAcpx).toMatchObject({
       provider: {
