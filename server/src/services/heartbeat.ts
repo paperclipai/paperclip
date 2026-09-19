@@ -3118,6 +3118,10 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     Boolean(issue.projectWorkspaceId) ||
     Boolean(input.resolvedWorkspace.workspaceId) ||
     input.executionWorkspace.strategy === "git_worktree";
+  const intentionallyNonGitWorkspace =
+    input.resolvedWorkspace.sourceType === "non_git_path" &&
+    input.executionWorkspace.strategy !== "git_worktree" &&
+    input.persistedExecutionWorkspace?.strategyType !== "git_worktree";
 
   const fail = (
     reason: string,
@@ -3247,7 +3251,8 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   if (
     workspaceExpectation &&
     effectiveCwd &&
-    !(await hasGitMetadata(effectiveCwd))
+    !intentionallyNonGitWorkspace &&
+    !await hasGitMetadata(effectiveCwd)
   ) {
     fail(
       "missing_git_metadata",
@@ -3701,6 +3706,8 @@ export type WorkspaceMaterializationFailure = {
 export type ResolvedWorkspaceForRun = {
   cwd: string;
   source: "project_primary" | "task_session" | "agent_home";
+  /** Project workspace sourceType when the anchor came from a project workspace row. */
+  sourceType?: string | null;
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -12295,6 +12302,7 @@ export function heartbeatService(
           return {
             cwd: projectCwd,
             source: "project_primary" as const,
+            sourceType: workspace.sourceType ?? null,
             projectId: resolvedProjectId,
             workspaceId: workspace.id,
             repoUrl: workspace.repoUrl,
@@ -12326,6 +12334,7 @@ export function heartbeatService(
       return {
         cwd: fallbackCwd,
         source: "project_primary" as const,
+        sourceType: projectWorkspaceRows[0]?.sourceType ?? null,
         projectId: resolvedProjectId,
         workspaceId: projectWorkspaceRows[0]?.id ?? null,
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
@@ -12346,6 +12355,7 @@ export function heartbeatService(
       return {
         cwd: managedWorkspace.cwd,
         source: "project_primary" as const,
+        sourceType: null,
         projectId: resolvedProjectId,
         workspaceId: null,
         repoUrl: null,
@@ -12368,6 +12378,7 @@ export function heartbeatService(
         return {
           cwd: sessionCwd,
           source: "task_session" as const,
+          sourceType: null,
           projectId: resolvedProjectId,
           workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
           repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
@@ -12403,6 +12414,7 @@ export function heartbeatService(
     return {
       cwd,
       source: "agent_home" as const,
+      sourceType: null,
       projectId: resolvedProjectId,
       workspaceId: null,
       repoUrl: null,
