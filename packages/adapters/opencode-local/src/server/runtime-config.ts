@@ -106,6 +106,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  copySourceConfig?: "all" | "file";
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
@@ -136,12 +137,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   await fs.mkdir(runtimeConfigDir, { recursive: true });
   try {
-    await fs.cp(sourceConfigDir, runtimeConfigDir, {
-      recursive: true,
-      force: true,
-      errorOnExist: false,
-      dereference: false,
-    });
+    if (input.copySourceConfig === "file") {
+      await fs.copyFile(path.join(sourceConfigDir, "opencode.json"), runtimeConfigPath);
+    } else {
+      await fs.cp(sourceConfigDir, runtimeConfigDir, {
+        recursive: true,
+        force: true,
+        errorOnExist: false,
+        dereference: false,
+      });
+    }
   } catch (err) {
     if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
       throw err;
