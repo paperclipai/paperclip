@@ -513,6 +513,7 @@ function canonicalCallbackUrl(value: string): string | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    url.hostname = url.hostname.replace(/\.$/, "");
     url.username = "";
     url.password = "";
     url.search = "";
@@ -554,16 +555,16 @@ function slackCallbackObservationUrl(request: Request): string | null {
   if (!directUrl || !runtimeCanonicalOrigin()) return directUrl;
   const host = request.headers.get("x-forwarded-host")?.trim();
   const protocol = request.headers.get("x-forwarded-proto")?.trim();
-  if (!host || (protocol !== "https" && protocol !== "http")) return directUrl;
+  if (!host || /[\s/@\\?#,]/.test(host) || (protocol !== "https" && protocol !== "http")) return directUrl;
   try {
     const origin = new URL(`${protocol}://${host}`);
     // Accept one authority only, never credentials, paths, queries, or lists.
-    if (origin.host !== host.toLowerCase() || origin.username || origin.password) return directUrl;
+    if (!origin.host || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash) return directUrl;
     const observed = new URL(directUrl);
     observed.protocol = origin.protocol;
     observed.host = origin.host;
     observed.port = origin.port;
-    return observed.toString();
+    return canonicalCallbackUrl(observed.toString());
   } catch {
     return directUrl;
   }

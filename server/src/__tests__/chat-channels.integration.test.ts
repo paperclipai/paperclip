@@ -13049,6 +13049,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
       await send("paperclip.example");
       await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false } });
+      for (const host of ["paperclip.example:443", "PAPERCLIP.EXAMPLE:443", "paperclip.example.", "paperclip.example.:443"]) {
+        await send(host);
+        await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false } });
+      }
     } finally {
       await service.shutdown();
       canonicalOrigin.mockRestore();
