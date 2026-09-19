@@ -53,7 +53,7 @@ jobs:
           # the bake group (which has no such key -> "unknown key" error).
           docker buildx bake \
             -f docker/agent-runtime/buildx-bake.hcl \
-            base opencode pi codex gemini claude \
+            base opencode pi codex gemini claude grok \
             --push \
             --metadata-file=bake-metadata.json
           # Extract digests for cosign signing
@@ -63,12 +63,14 @@ jobs:
           CODEX_DIGEST=$(jq -r '."codex"."containerimage.digest"' bake-metadata.json)
           GEMINI_DIGEST=$(jq -r '."gemini"."containerimage.digest"' bake-metadata.json)
           CLAUDE_DIGEST=$(jq -r '."claude"."containerimage.digest"' bake-metadata.json)
+          GROK_DIGEST=$(jq -r '."grok"."containerimage.digest"' bake-metadata.json)
           echo "base_digest=$BASE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "opencode_digest=$OPENCODE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "pi_digest=$PI_DIGEST" >> "$GITHUB_OUTPUT"
           echo "codex_digest=$CODEX_DIGEST" >> "$GITHUB_OUTPUT"
           echo "gemini_digest=$GEMINI_DIGEST" >> "$GITHUB_OUTPUT"
           echo "claude_digest=$CLAUDE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "grok_digest=$GROK_DIGEST" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ env.VERSION }}
           REGISTRY: ${{ env.REGISTRY }}
@@ -96,3 +98,7 @@ jobs:
       - name: Cosign sign claude
         run: |
           cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-claude@${{ steps.bake.outputs.claude_digest }}"
+
+      - name: Cosign sign grok
+        run: |
+          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-grok@${{ steps.bake.outputs.grok_digest }}"
