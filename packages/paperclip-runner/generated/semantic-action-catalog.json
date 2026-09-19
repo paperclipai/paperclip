@@ -1524,8 +1524,7 @@
   },
   {
     "allowedModes": [
-      "standard",
-      "skill_test"
+      "standard"
     ],
     "description": "Reassign an existing task to another company agent. Read search_tasks first and supply its current assignee and statusVersion to prevent overwriting a concurrent change. Preserve the task, documents, dependencies, and blocked/backlog status. Active work is stopped before handoff. Use a stable idempotency key for retries. Cannot reassign this run’s own task, conversations, completed tasks, or pending reviews; use create_task for delegation from the current task.",
     "effect": "write",

@@ -15,6 +15,17 @@ export class AcpxApprovalRequiredError extends Error {
   }
 }
 
+// Review additions explicitly: a newly catalogued mutation must not inherit
+// automatic provider permission. These operations implement the bounded plan,
+// task, and handoff workflow; governance decisions, generic APIs, and workspace
+// controls deliberately stay outside it. Asking a human does not approve work.
+const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
+  "report_progress", "answer_status_question", "write_document",
+  "request_human_input", "register_deliverable", "finish_task", "block_task",
+  "request_review", "create_task", "reassign_task", "set_dependencies",
+  "create_project", "request_approval",
+]);
+
 /** Exact SDK rules for the run's runner-owned Paperclip MCP connection. */
 export function claudePaperclipPermissionRules(
   tools: readonly Readonly<Record<string, unknown>>[],
@@ -31,7 +42,9 @@ export function claudePaperclipPermissionRules(
     // This only bypasses the provider's redundant permission prompt. The
     // authenticated bridge and controller still validate run authority,
     // company scope, claims, task mode, and governed-action approvals.
-    return action && (mode === "approve-paperclip" || action.effect === "read")
+    return action && (action.effect === "read" || (
+      mode === "approve-paperclip" && AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS.has(name)
+    ))
       ? [`mcp__paperclip__${name}`]
       : [];
   });

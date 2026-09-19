@@ -2525,7 +2525,7 @@ describe("buildNativeExecutionInput wake projection", () => {
       provider: {
         kind: "acpx",
         agent: "codex",
-        permissionMode: "approve-reads",
+        permissionMode: "approve-paperclip",
       },
     });
     expect(

@@ -164,7 +164,7 @@ describe("buildPaperclipRunnerConfig", () => {
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
       opencodePermissionMode: "allow",
       codexPermissionMode: "never",
-      acpxPermissionMode: "approve-reads",
+      acpxPermissionMode: "approve-paperclip",
     });
   });
 

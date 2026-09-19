@@ -71,8 +71,9 @@ at the provider rather than silently falling back.
 
 ACPX Claude defaults to `approve-paperclip`, shown as **Automatic Paperclip
 actions**. The host intersects the run's assigned public tools with the known
-Paperclip action catalog and writes exact MCP permission rules into isolated
-Claude settings. Plans, task creation, reassignment, and other assigned actions
+Paperclip read catalog and an explicit planning/task action allowlist, then
+writes exact MCP permission rules into isolated Claude settings. Plans, task
+creation, reassignment, and the listed task workflow actions
 can execute without a second provider permission prompt. The controller still
 checks company access, action claims, task modes, and governed approvals on every
 call. A tool's presence does not grant permission to act on another company's data.
@@ -80,7 +81,10 @@ call. A tool's presence does not grant permission to act on another company's da
 The `paperclip` connection is always the runner's authenticated tool bridge;
 ambient MCP configuration is excluded. Tool hints and provider permission
 metadata cannot grant access. Unassigned tools, external connections, and
-provider-native shell or filesystem operations receive no automatic permission.
+provider-native shell or filesystem operations receive no automatic permission. Governance decisions, generic API
+calls, skill creation, and workspace controls are outside the default allowlist.
+New catalog mutations need an explicit allowlist review before they can become
+automatic.
 Explicit `approve-reads` (**Allow Paperclip reads**) and `deny-all` settings retain
 their restrictive behavior. Existing saved settings are not migrated. Protocol
 completion and task-delivery controls keep their separate allowance.

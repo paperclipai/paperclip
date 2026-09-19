@@ -119,7 +119,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         value: "approve-paperclip",
         label: "Automatic Paperclip actions",
         description:
-          "Automatically run assigned Paperclip tools, including plans, tasks, and reassignment. Company permissions and approval requirements still apply. Other operations require permission.",
+          "Automatically run assigned Paperclip planning and task tools, including reassignment. Company permissions and approval requirements still apply. Other operations require permission.",
       },
       {
         value: "approve-reads",

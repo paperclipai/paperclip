@@ -110,6 +110,44 @@ describe("runner task reassignment", () => {
     expect(f.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it.each(["version", "caller", "stop-error"])("restores the prior owner after a cancelled handoff loses %s", async conflict => {
+    const f = await fixture("in_progress");
+    const oldRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: oldRun, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.targetId, status: "running", runtimeMode: "native", invocationSource: "assignment", triggerDetail: "system" });
+    await db.update(issues).set({ executionRunId: oldRun }).where(eq(issues.id, f.targetId));
+    f.stopTaskForReassignment.mockImplementationOnce(async () => {
+      await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned" }).where(eq(heartbeatRuns.id, oldRun));
+      if (conflict === "version") await db.update(issues).set({ statusVersion: 1 }).where(eq(issues.id, f.targetId));
+      if (conflict === "caller") await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      if (conflict === "stop-error") throw new Error("stop acknowledgement failed after cancellation");
+    });
+    await expect(f.authority.execute(f.call)).rejects.toThrow();
+    expect((await f.target()).assigneeAgentId).toBe(f.agentId);
+    expect(f.enqueueWakeup).toHaveBeenCalledExactlyOnceWith(f.agentId, expect.objectContaining({
+      payload: { issueId: f.targetId, mutation: "reassign_task_rollback", interruptedRunId: oldRun },
+      issueStateGuard: { statuses: ["todo", "in_progress"], assigneeAgentId: f.agentId, statusVersion: conflict === "version" ? 1 : 0 },
+    }));
+  });
+
+  it.each(["owner", "closed", "new-run"])("does not compensate over a newer %s decision", async conflict => {
+    const f = await fixture("in_progress");
+    const oldRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: oldRun, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.targetId, status: "running", runtimeMode: "native", invocationSource: "assignment", triggerDetail: "system" });
+    await db.update(issues).set({ executionRunId: oldRun }).where(eq(issues.id, f.targetId));
+    f.stopTaskForReassignment.mockImplementationOnce(async () => {
+      await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned" }).where(eq(heartbeatRuns.id, oldRun));
+      const newRun = randomUUID();
+      if (conflict === "new-run") await db.insert(heartbeatRuns).values({ id: newRun, companyId: f.companyId,
+        agentId: f.agentId, status: "running", invocationSource: "assignment", triggerDetail: "system" });
+      await db.update(issues).set(conflict === "owner" ? { assigneeAgentId: f.nextId, statusVersion: 1 }
+        : conflict === "closed" ? { status: "done" } : { executionRunId: newRun }).where(eq(issues.id, f.targetId));
+    });
+    await expect(f.authority.execute(f.call)).rejects.toThrow();
+    expect(f.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it.each(["done", "cancelled", "in_review"])("rejects %s before interrupting work", async status => {
     const f = await fixture(status);
     await expect(f.authority.execute(f.call)).rejects.toThrow("state_denied");
@@ -124,7 +162,7 @@ describe("runner task reassignment", () => {
     expect(f.stopTaskForReassignment).not.toHaveBeenCalled();
   });
 
-  it.each(["planning", "ask"])("denies reassignment from %s mode", async workMode => {
+  it.each(["planning", "ask", "skill_test"])("denies reassignment from %s mode", async workMode => {
     const f = await fixture();
     await db.update(issues).set({ workMode }).where(eq(issues.id, f.issueId));
     await expect(f.authority.execute(f.call)).rejects.toThrow("mode_denied");

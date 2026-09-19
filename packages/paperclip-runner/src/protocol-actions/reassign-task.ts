@@ -13,8 +13,7 @@ export const reassignTaskAction = {
       "delegation:tasks:assign"
     ],
     "taskModes": [
-      "standard",
-      "skill_test"
+      "standard"
     ],
     "sideEffectClass": "company_write",
     "idempotency": "required",
@@ -82,8 +81,7 @@ export const reassignTaskAction = {
         "delegation:tasks:assign"
       ],
       "allowedModes": [
-        "standard",
-        "skill_test"
+        "standard"
       ],
       "inputSchema": {
         "type": "object",
@@ -272,8 +270,7 @@ export const reassignTaskAction = {
         "delegation:tasks:assign"
       ],
       "taskModes": [
-        "standard",
-        "skill_test"
+        "standard"
       ],
       "sideEffectClass": "company_write",
       "idempotency": "required",
