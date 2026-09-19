@@ -787,6 +787,10 @@ lockfile from its own trusted checkout, never from the tested branch.
 
 ### Injected interruption diagnostics
 
+The restart supervisor starts Paperclip with the TypeScript loader in the same
+Node process it owns. A forced stop therefore cannot leave an old controller
+alive to stop the embedded database after the replacement starts.
+
 Everyday restart and Stop scenarios exempt only their recorded cancellation,
 graceful-shutdown interruption, or process-loss outcome. A later adapter error
 on that same run still fails immediately and fails the lifecycle grader. The

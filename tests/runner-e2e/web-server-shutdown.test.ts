@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { reserveRunnerE2EDatabasePort } from "./ports.js";
-import { runnerE2EWebServerGracefulShutdown } from "./web-server-command.js";
+import { runnerE2EWebServerGracefulShutdown, runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 
 const require = createRequire(import.meta.url);
 
@@ -115,3 +115,33 @@ it("lets Playwright reap a restarted server through the production bounded shutd
     await rm(root, { recursive: true, force: true });
   }
 }, 25_000);
+
+
+it("owns the actual server PID so a forced restart cannot leave a late database closer", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-server-pid-"));
+  const entry = path.join(root, "server.mts");
+  let candidate: ReturnType<typeof spawn> | undefined;
+  let actualPid: number | undefined;
+  try {
+    await writeFile(entry, `process.send!({ pid: process.pid }); setInterval(() => {}, 1000);`);
+    candidate = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(path.resolve(import.meta.dirname, "../.."), entry), { stdio: ["ignore", "pipe", "pipe", "ipc"] });
+    actualPid = await new Promise<number>((resolve, reject) => {
+      candidate!.once("message", (message: any) => resolve(message.pid));
+      candidate!.once("error", reject);
+      candidate!.once("exit", () => reject(new Error("Server exited before publishing its PID")));
+    });
+    expect(actualPid).toBe(candidate.pid);
+    const exited = new Promise(resolve => candidate!.once("exit", resolve));
+    candidate.kill("SIGKILL");
+    await exited;
+    expect(() => process.kill(actualPid!, 0)).toThrow();
+  } finally {
+    if (actualPid) { try { process.kill(actualPid, "SIGKILL"); } catch {} }
+    if (candidate && candidate.exitCode === null && candidate.signalCode === null) {
+      const exited = new Promise(resolve => candidate!.once("exit", resolve));
+      candidate.kill("SIGKILL");
+      await exited;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 10_000);
