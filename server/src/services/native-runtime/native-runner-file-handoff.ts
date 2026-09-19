@@ -428,28 +428,39 @@ function record(value: unknown): Record<string, unknown> {
 
 function wakeAttachmentSelections(value: unknown): Array<{
   readonly id: string;
-  readonly commentId: string;
+  readonly commentId: string | null;
 }> {
   const wake = record(record(value).paperclipWake);
   const comments = Array.isArray(wake.comments) ? wake.comments : [];
-  const selected: Array<{ id: string; commentId: string }> = [];
+  const selected: Array<{ id: string; commentId: string | null }> = [];
   const seen = new Set<string>();
+  const select = (candidate: unknown, commentId: string | null) => {
+    const attachment = record(candidate);
+    if (
+      typeof attachment.id !== "string" ||
+      !/^[0-9a-f-]{36}$/iu.test(attachment.id) ||
+      seen.has(attachment.id)
+    ) {
+      return;
+    }
+    seen.add(attachment.id);
+    selected.push({ id: attachment.id, commentId });
+  };
   for (const candidate of comments) {
     const comment = record(candidate);
     if (typeof comment.id !== "string" || !Array.isArray(comment.attachments)) {
       continue;
     }
     for (const attachmentCandidate of comment.attachments) {
-      const attachment = record(attachmentCandidate);
-      if (
-        typeof attachment.id !== "string" ||
-        !/^[0-9a-f-]{36}$/iu.test(attachment.id) ||
-        seen.has(attachment.id)
-      ) {
-        continue;
-      }
-      seen.add(attachment.id);
-      selected.push({ id: attachment.id, commentId: comment.id });
+      select(attachmentCandidate, comment.id);
+    }
+  }
+  // Files dropped on the task itself carry no comment binding. The declared
+  // null is still checked against the stored row below, so a payload cannot
+  // claim an unbound file that the database says belongs to a comment.
+  if (Array.isArray(wake.issueAttachments)) {
+    for (const attachmentCandidate of wake.issueAttachments) {
+      select(attachmentCandidate, null);
     }
   }
   return selected;

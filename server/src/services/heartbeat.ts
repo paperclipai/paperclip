@@ -7773,34 +7773,47 @@ export async function buildPaperclipWakePayload(input: {
       ? [comment.id]
       : [],
   );
-  const attachmentRows =
-    !issueId || attachmentCommentIds.length === 0
-      ? []
-      : await input.db
-          .select({
-            id: issueAttachments.id,
-            issueCommentId: issueAttachments.issueCommentId,
-            filename: assets.originalFilename,
-            contentType: assets.contentType,
-            byteSize: assets.byteSize,
-          })
-          .from(issueAttachments)
-          .innerJoin(
-            assets,
-            and(
-              eq(issueAttachments.assetId, assets.id),
-              eq(assets.companyId, input.companyId),
+  // A file dropped on the task itself is bound to no comment, so it can never
+  // ride a comment's attachment list. It still belongs to the wake: the human
+  // uploaded it for the assignee to read. Board uploads are the only unbound
+  // rows that qualify - a row carrying an originating run is a file an agent
+  // handed back, and re-serving those would re-stage the agent's own output on
+  // every later wake.
+  const attachmentRows = !issueId
+    ? []
+    : await input.db
+        .select({
+          id: issueAttachments.id,
+          issueCommentId: issueAttachments.issueCommentId,
+          filename: assets.originalFilename,
+          contentType: assets.contentType,
+          byteSize: assets.byteSize,
+        })
+        .from(issueAttachments)
+        .innerJoin(
+          assets,
+          and(
+            eq(issueAttachments.assetId, assets.id),
+            eq(assets.companyId, input.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(issueAttachments.companyId, input.companyId),
+            eq(issueAttachments.issueId, issueId),
+            or(
+              and(
+                isNull(issueAttachments.issueCommentId),
+                isNull(issueAttachments.originatingRunId),
+              ),
+              attachmentCommentIds.length > 0
+                ? inArray(issueAttachments.issueCommentId, attachmentCommentIds)
+                : undefined,
             ),
-          )
-          .where(
-            and(
-              eq(issueAttachments.companyId, input.companyId),
-              eq(issueAttachments.issueId, issueId),
-              inArray(issueAttachments.issueCommentId, attachmentCommentIds),
-            ),
-          )
-          .orderBy(asc(issueAttachments.createdAt), asc(issueAttachments.id))
-          .limit(MAX_INLINE_WAKE_ATTACHMENTS + 1);
+          ),
+        )
+        .orderBy(asc(issueAttachments.createdAt), asc(issueAttachments.id))
+        .limit(MAX_INLINE_WAKE_ATTACHMENTS + 1);
   if (attachmentRows.length > MAX_INLINE_WAKE_ATTACHMENTS) truncated = true;
   const attachmentsByCommentId = new Map<
     string,
@@ -7812,20 +7825,31 @@ export async function buildPaperclipWakePayload(input: {
       contentPath: string;
     }>
   >();
+  const issueLevelAttachments: Array<{
+    id: string;
+    filename: string;
+    contentType: string;
+    byteSize: number;
+    contentPath: string;
+  }> = [];
   for (const attachment of attachmentRows.slice(
     0,
     MAX_INLINE_WAKE_ATTACHMENTS,
   )) {
-    if (!attachment.issueCommentId) continue;
-    const descriptors =
-      attachmentsByCommentId.get(attachment.issueCommentId) ?? [];
-    descriptors.push({
+    const descriptor = {
       id: attachment.id,
       filename: attachment.filename?.trim() || "attachment",
       contentType: attachment.contentType,
       byteSize: attachment.byteSize,
       contentPath: `/api/attachments/${attachment.id}/content`,
-    });
+    };
+    if (!attachment.issueCommentId) {
+      issueLevelAttachments.push(descriptor);
+      continue;
+    }
+    const descriptors =
+      attachmentsByCommentId.get(attachment.issueCommentId) ?? [];
+    descriptors.push(descriptor);
     attachmentsByCommentId.set(attachment.issueCommentId, descriptors);
   }
   for (const comment of comments) {
@@ -8156,6 +8180,7 @@ export async function buildPaperclipWakePayload(input: {
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
+    issueAttachments: issueLevelAttachments,
     annotationDeltas,
     planReviewContext,
     documentReviewContext,
