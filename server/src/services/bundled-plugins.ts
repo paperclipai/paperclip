@@ -265,6 +265,9 @@ async function reconcileBundledPluginManifest(
   verifiedManifest?: PaperclipPluginManifestV1,
 ): Promise<"upgrade_pending" | undefined> {
   try {
+    // Managed reinstalls take the install path instead; this branch means the
+    // operator's uninstall must be retained, including its status.
+    if (install.distribution && existing.status === "uninstalled") return;
     if (!verifiedManifest && !bundleManifestExists(install.localPath)) return;
     const bundleManifest = verifiedManifest ?? await deps.loader.loadManifest(install.localPath);
     if (!bundleManifest) return;

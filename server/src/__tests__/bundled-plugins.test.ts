@@ -472,6 +472,17 @@ describe("ensureBundledPlugins", () => {
     expect(deps.logger.error).toHaveBeenCalled();
   });
 
+  it("does not replace an operator uninstall with a distribution approval request", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update, updateStatus, installPlugin } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "uninstalled" } } });
+    loadManifest.mockResolvedValue({ ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read"] });
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
   it("swallows a reconcile error and continues boot", async () => {
     const { deps, update } = makeDeps({
       rows: {
