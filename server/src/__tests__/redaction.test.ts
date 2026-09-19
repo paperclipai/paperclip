@@ -7,6 +7,7 @@ import {
   redactAgentAdapterConfig,
   redactEventPayload,
   redactSensitiveText,
+  sanitizeAgentAdapterConfig,
   sanitizeRecord,
 } from "../redaction.js";
 
@@ -708,6 +709,58 @@ second-line\" status=401`,
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it.each([
+    "us.anthropic.claude-opus-4-8",
+    "us.anthropic.claude-opus-4-8-v1",
+    "eu.anthropic.claude-opus-4-7",
+    "apac.anthropic.claude-sonnet-4-6",
+    "global.anthropic.claude-sonnet-4-6",
+    "us.anthropic.claude-fable-5-1",
+    "us.anthropic.claude-sonnet-4-5-20250929-v2:0",
+  ])("preserves the Bedrock model identifier %s in agent configs", (model) => {
+    for (const config of [{ model }, { model, env: {} }]) {
+      expect(redactAgentAdapterConfig(config).model).toBe(model);
+      expect(sanitizeAgentAdapterConfig(config).model).toBe(model);
+      expect(config.model).toBe(model);
+    }
+  });
+
+  it("keeps credential redaction outside the recognized agent model field", () => {
+    const model = "us.anthropic.claude-opus-4-8";
+    expect(redactAgentAdapterConfig({
+      model,
+      apiKey: model,
+      customValue: model,
+      nested: { model },
+      env: { ANTHROPIC_MODEL: model },
+    })).toEqual({
+      model,
+      apiKey: REDACTED_EVENT_VALUE,
+      customValue: REDACTED_EVENT_VALUE,
+      nested: { model: REDACTED_EVENT_VALUE },
+      env: { ANTHROPIC_MODEL: { type: "plain", value: REDACTED_EVENT_VALUE } },
+    });
+    expect(sanitizeRecord({ model }).model).toBe(REDACTED_EVENT_VALUE);
+    expect(redactEventPayload({ model })?.model).toBe(REDACTED_EVENT_VALUE);
+    expect(sanitizeAgentAdapterConfig({ model, apiKey: model, nested: { model } })).toEqual({
+      model,
+      apiKey: REDACTED_EVENT_VALUE,
+      nested: { model: REDACTED_EVENT_VALUE },
+    });
+  });
+
+  it.each([
+    "attacker.supplied.token",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
+    "us.anthropic.secret-token",
+    "us.anthropic.claude-SECRET",
+    "us.anthropic.claude-opus-4-8.extra",
+    `us.anthropic.claude-${"a".repeat(256)}`,
+  ])("does not exempt an unknown credential-shaped model value: %s", (model) => {
+    expect(redactAgentAdapterConfig({ model }).model).toBe(REDACTED_EVENT_VALUE);
+    expect(sanitizeAgentAdapterConfig({ model }).model).toBe(REDACTED_EVENT_VALUE);
   });
 
   it("redacts every plaintext agent env binding while preserving secret references", () => {
