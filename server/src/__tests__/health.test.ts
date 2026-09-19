@@ -35,6 +35,9 @@ function createHealthyDb(): Db {
   } as unknown as Db;
 }
 
+// Large enough to clear the minimum-plausible-size backup check.
+const plausibleBackupContent = "x".repeat(4096);
+
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
@@ -198,7 +201,7 @@ describe("GET /health", () => {
   it("surfaces a stale database backup warning in full health details", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, plausibleBackupContent);
     fs.utimesSync(
       backupFile,
       new Date("2026-07-05T03:17:02.000Z"),
@@ -235,7 +238,7 @@ describe("GET /health", () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
     const alertFile = path.join(backupDir, "db-backup-to-s3.failure");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, plausibleBackupContent);
     fs.writeFileSync(alertFile, "db-backup-to-s3 failed at 2026-07-06T03:17:00.000Z exit=1\n");
     const app = createApp(createHealthyDb(), testServerInfo, {
       enabled: true,
@@ -269,7 +272,7 @@ describe("GET /health", () => {
     fs.mkdirSync(backupDir);
     const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
     const alertFile = path.join(backupRoot, "db-backup-to-s3.failure");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, plausibleBackupContent);
     fs.writeFileSync(alertFile, "db-backup-to-s3 failed beside backups\n");
     const app = createApp(createHealthyDb(), testServerInfo, {
       enabled: true,
@@ -296,10 +299,213 @@ describe("GET /health", () => {
     });
   });
 
+  it("warns when the latest database backup is implausibly small", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-tiny-backup-"));
+    const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(backupFile, Buffer.alloc(20));
+    fs.utimesSync(
+      backupFile,
+      new Date("2026-07-06T03:17:02.000Z"),
+      new Date("2026-07-06T03:17:02.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    // Fresh enough to pass the age check, so only the size check fires.
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      latestBackup: {
+        name: "paperclip-20260706-031702.sql.gz",
+        sizeBytes: 20,
+      },
+      warnings: [
+        {
+          code: "database_backup_too_small",
+        },
+      ],
+    });
+    expect(res.body.databaseBackup.warnings[0].message).toContain("20 bytes");
+  });
+
+  it("warns when the latest backup collapses versus the recent median size", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-median-backup-"));
+    for (let day = 1; day <= 4; day += 1) {
+      const prior = path.join(backupDir, `paperclip-2026070${day}-031702.sql.gz`);
+      fs.writeFileSync(prior, Buffer.alloc(100_000));
+      fs.utimesSync(
+        prior,
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+      );
+    }
+    const latestFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(latestFile, Buffer.alloc(5_000));
+    fs.utimesSync(
+      latestFile,
+      new Date("2026-07-06T03:17:02.000Z"),
+      new Date("2026-07-06T03:17:02.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    // 5 KB clears the absolute floor but is under 10% of the 100 KB median.
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      warnings: [
+        {
+          code: "database_backup_too_small",
+        },
+      ],
+    });
+    expect(res.body.databaseBackup.warnings[0].message).toContain("median");
+  });
+
+  it("keeps database backup status ok when the latest backup shrinks moderately", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-shrunk-backup-"));
+    for (let day = 1; day <= 4; day += 1) {
+      const prior = path.join(backupDir, `paperclip-2026070${day}-031702.sql.gz`);
+      fs.writeFileSync(prior, Buffer.alloc(100_000));
+      fs.utimesSync(
+        prior,
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+      );
+    }
+    const latestFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(latestFile, Buffer.alloc(60_000));
+    fs.utimesSync(
+      latestFile,
+      new Date("2026-07-06T03:17:02.000Z"),
+      new Date("2026-07-06T03:17:02.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "ok",
+      warnings: [],
+    });
+  });
+
+  it("ignores other filename prefixes when judging the latest backup against the median", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-mixed-prefix-"));
+    // A foreign stream of much larger backups sharing the directory — a
+    // directory-wide median would flag the healthy paperclip stream below.
+    for (let day = 1; day <= 4; day += 1) {
+      const other = path.join(backupDir, `other-2026070${day}-120000.sql.gz`);
+      fs.writeFileSync(other, Buffer.alloc(10_000_000));
+      fs.utimesSync(
+        other,
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+      );
+      const prior = path.join(backupDir, `paperclip-2026070${day}-031702.sql.gz`);
+      fs.writeFileSync(prior, Buffer.alloc(100_000));
+      fs.utimesSync(
+        prior,
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+      );
+    }
+    const latestFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(latestFile, Buffer.alloc(60_000));
+    fs.utimesSync(
+      latestFile,
+      new Date("2026-07-06T03:17:02.000Z"),
+      new Date("2026-07-06T03:17:02.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    // 60 KB vs the paperclip-stream median of 100 KB is a moderate shrink,
+    // not a collapse; the 10 MB foreign stream must not change that call.
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "ok",
+      warnings: [],
+    });
+  });
+
+  it("still detects a collapsed backup when tiny foreign-prefix files share the directory", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-mixed-collapse-"));
+    // Tiny foreign files would drag a directory-wide median down far enough
+    // to hide the paperclip stream's collapse.
+    for (let day = 1; day <= 4; day += 1) {
+      const other = path.join(backupDir, `other-2026070${day}-120000.sql.gz`);
+      fs.writeFileSync(other, Buffer.alloc(2_000));
+      fs.utimesSync(
+        other,
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+      );
+      const prior = path.join(backupDir, `paperclip-2026070${day}-031702.sql.gz`);
+      fs.writeFileSync(prior, Buffer.alloc(100_000));
+      fs.utimesSync(
+        prior,
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+      );
+    }
+    const latestFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(latestFile, Buffer.alloc(5_000));
+    fs.utimesSync(
+      latestFile,
+      new Date("2026-07-06T03:17:02.000Z"),
+      new Date("2026-07-06T03:17:02.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    // 5 KB is under 10% of the paperclip-stream median of 100 KB.
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      warnings: [
+        {
+          code: "database_backup_too_small",
+        },
+      ],
+    });
+    expect(res.body.databaseBackup.warnings[0].message).toContain("median");
+  });
+
   it("surfaces redacted database backup warnings for anonymous authenticated probes", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, plausibleBackupContent);
     fs.utimesSync(
       backupFile,
       new Date("2026-07-05T03:17:02.000Z"),
