@@ -129,13 +129,10 @@ const STEP_TIMEOUT_MS = 15_000;
  * captured a moment earlier can be detached by the time it is clicked — a click
  * that raises no error and does nothing.
  *
- * The arrival is waited on by *heading*, not by the next button's label. The arc
- * labels its forward button "Next" on every step it has one, so a story that
- * waited for a button name would be satisfied by the button it just clicked and
- * report arriving somewhere it never left. This is not hypothetical: these
- * stories waited for a button named "Connect" until the label changed, at which
- * point Review sat on the connect step looking like a story written to open
- * there — the exact failure `STEP_TIMEOUT_MS` is commented against.
+ * Wait for the destination's accessible heading, since button labels repeat
+ * across steps and the heading's animated text lives inside a nested span.
+ * A direct text query restricted to h1/h2 misses that span and stops the story
+ * before it can pick a source or reach Review.
  */
 async function advance(to: string) {
   await waitFor(
@@ -143,11 +140,11 @@ async function advance(to: string) {
     { timeout: STEP_TIMEOUT_MS },
   );
   await userEvent.click(screen.getByRole("button", { name: PRIMARY }));
-  await screen.findByText(to, { selector: "h2, h1" }, { timeout: STEP_TIMEOUT_MS });
+  await screen.findByRole("heading", { name: to }, { timeout: STEP_TIMEOUT_MS });
 }
 
-/** The arc's forward button, which reads the same on every step but the last. */
-const PRIMARY = "Next";
+/** Naming advances with Next; the selected model source advances with Connect. */
+const PRIMARY = /^(Next|Connect)$/;
 
 /**
  * Pick a model source, which the connect step needs before it will go forward.
