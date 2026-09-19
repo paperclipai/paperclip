@@ -150,7 +150,14 @@ import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.j
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
-const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+// The named MCP gateway's `tools/call` protocol has no field for a per-call
+// timeout, so every agent call falls back to this default. Self-hosted
+// operators run MCP servers whose legitimate read operations (traceroute,
+// dashboard search, SSH `show` commands) take longer than 10s, and there is no
+// other knob. `PAPERCLIP_TOOL_TIMEOUT_MS` raises the fallback and, when it is
+// set above the interactive ceiling, the ceiling with it.
+const FALLBACK_TOOL_TIMEOUT_MS = 10_000;
+const FALLBACK_TOOL_TIMEOUT_CEILING_MS = 60_000;
 
 export function resolveCredentialGrantKind(
   policy: "shared" | "per_user" | "per_user_with_fallback" | "per_agent",
@@ -642,12 +649,18 @@ function gatewaySessionFromRow(
   };
 }
 
-function timeoutMs(value: number | undefined) {
-  if (!Number.isFinite(value)) return DEFAULT_TOOL_TIMEOUT_MS;
-  return Math.max(
-    1,
-    Math.min(60_000, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)),
+function configuredToolTimeoutMs() {
+  return positiveInt(
+    process.env.PAPERCLIP_TOOL_TIMEOUT_MS,
+    FALLBACK_TOOL_TIMEOUT_MS,
   );
+}
+
+function timeoutMs(value: number | undefined) {
+  const fallback = configuredToolTimeoutMs();
+  if (!Number.isFinite(value)) return fallback;
+  const ceiling = Math.max(FALLBACK_TOOL_TIMEOUT_CEILING_MS, fallback);
+  return Math.max(1, Math.min(ceiling, Math.floor(value ?? fallback)));
 }
 
 function sessionTtlMs(value: number | undefined) {
@@ -5239,7 +5252,7 @@ export function createToolGatewayService(
           env,
           protocolMethod: input.method,
           protocolParams: input.params ?? {},
-          timeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
+          timeoutMs: configuredToolTimeoutMs(),
         }),
     );
   }

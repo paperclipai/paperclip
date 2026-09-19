@@ -4188,6 +4188,60 @@ rl.on("line", (line) => {
     });
   }
 
+  it("honors PAPERCLIP_TOOL_TIMEOUT_MS when the gateway supplies no per-call timeout", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer(() => ({
+      delayMs: 200,
+      body: { jsonrpc: "2.0", id: "slow", result: { content: [{ type: "text", text: "late" }] } },
+    }));
+    const previous = process.env.PAPERCLIP_TOOL_TIMEOUT_MS;
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "configurable-timeout",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+
+      const callWithoutPerCallTimeout = async (value: string) => {
+        const gateway = createTestToolGatewayService(db);
+        const session = await gateway.createSession({
+          companyId: company.id,
+          agentId: agent.id,
+          runId: run.id,
+        });
+        const connectedTool = (await gateway.listToolsForSession(session.token))
+          .find((tool) => tool.providerType === "mcp_remote_http");
+        expect(connectedTool).toBeTruthy();
+        return gateway.executeTool({
+          sessionToken: session.token,
+          tool: connectedTool!.name,
+          parameters: { key: "alpha", value },
+        });
+      };
+
+      // Default fallback (10s) leaves the 200ms call room to finish.
+      delete process.env.PAPERCLIP_TOOL_TIMEOUT_MS;
+      const allowed = await callWithoutPerCallTimeout("one");
+      expect(allowed).toMatchObject({ status: "completed" });
+
+      // A lowered fallback aborts the same call, so the variable is read.
+      process.env.PAPERCLIP_TOOL_TIMEOUT_MS = "20";
+      await callWithoutPerCallTimeout("two").then(
+        () => {
+          throw new Error("Expected the configured tool timeout to abort the call");
+        },
+        (error) => expectGatewayError(error, 504, "tool_timeout"),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_TOOL_TIMEOUT_MS;
+      else process.env.PAPERCLIP_TOOL_TIMEOUT_MS = previous;
+      await fake.close();
+    }
+  });
+
   it("persists hashed sessions and accepts them across gateway service instances", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
