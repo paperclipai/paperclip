@@ -17611,7 +17611,7 @@ export function heartbeatService(
       claimedWakeReason !== "source_scoped_recovery_action"
     ) {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
+      const lockRow = await db
         .update(issues)
         .set({
           executionRunId: claimed.id,
@@ -17637,7 +17637,25 @@ export function heartbeatService(
               eq(issues.executionRunId, claimed.id),
             ),
           ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      // The WHERE clause above is the compare-and-set: it only writes when no
+      // other run currently owns the lock. If a concurrent claim already won
+      // it (or the assignee changed), this run's write matches zero rows.
+      // Do NOT let it fall through and execute anyway — that duplicates the
+      // winning run's work with the lock fields never reflecting the loser
+      // (see SPC-41548: two runs of the same agent both continued past this
+      // point on the same issue after the second claim silently no-opped).
+      if (!lockRow) {
+        await cancelRunInternal(
+          claimed.id,
+          "Cancelled: another run already holds this issue's execution lock",
+          { errorCode: "issue_execution_lock_lost" },
         );
+        return null;
+      }
     }
 
     return claimed;
