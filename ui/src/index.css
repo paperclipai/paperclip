@@ -1,3 +1,4 @@
+@import "./motion-tokens.css";
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
@@ -245,14 +246,11 @@
      hardcoded ms / cubic-bezier in components (enforced by a check script).
      ──────────────────────────────────────────────────────────────────────── */
 
-  /* Easing primitives (tunable). --motion-ease-out itself is declared by the
-     decision/quicklook motion block further down; the thread shares it. */
-  --motion-ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);  /* house signature curve */
-  --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);   /* house material curve */
+  /* Shared easing and instant/fast duration primitives are in the imported
+     motion-tokens.css so JavaScript motion uses the same defaults.
+     --motion-ease-out is declared by the decision/quicklook block below. */
 
   /* Duration primitives (tunable) */
-  --motion-duration-instant: 80ms;
-  --motion-duration-fast: 160ms;
   --motion-duration-base: 240ms;
   --motion-duration-slow: 360ms;
   --motion-duration-deliberate: 520ms;

@@ -1,0 +1,29 @@
+/* Imported by index.css. Numeric Motion parameters and choreography timings
+   live here so CSS remains the source of truth for onboarding motion. */
+:root {
+  --motion-ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-duration-instant: 80ms;
+  --motion-duration-fast: 160ms;
+  --motion-onboarding-step: 280ms;
+  --motion-onboarding-capsule: 1000ms;
+  --motion-onboarding-preview: 450ms;
+  --motion-onboarding-hero-fade: 550ms;
+  --motion-onboarding-tag-enter: 340ms;
+  --motion-onboarding-tag-exit: 260ms;
+  --motion-onboarding-label-exit: 120ms;
+  --motion-onboarding-label-enter: 220ms;
+  --motion-onboarding-source-collapse: 420ms;
+  --motion-onboarding-card-enter: 300ms;
+  --motion-onboarding-card-exit: 180ms;
+  --motion-onboarding-connected-hold: 2000ms;
+  --motion-onboarding-copied-gap: 120ms;
+  --motion-onboarding-step-travel: 8;
+  --motion-onboarding-tag-travel: 7;
+  --motion-onboarding-canvas-travel: 10;
+  --motion-onboarding-reveal-travel: 6;
+  --motion-onboarding-capsule-scale: 0.5;
+  --motion-onboarding-capsule-bounce: 0.4;
+  --motion-onboarding-hero-stiffness: 150;
+  --motion-onboarding-hero-damping: 16;
+}

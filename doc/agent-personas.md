@@ -86,6 +86,11 @@ hashes and pixel dimensions; deployment verification fetches every image and che
 its content type, PNG signature, dimensions, and hash. Dev Storybook still uses the
 API proxy for cold-cache and regeneration testing.
 
+The onboarding motion values live in `ui/src/motion-tokens.css`, imported by
+`ui/src/index.css`. The JavaScript choreography reads these CSS tokens and uses
+the same stylesheet for defaults before styles load. Reduced motion removes
+transition durations; the connection status hold remains readable.
+
 Focused checks:
 
 ```sh
