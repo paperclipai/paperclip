@@ -1297,6 +1297,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
   }) {
+    // Platform faults (host restart, graceful shutdown, reaped orphan) take the
+    // environmental wait-and-redispatch path instead of an assignee-directed
+    // one. The action is system-owned, nobody is woken to take over, and the
+    // re-dispatch arrives as a scheduled retry of the original assignee.
+    const infraTerminated = input.cause === "infra_terminated";
     const action = await waitForValue(async () =>
       db
         .select()
@@ -1320,7 +1325,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       recoveryIssueId: null,
       kind: input.kind ?? "stranded_assigned_issue",
       status: "active",
-      ownerType: "board",
+      ownerType: infraTerminated ? "system" : "board",
       ownerAgentId: null,
       previousOwnerAgentId: input.previousOwnerAgentId ?? input.agentId,
       returnOwnerAgentId: input.returnOwnerAgentId ?? input.agentId,
@@ -1333,14 +1338,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: input.previousStatus,
       latestRunId: input.runId,
       retryReason: input.retryReason ?? null,
-      routingPolicy: "board_escalation_no_takeover_v1",
+      // Infra terminations do not escalate to the board, so they carry no
+      // board-escalation routing policy.
+      ...(infraTerminated
+        ? {}
+        : { routingPolicy: "board_escalation_no_takeover_v1" }),
     });
-    if (input.cause === "execution_review_participant_recovery") {
-      expect(action.nextAction).toContain("failed review participant path");
-    } else if (input.cause === "process_lost") {
+    if (infraTerminated) {
       expect(action.nextAction).toContain(
-        "explicitly retry the original owner",
+        "Wait for the scheduled re-dispatch of the original assignee",
       );
+      expect(action.nextAction).toContain("not by an agent fault");
+    } else if (input.cause === "execution_review_participant_recovery") {
+      expect(action.nextAction).toContain("failed review participant path");
     } else {
       expect(action.nextAction).toContain(
         input.kind === "missing_disposition"
@@ -1361,13 +1371,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     expect(recoveryIssues).toHaveLength(0);
 
-    const recoveryWakeups = await db
-      .select()
-      .from(agentWakeupRequests)
-      .where(
-        sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${action.id}`,
+    if (infraTerminated) {
+      // The only scheduled work is the re-dispatch of the original assignee, on
+      // the short infra backoff. No takeover owner is woken.
+      const redispatch = await waitForValue(async () =>
+        db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.reason, "infra_termination_recovery"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null),
       );
-    expect(recoveryWakeups).toHaveLength(0);
+      expect(redispatch).toMatchObject({
+        agentId: input.agentId,
+        status: "queued",
+        requestedByActorType: "system",
+        payload: expect.objectContaining({
+          issueId: input.issueId,
+          retryOfRunId: input.runId,
+          retryReason: "infra_termination_recovery",
+        }),
+      });
+
+      const scheduled = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.status, "scheduled_retry"),
+          ),
+        );
+      expect(scheduled).toHaveLength(1);
+      expect(scheduled[0]).toMatchObject({
+        agentId: input.agentId,
+        scheduledRetryReason: "infra_termination_recovery",
+        retryOfRunId: input.runId,
+      });
+    } else {
+      const recoveryWakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          sql`${agentWakeupRequests.payload} ->> 'recoveryActionId' = ${action.id}`,
+        );
+      expect(recoveryWakeups).toHaveLength(0);
+    }
     await waitForHeartbeatIdle(db);
     const sourceIssue = await db
       .select()
@@ -10014,7 +10067,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "todo",
         runStatus: "failed",
         retryReason: "assignment_recovery",
-        runErrorCode: "process_lost",
+        // An agent-side failure on purpose: this case is about the dispatch
+        // retry cap, and the cap escalates to the board. Infra kills take the
+        // wait-and-redispatch path instead, covered separately.
+        runErrorCode: "adapter_exit_code",
         runError: "Authorization: Bearer sk-test-recovery-secret",
       });
     const longRecoveryOwnerName = "R".repeat(161);
@@ -10043,7 +10099,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "todo",
       retryReason: "assignment_recovery",
-      cause: "process_lost",
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain(
       "sk-test-recovery-secret",
@@ -10600,6 +10655,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "in_progress",
         runStatus: "failed",
         retryReason: "issue_continuation_needed",
+        // An agent-side failure on purpose: this case is about the continuation
+        // retry cap, and the cap escalates to the board. Infra kills take the
+        // wait-and-redispatch path instead, covered separately.
+        runErrorCode: "adapter_exit_code",
       });
     const heartbeat = heartbeatService(db);
 
@@ -10622,7 +10681,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
-      cause: "process_lost",
     });
 
     const comments = await db
@@ -10650,6 +10708,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ),
     ).toBe(true);
   });
+
+  // A run the platform killed carries no signal about the agent that was
+  // running it: the process is destroyed before the agent can record progress.
+  // Such a run must not produce an assignee-directed recovery action; it takes
+  // the same environmental wait-and-redispatch treatment `provider_quota`
+  // already gets.
+  it.each(["process_lost", "server_shutdown_interrupted", "orphaned_running_run"])(
+    "waits and re-dispatches instead of blaming the assignee after a %s run",
+    async (errorCode) => {
+      const { companyId, agentId, issueId, runId } =
+        await seedStrandedIssueFixture({
+          status: "in_progress",
+          runStatus: "failed",
+          retryReason: "issue_continuation_needed",
+          runErrorCode: errorCode,
+        });
+
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+      // The helper asserts the whole environmental-wait shape for this cause:
+      // a system-owned action with no board-escalation routing policy, and a
+      // scheduled retry of the original assignee rather than a takeover wake.
+      const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+        companyId,
+        agentId,
+        issueId,
+        runId,
+        previousStatus: "in_progress",
+        retryReason: "issue_continuation_needed",
+        cause: "infra_terminated",
+      });
+      expect(recoveryAction.ownerAgentId).toBeNull();
+      expect(recoveryAction.returnOwnerAgentId).toBe(agentId);
+      expect(recoveryAction.wakePolicy).toMatchObject({
+        type: "monitor_only",
+        reason: "infra_terminated",
+      });
+      expect(recoveryAction.monitorPolicy).toMatchObject({
+        type: "wait_recovery",
+        retryAgentId: agentId,
+      });
+    },
+  );
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } =
