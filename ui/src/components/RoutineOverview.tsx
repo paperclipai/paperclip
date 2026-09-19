@@ -14,9 +14,7 @@ import { Button } from "@/components/ui/button";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { Link } from "@/lib/router";
 import {
-  routineActivityAuditHref,
   routineDetailHref,
-  routineRunsAuditHref,
 } from "./RoutineContextualSidebar";
 import { useRoutineDetail } from "./routine-sections/context";
 
@@ -218,7 +216,7 @@ export function RoutineOverview() {
         <div className="flex items-center justify-between gap-3">
           <h2 id="routine-recent-runs-heading" className="text-sm font-semibold">Recent runs</h2>
           <Button variant="ghost" size="sm" asChild>
-            <Link to={routineRunsAuditHref(routine.id)}>View all runs</Link>
+            <Link to={routineDetailHref(routine.id, "runs")}>View all runs</Link>
           </Button>
         </div>
         {recentRuns.length === 0 ? (
@@ -250,7 +248,7 @@ export function RoutineOverview() {
           </div>
         )}
         <Button variant="link" size="sm" className="w-fit px-0" asChild>
-          <Link to={routineActivityAuditHref(routine.id)}>View routine activity</Link>
+          <Link to={routineDetailHref(routine.id, "activity")}>View routine activity</Link>
         </Button>
       </section>
     </div>

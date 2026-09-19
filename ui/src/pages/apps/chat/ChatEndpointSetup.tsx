@@ -1,3 +1,4 @@
+import { SetupWizardFooter } from "@/components/SetupWizard";
 import { ChatSetupNavigation } from "@/components/chat/ChatSetupNavigation";
 import { SlackIdentityStep } from "./SlackIdentityStep";
 import { PhotonConnectStep } from "./PhotonConnectStep";
@@ -476,10 +477,7 @@ function ChatSdkEndpointSetup() {
               placeholder="Choose an active agent"
               emptyMessage="No active agents are available."
             />}
-            <div className="flex items-center justify-between gap-3">
-              <Button variant="ghost" className="text-muted-foreground" onClick={() => navigate("/apps")}>
-                Save &amp; exit
-              </Button>
+            <SetupWizardFooter onSaveExit={() => navigate("/apps")}>
               <Button
                 disabled={!agentId || createEndpoint.isPending}
                 onClick={() => endpoint ? setViewedStep(1) : createEndpoint.mutate()}
@@ -489,7 +487,7 @@ function ChatSdkEndpointSetup() {
                 )}
                 Continue
               </Button>
-            </div>
+            </SetupWizardFooter>
           </>
         ) : null}
         {endpoint && (

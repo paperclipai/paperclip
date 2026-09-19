@@ -201,9 +201,9 @@ describe("RoutineOverview", () => {
     expect(container.textContent).not.toContain("PRIVATE_TOKEN");
     expect(container.textContent).not.toContain("secret-1");
     expect(issueRowRender).toHaveBeenCalledWith(expect.objectContaining({ presentation: "task" }));
-    expect(container.querySelector('a[href="/activity/runs?entityType=routine&entityId=routine-1"]'))
+    expect(container.querySelector('a[href="/routines/routine-1/runs"]'))
       .not.toBeNull();
-    expect(container.querySelector('a[href="/activity?entityType=routine&entityId=routine-1"]'))
+    expect(container.querySelector('a[href="/routines/routine-1/activity"]'))
       .not.toBeNull();
   });
 });
