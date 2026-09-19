@@ -4592,6 +4592,89 @@ function cancellationDb(options?: {
 }
 
 describe("native startup restart detachment", () => {
+  it("waits for in-flight runner startup and its detach acknowledgement before shutdown returns", async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-startup-detach-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    const restarting = structuredClone(execution);
+    restarting.binding.runId = "restart-inflight-bootstrap";
+    restarting.session.normalizedSessionId = "restart-inflight-session";
+    let open!: () => void, started!: () => void, acknowledge!: () => void;
+    const opening = new Promise<void>(resolve => { open = resolve; });
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    const acknowledgement = new Promise<void>(resolve => { acknowledge = resolve; });
+    const detached = vi.fn();
+    const detach = vi.fn(async () => { await acknowledgement; });
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      started();
+      await opening;
+      await options.onSession({ detachControllerForRestart: detach });
+      await options.onSession(null);
+      throw new Error("detachment closed the old event stream");
+    });
+    const running = executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting, runnerInstanceId: "runner", useRunnerd: true });
+    const outcome = running.catch(error => error);
+    let detaching: Promise<unknown> | undefined;
+    try {
+      await admitted;
+      detaching = detachNativeSessionsForRestart([restarting.binding.runId]).then(detached);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(detached).not.toHaveBeenCalled();
+      open();
+      await vi.waitFor(() => expect(detach).toHaveBeenCalledOnce());
+      expect(detached).not.toHaveBeenCalled();
+      acknowledge();
+      await detaching;
+      expect(detached).toHaveBeenCalledWith(expect.objectContaining({ detachedRunIds: [restarting.binding.runId] }));
+      expect(await outcome).toBeInstanceOf(NativeControllerDetachedForRestartError);
+    } finally {
+      open(); acknowledge();
+      await outcome;
+      await detaching;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("settles failed startup without claiming detachment (deadline exceeded: %s)", async (exceedDeadline) => {
+    const root = await mkdtemp(join(tmpdir(), "native-startup-failure-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    const restarting = structuredClone(execution);
+    restarting.binding.runId = `restart-failed-bootstrap-${exceedDeadline}`;
+    restarting.session.normalizedSessionId = `restart-failed-session-${exceedDeadline}`;
+    let release!: () => void, started!: () => void;
+    const opening = new Promise<void>(resolve => { release = resolve; });
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      started();
+      await opening;
+      throw new Error("bootstrap failed before session publication");
+    });
+    const outcome = executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting, runnerInstanceId: "runner", useRunnerd: true }).catch(error => error);
+    try {
+      await admitted;
+      if (exceedDeadline) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const detached = detachNativeSessionsForRestart([restarting.binding.runId]).catch(error => error);
+      if (exceedDeadline) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(await detached).toMatchObject({ message: "native_restart_startup_not_ready" });
+        vi.useRealTimers();
+      } else {
+        release();
+        expect(await detached).toMatchObject({ detachedRunIds: [], inactiveRunIds: [restarting.binding.runId] });
+      }
+    } finally {
+      vi.useRealTimers();
+      release();
+      await outcome;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("remembers shutdown while the session is still opening and detaches its late publication", async () => {
     const restarting = structuredClone(execution);
     restarting.binding.runId = "restart-during-session-open";

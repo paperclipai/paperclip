@@ -173,6 +173,7 @@ import {
 type ActiveNativeSession = {
   session: NativeSession;
   cancelRequested: boolean;
+  restartDetach?: Promise<void>;
 };
 
 class NativeResultPendingFinalizationError extends Error {
@@ -202,6 +203,36 @@ const activeNativeSessions = new Map<string, ActiveNativeSession>();
 // the late publication detaches before it can dispatch another turn.
 const nativeRunsDetachingForRestart = new Set<string>();
 
+// A restart must not cut authority rotation between archiving the previous
+// runner state and authenticating its replacement. Keep the startup owner
+// alive until onSession can detach it, or until startup itself has settled.
+type NativeSessionStartup = {
+  promise: Promise<ActiveNativeSession | null>;
+  resolve: (session: ActiveNativeSession | null) => void;
+};
+const nativeSessionStartups = new Map<string, NativeSessionStartup>();
+
+function detachActiveNativeSessionForRestart(active: ActiveNativeSession) {
+  active.restartDetach ??= Promise.resolve().then(() => active.session.detachControllerForRestart!());
+  return active.restartDetach;
+}
+
+async function waitForNativeStartupForRestart(runId: string) {
+  const startup = nativeSessionStartups.get(runId);
+  if (!startup) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      startup.promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("native_restart_startup_not_ready")), 30_000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function detachNativeSessionsForRestart(
   runIds: readonly string[],
 ): Promise<{
@@ -214,7 +245,7 @@ export async function detachNativeSessionsForRestart(
   const unsupportedRunIds: string[] = [];
   for (const runId of new Set(runIds)) {
     nativeRunsDetachingForRestart.add(runId);
-    const active = activeNativeSessions.get(runId);
+    const active = activeNativeSessions.get(runId) ?? await waitForNativeStartupForRestart(runId);
     if (!active) {
       inactiveRunIds.push(runId);
       continue;
@@ -223,7 +254,7 @@ export async function detachNativeSessionsForRestart(
       unsupportedRunIds.push(runId);
       continue;
     }
-    await active.session.detachControllerForRestart();
+    await detachActiveNativeSessionForRestart(active);
     detachedRunIds.push(runId);
   }
   return { detachedRunIds, inactiveRunIds, unsupportedRunIds };
@@ -6934,6 +6965,7 @@ export async function executePaperclipNativeSession(input: {
   let sessionScopeId: string | null = null;
   let ownsSessionScope = false;
   let executionFailure: unknown;
+  let startup: NativeSessionStartup | undefined;
   try {
     // The session scope is unaffected by appending server-staged attachment
     // descriptors. Claim it before any workspace scrub/write so a duplicate
@@ -6947,6 +6979,10 @@ export async function executePaperclipNativeSession(input: {
       input.execution.binding.runId,
     );
     ownsSessionScope = true;
+    let resolveStartup!: (session: ActiveNativeSession | null) => void;
+    const startupPromise = new Promise<ActiveNativeSession | null>(resolve => { resolveStartup = resolve; });
+    startup = { promise: startupPromise, resolve: resolveStartup };
+    nativeSessionStartups.set(input.execution.binding.runId, startup);
 
     // The shutdown sweep can have removed an idle owner while its remote
     // checkpoint is still being saved. The scope reservation also prevents
@@ -7002,6 +7038,10 @@ export async function executePaperclipNativeSession(input: {
     executionFailure = error;
     throw error;
   } finally {
+    startup?.resolve(null);
+    if (startup && nativeSessionStartups.get(input.execution.binding.runId) === startup) {
+      nativeSessionStartups.delete(input.execution.binding.runId);
+    }
     if (
       ownsSessionScope &&
       sessionScopeId !== null &&
@@ -8109,14 +8149,13 @@ async function executePaperclipNativeSessionWithinScope(
                 }
               }
               if (session) {
-                activeNativeSessions.set(input.execution.binding.runId, {
-                  session,
-                  cancelRequested: false,
-                });
+                const active: ActiveNativeSession = { session, cancelRequested: false };
+                activeNativeSessions.set(input.execution.binding.runId, active);
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
                 if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
-                  await session.detachControllerForRestart?.();
+                  if (session.detachControllerForRestart) await detachActiveNativeSessionForRestart(active);
                 }
+                nativeSessionStartups.get(input.execution.binding.runId)?.resolve(active);
               } else {
                 liveQuestions.close();
                 activeNativeSessions.delete(input.execution.binding.runId);

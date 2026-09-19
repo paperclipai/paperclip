@@ -1093,6 +1093,10 @@ that classification finishes.
   runner must authenticate to its existing PRP authority; reconnection neither
   launches another provider nor consumes a provider retry. A replacement
   sandbox or mismatched identity blocks adoption without overwriting evidence.
+- Shutdown waits up to 30 seconds for an in-progress native startup to reach
+  its detach acknowledgement. It reports a startup deadline failure instead
+  of claiming that an unfinished bootstrap detached safely. A queued turn
+  waits for the previous executor to finish releasing its task resources.
 - A verified dead runner starts a replacement from the same durable root and
   resumes the same provider checkpoint. Only the operating-system PID changes.
 - A runner that died before its first authenticated connection can restart on
