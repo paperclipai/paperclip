@@ -17132,6 +17132,23 @@ export function heartbeatService(
     }
 
     const issueId = readNonEmptyString(context.issueId);
+    if (issueId && activeRunExecutions.size > 0) {
+      // Native finalization publishes success before workspace synchronization,
+      // provider suspension, and lease release finish. A queued comment must
+      // not acquire a fresh sandbox while its predecessor still owns that work.
+      // The executor's finally block retries this agent after removing its owner.
+      const [settlingOwner] = await db.select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
+          eq(heartbeatRuns.runtimeMode, "native"),
+          inArray(heartbeatRuns.id, [...activeRunExecutions]),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        ))
+        .limit(1);
+      if (settlingOwner) return null;
+    }
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         run.companyId,

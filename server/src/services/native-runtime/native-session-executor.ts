@@ -9515,7 +9515,9 @@ async function readRemoteRunnerState(input: {
     timeoutMs: 10_000,
   });
   if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_state_unavailable");
+    throw new Error(
+      `runner_remote_state_unavailable: exit=${result.exitCode} timedOut=${result.timedOut}${result.stderr.trim() ? ` ${redactSensitiveText(result.stderr).trim().slice(-512)}` : ""}`,
+    );
   }
   return record(
     JSON.parse(
@@ -10884,13 +10886,13 @@ async function createRunnerdBackendWithinSessionClaim(
         ),
       );
     } catch {
-      throw new Error("runner_harness_state_mismatch");
+      throw new Error("runner_harness_state_mismatch: runner_state_invalid_json");
     }
     if (
       runnerState.runnerInstanceId !== input.runnerInstanceId ||
       runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
     ) {
-      throw new Error("runner_harness_state_mismatch");
+      throw new Error("runner_harness_state_mismatch: runner_identity");
     }
     if (runnerState.lifecycle !== "suspended") {
       return {
@@ -10908,7 +10910,7 @@ async function createRunnerdBackendWithinSessionClaim(
         execution: input.execution,
       });
     } catch {
-      throw new Error("runner_harness_state_mismatch");
+      throw new Error("runner_harness_state_mismatch: provider_state_unreadable");
     }
     const providerSessionIdentity =
       providerSessionIdentityFromDurableProviderState({
@@ -10916,7 +10918,7 @@ async function createRunnerdBackendWithinSessionClaim(
         providerState,
       });
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
-      throw new Error("runner_harness_state_mismatch");
+      throw new Error("runner_harness_state_mismatch: provider_identity_incomplete");
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
       root,
@@ -10931,7 +10933,7 @@ async function createRunnerdBackendWithinSessionClaim(
         current: providerSessionIdentity,
       })
     ) {
-      throw new Error("runner_harness_state_mismatch");
+      throw new Error("runner_harness_state_mismatch: provider_identity_changed");
     }
     return {
       complete: true,
@@ -11221,7 +11223,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     ) {
                       if (state.incompleteReason !== "unavailable" || backupAvailable ||
                           !(await claimUntouchedSessionInResumedLease())) {
-                        throw new Error("runner_harness_state_mismatch");
+                        throw new Error(`runner_harness_state_mismatch: resumed_${state.incompleteReason}`);
                       }
                     } else {
                       await recordInPlaceHarnessReuse(
