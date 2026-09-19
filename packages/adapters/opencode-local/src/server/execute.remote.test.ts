@@ -153,6 +153,7 @@ describe("opencode remote execution", () => {
       config: {
         command: "opencode",
         model: "opencode/gpt-5-nano",
+        extraArgs: ["--", "--dir"],
         ...(managed ? {
           managedAiConnection: { provider: "openrouter", method: "api_key" },
         } : {}),
@@ -236,6 +237,7 @@ describe("opencode remote execution", () => {
       `${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`,
     );
     expect(modelProbeCall?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
+    expect(runCall?.[2].slice(-4)).toEqual(["--dir", managedRemoteWorkspace, "--", "--dir"]);
     const call = runCall as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
@@ -335,7 +337,7 @@ describe("opencode remote execution", () => {
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
   });
 
-  it("resumes saved OpenCode sessions for remote SSH execution only when the identity matches", async () => {
+  it("resumes matching remote sessions and preserves an explicit run directory", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-resume-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -370,6 +372,7 @@ describe("opencode remote execution", () => {
       config: {
         command: "opencode",
         model: "opencode/gpt-5-nano",
+        extraArgs: ["--dir", "/operator-supplied"],
       },
       context: {
         paperclipWorkspace: {
@@ -397,5 +400,7 @@ describe("opencode remote execution", () => {
       | undefined;
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("session-123");
+    expect(call?.[2].slice(-2)).toEqual(["--dir", "/operator-supplied"]);
+    expect(call?.[2].filter((arg) => arg === "--dir" || arg.startsWith("--dir="))).toHaveLength(1);
   });
 });
