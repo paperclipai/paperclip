@@ -548,6 +548,11 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       skipped: 0,
       watchdogIssueIds: [],
     }),
+    previewWatchdogStopState: async () => ({
+      state: "not_applicable",
+      reason: "Task watchdog service unavailable in this route context.",
+      includedIssueIds: [],
+    }),
     revalidateMutationScope: async () => ({
       allowed: true,
       classification: {

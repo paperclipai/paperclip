@@ -529,6 +529,7 @@ import {
 } from "./recovery/review-path-recovery.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
+import { hasArmedInvokableIssueWatchdog } from "./task-watchdog-delivery.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -13285,6 +13286,7 @@ export function heartbeatService(
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      armedWatchdog,
     ] = await Promise.all([
       issue
         ? db
@@ -13430,6 +13432,9 @@ export function heartbeatService(
             .limit(1)
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? hasArmedInvokableIssueWatchdog(db, issue)
+        : Promise.resolve(false),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -13447,6 +13452,7 @@ export function heartbeatService(
         pendingInteraction || pendingApproval,
       ),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
+      hasArmedWatchdog: armedWatchdog,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),

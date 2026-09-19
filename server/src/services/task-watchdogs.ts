@@ -1266,20 +1266,23 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return Boolean(interaction || approval);
   }
 
-  async function markTerminalWatchdogIssueReviewed(watchdog: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    if (!watchdog.watchdogIssueId || !watchdog.lastObservedFingerprint) return watchdog;
+  // Reads, without writing, the reviewed fingerprint that a finished watchdog
+  // review issue implies. Returns null when the persisted row is already
+  // current or the watchdog issue has not reached a review disposition.
+  async function pendingReviewedFingerprintUpdate(watchdog: IssueWatchdogRow) {
+    if (!watchdog.watchdogIssueId || !watchdog.lastObservedFingerprint) return null;
     const watchdogIssue = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
       .then((rows) => rows[0] ?? null);
-    if (!watchdogIssue) return watchdog;
+    if (!watchdogIssue) return null;
     const hasPendingReviewPath = watchdogIssue.status === "in_review"
       ? await watchdogIssueHasPendingReviewPath(watchdog.companyId, watchdogIssue.id)
       : false;
-    if (!isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath)) return watchdog;
+    if (!isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath)) return null;
     const reviewedFingerprint = reviewedFingerprintForWatchdogIssue(watchdogIssue);
-    if (!reviewedFingerprint) return watchdog;
+    if (!reviewedFingerprint) return null;
     const observedSnapshot = parseStopSnapshot(watchdog.lastObservedStopSnapshot);
     const reviewedStopSnapshot = observedSnapshot?.fingerprint === reviewedFingerprint
       ? observedSnapshot
@@ -1287,7 +1290,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     if (
       watchdog.lastReviewedFingerprint === reviewedFingerprint &&
       canonicalJson(parseStopSnapshot(watchdog.lastReviewedStopSnapshot)) === canonicalJson(reviewedStopSnapshot)
-    ) return watchdog;
+    ) return null;
+    return { watchdogIssue, reviewedFingerprint, reviewedStopSnapshot };
+  }
+
+  async function markTerminalWatchdogIssueReviewed(watchdog: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
+    const pending = await pendingReviewedFingerprintUpdate(watchdog);
+    if (!pending) return watchdog;
+    const { watchdogIssue, reviewedFingerprint, reviewedStopSnapshot } = pending;
     const [updated] = await db
       .update(issueWatchdogs)
       .set({
@@ -1435,14 +1445,41 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return created;
   }
 
-  async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
+  async function loadApplicableWatchedIssue(watchdog: IssueWatchdogRow) {
     const sourceIssue = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.issueId), visibleIssueCondition()))
       .then((rows) => rows[0] ?? null);
-    if (!sourceIssue || sourceIssue.originKind === TASK_WATCHDOG_ORIGIN_KIND) {
+    if (!sourceIssue || sourceIssue.originKind === TASK_WATCHDOG_ORIGIN_KIND) return null;
+    return sourceIssue;
+  }
+
+  /**
+   * Classifies the watched subtree the same way the next evaluation will,
+   * but writes nothing. A finished review of the current stop state is
+   * applied in memory first, so an `already_reviewed` result here means the
+   * watchdog will not fire again for this stop state.
+   */
+  async function previewWatchdogStopState(row: IssueWatchdogRow): Promise<TaskWatchdogClassifierResult> {
+    const pending = await pendingReviewedFingerprintUpdate(row);
+    const watchdog: IssueWatchdogRow = pending
+      ? {
+        ...row,
+        lastReviewedFingerprint: pending.reviewedFingerprint,
+        lastReviewedStopSnapshot: pending.reviewedStopSnapshot,
+      }
+      : row;
+    if (!(await loadApplicableWatchedIssue(watchdog))) {
+      return { state: "not_applicable", reason: "Watched issue is not applicable.", includedIssueIds: [] };
+    }
+    return classifyTaskWatchdogSubtree(await collectClassifierInput(watchdog.companyId, watchdog));
+  }
+
+  async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
+    const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
+    const sourceIssue = await loadApplicableWatchedIssue(watchdog);
+    if (!sourceIssue) {
       return { state: "skipped" as const, reason: "watched_issue_not_applicable" };
     }
 
@@ -1811,5 +1848,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     },
 
     revalidateMutationScope,
+
+    previewWatchdogStopState,
   };
 }

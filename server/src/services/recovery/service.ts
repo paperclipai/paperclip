@@ -104,6 +104,7 @@ import {
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { hasArmedInvokableIssueWatchdog } from "../task-watchdog-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -1383,6 +1384,11 @@ export function recoveryService(
         .then((rows) => rows[0] ?? null);
       if (activeConversation) return true;
     }
+
+    // An armed watchdog owns the next wake for an idle issue. It only counts
+    // when its agent can actually run it, so a dead watchdog never suppresses
+    // stranded-issue recovery.
+    if (await hasArmedInvokableIssueWatchdog(db, issue)) return true;
 
     return db
       .select({ id: issueRelations.issueId })
