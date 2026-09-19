@@ -109,6 +109,17 @@ const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) 
               resolve([{ count: mockCrossIssueInfluence.priorCount }]),
           };
         }
+        // The guard also reads the checkout anchors on `issues` when the run's
+        // snapshot cannot decide the write. These route tests always give the
+        // run a snapshot issue, so the harness reports no checkout rows.
+        if (Object.keys(selection).includes("checkoutRunId")) {
+          return { then: (resolve: (rows: unknown[]) => unknown) => resolve([]) };
+        }
+        if (Object.keys(selection).length === 1 && Object.keys(selection).includes("id")) {
+          return {
+            limit: () => ({ then: (resolve: (rows: unknown[]) => unknown) => resolve([]) }),
+          };
+        }
         const run = mockRunAttribution.value;
         return {
           for: () => ({

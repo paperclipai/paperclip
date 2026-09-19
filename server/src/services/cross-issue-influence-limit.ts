@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -109,13 +109,45 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    let sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
+    }
+
+    // A timer heartbeat carries no issue in its context snapshot, so the snapshot
+    // alone cannot say whether a write is same-issue. The checkout the run already
+    // holds answers that question, so read it before the write is refused.
+    if (isUuidLike(input.targetIssueId)) {
+      const targetAnchor = await tx
+        .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      // The run owns the target issue. This is a same-issue write, not influence.
+      if (
+        targetAnchor &&
+        (targetAnchor.checkoutRunId === input.runId || targetAnchor.executionRunId === input.runId)
+      ) {
+        return null;
+      }
+    }
+
+    if (!sourceIssueId) {
+      // The run has no snapshot issue. Anchor the counter on the issue the run
+      // checked out, so a genuine cross-issue write is counted against the cap.
+      // A run with no snapshot issue and no checkout is still refused.
+      const checkedOut = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.checkoutRunId, input.runId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!checkedOut) throw crossIssueInfluenceRunContextError();
+      sourceIssueId = checkedOut.id;
     }
 
     const priorCount = await tx
