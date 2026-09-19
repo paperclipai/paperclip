@@ -520,26 +520,42 @@ Before proposing a credential you MUST read the "Agent secret proposals" section
 
 ## Reading Granted Secrets
 
-When authenticated with the current run's agent JWT, list the secrets available to that run before fetching a value:
+When authenticated with the current run's agent JWT, list the secrets available to that run. **The
+list is the delivery check.** A key present here with a `resolvedVersion` is confirmation that its
+binding resolved for this run — the list is metadata-only, returns no values, and writes no
+`secret_access_events` row. Do not fetch a value to answer *did my binding land?*; this answers it.
 
 ```bash
 PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
 PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
 curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/agents/me/secrets"
+  "$PAPERCLIP_API_BASE/api/agents/me/secrets" \
+  | jq -r '.secrets[] | "\(.key) delivery=\(.delivery) resolved=v\(.resolvedVersion) latest=v\(.latestVersion)"'
 ```
 
-The list is metadata-only. Fetch a specific value only when needed; the request has no body:
+For an `env` binding, confirm it reached this process without printing it: `[ -n "$GITHUB_TOKEN" ] && echo set`.
+
+Fetch a value **only when you need the value itself in order to use it**, never to confirm delivery.
+The request has no body. Capture the response into a variable; never echo it. Print field names and a
+fingerprint instead:
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/agents/me/secrets/github_token/value"
+BODY="$(curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_BASE/api/agents/me/secrets/github_token/value")"
+printf 'keys=%s\n' "$(printf %s "$BODY" | jq -r 'keys|join(",")')"
+VALUE="$(printf %s "$BODY" | jq -r '.value // empty')"
+[ -n "$VALUE" ] && printf 'delivered chars=%s sha256_8=%s\n' \
+  "${#VALUE}" "$(printf %s "$VALUE" | sha256sum | cut -c1-8)"
 ```
+
+Printing field names rather than the body means a renamed or absent field reads as a schema mismatch
+rather than a false "not delivered". Length plus a truncated digest proves two copies match and is
+not reversible for a high-entropy token.
 
 - An `env.*` secret binding also grants API read access; `access.*` bindings grant API access without env injection.
 - Prefer env injection for values needed on every run by the adapter or its child processes.
 - Prefer on-demand fetch for values used only on some runs, large or structured values, or skills/tools that do not inherit adapter env.
-- Every value fetch, including failures, is audited in `secret_access_events` and `activity_log`; never print, persist, or paste fetched values into task comments.
+- Every value fetch, including failures, is audited in `secret_access_events` and `activity_log`; never print, persist, or paste fetched values anywhere — command output is captured verbatim in the run transcript, so echoing a value leaks it at rest.
 - These endpoints require the current run-bound agent JWT. Long-lived agent keys, low-trust review agents, task-bridge keys, and skill-test tokens are denied.
 
 Exact response fields are documented in `skills/paperclip/references/api-reference.md`.
