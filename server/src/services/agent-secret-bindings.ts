@@ -1,4 +1,4 @@
-import { envBindingSchema, type SecretProjectionClass, type SecretVersionSelector } from "@paperclipai/shared";
+import { envBindingSchema, envBindingSecretRefSchema, type SecretProjectionClass, type SecretVersionSelector } from "@paperclipai/shared";
 
 interface AgentSecretBindingSyncService {
   syncSecretRefsForTarget?: (
@@ -143,6 +143,39 @@ export function collectUserSecretRefs(adapterConfig: unknown): Array<{
   }
 
   return refs;
+}
+
+export function getSecretRefAtConfigPath(
+  adapterConfig: unknown,
+  configPath: string,
+): { secretId: string } | null {
+  const config = asRecord(adapterConfig);
+  if (!config) return null;
+  const raw = configPath.startsWith("env.")
+    ? asRecord(config.env)?.[configPath.slice("env.".length)]
+    : config[configPath];
+  const parsed = envBindingSecretRefSchema.safeParse(raw);
+  return parsed.success ? { secretId: parsed.data.secretId } : null;
+}
+
+export function removeSecretRefAtConfigPath(
+  adapterConfig: unknown,
+  configPath: string,
+): Record<string, unknown> {
+  const config = asRecord(adapterConfig);
+  if (!config) return {};
+  if (configPath.startsWith("env.")) {
+    const envKey = configPath.slice("env.".length);
+    const envValue = asRecord(config.env);
+    if (!envValue || !(envKey in envValue)) return config;
+    const nextEnv = { ...envValue };
+    delete nextEnv[envKey];
+    return { ...config, env: nextEnv };
+  }
+  if (!(configPath in config)) return config;
+  const next = { ...config };
+  delete next[configPath];
+  return next;
 }
 
 export async function syncAgentAdapterEnvBindings(input: {
