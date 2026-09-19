@@ -80,7 +80,7 @@ export interface NativeAwsAgentCoreProfileSnapshot {
 export type NativeAcpxAgent = "pi" | "claude" | "codex";
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
-export type NativeAcpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
+export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 
 export interface NativeAcpxProfileSnapshot {
   driverKind: "acpx_runtime";
@@ -534,8 +534,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       throw new NativeExecutionInputError("input.provider.agent must be pi, claude, or codex");
     }
     if (isV4) {
-      if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
-        throw new NativeExecutionInputError("input.provider.permissionMode must be approve-all, approve-reads, or deny-all");
+      if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
+        throw new NativeExecutionInputError("input.provider.permissionMode must be approve-all, approve-paperclip, approve-reads, or deny-all");
       }
     } else if (provider.permissionPolicy !== "interactive") {
       throw new NativeExecutionInputError("input.provider.permissionPolicy must be interactive");

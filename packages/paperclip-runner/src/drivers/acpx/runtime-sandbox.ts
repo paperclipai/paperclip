@@ -28,7 +28,7 @@ import {
 } from "node:path";
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
-import { claudeReadPermissionRules } from "./permission-policy.js";
+import { claudePaperclipPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
   resolveAcpxRuntimeRoot,
@@ -378,8 +378,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
       `${JSON.stringify({
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
-        ...(input.binding.permissionMode === "approve-reads"
-          ? { permissions: { allow: claudeReadPermissionRules(input.tools ?? []) } }
+        ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
+          ? { permissions: { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) } }
           : {}),
       })}\n`,
     );

@@ -51,7 +51,7 @@ describe("ACPX driver profile", () => {
   ] as const)("accepts the exact qualified %s model", (agent, model) => {
     expect(validateAcpxDriverConfig({ agent, model })).toEqual({
       ok: true,
-      config: { agent, model, permissionMode: "approve-all" },
+      config: { agent, model, permissionMode: "approve-paperclip" },
       issues: [],
     });
   });

@@ -33,6 +33,22 @@ describe("runner E2E catalog", () => {
     expect(connectionReviewSuite.tasks.every(task => task.flow === "governed_tool_review")).toBe(true);
   });
 
+  it("tests native chat plans, tasks, and reassignment with production permission defaults", () => {
+    const suite = runnerSuites.find(suite => suite.id === "agent-chat")!;
+    for (const id of ["runner-codex", "runner-acpx-claude"]) {
+      const profile = suite.profiles.find(profile => profile.id === id)!;
+      const payload = profile.buildAgent({
+        executionId: "default-permissions", workspacePath: "/workspace", environmentId: "env-1", environmentFixtureId: "local",
+        secretRefs: {
+          [profile.credential]: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
+        },
+      });
+      expect(payload.adapterConfig).not.toHaveProperty("acpxPermissionMode");
+      expect(payload.adapterConfig).not.toHaveProperty("codexPermissionMode");
+      expect(suite.tasks.map(task => task.id)).toEqual(expect.arrayContaining(["plan-handoff", "reassign-task"]));
+    }
+  });
+
   it("validates the core, local-integrity, breadth, and warm suites", () => {
     expect(runnerProfiles).toHaveLength(7);
     expect(openRouterBreadthProfiles).toHaveLength(4);

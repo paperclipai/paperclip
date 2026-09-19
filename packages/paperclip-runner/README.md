@@ -69,14 +69,21 @@ alias during selection and verification. Users can keep selecting models from
 the normal Claude catalog or entering custom IDs; unavailable models still fail
 at the provider rather than silently falling back.
 
-For ACPX Claude, `approve-reads` is shown as **Allow Paperclip reads**. The host
-intersects the run's public tools with the implementation catalog's read effects
-and writes exact MCP permission rules into the isolated Claude settings. The
-`paperclip` connection is always the runner's authenticated tool bridge; ambient
-MCP configuration is excluded. Tool hints and provider permission metadata cannot
-grant access. Unassigned tools, writes, external tools, and provider-native
-operations do not receive automatic read permission. Protocol completion and
-task-delivery controls keep their existing separate allowance.
+ACPX Claude defaults to `approve-paperclip`, shown as **Automatic Paperclip
+actions**. The host intersects the run's assigned public tools with the known
+Paperclip action catalog and writes exact MCP permission rules into isolated
+Claude settings. Plans, task creation, reassignment, and other assigned actions
+can execute without a second provider permission prompt. The controller still
+checks company access, action claims, task modes, and governed approvals on every
+call. A tool's presence does not grant permission to act on another company's data.
+
+The `paperclip` connection is always the runner's authenticated tool bridge;
+ambient MCP configuration is excluded. Tool hints and provider permission
+metadata cannot grant access. Unassigned tools, external connections, and
+provider-native shell or filesystem operations receive no automatic permission.
+Explicit `approve-reads` (**Allow Paperclip reads**) and `deny-all` settings retain
+their restrictive behavior. Existing saved settings are not migrated. Protocol
+completion and task-delivery controls keep their separate allowance.
 
 This runtime has no interactive permission handler. An operation that still
 requires approval stops the turn with `approval_required`. The server marks the

@@ -15,6 +15,7 @@ import {
 const ACPX_AGENTS = ["claude", "codex"] as const;
 const ACPX_PERMISSION_MODES = [
   "approve-all",
+  "approve-paperclip",
   "approve-reads",
   "deny-all",
 ] as const;
@@ -109,12 +110,12 @@ export function validateAcpxDriverConfig(
     "permissionMode",
   )
     ? text(config.permissionMode)
-    : "approve-all";
+    : "approve-paperclip";
   if (!isPermissionMode(permissionMode)) {
     return invalid(
       "permissionMode",
       "invalid_permission_mode",
-      "ACPX permission mode must be approve-all, approve-reads, or deny-all.",
+      "ACPX permission mode must be approve-all, approve-paperclip, approve-reads, or deny-all.",
     );
   }
 

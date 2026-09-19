@@ -144,6 +144,8 @@ suite. Cancelled turns and execution-task runs remain included in billing and
 cleanup. The production chat directive is injected normally; fixtures do not
 replace it with completion instructions. Daytona is excluded.
 
+The native chat profiles use production provider permission defaults, rather than
+full-auto overrides, for plan handoff, task creation, and reassignment.
 The native Codex and Claude profiles also cover reassignment of existing ready
 and backlog tasks. The oracle verifies stable task IDs, preserved descriptions,
 assignment audit evidence, exactly one successful successor run and its output

@@ -7,7 +7,7 @@ export class AcpxApprovalRequiredError extends Error {
   readonly code = "approval_required";
   constructor() {
     super(
-      "Approval required. This operation is not an automatically allowed Paperclip read, " +
+      "Approval required. This operation is not an automatically allowed Paperclip action, " +
       "and this runner has no interactive approval handler. Review the operation and " +
       "update the agent's permission setting before retrying.",
     );
@@ -16,16 +16,22 @@ export class AcpxApprovalRequiredError extends Error {
 }
 
 /** Exact SDK rules for the run's runner-owned Paperclip MCP connection. */
-export function claudeReadPermissionRules(
+export function claudePaperclipPermissionRules(
   tools: readonly Readonly<Record<string, unknown>>[],
+  mode: NativeAcpxPermissionMode,
 ): string[] {
+  if (mode !== "approve-reads" && mode !== "approve-paperclip") return [];
   const names = tools.flatMap((tool) => {
     if (typeof tool.name !== "string") return [];
     const name = canonicalRunnerToolName(tool.name);
     // Effects come from Paperclip's implementation catalog, never tool hints
     // or the provider's permission-request metadata. Unknown operations stay
     // subject to approval even when their names or annotations claim a read.
-    return paperclipSemanticAction(name)?.effect === "read"
+    const action = paperclipSemanticAction(name);
+    // This only bypasses the provider's redundant permission prompt. The
+    // authenticated bridge and controller still validate run authority,
+    // company scope, claims, task mode, and governed-action approvals.
+    return action && (mode === "approve-paperclip" || action.effect === "read")
       ? [`mcp__paperclip__${name}`]
       : [];
   });
@@ -60,7 +66,7 @@ export function acpxRuntimePermissionPolicy(
   if (mode === "deny-all") return { defaultAction: "deny" };
   // ACPX derives permission kinds from provider-originated requests. Until the
   // host can bind a request to independent authority, no kind is safe to
-  // auto-approve here. Verified Paperclip reads are allowed earlier at the
+  // auto-approve here. Assigned Paperclip actions are allowed earlier at the
   // Claude SDK dispatch boundary. Other requests require an approval handler.
   return { defaultAction: "escalate" };
 }
@@ -78,8 +84,8 @@ export function decideAcpxPermission(
   if (mode === "deny-all") return "reject_once";
   if (mode === "approve-all") return "allow_once";
   // inferredKind and raw semantic/MCP metadata both originate outside the
-  // runner trust boundary. Neither can grant local read or semantic authority.
-  // Verified Paperclip reads use exact SDK rules on the runner-owned MCP
+  // runner trust boundary. Neither can grant local semantic authority.
+  // Assigned Paperclip actions use exact SDK rules on the runner-owned MCP
   // connection. Anything reaching this fallback still requires approval.
   return "delegate";
 }

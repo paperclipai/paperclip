@@ -5221,7 +5221,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         identity.requestedModel !== expectedModel ||
         identity.effectiveModel !== expectedModel ||
         identity.permissionMode !== input.execution.provider.permissionMode ||
-        !["approve-all", "approve-reads", "deny-all"].includes(
+        !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
           String(identity.permissionMode),
         ) ||
         !Array.isArray(identity.providerLifetimeFenceCandidates) ||

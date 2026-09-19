@@ -16,13 +16,17 @@ describe("Paperclip Runner permission defaults", () => {
     expect(resolvePaperclipRunnerPermissionMode("codex", "untrusted")).toBe("never");
   });
 
-  it("uses interactive defaults for dormant non-Codex providers", () => {
+  it("defaults Claude to authorized Paperclip actions and OpenCode to ask", () => {
     expect(resolvePaperclipRunnerPermissionMode("opencode", undefined)).toBe(
       "ask",
     );
     expect(resolvePaperclipRunnerPermissionMode("acpx", undefined)).toBe(
-      "approve-reads",
+      "approve-paperclip",
     );
+  });
+
+  it.each(["approve-paperclip", "approve-reads", "deny-all", "approve-all"])("preserves explicit Claude %s settings", (mode) => {
+    expect(resolvePaperclipRunnerPermissionMode("acpx", mode)).toBe(mode);
   });
 
   it("recognizes only exact provider identifiers", () => {

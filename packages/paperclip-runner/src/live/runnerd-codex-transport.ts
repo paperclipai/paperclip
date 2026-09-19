@@ -3155,7 +3155,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
 export function resolveRunnerdAcpxPermissionMode(
   configured: CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"],
 ): NonNullable<CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"]> {
-  return configured ?? "approve-reads";
+  return configured ?? "approve-paperclip";
 }
 
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([

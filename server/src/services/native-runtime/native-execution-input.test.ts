@@ -469,6 +469,9 @@ describe("native execution input external-chat framing", () => {
       },
       runtimeContext: nativeRuntimeContextFixture(),
     });
+    expect(input.provider).toMatchObject(provider === "acpx"
+      ? { kind: "acpx", permissionMode: "approve-paperclip" }
+      : { kind: "codex", approvalPolicy: "never" });
     expect(input.task.prompt).not.toContain("## Questions that need a user response");
     expect(input.task.prompt).toContain("Use Paperclip's request_human_input for durable task questions.");
     expect(input.task.prompt).not.toContain("payload.questionSet");

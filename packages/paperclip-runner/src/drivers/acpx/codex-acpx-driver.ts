@@ -435,7 +435,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         workingDirectory: input.workingDirectory,
         agent: this.#options.agent ?? "codex",
         model: this.#options.model,
-        permissionMode: this.#options.permissionMode ?? "approve-reads",
+        permissionMode: this.#options.permissionMode ?? "approve-paperclip",
         systemInstructions: this.#options.systemInstructions,
         environment: this.#options.environment,
         managedCodexCredentialSourcePath:
@@ -1903,7 +1903,7 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
     !/^sha256:[a-f0-9]{64}$/.test(identity.profileDigest) ||
     !/^sha256:[a-f0-9]{64}$/.test(identity.workspaceDigest) ||
     (identity.permissionMode !== undefined &&
-      !["approve-all", "approve-reads", "deny-all"].includes(
+      !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
         identity.permissionMode,
       )) ||
     !validProviderLifetimeFenceCandidates(

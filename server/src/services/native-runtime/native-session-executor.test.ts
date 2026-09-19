@@ -83,7 +83,7 @@ type RunnerTransportOptions = {
   provider?: "codex" | "opencode" | "acpx";
   opencodePermissionMode?: "allow" | "ask" | "deny";
   acpxAgent?: "claude" | "codex";
-  acpxPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  acpxPermissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
   resumeActiveTurnId?: string | null;
   resumeProviderSession?: {
     driverSessionId: string;

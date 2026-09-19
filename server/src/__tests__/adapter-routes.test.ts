@@ -362,7 +362,7 @@ describe("adapter routes", () => {
       }),
       expect.objectContaining({
         key: "acpxPermissionMode",
-        default: "approve-reads",
+        default: "approve-paperclip",
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       }),
       expect.objectContaining({

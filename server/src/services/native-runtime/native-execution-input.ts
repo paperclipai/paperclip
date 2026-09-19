@@ -240,7 +240,7 @@ export function buildNativeExecutionInput(input: {
           kind: "acpx",
           agent: acpxProfile!.agent,
           model: input.model,
-          permissionMode: input.acpxPermissionMode ?? "approve-reads",
+          permissionMode: input.acpxPermissionMode ?? "approve-paperclip",
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,

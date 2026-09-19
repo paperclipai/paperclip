@@ -1022,7 +1022,7 @@ Native Codex is qualified only with `codexPermissionMode: "never"`. The create
 and edit surfaces do not offer `on-request` or `untrusted`, and a persisted
 unsupported value fails with remediation instead of being silently coerced.
 OpenCode retains `allow`, `ask`, and `deny`; ACPX retains `approve-all`,
-`approve-reads`, and `deny-all`. Codex conversion keeps a non-empty model and
+`approve-paperclip` (the default), `approve-reads`, and `deny-all`. Codex conversion keeps a non-empty model and
 otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
 applies the same default to older runner rows whose model is missing or blank.
 
@@ -1030,10 +1030,12 @@ For an Agent Chat test drive, enable **Agent Chat** in Experimental settings and
 configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
 the Claude account through the agent's **AI connection** section (or supply an
 explicit supported provider credential); an ambient Claude CLI login alone is
-not a credential source for its isolated runner home. The conservative ACPX
-permission mode fails closed when no coordinator decision is available, including
-for MCP tools. Use `approve-all` only for agents authorized to perform the test's
-tool actions; the server still enforces company and action permissions.
+not a credential source for its isolated runner home. The default
+`approve-paperclip` setting lets assigned Paperclip actions run automatically;
+company permissions and approval gates still apply. Explicit `approve-reads` or
+`deny-all` settings remain restrictive. Unassigned, external, and provider-native
+operations still require permission; do not select `approve-all` merely to save
+plans, create tasks, or reassign work.
 
 Test questions, saved plan revisions, approval before task handoff, status
 lookups, and `/new` preserving chat history. Hiring additionally requires the

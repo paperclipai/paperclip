@@ -1258,8 +1258,8 @@ it("preserves answer and internal wait descriptions in the serialized native too
   ).toContain("not in the top-level user-facing summary");
 });
 
-it("defaults runnerd ACPX permissions to approve reads", () => {
-  expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-reads");
+it("defaults runnerd ACPX permissions to authorized Paperclip actions", () => {
+  expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-paperclip");
   expect(resolveRunnerdAcpxPermissionMode("deny-all")).toBe("deny-all");
 });
 
