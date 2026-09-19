@@ -364,6 +364,37 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       .where(eq(nativeRunFinalizations.runId, input.fixture.runId));
   }
 
+  it.each([null, process.pid])("claims sandbox recovery without interpreting remote PID %s locally", async (remotePid) => {
+    const fixture = await seedRun(`remote-${remotePid ?? "warm"}`);
+    await fixture.db.update(heartbeatRuns).set({
+      processPid: remotePid,
+      processStartedAt: new Date("2020-01-01T00:00:00Z"),
+      runnerProfileJson: {
+        nativeWorkspaceSync: {
+          schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+          descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+          workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox",
+          remoteCwd: "/workspace",
+        },
+        sessionCheckpoint: {
+          identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId,
+            sessionId: fixture.native.normalizedSessionId },
+          providerSessionId: "provider-session",
+          process: { providerPid: process.pid },
+        },
+      },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "graceful", runIds: [fixture.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId,
+      providerAttempt: 0, remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } });
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator?.recoveryState).toBe("awaiting_runner_reattach");
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run?.status).toBe("running");
+    expect(run?.processPid).toBe(remotePid);
+  });
+
   realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
     const fixture = await seedRun("LIVE");
     const stateDirectory = resolve(runtimeRoot, fixture.runId);
