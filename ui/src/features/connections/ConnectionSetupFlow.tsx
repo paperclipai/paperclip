@@ -68,6 +68,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useCopyAction } from "@/lib/use-copy-action";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
+import { useAuthorizationWindow } from "@/lib/authorizationWindow";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
@@ -81,6 +82,7 @@ import {
   resolveAppsConnectRouteKey,
   vercelConnectSourceHref,
 } from "@/pages/apps/app-connect-policy";
+import { appTabHref } from "@/pages/apps/app-tabs";
 import { parseGoogleSheetIds } from "@/pages/apps/google-sheets";
 import { connectionNameForGrantKind } from "@/pages/apps/connection-identity";
 import {
@@ -676,8 +678,11 @@ export function ConnectionSetupFlow({
   const directOAuthRetryingRef = useRef(false);
   const hydratedResumeConnectionIdRef = useRef<string | null>(null);
   const [hydratedResumeConnectionId, setHydratedResumeConnectionId] = useState<string | null>(null);
-  const oauthPopupRef = useRef<Window | null>(null);
-  const [dialogOAuthConnectionId, setDialogOAuthConnectionId] = useState<string | null>(null);
+  // A dialog host wants a compact popup beside the task it interrupted; the
+  // full-page host opens a plain tab, so the connectors page it was started from
+  // is still there — on its wizard step — when authorization returns.
+  const authorizationWindow = useAuthorizationWindow(host === "dialog" ? "popup" : "tab");
+  const [childOAuthConnectionId, setChildOAuthConnectionId] = useState<string | null>(null);
   const [authorizationFallbackUrl, setAuthorizationFallbackUrl] = useState<string | null>(null);
   const oauthHandoffAbortRef = useRef<AbortController | null>(null);
   const [showConnectionChoice, setShowConnectionChoice] = useState(
@@ -687,52 +692,58 @@ export function ConnectionSetupFlow({
   const [existingConnectionError, setExistingConnectionError] = useState<string | null>(null);
   const [unavailableReconnectId, setUnavailableReconnectId] = useState<string | null>(null);
 
+  /** What to call the app in sign-in copy, before a catalog entry is resolved. */
+  const connectingName = entry?.name ?? (linkName.trim() || "this app");
+
+  /**
+   * Whether sign-in opens beside this page instead of replacing it.
+   *
+   * Connector setup has nowhere it must return to, so the provider gets its own
+   * window and the operator keeps the wizard step, the queries and the scroll
+   * position they left behind. A task hand-off is the exception: its callback
+   * page replaces the window it runs in to put the operator back on the issue
+   * that asked for the connection, and only a page host has an issue to go back
+   * to — the dialog host already receives that outcome as a message.
+   */
+  const authorizationOpensBeside = host === "dialog" || !connectionIntentId;
+
   const reserveOAuthPopup = useCallback(() => {
-    if (host !== "dialog" || oauthPopupRef.current?.closed === false) return;
-    oauthPopupRef.current = window.open(
-      "about:blank",
-      "paperclip-connection-oauth",
-      "popup,width=720,height=760,resizable=yes,scrollbars=yes",
-    );
-  }, [host]);
+    if (!authorizationOpensBeside) return;
+    authorizationWindow.reserve();
+  }, [authorizationOpensBeside, authorizationWindow]);
 
   const openAuthorization = useCallback((url: string) => {
-    if (host !== "dialog") {
+    if (!authorizationOpensBeside) {
       navigateTopLevel(url);
       return;
     }
     setAuthorizationFallbackUrl(url);
-    const popup = oauthPopupRef.current;
-    if (!popup || popup.closed) {
-      setOAuthPhase("error");
-      setOAuthError("Paperclip couldn’t open the sign-in window. Open sign-in in a new tab to continue.");
-      onPhaseChange?.("needs_retry");
-      return;
-    }
-    popup.location.assign(url);
-    popup.focus();
-  }, [host, onPhaseChange]);
+    if (authorizationWindow.open(url)) return;
+    setOAuthPhase("error");
+    setOAuthError("Paperclip couldn’t open the sign-in window. Open sign-in in a new tab to continue.");
+    onPhaseChange?.("needs_retry");
+  }, [authorizationOpensBeside, authorizationWindow, onPhaseChange]);
 
   const openAuthorizationTab = useCallback(() => {
     // Let a real link own navigation. Some embedded browsers return a window
     // proxy from window.open without opening a usable authorization tab.
-    oauthPopupRef.current = null;
+    authorizationWindow.forget();
     setOAuthError(null);
     setOAuthPhase("redirecting");
     onPhaseChange?.("authorizing");
-  }, [onPhaseChange]);
+  }, [authorizationWindow, onPhaseChange]);
 
   useEffect(() => {
-    if (host !== "dialog" || oauthPhase !== "redirecting") return;
+    if (!authorizationOpensBeside || oauthPhase !== "redirecting") return;
     const timer = window.setInterval(() => {
-      if (!oauthPopupRef.current?.closed) return;
+      if (!authorizationWindow.current()?.closed) return;
       setOAuthPhase("error");
       setOAuthError("The sign-in window closed. If authorization did not finish, try again.");
       setAuthorizationFallbackUrl(null);
       onPhaseChange?.("needs_retry");
     }, 1_000);
     return () => window.clearInterval(timer);
-  }, [host, oauthPhase, onPhaseChange]);
+  }, [authorizationOpensBeside, authorizationWindow, oauthPhase, onPhaseChange]);
 
   const prepareAndOpenOAuth = useCallback(async (
     start: Pick<ToolOAuthStartResult, "authorizationUrl" | "handoff">,
@@ -743,7 +754,9 @@ export function ConnectionSetupFlow({
     try {
       const target = await prepareOAuthNavigation(start, { signal: controller.signal });
       if (target.kind === "reauthentication") {
-        const destination = host === "dialog" ? oauthPopupRef.current : window;
+        // Re-login runs wherever the sign-in itself will run, so the pending
+        // handoff has to be written into that window's session storage.
+        const destination = authorizationOpensBeside ? authorizationWindow.current() : window;
         if (!destination || destination.closed || !start.handoff) {
           throw new Error("Paperclip couldn’t preserve this sign-in while refreshing your account.");
         }
@@ -762,7 +775,7 @@ export function ConnectionSetupFlow({
     } finally {
       if (oauthHandoffAbortRef.current === controller) oauthHandoffAbortRef.current = null;
     }
-  }, [host, onPhaseChange, openAuthorization]);
+  }, [authorizationOpensBeside, authorizationWindow, onPhaseChange, openAuthorization]);
 
   useEffect(() => () => oauthHandoffAbortRef.current?.abort(), []);
 
@@ -790,27 +803,40 @@ export function ConnectionSetupFlow({
     return () => window.removeEventListener("message", receiveOAuthOutcome);
   }, [connectionIntentId, host, onComplete, onOAuthDeclined]);
 
-  // Standalone dialog hosts have no task interaction to receive a callback.
-  // Wait for this popup to return to our origin, then verify durable state via
-  // the API. Provider-window contents never determine the saved connection.
+  // Without a task interaction there is no callback message to wait for, and
+  // the sign-in window is the one holding the result. Watch it back to our own
+  // origin, then verify durable state via the API — the window's contents never
+  // determine the saved connection — and finish here so the operator lands back
+  // on the page they started from rather than in the tab they were handed.
   useEffect(() => {
-    if (host !== "dialog" || connectionIntentId || !dialogOAuthConnectionId) return;
+    if (connectionIntentId || !childOAuthConnectionId) return;
     let cancelled = false;
     let checking = false;
     const timer = window.setInterval(async () => {
       if (checking || cancelled) return;
-      const popup = oauthPopupRef.current;
-      if (!popup || popup.closed) {
-        setDialogOAuthConnectionId(null);
+      const child = authorizationWindow.current();
+      // Nothing claimed means a real link owns this sign-in and its window is
+      // not ours to read. Leave the wizard where it is rather than calling it
+      // closed.
+      if (!child) return;
+      if (child.closed) {
+        setChildOAuthConnectionId(null);
         setOAuthPhase("error");
-        setOAuthError("The sign-in window closed. Try again to finish connecting GitHub.");
+        setOAuthError(`The sign-in window closed. Try again to finish connecting ${connectingName}.`);
         return;
       }
       let returned: URL;
-      try { returned = new URL(popup.location.href); } catch { return; }
-      if (returned.origin !== window.location.origin || !returned.pathname.includes(dialogOAuthConnectionId)) return;
+      try { returned = new URL(child.location.href); } catch { return; }
+      if (returned.origin !== window.location.origin) return;
+      // A failed authorization comes back either on the connection's own page or
+      // on this wizard resuming the draft, so recognize the connection in the
+      // path and in the resume parameter.
+      if (
+        !returned.pathname.includes(childOAuthConnectionId)
+        && returned.searchParams.get("resume") !== childOAuthConnectionId
+      ) return;
       if (returned.searchParams.has("oauth")) {
-        setDialogOAuthConnectionId(null);
+        setChildOAuthConnectionId(null);
         setOAuthPhase("error");
         setOAuthError("Authorization did not complete. Finish setup in the sign-in window or try again.");
         return;
@@ -818,22 +844,23 @@ export function ConnectionSetupFlow({
       if (returned.searchParams.get("success") !== "1") return;
       checking = true;
       try {
-        const connection = await toolsApi.getConnection(dialogOAuthConnectionId);
+        const connection = await toolsApi.getConnection(childOAuthConnectionId);
         if (!cancelled && connection.status === "active") {
-          setDialogOAuthConnectionId(null);
-          popup.close();
-          onComplete?.({ connectionId: connection.id });
+          setChildOAuthConnectionId(null);
+          authorizationWindow.close();
+          if (onComplete) onComplete({ connectionId: connection.id });
+          else navigate(appTabHref(connection.id, "permissions"));
         }
       } catch {
         if (!cancelled) {
-          setDialogOAuthConnectionId(null);
+          setChildOAuthConnectionId(null);
           setOAuthPhase("error");
           setOAuthError("Could not confirm the connection. Try again.");
         }
       } finally { checking = false; }
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [connectionIntentId, dialogOAuthConnectionId, host, onComplete]);
+  }, [authorizationWindow, childOAuthConnectionId, connectingName, connectionIntentId, navigate, onComplete]);
 
   const resetGenericAuthState = () => {
     setLinkAuthMode("auto");
@@ -976,10 +1003,9 @@ export function ConnectionSetupFlow({
   });
   const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
   const closeEnrollmentPopup = useCallback(() => {
-    oauthPopupRef.current?.close();
-    oauthPopupRef.current = null;
+    authorizationWindow.close();
     setEnrollmentAuthorizationUrl(null);
-  }, []);
+  }, [authorizationWindow]);
   const preserveEnrollmentAccess = useCallback(() => {
     if (!selectedCompanyId || !requestedAppKey) return;
     saveEnrollmentAccessState(selectedCompanyId, requestedAppKey, {
@@ -995,19 +1021,13 @@ export function ConnectionSetupFlow({
       setConnectorEnrollmentError(target.message);
       return;
     }
-    if (host === "dialog") {
-      setEnrollmentAuthorizationUrl(target.url);
-      const popup = oauthPopupRef.current;
-      if (popup && !popup.closed) {
-        popup.location.assign(target.url);
-        popup.focus();
-      } else {
-        setConnectorEnrollmentError("Open authorization in a new tab to continue.");
-      }
-      return;
-    }
-    navigateTopLevel(target.url);
-  }, [host, closeEnrollmentPopup]);
+    // Enrollment closes its own window once Paperclip Cloud confirms it, and
+    // this page is already polling for that — so it opens beside the wizard and
+    // the operator comes back to the access selection they made.
+    setEnrollmentAuthorizationUrl(target.url);
+    if (authorizationWindow.open(target.url)) return;
+    setConnectorEnrollmentError("Open authorization in a new tab to continue.");
+  }, [authorizationWindow, closeEnrollmentPopup]);
   useEffect(() => {
     if (!enrollmentAuthorizationUrl || connectorEnrollmentQuery.data?.status !== "active") return;
     // Enrollment is only a prerequisite. Re-read the server catalog and keep
@@ -1195,9 +1215,9 @@ export function ConnectionSetupFlow({
   const startOAuth = useCallback((connection: ToolConnection) => {
     onPhaseChange?.("authorizing");
     reserveOAuthPopup();
-    if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
+    if (!connectionIntentId) setChildOAuthConnectionId(connection.id);
     mutateOAuthStart(connection);
-  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId]);
+  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, connectionIntentId]);
 
   /**
    * Commit the Access step's agent reach for a connection. Shared by the
@@ -1333,6 +1353,10 @@ export function ConnectionSetupFlow({
           return;
         }
         setGenericOAuthPending(true);
+        // Sign-in happens beside this page, so the wizard watches that window
+        // back and finishes here instead of waiting for a callback it will
+        // never receive.
+        setChildOAuthConnectionId(result.connection?.id ?? result.connectionId);
         void prepareAndOpenOAuth({
           authorizationUrl: startUrl,
           handoff: result.auth.handoff,
@@ -2209,7 +2233,7 @@ export function ConnectionSetupFlow({
                 disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
                 onClick={() => {
                   setConnectorEnrollmentError(null);
-                  reserveOAuthPopup();
+                  authorizationWindow.reserve();
                   preserveEnrollmentAccess();
                   // Let the server reuse a live enrollment or replace an expired
                   // one. A cached verification URL may expire while this page is open.

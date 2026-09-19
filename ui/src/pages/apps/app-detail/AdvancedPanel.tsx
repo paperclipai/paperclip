@@ -19,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useToast } from "@/context/ToastContext";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
-import { navigateTopLevel } from "@/lib/browserNavigation";
+import { useAuthorizationWindow } from "@/lib/authorizationWindow";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { cn } from "@/lib/utils";
 import { Link } from "@/lib/router";
@@ -163,6 +163,9 @@ export function ReconnectCard({
   reconnectUnavailableMessage?: string;
 }) {
   const { pushToast } = useToast();
+  // Reconnecting leaves for the provider's own page, so it opens in its own tab
+  // and this panel keeps the connection the operator was working on.
+  const authorizationWindow = useAuthorizationWindow();
   const reconnectOAuth = useMutation({
     // Reconnect is not a new identity choice. Personal-only connections must
     // put the replacement token back on the signed-in user's existing grant;
@@ -170,13 +173,17 @@ export function ReconnectCard({
     mutationFn: () => connection.credentialPolicy === "per_user"
       ? toolsApi.startOAuth(connection.id, { asCurrentUser: true })
       : toolsApi.startOAuth(connection.id),
+    // Claimed while the click still counts as user activation; the server has
+    // not handed back a URL yet, and by then it will not.
+    onMutate: () => authorizationWindow.reserve(),
     onSuccess: async (start) => {
       try {
         const target = await prepareOAuthNavigation(start);
-        if (target.kind === "reauthentication" && start.handoff) {
-          savePendingCloudHandoff(start.handoff.session);
-        }
-        navigateTopLevel(target.url);
+        authorizationWindow.navigateTo(target.url, (destination) => {
+          if (target.kind === "reauthentication" && start.handoff) {
+            savePendingCloudHandoff(start.handoff.session, destination.sessionStorage);
+          }
+        });
       } catch (error) {
         pushToast({
           title: "Couldn’t start sign-in",
