@@ -59426,8 +59426,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const fixture = await seedCompany();
       const { callbacks, endpoint, service, wakeup, webhookSecret } =
         await configuredGitHubEndpoint(fixture);
-      // Recovery sweeps all companies. Only this endpoint's assigned agent
-      // proves whether its bot edit incorrectly created new work.
+      // Recover only this fixture's ingress and delivery. A global sweep can
+      // drain unrelated fixtures' retries and exceed the test's time budget.
+      const processFixtureDelivery = async () => {
+        const [ingress] = await db
+          .select({ id: chatActions.id })
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "github_webhook_ingress"),
+              eq(
+                chatActions.providerActionId,
+                "github_webhook_ingress:bot-update-exact",
+              ),
+            ),
+          );
+        expect(ingress).toBeDefined();
+        await service.processPendingGitHubWebhookIngress(1, ingress!.id);
+        const [delivery] = await db
+          .select({ id: chatDeliveries.id })
+          .from(chatDeliveries)
+          .where(
+            and(
+              eq(chatDeliveries.endpointId, endpoint.id),
+              eq(chatDeliveries.eventKind, "message_updated"),
+            ),
+          );
+        expect(delivery).toBeDefined();
+        await service.processPendingDeliveries(1, delivery!.id);
+      };
       const fixtureWakeups = () =>
         wakeup.mock.calls.filter((call) => call[0] === fixture.assignedAgentId);
       const thread = makeThread({
@@ -59549,7 +59577,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           ).toHaveLength(0);
         }
         expect((await send()).ok).toBe(true);
-        await service.processPendingDeliveries();
+        await processFixtureDelivery();
         const [delivery] = await db
           .select()
           .from(chatDeliveries)
@@ -59586,7 +59614,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             filtering: { contentRetained: false },
           });
           expect((await send()).ok).toBe(true);
-          await service.processPendingDeliveries();
+          await processFixtureDelivery();
           expect(
             await db
               .select()
