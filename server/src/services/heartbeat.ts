@@ -19497,6 +19497,10 @@ export function heartbeatService(
     });
   }
 
+  async function promoteQuotaBlockedIssues() {
+    return recovery.promoteQuotaBlockedIssues();
+  }
+
   async function sweepStaleIssueLocks() {
     return recovery.sweepStaleIssueLocks();
   }
@@ -29327,6 +29331,7 @@ export function heartbeatService(
     },
 
     reconcileStrandedAssignedIssues,
+    promoteQuotaBlockedIssues,
     recoverPendingSessionGoalActions,
     recoverActiveSessionGoals,
 

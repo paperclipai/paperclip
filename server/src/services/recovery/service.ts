@@ -51,6 +51,17 @@ import {
   statusDecisions,
   workAssessments,
 } from "@paperclipai/db";
+import {
+  QUOTA_FAMILY_LOOKBACK_MS,
+  QUOTA_WAIT_CANARY_RESOLUTION_NOTE_PREFIX,
+  QUOTA_WAIT_GREEN_RESOLUTION_NOTE_PREFIX,
+  QUOTA_WAIT_RESOLUTION_NOTE_PREFIX,
+  classifyAdapterFamilyQuotaState,
+  decideQuotaBlockedReleases,
+  parseProviderQuotaResetHint,
+  type AdapterFamilyQuotaVerdict,
+  type QuotaReleaseKind,
+} from "./quota-wait.js";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -473,9 +484,26 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "codex_transient_upstream",
   "codex_harness_crash",
   "claude_transient_upstream",
-  "provider_quota",
   "timeout",
 ]);
+
+// A provider quota wall is a wait, not a failure of this issue. It outlasts the
+// bounded transient retries by hours or days, so classifying it as transient
+// only burns the retry budget in minutes and then escalates a healthy issue to
+// `blocked`. Quota waits are held in their current status instead, and released
+// by `promoteQuotaBlockedIssues` once the adapter family demonstrably recovers.
+const QUOTA_WAIT_CONTINUATION_ERROR_CODES = new Set<string>(["provider_quota"]);
+
+/** Quota walls are per provider account, so families are scoped per company. */
+function quotaFamilyKey(companyId: string, family: string) {
+  return `${companyId}:${family}`;
+}
+
+function toDateOrNull(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_engine_unavailable",
@@ -679,6 +707,7 @@ export function classifyAdapterFailureForRecovery(
 type ContinuationRetryClassification = {
   kind:
     | "transient_infra"
+    | "quota_wait"
     | "non_retryable"
     | "deliberate_wait_without_target"
     | "default";
@@ -696,6 +725,16 @@ export function classifyContinuationFailure(
       kind: "deliberate_wait_without_target",
       maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS,
       baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
+  if (errorCode && QUOTA_WAIT_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    // No bounded continuation retries: the wall outlasts them. Recovery is
+    // owned by the evidence-gated quota release instead.
+    return {
+      kind: "quota_wait",
+      maxAttempts: 0,
+      baseBackoffMs: 0,
       errorCode,
     };
   }
@@ -3763,6 +3802,11 @@ export function recoveryService(
         actionId: recoveryAction.id,
         agentId: recoveryAction.returnOwnerAgentId,
       });
+      // A quota wall says nothing about this issue, so it keeps its current
+      // status and its own assignee. The wait monitor above is its live path,
+      // and `promoteQuotaBlockedIssues` releases it once the adapter family
+      // recovers. Moving it to `blocked` here is what previously stranded it.
+      return input.issue;
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(
       input.issue.companyId,
@@ -3773,7 +3817,6 @@ export function recoveryService(
       blockedByIssueIds: blockerIds,
     });
     if (!updated) return null;
-    if (isProviderQuotaWait) return updated;
     const sourceAssigneePreserved =
       updated.assigneeAgentId === input.issue.assigneeAgentId &&
       updated.assigneeUserId === input.issue.assigneeUserId;
@@ -3976,6 +4019,27 @@ export function recoveryService(
     return updated;
   }
 
+  /**
+   * Record a provider-quota wait without changing the issue's status.
+   *
+   * This opens (or refreshes) the system-owned quota recovery action and its
+   * wait monitor, which together make the issue discoverable by
+   * `promoteQuotaBlockedIssues`. The issue keeps its status and its assignee,
+   * because a provider quota wall is a statement about the provider, not about
+   * this issue.
+   */
+  async function holdQuotaWaitIssue(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+  }) {
+    return escalateStrandedAssignedIssue({
+      issue: input.issue,
+      previousStatus: input.issue.status as StrandedPreviousStatus,
+      latestRun: input.latestRun,
+      recoveryCause: "provider_quota",
+    });
+  }
+
   async function persistAdapterFailureRecoveryClassification(
     latestRun: NonNullable<LatestIssueRun>,
     classification: NonNullable<AdapterFailureRecoveryClassification>,
@@ -4176,6 +4240,7 @@ export function recoveryService(
       escalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
+      quotaWaitHeld: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
       onboardingFirstTaskExempted: 0,
@@ -5101,6 +5166,22 @@ export function recoveryService(
           continue;
         }
 
+        if (classification.kind === "quota_wait") {
+          // The provider is unavailable, this issue is not. Escalating it to
+          // `blocked` would hand it to a recovery owner who can do nothing
+          // about the wall, and nothing would hand it back. Keep it where it
+          // is, make sure a durable wait path exists, and let
+          // `promoteQuotaBlockedIssues` release it on evidence of recovery.
+          const held = await holdQuotaWaitIssue({ issue, latestRun });
+          if (held) {
+            result.quotaWaitHeld += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (classification.kind === "non_retryable") {
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -5899,6 +5980,385 @@ export function recoveryService(
     return result;
   }
 
+  /**
+   * Read the recent run history of every adapter family, per company, and turn
+   * it into a quota verdict. Families are scoped per company because a quota
+   * wall belongs to the provider account the company is configured with. Only
+   * companies that actually hold quota-blocked work are scanned, so the window
+   * read stays on the company-scoped run indexes.
+   */
+  async function readAdapterFamilyQuotaVerdicts(
+    now: Date,
+    companyIds: string[],
+  ) {
+    const verdicts = new Map<string, AdapterFamilyQuotaVerdict>();
+    if (companyIds.length === 0) return verdicts;
+
+    // A raw template binds a Date as an unsupported driver parameter, so the
+    // window bound is passed as an explicitly cast ISO string.
+    const sinceIso = new Date(
+      now.getTime() - QUOTA_FAMILY_LOOKBACK_MS,
+    ).toISOString();
+    const rows = (await db.execute(sql`
+      with window_runs as (
+        select
+          ${heartbeatRuns.companyId} as company_id,
+          ${agents.adapterType} as family,
+          ${heartbeatRuns.status} as status,
+          ${heartbeatRuns.errorCode} as error_code,
+          ${heartbeatRuns.error} as error,
+          ${heartbeatRuns.finishedAt} as finished_at
+        from ${heartbeatRuns}
+        join ${agents} on ${agents.id} = ${heartbeatRuns.agentId}
+        where ${heartbeatRuns.finishedAt} > ${sinceIso}::timestamptz
+          and ${inArray(heartbeatRuns.companyId, companyIds)}
+      ),
+      family_marks as (
+        select
+          company_id,
+          family,
+          max(finished_at) filter (where status = 'succeeded') as last_success_at,
+          max(finished_at) filter (
+            where status = 'failed' and error_code = 'provider_quota'
+          ) as last_quota_failure_at,
+          max(finished_at) filter (
+            where status in ('succeeded', 'failed')
+          ) as last_terminal_at
+        from window_runs
+        group by company_id, family
+      )
+      select
+        m.company_id,
+        m.family,
+        m.last_success_at,
+        m.last_quota_failure_at,
+        m.last_terminal_at,
+        (
+          select count(*)
+          from window_runs r
+          where r.company_id = m.company_id
+            and r.family = m.family
+            and r.status = 'succeeded'
+            and (
+              m.last_quota_failure_at is null
+              or r.finished_at > m.last_quota_failure_at
+            )
+        ) as successes_after_quota_failure,
+        (
+          select string_agg(newest.error, E'\n')
+          from (
+            select r.error
+            from window_runs r
+            where r.company_id = m.company_id
+              and r.family = m.family
+              and r.status = 'failed'
+              and r.error_code = 'provider_quota'
+              and r.error is not null
+            order by r.finished_at desc
+            limit 10
+          ) as newest
+        ) as quota_failure_errors
+      from family_marks m
+    `)) as unknown as Iterable<{
+      company_id: string;
+      family: string;
+      last_success_at: string | null;
+      last_quota_failure_at: string | null;
+      last_terminal_at: string | null;
+      successes_after_quota_failure: string | number;
+      quota_failure_errors: string | null;
+    }>;
+
+    for (const row of rows) {
+      const resetHints = (row.quota_failure_errors ?? "")
+        .split("\n")
+        .map((line) => parseProviderQuotaResetHint(line, now))
+        .filter((hint): hint is Date => hint !== null && hint > now);
+      const verdict = classifyAdapterFamilyQuotaState(
+        {
+          family: row.family,
+          lastSuccessAt: toDateOrNull(row.last_success_at),
+          lastQuotaFailureAt: toDateOrNull(row.last_quota_failure_at),
+          lastTerminalAt: toDateOrNull(row.last_terminal_at),
+          successesAfterQuotaFailure: Number(
+            row.successes_after_quota_failure ?? 0,
+          ),
+          resetHintUntil: resetHints.length
+            ? new Date(Math.max(...resetHints.map((hint) => hint.getTime())))
+            : null,
+        },
+        now,
+      );
+      verdicts.set(quotaFamilyKey(row.company_id, row.family), verdict);
+    }
+    return verdicts;
+  }
+
+  /**
+   * Issues held in `blocked` by an active provider-quota recovery action, with
+   * the cooldown history of their own earlier quota releases.
+   */
+  async function readQuotaBlockedCandidates() {
+    const rows = await db
+      .select({
+        issueId: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        recoveryActionId: issueRecoveryActions.id,
+        returnOwnerAgentId: issueRecoveryActions.returnOwnerAgentId,
+        strandedSince: issueRecoveryActions.createdAt,
+        // The family that matters is the one that continues the work, not the
+        // one that happens to own the recovery action.
+        workFamily: agents.adapterType,
+        failedAt: heartbeatRuns.finishedAt,
+      })
+      .from(issues)
+      .innerJoin(
+        issueRecoveryActions,
+        and(
+          eq(issueRecoveryActions.sourceIssueId, issues.id),
+          eq(issueRecoveryActions.companyId, issues.companyId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence} ->> 'latestRunErrorCode' = 'provider_quota'`,
+        ),
+      )
+      .leftJoin(
+        agents,
+        eq(
+          agents.id,
+          sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}, ${issueRecoveryActions.previousOwnerAgentId}, ${issues.assigneeAgentId})`,
+        ),
+      )
+      .leftJoin(
+        heartbeatRuns,
+        eq(
+          heartbeatRuns.id,
+          // Legacy evidence can hold a non-uuid run reference. An unguarded
+          // cast would raise and abort the whole sweep, so anything that is
+          // not a uuid simply joins to no run.
+          sql`case
+            when ${issueRecoveryActions.evidence} ->> 'latestRunId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            then (${issueRecoveryActions.evidence} ->> 'latestRunId')::uuid
+          end`,
+        ),
+      )
+      .where(and(eq(issues.status, "blocked"), visibleIssueCondition()));
+
+    if (rows.length === 0) return [];
+
+    // Earlier releases of the same issue are the durable per-issue cooldown.
+    const previousReleases = await db
+      .select({
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        releasedAt: sql<string>`max(${issueRecoveryActions.resolvedAt})`,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          inArray(
+            issueRecoveryActions.sourceIssueId,
+            rows.map((row) => row.issueId),
+          ),
+          sql`${issueRecoveryActions.resolutionNote} like ${`${QUOTA_WAIT_RESOLUTION_NOTE_PREFIX}_%`}`,
+        ),
+      )
+      .groupBy(issueRecoveryActions.sourceIssueId);
+    const lastReleaseByIssue = new Map(
+      previousReleases.map((row) => [
+        row.sourceIssueId,
+        toDateOrNull(row.releasedAt),
+      ]),
+    );
+
+    return rows.map((row) => ({
+      issueId: row.issueId,
+      companyId: row.companyId,
+      identifier: row.identifier,
+      recoveryActionId: row.recoveryActionId,
+      returnOwnerAgentId: row.returnOwnerAgentId,
+      workFamily: row.workFamily,
+      failedAt: row.failedAt,
+      strandedSince: row.strandedSince,
+      lastPromotedAt: lastReleaseByIssue.get(row.issueId) ?? null,
+    }));
+  }
+
+  /** Newest canary release per company and family, for the probe cooldown. */
+  async function readLastQuotaCanaryByFamily(companyIds: string[]) {
+    const rows = await db
+      .select({
+        companyId: issueRecoveryActions.companyId,
+        resolutionNote: issueRecoveryActions.resolutionNote,
+        releasedAt: sql<string>`max(${issueRecoveryActions.resolvedAt})`,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          inArray(issueRecoveryActions.companyId, companyIds),
+          sql`${issueRecoveryActions.resolutionNote} like ${`${QUOTA_WAIT_CANARY_RESOLUTION_NOTE_PREFIX}:%`}`,
+        ),
+      )
+      .groupBy(
+        issueRecoveryActions.companyId,
+        issueRecoveryActions.resolutionNote,
+      );
+
+    const lastCanary = new Map<string, Date>();
+    for (const row of rows) {
+      const family = (row.resolutionNote ?? "").slice(
+        QUOTA_WAIT_CANARY_RESOLUTION_NOTE_PREFIX.length + 1,
+      );
+      const releasedAt = toDateOrNull(row.releasedAt);
+      if (!family || !releasedAt) continue;
+      const key = quotaFamilyKey(row.companyId, family);
+      const existing = lastCanary.get(key);
+      if (!existing || releasedAt > existing) lastCanary.set(key, releasedAt);
+    }
+    return lastCanary;
+  }
+
+  /**
+   * Return quota-blocked issues to work once their adapter family demonstrably
+   * recovered.
+   *
+   * A provider quota wall used to be terminal: the issue landed in `blocked`
+   * and only a human ever took it out again. This routine is the automatic way
+   * back. It releases strictly on evidence - successful runs by the same
+   * adapter family, recorded after the quota failure - never on a provider
+   * reset timestamp. A family that has gone completely silent cannot produce
+   * that evidence on its own, so exactly one issue per family is released as a
+   * canary per cooldown to generate it.
+   */
+  async function promoteQuotaBlockedIssues(now = new Date()) {
+    const result = {
+      released: 0,
+      canaries: 0,
+      held: 0,
+      issueIds: [] as string[],
+    };
+
+    const candidates = await readQuotaBlockedCandidates();
+    if (candidates.length === 0) return result;
+
+    const companyIds = [
+      ...new Set(candidates.map((candidate) => candidate.companyId)),
+    ];
+    const [families, lastCanaryByFamily] = await Promise.all([
+      readAdapterFamilyQuotaVerdicts(now, companyIds),
+      readLastQuotaCanaryByFamily(companyIds),
+    ]);
+
+    // The decision layer is company-agnostic, so family keys are scoped here
+    // and unscoped again for each candidate.
+    const { releases, holds } = decideQuotaBlockedReleases({
+      candidates: candidates.map((candidate) => ({
+        ...candidate,
+        workFamily: candidate.workFamily
+          ? quotaFamilyKey(candidate.companyId, candidate.workFamily)
+          : null,
+      })),
+      families,
+      lastCanaryByFamily,
+      now,
+    });
+    result.held = holds.length;
+
+    for (const release of releases) {
+      const candidate = candidates.find(
+        (row) => row.issueId === release.candidate.issueId,
+      );
+      if (!candidate?.returnOwnerAgentId) continue;
+      const restored = await restoreQuotaBlockedIssue({
+        candidate,
+        kind: release.kind,
+        reason: release.reason,
+      });
+      if (!restored) {
+        result.held += 1;
+        continue;
+      }
+      if (release.kind === "canary") result.canaries += 1;
+      result.released += 1;
+      result.issueIds.push(candidate.issueId);
+    }
+
+    if (result.released > 0 || holds.length > 0) {
+      logger.info(
+        {
+          released: result.released,
+          canaries: result.canaries,
+          held: result.held,
+          issueIds: result.issueIds,
+          holdReasons: holds
+            .slice(0, 10)
+            .map((hold) => `${hold.candidate.identifier}: ${hold.reason}`),
+        },
+        "provider quota release evaluated blocked issues",
+      );
+    }
+
+    return result;
+  }
+
+  async function restoreQuotaBlockedIssue(input: {
+    candidate: Awaited<ReturnType<typeof readQuotaBlockedCandidates>>[number];
+    kind: QuotaReleaseKind;
+    reason: string;
+  }) {
+    const { candidate } = input;
+    const returnOwnerAgentId = candidate.returnOwnerAgentId;
+    if (!returnOwnerAgentId) return null;
+
+    // Hand the issue back to the agent that was doing the work. Waking the
+    // recovery owner instead is how quota returns previously landed on an
+    // agent in a still-walled family, which bounced the issue straight back.
+    const updated = await issuesSvc.update(candidate.issueId, {
+      status: "todo",
+      assigneeAgentId: returnOwnerAgentId,
+    });
+    if (!updated) return null;
+
+    const resolutionNote = `${
+      input.kind === "canary"
+        ? QUOTA_WAIT_CANARY_RESOLUTION_NOTE_PREFIX
+        : QUOTA_WAIT_GREEN_RESOLUTION_NOTE_PREFIX
+    }:${candidate.workFamily ?? "unknown"}`;
+    const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: candidate.companyId,
+      sourceIssueId: candidate.issueId,
+      actionId: candidate.recoveryActionId,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote,
+    });
+    if (!resolved) return null;
+
+    await logActivity(db, {
+      companyId: candidate.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.recovery_action_resolved",
+      entityType: "issue",
+      entityId: candidate.issueId,
+      details: {
+        identifier: candidate.identifier,
+        recoveryActionId: resolved.id,
+        recoveryActionStatus: resolved.status,
+        outcome: resolved.outcome,
+        sourceIssueStatus: "todo",
+        resolutionNote,
+        source: "provider_quota_release",
+        releaseKind: input.kind,
+        releaseReason: input.reason,
+      },
+    });
+
+    await enqueueInitialAssignedTodoDispatch(updated, returnOwnerAgentId);
+    return updated;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -5906,6 +6366,7 @@ export function recoveryService(
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    promoteQuotaBlockedIssues,
     sweepStaleIssueLocks,
     reconcileResolvedDependencyWakeBackstop,
     readRecoveryTimerIntervalMs,
