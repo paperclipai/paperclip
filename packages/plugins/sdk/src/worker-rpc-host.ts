@@ -1135,6 +1135,42 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      attention: {
+        async list(input) {
+          return callHost("attention.list", input);
+        },
+      },
+
+      decisions: {
+        queues: {
+          async list(input) {
+            return callHost("decisions.queues.list", input);
+          },
+          async listItems(input) {
+            return callHost("decisions.queues.listItems", input);
+          },
+        },
+        triage: {
+          async get(input) {
+            return callHost("decisions.triage.get", input);
+          },
+          async update(input) {
+            return callHost("decisions.triage.update", input);
+          },
+        },
+        retention: {
+          async setKeep(input) {
+            return callHost("decisions.retention.setKeep", input);
+          },
+          async archive(input) {
+            return callHost("decisions.retention.archive", input);
+          },
+          async revive(input) {
+            return callHost("decisions.retention.revive", input);
+          },
+        },
+      },
+
       agents: {
         async list(input) {
           return callHost("agents.list", {

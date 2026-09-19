@@ -727,6 +727,14 @@ Scoped API routes:
 - Only safe request headers are forwarded; auth/cookie headers are never passed
   to the worker.
 
+Attention and decision triage helpers:
+
+- `ctx.attention.list({ companyId, actorUserId, queue, sort, all, includeDismissed, archived, activitySince, activityUntil, cursor, limit })` returns the attention feed of the paired user (`attention.read`).
+- `ctx.decisions.queues.list`, `ctx.decisions.queues.listItems`, and `ctx.decisions.triage.get` read decision queues and triage (`decision.queues.read`).
+- `ctx.decisions.triage.update` sets `decideBy` and `snoozedUntil`. `ctx.decisions.retention.setKeep`, `archive`, and `revive` change retention (`decision.triage.manage`).
+- Every call takes `actorUserId`. The host makes sure on each call that this user is an active human member of the company, and applies the same authorization and per-source read checks as the web app routes. Write calls reject viewer members.
+- Triage and retention rows are attributed to the user. The activity entries use `actorType: "plugin"` with the user as the initiating actor.
+
 ## 14.2 Example SDK Shape
 
 ```ts
@@ -811,6 +819,8 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `costs.read`
 - `issues.orchestration.read`
 - `database.namespace.read`
+- `attention.read`
+- `decision.queues.read`
 
 ### Data Write
 
@@ -819,6 +829,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `issue.comments.create`
 - `issue.comments.create_human_attributed`
 - `issue.interactions.create`
+- `decision.triage.manage`
 - `issue.documents.write`
 - `issue.relations.write`
 - `issues.checkout`

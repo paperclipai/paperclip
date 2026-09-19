@@ -294,4 +294,59 @@ describe("plugin SDK test harness", () => {
       body: "relayed reply",
     });
   });
+
+  it("gates decision triage by capability and by the paired user's role", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-decision-triage",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Decision triage",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["attention.read", "decision.queues.read", "decision.triage.manage"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    const now = new Date("2026-06-03T11:00:00.000Z");
+    const member = (id: string, principalId: string, membershipRole: string) => ({
+      id,
+      companyId: "company-1",
+      principalType: "user" as const,
+      principalId,
+      status: "active" as const,
+      membershipRole,
+      grants: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.seed({
+      accessMembers: [member("m-viewer", "viewer-1", "viewer"), member("m-owner", "owner-1", "owner")] as any,
+    });
+    const source = { companyId: "company-1", sourceKind: "approval" as const, sourceId: "approval-1" };
+
+    await expect(harness.ctx.decisions.triage.get({ ...source, actorUserId: "viewer-1" })).resolves.toBeNull();
+    await expect(
+      harness.ctx.decisions.triage.update({ ...source, actorUserId: "viewer-1", decideBy: "today" }),
+    ).rejects.toThrow("viewer (read-only) access");
+    await expect(
+      harness.ctx.decisions.triage.update({ ...source, actorUserId: "stranger", decideBy: "today" }),
+    ).rejects.toThrow("not an active human member");
+
+    const triage = await harness.ctx.decisions.triage.update({ ...source, actorUserId: "owner-1", decideBy: "this_week" });
+    expect(triage).toMatchObject({ decideBy: "this_week", setByType: "user", setByUserId: "owner-1", version: 1 });
+    await expect(harness.ctx.decisions.triage.get({ ...source, actorUserId: "viewer-1" }))
+      .resolves.toMatchObject({ decideBy: "this_week" });
+
+    const feed = await harness.ctx.attention.list({ companyId: "company-1", actorUserId: "viewer-1" });
+    expect(feed.items).toEqual([]);
+
+    const readOnly = createTestHarness({
+      manifest: { ...manifest, id: "paperclip.test-decision-read-only", capabilities: ["decision.queues.read"] },
+    });
+    readOnly.seed({ accessMembers: [member("m-owner", "owner-1", "owner")] as any });
+    await expect(
+      readOnly.ctx.decisions.triage.update({ ...source, actorUserId: "owner-1", decideBy: "today" }),
+    ).rejects.toThrow("decision.triage.manage");
+  });
 });

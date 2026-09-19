@@ -32,6 +32,10 @@ import type {
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
   Approval,
+  AttentionFeed,
+  DecisionQueue,
+  DecisionQueueItem,
+  DecisionTriage,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
@@ -58,6 +62,9 @@ import type {
   PluginIssueRelationSummary,
   PluginIssueSubtree,
   PluginIssueAttachmentContent,
+  PluginAttentionListInput,
+  PluginDecisionSourceRef,
+  PluginDecisionRetentionState,
   PluginIssueWakeupBatchResult,
   PluginIssueWakeupResult,
   PluginJobContext,
@@ -2078,6 +2085,45 @@ export interface WorkerToHostMethods {
       decisionNote?: string | null;
     },
     result: { approval: Approval; applied: boolean },
+  ];
+
+  // Attention feed and decision triage. Every method acts for `actorUserId`,
+  // an active human company member the host re-verifies on each call.
+  "attention.list": [
+    params: PluginAttentionListInput,
+    result: AttentionFeed,
+  ];
+  "decisions.queues.list": [
+    params: { companyId: string; actorUserId: string },
+    result: DecisionQueue[],
+  ];
+  "decisions.queues.listItems": [
+    params: { companyId: string; key: string; actorUserId: string },
+    result: DecisionQueueItem[],
+  ];
+  "decisions.triage.get": [
+    params: PluginDecisionSourceRef & { actorUserId: string },
+    result: DecisionTriage | null,
+  ];
+  "decisions.triage.update": [
+    params: PluginDecisionSourceRef & {
+      actorUserId: string;
+      decideBy?: string | null;
+      snoozedUntil?: string | null;
+    },
+    result: DecisionTriage,
+  ];
+  "decisions.retention.setKeep": [
+    params: PluginDecisionSourceRef & { actorUserId: string; keep: boolean },
+    result: PluginDecisionRetentionState,
+  ];
+  "decisions.retention.archive": [
+    params: PluginDecisionSourceRef & { actorUserId: string },
+    result: PluginDecisionRetentionState,
+  ];
+  "decisions.retention.revive": [
+    params: PluginDecisionSourceRef & { actorUserId: string },
+    result: PluginDecisionRetentionState,
   ];
 
   // Agents (read)
