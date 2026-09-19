@@ -373,6 +373,7 @@ export class PaperclipRunnerToolAuthority {
           .where(and(
             eq(issues.companyId, this.binding.companyId),
             eq(issues.parentId, this.binding.issueId),
+            isNull(issues.hiddenAt),
           ))
           .orderBy(desc(issues.createdAt), desc(issues.id))
           .limit(101);

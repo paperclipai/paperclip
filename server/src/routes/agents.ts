@@ -5763,7 +5763,14 @@ export function agentRoutes(
         if (issue.conversationAgentId) {
           // Agent Chat has no task description to replay. Recover the exact
           // request from the selected server-owned run, never caller markers.
-          // Hydration will read the current comments under the task boundary.
+          // Keep the generation pinned so a reset before dispatch cannot revive
+          // the old request. Runs that failed before turn preparation belong to
+          // the initial generation and cannot be retried after a reset.
+          const generation = failedContext.conversationSessionGeneration ?? 0;
+          if (!Number.isInteger(generation) || generation !== issue.conversationSessionGeneration) {
+            throw conflict("Conversation session changed; this older turn cannot be retried.");
+          }
+          retryConversationContext = { conversationSessionGeneration: generation };
           const commentIds = [...new Set([
             ...(Array.isArray(failedContext.wakeCommentIds) ? failedContext.wakeCommentIds : []),
             failedContext.wakeCommentId,
@@ -5771,6 +5778,7 @@ export function agentRoutes(
           ].filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
           if (commentIds.length > 0) {
             retryConversationContext = {
+              ...retryConversationContext,
               wakeCommentIds: commentIds,
               wakeCommentId: commentIds[commentIds.length - 1],
             };

@@ -26,6 +26,7 @@ describe("semantic action catalog", () => {
     for (const schema of [createProjectAction.live.descriptor.inputSchema, paperclipSemanticAction("create_project")!.inputSchema]) {
       const validate = ajv.compile(schema);
       const input = { name: "Onboarding", idempotencyKey: "onboarding" };
+      expect(schema).toMatchObject({ properties: { icon: { enum: [...PROJECT_ICON_NAMES, null] } } });
       for (const icon of [...PROJECT_ICON_NAMES, null]) expect(validate({ ...input, icon }), String(icon)).toBe(true);
       expect(validate({ ...input, icon: "users" })).toBe(false);
     }

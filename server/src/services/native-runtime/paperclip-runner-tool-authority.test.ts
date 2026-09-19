@@ -164,6 +164,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     const unrelatedId = randomUUID();
     const otherCompanyId = randomUUID();
     const foreignChildId = randomUUID();
+    const hiddenChildIds = Array.from({ length: 101 }, () => randomUUID());
     await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTHER" });
     await db.insert(issues).values([
       { id: completedChildId, companyId, parentId: issueId, title: "Existing completed draft", status: "done", assigneeAgentId: agentId },
@@ -171,6 +172,9 @@ describe("PaperclipRunnerToolAuthority", () => {
       { id: unrelatedId, companyId, title: "Unrelated task", status: "todo" },
       // Even inconsistent imported data cannot expose another company's task.
       { id: foreignChildId, companyId: otherCompanyId, parentId: issueId, title: "Foreign child", status: "todo" },
+      // Hidden rows must neither enter context nor consume the visible child limit.
+      ...hiddenChildIds.map((id) => ({ id, companyId, parentId: issueId, title: "Hidden child",
+        hiddenAt: new Date(), createdAt: new Date(Date.now() + 1000) })),
     ]);
     try {
       const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
@@ -185,8 +189,9 @@ describe("PaperclipRunnerToolAuthority", () => {
       });
       expect(JSON.stringify(context)).not.toContain(foreignChildId);
       expect(JSON.stringify(context)).not.toContain(unrelatedId);
+      for (const id of hiddenChildIds) expect(JSON.stringify(context)).not.toContain(id);
     } finally {
-      await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId]));
+      await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId, ...hiddenChildIds]));
       await db.delete(companies).where(eq(companies.id, otherCompanyId));
     }
   });
