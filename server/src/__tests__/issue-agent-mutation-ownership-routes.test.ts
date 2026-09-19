@@ -1323,6 +1323,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(ownerAgentId) });
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
@@ -1367,6 +1368,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("preserves explicit workspace choices on agent-created root issues", async () => {
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(ownerAgentId) });
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
@@ -1432,6 +1434,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("strips agent-supplied createdByUserId and derives attribution from the authenticated actor", async () => {
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(ownerAgentId) });
     const app = await createApp(ownerActor());
 
     const res = await request(app)
