@@ -210,6 +210,25 @@ function derivePersistedMonitorState(input: {
   return null;
 }
 
+/**
+ * Attempts carried into a newly scheduled monitor.
+ *
+ * `maxAttempts` bounds one monitor, not the issue. Only a monitor that is still
+ * `scheduled` carries its attempts forward, so lowering `maxAttempts` below the
+ * attempts the live monitor already spent is still rejected. Once a monitor has
+ * fired (`triggered`) or been cleared its lifecycle is over — the policy monitor
+ * is stripped on trigger — so the next `nextCheckAt` is a new monitor and starts
+ * at zero.
+ *
+ * Without the reset the count is a lifetime cap on the issue: every monitor the
+ * issue ever held is charged against whatever `maxAttempts` the next caller
+ * supplies, so one exhausted monitor permanently blocks every later one and
+ * strands `in_review` issues with no wake path at all.
+ */
+function carriedMonitorAttemptCount(previous: IssueExecutionMonitorState | null | undefined): number {
+  return previous?.status === "scheduled" ? previous.attemptCount ?? 0 : 0;
+}
+
 function buildScheduledMonitorState(
   previous: IssueExecutionMonitorState | null,
   monitor: IssueExecutionMonitorPolicy,
@@ -218,7 +237,7 @@ function buildScheduledMonitorState(
     status: "scheduled",
     nextCheckAt: monitor.nextCheckAt,
     lastTriggeredAt: previous?.lastTriggeredAt ?? null,
-    attemptCount: previous?.attemptCount ?? 0,
+    attemptCount: carriedMonitorAttemptCount(previous),
     notes: monitor.notes ?? null,
     scheduledBy: monitor.scheduledBy,
     ...monitorMetadataFromPolicy(monitor),
@@ -300,6 +319,36 @@ function exhaustedMonitorClearReason(input: {
     return "max_attempts_exhausted";
   }
   return null;
+}
+
+/**
+ * Name the bound that rejected the monitor, the count it was compared against,
+ * and the value that would be accepted. "Monitor bounds are already exhausted"
+ * on its own tells the caller neither which bound tripped nor how to satisfy it.
+ */
+function monitorBoundsExhaustedError(input: {
+  clearReason: IssueExecutionMonitorClearReason;
+  monitor: IssueExecutionMonitorPolicy;
+  attemptCount: number;
+}) {
+  const maxAttempts = input.monitor.maxAttempts ?? null;
+  const details: Record<string, unknown> = {
+    clearReason: input.clearReason,
+    attemptCount: input.attemptCount,
+    maxAttempts,
+    timeoutAt: input.monitor.timeoutAt ?? null,
+  };
+  if (input.clearReason === "timeout_exceeded") {
+    return unprocessable(
+      `${MONITOR_BOUNDS_EXHAUSTED_MESSAGE}: timeoutAt ${input.monitor.timeoutAt} has already passed. Supply a timeoutAt in the future, or omit it.`,
+      details,
+    );
+  }
+  const minimumMaxAttempts = input.attemptCount + 1;
+  return unprocessable(
+    `${MONITOR_BOUNDS_EXHAUSTED_MESSAGE}: the scheduled monitor has already used ${input.attemptCount} attempt(s) and maxAttempts is ${maxAttempts}. Supply maxAttempts of at least ${minimumMaxAttempts}.`,
+    { ...details, minimumMaxAttempts },
+  );
 }
 
 function nextAssigneeIds(input: {
@@ -1086,14 +1135,19 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
         clearedAt: new Date(),
       });
     } else {
+      const carriedAttemptCount = carriedMonitorAttemptCount(currentMonitorState);
       const exhaustedReason = exhaustedMonitorClearReason({
         monitor: input.policy.monitor,
-        attemptCount: currentMonitorState?.attemptCount ?? 0,
+        attemptCount: carriedAttemptCount,
         now: new Date(),
       });
       if (exhaustedReason) {
         if (input.monitorExplicitlyUpdated) {
-          throw unprocessable(MONITOR_BOUNDS_EXHAUSTED_MESSAGE, { clearReason: exhaustedReason });
+          throw monitorBoundsExhaustedError({
+            clearReason: exhaustedReason,
+            monitor: input.policy.monitor,
+            attemptCount: carriedAttemptCount,
+          });
         }
         patch.executionPolicy = stripMonitorFromExecutionPolicy(input.policy);
         patch.monitorNextCheckAt = null;
@@ -1108,6 +1162,10 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
         patch.monitorWakeRequestedAt = null;
         patch.monitorNotes = input.policy.monitor.notes ?? null;
         patch.monitorScheduledBy = input.policy.monitor.scheduledBy;
+        // The column is what the dispatcher and the liveness classifier read, so
+        // it has to be reset alongside the state or the new monitor inherits the
+        // previous monitor's attempts.
+        patch.monitorAttemptCount = carriedAttemptCount;
         targetMonitorState = buildScheduledMonitorState(currentMonitorState, input.policy.monitor);
       }
     }
@@ -1147,7 +1205,11 @@ export function buildInitialIssueMonitorFields(input: {
     now: new Date(),
   });
   if (exhaustedReason) {
-    throw unprocessable(MONITOR_BOUNDS_EXHAUSTED_MESSAGE, { clearReason: exhaustedReason });
+    throw monitorBoundsExhaustedError({
+      clearReason: exhaustedReason,
+      monitor: input.policy.monitor,
+      attemptCount: 0,
+    });
   }
 
   const monitorState = buildScheduledMonitorState(null, input.policy.monitor);

@@ -4,6 +4,7 @@ import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
   isReviewPathRecoveryIdempotencyConflict,
+  reviewPathConsumedRefFromRun,
 } from "./review-path-recovery.js";
 
 const stalled = {
@@ -94,6 +95,28 @@ describe("review-path recovery", () => {
     });
 
     expect(decision).toEqual({ kind: "skip", reason: "review issue still has a maintained path" });
+  });
+
+  it("fingerprints monitor wakes per monitor, not per attempt count", () => {
+    const refFor = (nextCheckAt: string) => reviewPathConsumedRefFromRun({
+      runId: "run-1",
+      issueId: "issue-1",
+      contextSnapshot: {
+        wakeReason: "issue_monitor",
+        nextCheckAt,
+        monitorAttemptCount: 1,
+      },
+    });
+
+    // Two monitors, each on its first attempt: distinct fingerprints.
+    expect(refFor("2026-12-01T12:00:00.000Z")).not.toEqual(refFor("2026-12-08T12:00:00.000Z"));
+
+    // Contexts without a scheduled instant still fall back to the attempt count.
+    expect(reviewPathConsumedRefFromRun({
+      runId: "run-1",
+      issueId: "issue-1",
+      contextSnapshot: { wakeReason: "issue_monitor", monitorAttemptCount: 2 },
+    })).toBe("monitor:issue-1:cleared:2");
   });
 
   it("recognizes wrapped atomic deduplication conflicts without swallowing unrelated uniqueness errors", () => {
