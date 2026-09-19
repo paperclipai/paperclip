@@ -93,6 +93,7 @@ import {
   type AcpRuntimeUsageCost,
   type AcpSessionStore,
 } from "acpx/runtime";
+import { enforceCodexShellSnapshotPolicy } from "./codex-shell-snapshot.js";
 import {
   ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS,
   ACPX_HANDSHAKE_TIMEOUT_MS,
@@ -138,6 +139,7 @@ import {
   type RuntimeCacheEntry,
 } from "./run-site-host.js";
 import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
+import { createCredentialSafeSessionStore } from "./session-store.js";
 import {
   createRuntimeSpanRunner,
   emitRunPhaseTiming,
@@ -1292,6 +1294,14 @@ async function prepareCodexSkillRuntime(input: {
       targetHome: managedCodexHome,
       onLog: input.onLog,
     });
+  // Codex writes the provider launch environment — this run's bound credentials
+  // included — into `$CODEX_HOME/shell_snapshots/*.sh` as plaintext `declare -x`
+  // lines. Pin the policy off on every run, not only on the seed: the managed
+  // home is seeded once from the operator's `~/.codex/config.toml`, and an
+  // operator-supplied `CODEX_HOME` is never seeded at all. Runs on both.
+  for (const line of await enforceCodexShellSnapshotPolicy(effectiveCodexHome)) {
+    await input.onLog("stdout", `${line}\n`);
+  }
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
@@ -4209,26 +4219,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
         const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
-        const runtimeStore: AcpSessionStore = {
-          async load(id) {
-            const record = await persistedRuntimeStore.load(id);
-            if (!record) return undefined;
-            // ACPX resumes from the stored session options rather than the
-            // options passed to ensureSession. Keep conversation state, but
-            // launch the provider with this run's credentials and scratch paths.
-            return {
-              ...record,
-              acpx: {
-                ...record.acpx,
-                session_options: {
-                  ...record.acpx?.session_options,
-                  env: { ...prepared.env },
-                },
-              },
-            };
-          },
-          save: (record) => persistedRuntimeStore.save(record),
-        };
+        // `load` re-injects this run's launch environment (ACPX resumes from the
+        // stored session options, not the options passed to ensureSession) and
+        // `save` keeps that environment out of the on-disk record entirely.
+        const runtimeStore: AcpSessionStore = createCredentialSafeSessionStore({
+          persisted: persistedRuntimeStore,
+          launchEnv: prepared.env,
+        });
         const runtimeOptions: PaperclipAcpRuntimeOptions = {
           cwd: prepared.cwd,
           // Host-only spawn cwd for the relay proxy on the remote process-session

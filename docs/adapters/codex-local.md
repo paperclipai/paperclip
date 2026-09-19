@@ -136,6 +136,58 @@ needs a maintainer security review before merge. Treat this docs section as
 the follow-up implementation spec, not as authorization to add the warning in
 a docs-only change.
 
+## Shell Snapshot Policy
+
+Codex's shell-snapshot feature writes the provider process's launch
+environment — including this run's bound credentials — to
+`$CODEX_HOME/shell_snapshots/*.sh` as plaintext `declare -x NAME="value"`
+lines. On a single-host install every agent seat runs as the same OS account,
+so any seat can read any other seat's snapshot file. Paperclip disables the
+feature rather than letting it persist credentials to disk (KEE-192).
+
+- **Which homes are modified:** every effective `CODEX_HOME` an ACPX-engine
+  Codex run uses — the engine's managed company home (seeded once from the
+  operator's `~/.codex/config.toml`) and any operator-supplied `CODEX_HOME`
+  override (which is never seeded, so this is the only place the policy
+  reaches it). Enforcement runs on every run, not only at seed time.
+- **Enforced setting:** `features.shell_snapshot = false` in `config.toml`,
+  merged into an existing `[features]` table or appended as a managed block if
+  the file has none. The rewrite is idempotent — re-running it does not
+  duplicate the table or the managed comment.
+- **Permissions:** `config.toml` is always rewritten owner-only (`0600`),
+  whatever mode it had before. A rewrite is treated as the moment to correct a
+  group- or world-readable file left by an operator or a seed step, not to
+  carry that exposure forward.
+- **Fail-closed enforcement:** if the existing config can't be read or
+  written, Paperclip refuses to launch Codex at all rather than starting a run
+  whose credentials could be snapshotted; the run fails with an explicit
+  `CodexShellSnapshotPolicyError`. The same applies when the config declares
+  `features` as an inline table (`features = { ... }`) that this rewriter
+  cannot safely merge — unless the inline table already sets
+  `shell_snapshot = false`, in which case the policy is already in force and
+  the launch proceeds. A compliant config an operator locked down by hand
+  never blocks a launch.
+
+### Upgrading from builds that persisted credentials
+
+This change stops new credential persistence; it does not scrub what older
+builds already wrote. Two on-disk surfaces predate it:
+
+- **Session records** (`<stateDir>/sessions/<acpxRecordId>.json`): builds
+  before the credential-safe session store persisted the whole launch
+  environment, bound credentials included. A resumed session loads with this
+  run's environment injected fresh, so a record that still contains an old
+  environment keeps working — and keeps the old values at rest until that
+  record is saved again, which strips it. Untouched legacy records and any
+  backups taken before the upgrade therefore need a separate cleanup decision
+  (delete or re-save them); do not treat a successful resumable session as
+  evidence that an old copy was removed.
+- **Shell snapshots** (`$CODEX_HOME/shell_snapshots/*.sh`): snapshot files
+  written by runs before the policy was enforced are not cleaned up by
+  upgrading, and Paperclip's rewrite removes only the config key, not the
+  existing files. Check `shell_snapshots/` under each `CODEX_HOME` (the
+  managed home and any override) and delete leftovers by hand.
+
 ## Manual Local CLI
 
 For manual local CLI usage outside heartbeat runs (for example running as `codexcoder` directly), use:
