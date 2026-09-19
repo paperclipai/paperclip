@@ -31,14 +31,14 @@ async function choose(label: string) {
   expect(option).toBeTruthy();
   await act(async () => option!.click());
 }
-function Harness({ secretMessage }: { secretMessage?: SecretMessage }) {
+function Harness({ secretMessage, contextRoutine }: { secretMessage?: SecretMessage; contextRoutine?: RoutineDetail }) {
   const { data } = useQuery({ queryKey: queryKeys.routines.detail(routine.id), queryFn: api.get });
-  const value = { routine: data ?? routine, routineId: routine.id, companyId: routine.companyId, secretMessage, setSecretMessage: vi.fn() } as unknown as RoutineDetailContextValue;
+  const value = { routine: contextRoutine ?? data ?? routine, routineId: routine.id, companyId: routine.companyId, secretMessage, setSecretMessage: vi.fn() } as unknown as RoutineDetailContextValue;
   return <RoutineDetailContext.Provider value={value}><TriggersSection /></RoutineDetailContext.Provider>;
 }
-async function render(secretMessage?: SecretMessage) {
+async function render(secretMessage?: SecretMessage, contextRoutine?: RoutineDetail) {
   await act(async () => root.render(<MemoryRouter initialEntries={["/routines/routine-1/triggers"]}>
-    <QueryClientProvider client={client}><BreadcrumbProvider><Harness secretMessage={secretMessage} /></BreadcrumbProvider></QueryClientProvider>
+    <QueryClientProvider client={client}><BreadcrumbProvider><Harness secretMessage={secretMessage} contextRoutine={contextRoutine} /></BreadcrumbProvider></QueryClientProvider>
   </MemoryRouter>));
 }
 beforeEach(() => {
@@ -93,6 +93,20 @@ describe("TriggersSection", () => {
     expect(api.updateTrigger).toHaveBeenCalledWith("trigger-1", { setupPending: false });
     expect(button("Add trigger")).toBeTruthy();
     expect(container.textContent).not.toContain("one-time-secret");
+  });
+
+  it("shows polled connection results even when routine context is stale", async () => {
+    routine.triggers = [{ id: "trigger-1", kind: "webhook", enabled: true, setupPending: true, signingMode: "bearer", webhookUrl: "https://paperclip.example/webhook" }] as RoutineTrigger[];
+    await render(undefined, routine);
+    await click("Resume setup");
+    await click("Check connection");
+    expect(container.textContent).toContain("Waiting to verify");
+    for (const status of ["rejected", "received"] as const) {
+      routine = { ...routine, triggers: [{ ...routine.triggers[0], lastWebhookDelivery: { status, test: true, receivedAt: new Date().toISOString() } }] };
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.routines.detail(routine.id) }); });
+      await vi.waitFor(() => expect(container.textContent).toContain(status === "received" ? "Authentication passed. No routine run or task was created." : "Go back to Connect your app, update the key"));
+    }
+    expect(button("Finish setup")).toBeTruthy();
   });
 
   it("shows restored one-time credentials on the triggers screen", async () => {

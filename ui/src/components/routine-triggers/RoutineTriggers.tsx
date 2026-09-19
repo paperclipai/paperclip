@@ -413,9 +413,6 @@ function TriggerSetup({
     [routineId, onRefresh, onExit, storagePrefix],
   );
   const { routine: currentRoutine } = useRoutineDetail();
-  const latest =
-    currentRoutine.triggers.find((item) => item.id === currentTrigger?.id) ??
-    currentTrigger;
   return (
     <RoutineTriggerWizard
       initialDraft={initialDraft}
@@ -435,7 +432,7 @@ function TriggerSetup({
         setSecret(response.secretMaterial.webhookSecret);
         await onRefresh();
       }}
-      checkResult={latest?.lastWebhookDelivery?.status ?? "waiting"}
+      checkResult={currentTrigger?.lastWebhookDelivery?.status ?? "waiting"}
     />
   );
 }
