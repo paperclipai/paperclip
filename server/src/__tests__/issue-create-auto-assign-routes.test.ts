@@ -104,19 +104,20 @@ describeEmbeddedPostgres("issue create auto-assign (INUA-7276)", () => {
     return { companyId, agentId };
   }
 
-  async function seedParent(companyId: string) {
+  async function seedParent(companyId: string, assigneeAgentId: string) {
     const [parent] = await db.insert(issues).values({
       companyId,
       title: "Parent issue",
-      status: "todo",
+      status: "in_progress",
       priority: "medium",
+      assigneeAgentId,
     }).returning();
     return parent;
   }
 
   it("defaults assigneeAgentId to the requesting agent when omitted", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
-    const parent = await seedParent(companyId);
+    const parent = await seedParent(companyId, agentId);
     const app = createApp(agentActor(companyId, agentId));
 
     const res = await request(app)
@@ -129,7 +130,7 @@ describeEmbeddedPostgres("issue create auto-assign (INUA-7276)", () => {
 
   it("defaults assigneeAgentId to the requesting agent when null is passed", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
-    const parent = await seedParent(companyId);
+    const parent = await seedParent(companyId, agentId);
     const app = createApp(agentActor(companyId, agentId));
 
     const res = await request(app)
@@ -142,7 +143,7 @@ describeEmbeddedPostgres("issue create auto-assign (INUA-7276)", () => {
 
   it("honours an explicit assigneeAgentId when provided", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
-    const parent = await seedParent(companyId);
+    const parent = await seedParent(companyId, agentId);
     // Seed a second agent to assign to
     const otherAgentId = randomUUID();
     await db.insert(agents).values({
@@ -167,8 +168,8 @@ describeEmbeddedPostgres("issue create auto-assign (INUA-7276)", () => {
   });
 
   it("does not apply a default when the actor is a board user", async () => {
-    const { companyId } = await seedCompanyAndAgent();
-    const parent = await seedParent(companyId);
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const parent = await seedParent(companyId, agentId);
     const app = createApp(boardActor(companyId));
 
     const res = await request(app)
