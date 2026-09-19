@@ -16,12 +16,14 @@ function makeTemporaryRoot(): string {
   return root;
 }
 
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
+async function waitForCondition(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Condition was not met within ${timeoutMs}ms`);
+    }
+    await delay(25);
+  }
 }
 
 afterEach(() => {
@@ -34,11 +36,12 @@ describe("worktree port registry lock", () => {
   it("does not reclaim a stale lock while its fallback ownership probe responds", async () => {
     const homeDir = makeTemporaryRoot();
     const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
-    const firstEntered = deferred();
-    const releaseFirst = deferred();
     let secondEntered = false;
+    let second: Promise<void> | null = null;
 
     const first = withWorktreePortRegistryLock(homeDir, async () => {
+      const leaseHeartbeatMtime = fs.statSync(lockPath).mtimeMs;
+      await waitForCondition(() => fs.statSync(lockPath).mtimeMs > leaseHeartbeatMtime);
       fs.renameSync(path.join(lockPath, "owner.json"), path.join(lockPath, "owner.unavailable.json"));
       const backupOwnerPath = path.join(lockPath, "owner.backup.json");
       const owner = JSON.parse(fs.readFileSync(backupOwnerPath, "utf8"));
@@ -46,23 +49,28 @@ describe("worktree port registry lock", () => {
         ...owner,
         processIdentity: "unavailable-process-identity",
       })}\n`);
+      // Backdate immediately after a heartbeat tick so the contender sees a
+      // stale lease before the next background refresh can run.
       const oldTimestamp = new Date(Date.now() - 10_000);
       fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
-      firstEntered.resolve();
-      await releaseFirst.promise;
+      expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeGreaterThan(5_000);
+
+      // Start the contender before yielding so it races the stale lease, not a
+      // later heartbeat refresh.
+      const contender = withWorktreePortRegistryLock(homeDir, async () => {
+        secondEntered = true;
+      });
+      contender.catch(() => {});
+      second = contender;
+      await delay(100);
+
+      expect(secondEntered).toBe(false);
     });
-    await firstEntered.promise;
-
-    expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeGreaterThan(5_000);
-
-    const second = withWorktreePortRegistryLock(homeDir, async () => {
-      secondEntered = true;
-    });
-    await delay(100);
-
-    expect(secondEntered).toBe(false);
-    releaseFirst.resolve();
-    await Promise.all([first, second]);
+    await first;
+    if (!second) {
+      throw new Error("Expected the contender to start while the first lock holder was active");
+    }
+    await second;
     expect(secondEntered).toBe(true);
   }, 10_000);
 
