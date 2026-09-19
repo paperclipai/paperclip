@@ -108,7 +108,9 @@ documents, dependencies, scope, priority, and history.
 
 The old execution and any live goal must stop before ownership changes. Active
 work returns to todo; backlog and blocked work retain their status and are not
-started. Assignment changes advance the observed version, including ordinary
+started. An audited reassignment stop does not create a recovery blocker or
+retry the outgoing run when it ends without a semantic completion result.
+Assignment changes advance the observed version, including ordinary
 API changes, to reject stale handoffs. A durable audit receipt makes retries
 idempotent across caller runs; retrying after failed dispatch repairs the wake
 with a stable key and an owner/status/version guard.

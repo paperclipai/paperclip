@@ -6476,11 +6476,13 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
-  it("does not turn an acknowledged Stop before completion into a failure or a retry", async () => {
+  it.each(["operator", "reassignment"])("does not turn an acknowledged %s Stop before completion into a failure or a retry", async (source) => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const stop: Record<string, unknown> = {};
     state.execute.mockReset().mockImplementationOnce(async () => {
-      Object.assign(stop, { cancelledByActorType: "user", cancelledByUserId: "board", nativeCancellation: {
+      Object.assign(stop, { ...(source === "operator"
+        ? { cancelledByActorType: "user", cancelledByUserId: "board" }
+        : { reassignmentStopRequested: true }), nativeCancellation: {
         schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
         dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
       } });
