@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { appearanceForPalette } from "@paperclipai/shared";
+import { CAP_V1_COLORS } from "@paperclipai/shared/cliplab/palette-tokens";
 import type { createCharacter as CreateCharacter } from "@paperclipai/shared/cliplab/runtime";
 import { OnboardingCharacter } from "./OnboardingCharacter";
 
@@ -33,11 +34,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
-async function render(awake = false) {
+async function render(awake = false, selectedAppearance = appearance) {
   await act(async () => {
-    root.render(<OnboardingCharacter appearance={appearance} awake={awake} />);
-    await vi.dynamicImportSettled();
+    root.render(<OnboardingCharacter appearance={selectedAppearance} awake={awake} />);
   });
+  await act(async () => { await vi.dynamicImportSettled(); });
 }
 function expectFallback() {
   expect(host.querySelector("img")?.classList.contains("invisible")).toBe(false);
@@ -89,4 +90,18 @@ it("releases both canvases if a wake transition throws", async () => {
   expect(gray.destroy).toHaveBeenCalledOnce();
   expect(twin.destroy).toHaveBeenCalledOnce();
   expectFallback();
+});
+
+it.each([false, true])("refreshes the sleeping twin when its palette changes (wake: %s)", async (awake) => {
+  const gray = player(), twin = player(), nextGray = player(), nextTwin = player();
+  createCharacter.mockReturnValueOnce(gray).mockReturnValueOnce(twin)
+    .mockReturnValueOnce(nextGray).mockReturnValueOnce(nextTwin);
+  await render();
+  await render(awake, appearanceForPalette("coral-mint"));
+  expect(gray.destroy).toHaveBeenCalledOnce();
+  expect(twin.destroy).toHaveBeenCalledOnce();
+  const definition = createCharacter.mock.calls[3][1];
+  expect(definition.character.color).toBe(CAP_V1_COLORS["coral-mint"].a);
+  expect(definition.character.color2).toBe(CAP_V1_COLORS["coral-mint"].b);
+  if (awake) expect(nextTwin.play).toHaveBeenCalledOnce();
 });

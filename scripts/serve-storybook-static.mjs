@@ -66,7 +66,7 @@ const { createLocalDiskStorageProvider } = await import("../server/src/storage/l
 const cache = await mkdtemp(join(tmpdir(), "paperclip-storybook-avatars-"));
 const avatars = createAgentAvatarService(createLocalDiskStorageProvider(cache));
 const api = express();
-api.use("/api", agentAvatarRoutes(avatars));
+api.use("/api", agentAvatarRoutes(avatars).router);
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${port}`);
   if (url.pathname.startsWith("/api/agent-avatars/")) { api(req, res); return; }

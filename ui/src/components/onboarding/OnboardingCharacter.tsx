@@ -47,6 +47,7 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
   // What the live canvas currently shows, so a prop change is a transition
   // from something rather than a re-mount. Starts where the props say.
   const phase = useRef<Phase>(awake ? "awake" : "asleep");
+  const renderedPalette = useRef<string | null>(null);
   const timers = useRef<number[]>([]);
   const [ready, setReady] = useState(false), [failed, setFailed] = useState(false), [colored, setColored] = useState(awake);
   const [wakeSeconds, setWakeSeconds] = useState(0);
@@ -93,7 +94,7 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
       twin.seek(leadIn);
       if (players.current.overlay !== twin) return;
     }
-    phase.current = next; setColored(next === "awake");
+    phase.current = next; renderedPalette.current = identity.paletteId; setColored(next === "awake");
   }
 
   /** The arc's payoff: both canvases play the transition together while the palette fades in. */
@@ -150,8 +151,18 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
     // Mount once; later prop changes are transitions handled below.
   }, []);
 
+  // Refresh the hidden colored twin too, before a simultaneous wake. The gray
+  // canvas does not change color, but its twin must carry the new assignment.
   useEffect(() => {
-    if (!ready || !library.current) return;
+    if (!ready || !library.current || renderedPalette.current === identity.paletteId) return;
+    try { mount(phase.current); } catch (error) {
+      console.warn("Onboarding character palette change failed, showing the still portrait.", error);
+      fail();
+    }
+  }, [identity.paletteId, ready]);
+
+  useEffect(() => {
+    if (!ready || !library.current || !players.current.base) return;
     const next: Phase = awake ? "awake" : "asleep";
     if (next === phase.current) return;
     try {
@@ -161,15 +172,6 @@ export function OnboardingCharacter({ appearance, awake, className }: Onboarding
       fail();
     }
   }, [awake, ready]);
-
-  // A palette change while awake (a re-hire) recolours in place; asleep is gray regardless.
-  useEffect(() => {
-    if (!ready || phase.current !== "awake" || !library.current) return;
-    try { mount("awake"); } catch (error) {
-      console.warn("Onboarding character palette change failed, showing the still portrait.", error);
-      fail();
-    }
-  }, [identity.paletteId]);
 
   const live = ready && !failed;
   return (
