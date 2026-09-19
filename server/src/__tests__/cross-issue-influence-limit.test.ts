@@ -297,6 +297,30 @@ describe("cross-issue influence limit rollout", () => {
     ]);
   });
 
+  it("counts a scoped run's write to another issue that the same run checked out", async () => {
+    // A checkout stamps the run onto the target. A run that already has a
+    // snapshot issue must not clear the cap by checking out each target first,
+    // so the snapshot stays authoritative and the write is counted.
+    const fake = counterDb(0, { contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" } }, {
+      target: { checkoutRunId: "11111111-1111-4111-8111-111111111111" },
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, mode: "enforce", count: 1 });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        action: "issue.cross_issue_influence_observed",
+        details: expect.objectContaining({ sourceIssueId: "44444444-4444-4444-8444-444444444444" }),
+      }),
+    ]);
+  });
+
   it("fails closed for a malformed target issue id with no run source issue", async () => {
     // The target never reaches the database as a uuid cast, and the run has no
     // checkout to anchor on, so the guard still refuses the write.

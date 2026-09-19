@@ -235,6 +235,38 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     expect(recorded).toEqual([]);
   });
 
+  it("counts a scoped run's write to another issue that the same run checked out", async () => {
+    // Checkout stamps the run onto any issue the agent may claim. A scoped run
+    // must not clear the cap by checking out each target before it writes.
+    const sourceIssueId = randomUUID();
+    const { companyId, agentId, runId } = await seedRun({ issueId: sourceIssueId });
+    const targetIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: sourceIssueId, companyId, title: "Scoped issue" },
+      { id: targetIssueId, companyId, title: "Also checked out by this run", checkoutRunId: runId },
+    ]);
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId,
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, mode: "enforce", count: 1 });
+
+    const recorded = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        action: "issue.cross_issue_influence_observed",
+        details: expect.objectContaining({ sourceIssueId, targetIssueId }),
+      }),
+    ]);
+  });
+
   it("leaves a scoped run's same-issue write uncounted", async () => {
     const targetIssueId = randomUUID();
     const { companyId, agentId, runId } = await seedRun({ issueId: targetIssueId });

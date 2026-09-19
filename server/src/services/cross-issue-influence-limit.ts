@@ -120,26 +120,27 @@ export async function observeCrossIssueInfluence(
 
     // A timer heartbeat carries no issue in its context snapshot, so the snapshot
     // alone cannot say whether a write is same-issue. The checkout the run already
-    // holds answers that question, so read it before the write is refused.
-    if (isUuidLike(input.targetIssueId)) {
-      const targetAnchor = await tx
-        .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
-        .from(issues)
-        .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
-        .then((rows) => rows[0] ?? null);
-      // The run owns the target issue. This is a same-issue write, not influence.
-      if (
-        targetAnchor &&
-        (targetAnchor.checkoutRunId === input.runId || targetAnchor.executionRunId === input.runId)
-      ) {
-        return null;
-      }
-    }
-
+    // holds answers that question. The snapshot stays authoritative when it names
+    // an issue, so a scoped run cannot clear the cap by checking out each target.
     if (!sourceIssueId) {
-      // The run has no snapshot issue. Anchor the counter on the issue the run
-      // checked out, so a genuine cross-issue write is counted against the cap.
-      // A run with no snapshot issue and no checkout is still refused.
+      if (isUuidLike(input.targetIssueId)) {
+        const targetAnchor = await tx
+          .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null);
+        // The run owns the target issue. This is a same-issue write, not influence.
+        if (
+          targetAnchor &&
+          (targetAnchor.checkoutRunId === input.runId || targetAnchor.executionRunId === input.runId)
+        ) {
+          return null;
+        }
+      }
+
+      // Anchor the counter on the issue the run checked out, so a genuine
+      // cross-issue write is counted against the cap. A run with no snapshot
+      // issue and no checkout is still refused.
       const checkedOut = await tx
         .select({ id: issues.id })
         .from(issues)
