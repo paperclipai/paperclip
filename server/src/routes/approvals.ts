@@ -283,6 +283,25 @@ export function approvalRoutes(
       details: { type: approval.type, issueIds: uniqueIssueIds },
     });
 
+    for (const issueId of uniqueIssueIds) {
+      try {
+        const existing = await issuesSvc.getById(issueId);
+        if (!existing || existing.status === "done" || existing.status === "cancelled") {
+          continue;
+        }
+        await issuesSvc.update(issueId, {
+          status: "blocked",
+          unblockDescriptor: { owner: "board", action: "Decide pending approval card" },
+          companyGuard: companyId,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, issueId, approvalId: approval.id },
+          "failed to auto-block linked issue for approval card",
+        );
+      }
+    }
+
     res.status(201).json(redactApprovalPayload(approval));
   });
 
