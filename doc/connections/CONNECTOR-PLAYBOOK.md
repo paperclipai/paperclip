@@ -754,6 +754,13 @@ Common extension points:
   header/query projection.
 - `projectedConnectionHeaders`, `projectedConnectionToolArguments`, and
   `projectedConnectionToolInputSchema` for server-managed request material.
+- `buildRemoteHeaders` in `server/src/services/tool-connection-headers.ts` for
+  the shared remote MCP header policy used by catalog discovery, health checks,
+  and gateway requests (including credential-refresh retries). It merges
+  reviewed method headers, resolved credentials, and approved static headers;
+  credentials win case-insensitive collisions, and static/caller headers cannot
+  override managed method headers. Caller passthrough remains allowlisted and
+  session metadata is emitted only for gateway requests with a session.
 - OAuth discovery/client/token/refresh functions in
   `server/src/services/tool-access.ts`.
 - MCP invocation in `server/src/services/tool-gateway.ts`.
