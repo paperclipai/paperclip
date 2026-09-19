@@ -11,12 +11,19 @@ import { AuthPage } from "./Auth";
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const healthGetMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/auth", () => ({
   authApi: {
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+  },
+}));
+
+vi.mock("../api/health", () => ({
+  healthApi: {
+    get: () => healthGetMock(),
   },
 }));
 
@@ -86,6 +93,12 @@ describe("AuthPage", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     getSessionMock.mockResolvedValue(null);
+    healthGetMock.mockResolvedValue({
+      status: "ok",
+      features: {
+        authDisableSignUp: false,
+      },
+    });
     signInEmailMock.mockResolvedValue(undefined);
     signUpEmailMock.mockResolvedValue(undefined);
   });
@@ -166,6 +179,25 @@ describe("AuthPage", () => {
     expect(nameInput.getAttribute("autocomplete")).toBe("name");
     expect(nameInput.required).toBe(true);
     expect(passwordInput.getAttribute("autocomplete")).toBe("new-password");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the sign-up affordance when account creation is disabled", async () => {
+    healthGetMock.mockResolvedValueOnce({
+      status: "ok",
+      features: {
+        authDisableSignUp: true,
+      },
+    });
+
+    const root = await mount();
+
+    expect(container.textContent).not.toContain("Need an account?");
+    expect(container.textContent).not.toContain("Create one");
+    expect(container.textContent).toContain("Sign in to Paperclip");
 
     await act(async () => {
       root.unmount();
