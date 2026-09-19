@@ -18,8 +18,24 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
+// hashPrivateRef is needed when a run carries an issue id in its context.
+const mockTelemetryClient = vi.hoisted(() => ({
+  track: vi.fn(),
+  hashPrivateRef: (value: string) => `hashed:${value}`,
+}));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
+
+// Capture live events, so a test can assert the terminalization payload.
+const publishedLiveEvents = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock("../services/live-events.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/live-events.ts")>();
+  return {
+    ...actual,
+    publishLiveEvent: (input: Record<string, unknown>) => {
+      publishedLiveEvents.push(input);
+    },
+  };
+});
 
 import { heartbeatService } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
@@ -46,6 +62,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
 
   afterEach(async () => {
     mockTelemetryClient.track.mockClear();
+    publishedLiveEvents.length = 0;
     await db.delete(nativeRunFinalizations);
     await db.delete(issueComments);
     await db.delete(issueRelations);
@@ -476,12 +493,17 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // process-death authority misses this case. The issue-terminal authority
     // catches it: the issue reached "done" while the run row stayed "running".
     const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
     // process.pid is the live test process, so isPidAlive returns true.
+    // resultJson holds the run summary, which becomes finalText on the event.
     await db
       .update(heartbeatRuns)
-      .set({ processPid: process.pid })
+      .set({
+        processPid: process.pid,
+        contextSnapshot: { issueId },
+        resultJson: { summary: "Reused sandbox summary for the operator." },
+      })
       .where(eq(heartbeatRuns.id, runningRunId));
-    const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -501,7 +523,11 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(result.cleared).toBe(1);
 
     const run = await db
-      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        executionStatusDeliveryId: heartbeatRuns.executionStatusDeliveryId,
+      })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runningRunId))
       .then((rows) => rows[0]);
@@ -509,6 +535,9 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // succeeded run carries no error code.
     expect(run?.status).toBe("succeeded");
     expect(run?.errorCode).toBeNull();
+    // The terminal write queues a durable status delivery, as setRunStatus
+    // does, so the status delivery sweep retries a lost publish.
+    expect(run?.executionStatusDeliveryId).toEqual(expect.any(String));
 
     const lock = await db
       .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
@@ -523,6 +552,27 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("issue reached a terminal status");
+
+    // This path writes heartbeat_runs directly and not through setRunStatus,
+    // so it must publish the status event itself. Without the event, live-run
+    // views keep the run as live until they refetch.
+    const statusEvents = publishedLiveEvents.filter(
+      (e) => e.type === "heartbeat.run.status"
+        && (e.payload as Record<string, unknown>)?.runId === runningRunId,
+    );
+    expect(statusEvents).toHaveLength(1);
+    expect(statusEvents[0]!.companyId).toBe(companyId);
+    const payload = statusEvents[0]!.payload as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      status: "succeeded",
+      agentId,
+      issueId,
+      errorCode: null,
+      // A terminal payload must carry finalText: the plugin session consumer
+      // uses it as the message of the "done" event for a succeeded run.
+      finalText: "Reused sandbox summary for the operator.",
+    });
+    expect(payload.finishedAt).toEqual(expect.any(String));
 
     // The terminal write never awaits the telemetry emission, so wait for
     // it here instead of asserting it fired synchronously.
