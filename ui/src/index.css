@@ -3023,8 +3023,28 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   }
 }
 :root {
+  /*
+   * Width the desktop sidebar currently reserves. SidebarShell publishes the
+   * live value, including while the panel is being dragged; the fallback of 0
+   * covers every surface without one — the mobile drawer, and any host that
+   * renders the overlays outside the app shell.
+   */
+  --sidebar-reserved-width: 0px;
+  /*
+   * Left edge for the viewport-anchored overlays at the bottom of the screen:
+   * the announcement well and the toast viewport. They are fixed, so without
+   * this they land on top of the sidebar footer, which is where the account
+   * menu and the Share feedback button live.
+   */
+  --overlay-gutter-left: calc(var(--sidebar-reserved-width) + var(--spacing) * 3);
+  /*
+   * Width still on screen after the gutter, so a widened sidebar on a narrow
+   * window shortens the overlay instead of pushing it off the right edge.
+   * With no sidebar this is the full-bleed width these overlays always had.
+   */
+  --overlay-available-width: calc(100vw - var(--overlay-gutter-left) - var(--spacing) * 3);
   --announcement-width: 22rem;
-  --announcement-available-width: calc(100vw - var(--spacing) * 6);
+  --announcement-available-width: var(--overlay-available-width);
   --announcement-image-height: 8.5rem;
   --announcement-image-mobile-height: 6rem;
   --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
