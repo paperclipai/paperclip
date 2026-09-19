@@ -125,10 +125,11 @@ function renderApiAccessNote(env: Record<string, string>): string {
   return [
     "Paperclip API access note:",
     "Use run_shell_command with curl to make Paperclip API requests.",
+    "Never pass the credential as a command-line argument: process arguments are world-readable (/proc/<pid>/cmdline), so a token in an argument is exposed to every process on this host while the request runs. Feed the auth header to curl on stdin with `-H @-` instead -- printf is a shell builtin, so the value never lands in any process's arguments. Ids and request bodies are not secrets and may stay on the command line.",
     "GET example:",
-    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
+    `  run_shell_command({ command: "printf 'Authorization: Bearer %s' \\"$PAPERCLIP_API_KEY\\" | curl -s -H @- \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/checkout\\"" })`,
+    `  run_shell_command({ command: "printf 'Authorization: Bearer %s' \\"$PAPERCLIP_API_KEY\\" | curl -s -H @- -X POST -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/checkout\\"" })`,
     "When PAPERCLIP_TASK_ID is not set, substitute a real issue id from the current context; never send a placeholder like {id} in the URL.",
     "",
     "",

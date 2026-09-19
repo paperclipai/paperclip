@@ -209,7 +209,11 @@ test("renders safe Paperclip API examples from environment variables with multil
 
   expect(prompt).toContain("Use `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID`");
   expect(prompt).toContain("Displayed command logs may redact secrets");
-  expect(prompt).toContain('-H "Authorization: Bearer $PAPERCLIP_API_KEY"');
+  // The credential must never be shown as a command-line argument:
+  // /proc/<pid>/cmdline is world-readable, so an argv-borne bearer token is
+  // visible to every process on the host while the request runs.
+  expect(prompt).not.toContain('-H "Authorization: Bearer $PAPERCLIP_API_KEY"');
+  expect(prompt).toContain("-H @<(printf 'Authorization: Bearer %s' \"$PAPERCLIP_API_KEY\")");
   expect(prompt).toContain('-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"');
   expect(prompt).toContain("body=$(cat <<'MD'");
   expect(prompt).toContain("jq -n --arg status done --arg comment \"$body\"");

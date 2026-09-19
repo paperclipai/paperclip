@@ -590,6 +590,11 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).not.toContain("/api/issues/{id}");
     expect(prompt).not.toContain("-d '{...}'");
     expect(prompt).not.toContain("runtime-secret-token");
+    // The credential must never be demonstrated as a command-line argument:
+    // /proc/<pid>/cmdline is world-readable, so an argv-borne bearer token is
+    // visible to every process on the host while the request runs.
+    expect(prompt).not.toContain('-H "Authorization: Bearer');
+    expect(prompt).toContain("curl -s -H @-");
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
   });
 

@@ -19,6 +19,38 @@ In Paperclip, **task** and **issue** refer to the same work item. The UI may use
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For sandbox-backed local adapters, the Bash/tool environment may receive `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for a run-scoped bridge instead of the host API directly; use those exact env vars from Bash/curl and do not assume the host port is reachable from browser or web tools. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints are under `/api`. Use JSON except for multipart attachment uploads and binary content downloads. Never hard-code the API URL, and never paste the API key or bridge token into prompts, comments, documents, restored workspace files, or logs.
 
+**Credential transport — mandatory.** Never pass the token as a command-line argument. Process arguments are world-readable on Linux: `/proc/<pid>/cmdline` is mode `0444` and `ps -ww -eo args` shows them host-wide. So `curl -H "Authorization: Bearer $PAPERCLIP_API_KEY" ...` publishes this run's credential to every process on the box for the lifetime of the call, and into any `ps` output, crash dump or monitoring snapshot taken in that window. A run JWT has no revocation path, so a copied token stays usable until it expires. Feed the header to curl on stdin instead:
+
+```bash
+printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY" | curl -sS -H @- "$PAPERCLIP_API_URL/api/agents/me"
+```
+
+When stdin already carries the request body, pass the header from a process substitution:
+
+```bash
+jq -n --arg comment "$body" '{comment:$comment}' \
+  | curl -sS -X PATCH "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID" \
+      -H @<(printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY") \
+      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      -H "Content-Type: application/json" \
+      --data-binary @-
+```
+
+`printf` is a shell builtin, so the expanded value never becomes any process's `argv`. Ids, URLs and request bodies are not credentials and may stay on the command line. The same rule applies to every other secret you hand to a subprocess.
+
+Ready-made helpers ship with this skill:
+
+```bash
+. scripts/paperclip-api.sh
+pc_api GET  /api/agents/me
+pc_api POST "/api/issues/$PAPERCLIP_TASK_ID/comments" body.json      # $PC_API_STATUS holds the HTTP status
+pc_api_upload "/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments" ./evidence.png image/png
+
+python3 scripts/paperclip-api.py GET /api/agents/me                  # same rule, without the shell
+```
+
+`scripts/argv-leak-regression.py` proves the property holds: it samples `/proc/<pid>/cmdline` and `ps` while a request is in flight and fails unless the credential is absent from both **and** the header actually reached the server.
+
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
@@ -122,6 +154,8 @@ POST /api/issues/{issueId}/checkout
 Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
+
+Send the `Authorization` header on stdin (`-H @-`) or from a process substitution, never as a `-H "..."` argument — see **Credential transport** above.
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
@@ -525,14 +559,14 @@ When authenticated with the current run's agent JWT, list the secrets available 
 ```bash
 PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
 PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
-curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+curl -s -H @<(printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY") \
   "$PAPERCLIP_API_BASE/api/agents/me/secrets"
 ```
 
 The list is metadata-only. Fetch a specific value only when needed; the request has no body:
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+curl -s -X POST -H @<(printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY") \
   "$PAPERCLIP_API_BASE/api/agents/me/secrets/github_token/value"
 ```
 

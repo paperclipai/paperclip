@@ -385,7 +385,7 @@ export TWEET_WORK_ISSUE="$(
 )"
 
 curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H @<(printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY") \
   -H "Content-Type: application/json" \
   --data "$(jq -cn --arg issueId "$TWEET_WORK_ISSUE" '{ issueId: $issueId, role: "work" }')" \
   "$PAPERCLIP_API_URL/api/cases/$TWEET_CASE/issue-links" >/dev/null
