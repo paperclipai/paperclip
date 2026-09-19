@@ -229,17 +229,38 @@ export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: reado
   );
 }
 
-/** Called only after the required review boundary did not match. */
+/** Called after the boundary matcher; reject only with durable proof of the wrong ordering. */
 export function storyUnexercisedReviewBoundary(
   issues: StoryIssue[],
   runs: StoryRun[],
+  parentId: string,
+  leadId: string,
 ): string | undefined {
   if (issues.length === 0 || runs.length === 0) return;
   if (!issues.every((issue) =>
     issue.status === "done" && !issue.scheduledRetry && !issue.activeRecoveryAction,
   )) return;
   if (!runs.every((run) => run.status === "succeeded")) return;
-  return "Review handoff boundary not exercised: all tasks finished without evidence of a blocked parent before the review wake.";
+  const child = issues.find((issue) => issue.parentId === parentId);
+  const accepted = child?.interactions?.flatMap((interaction) => {
+    const review = storyAcceptedAgentReview(child, interaction.id, leadId, runs);
+    return review ? [review] : [];
+  })[0];
+  const reviewRun = accepted && runs.find((run) => run.id === accepted.resolvedByRunId);
+  const reviewStartedAt = Date.parse(reviewRun?.startedAt ?? "");
+  const parentRuns = runs.filter((run) =>
+    run.nativeIssueId === parentId ||
+    run.contextSnapshot?.issueId === parentId ||
+    run.contextSnapshot?.taskId === parentId,
+  );
+  // Snapshots are fetched separately. Missing review evidence is not proof that it
+  // never happened; wait unless persisted timestamps rule out the required order.
+  if (!Number.isFinite(reviewStartedAt) || parentRuns.length === 0) return;
+  if (!parentRuns.every((run) => {
+    const finishedAt = Date.parse(run.finishedAt ?? "");
+    return Number.isFinite(finishedAt) && finishedAt > reviewStartedAt;
+  })) return;
+  return "Review handoff boundary not exercised: the accepted review started before any parent run finished, so the blocked-parent-before-review ordering was not tested.";
 }
 
 export function storyLifecycleChecks(input: {

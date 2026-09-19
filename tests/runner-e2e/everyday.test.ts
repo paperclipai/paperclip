@@ -24,6 +24,7 @@ import {
   storyParentCompletionPrecedesReview,
   storyAcceptedAgentReview,
   type StoryRun,
+  type StoryIssue,
 } from "./everyday-observations.js";
 
 describe("everyday workflow grader and review timing", () => {
@@ -57,16 +58,44 @@ describe("everyday workflow grader and review timing", () => {
 
 describe("unexercised review boundary diagnostics", () => {
   const done = { id: "parent", companyId: "company", title: "task", status: "done" };
-  const completed = { id: "run", companyId: "company", agentId: "lead", status: "succeeded" };
-  it("fails promptly when all work finishes without the required review ordering", () => {
-    expect(storyUnexercisedReviewBoundary([done], [completed])).toContain("not exercised");
+  const completed = {
+    id: "run", companyId: "company", agentId: "lead", status: "succeeded",
+    nativeIssueId: "parent", finishedAt: "2026-09-19T14:47:48.134Z",
+  };
+  const child = {
+    ...done, id: "child", parentId: "parent", interactions: [{
+      id: "card", issueId: "child", kind: "request_confirmation", status: "accepted",
+      addresseeAgentId: "lead", resolvedByAgentId: "lead", resolvedByRunId: "review",
+      createdAt: "2026-09-19T14:47:04.000Z", resolvedAt: "2026-09-19T14:47:21.876Z",
+      payload: { target: { type: "custom", key: "native_completion_review", revisionId: "decision" } },
+      result: { version: 1, outcome: "accepted" },
+    }],
+  };
+  const review = {
+    ...completed, id: "review", nativeIssueId: "child", startedAt: "2026-09-19T14:47:05.802Z",
+    contextSnapshot: { nativeReviewInteractionId: "card", nativeReviewDecisionId: "decision" },
+  };
+  const diagnose = (issues: StoryIssue[] = [done, child], runs: StoryRun[] = [completed, review]) =>
+    storyUnexercisedReviewBoundary(issues, runs, "parent", "lead");
+  it("fails promptly with persisted proof that review preceded parent completion", () => {
+    expect(diagnose()).toContain("not exercised");
   });
   it("does not preempt in-flight finalization, recovery, or unfinished work", () => {
-    expect(storyUnexercisedReviewBoundary([done], [{ ...completed, status: "running" }])).toBeUndefined();
-    expect(storyUnexercisedReviewBoundary([{ ...done, scheduledRetry: {} }], [completed])).toBeUndefined();
-    expect(storyUnexercisedReviewBoundary([{ ...done, activeRecoveryAction: {} }], [completed])).toBeUndefined();
-    expect(storyUnexercisedReviewBoundary([{ ...done, status: "blocked" }], [completed])).toBeUndefined();
-    expect(storyUnexercisedReviewBoundary([], [])).toBeUndefined();
+    expect(diagnose([done, child], [{ ...completed, status: "running" }, review])).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([{ ...done, scheduledRetry: {} }, child], [completed, review], "parent", "lead")).toBeUndefined();
+    expect(storyUnexercisedReviewBoundary([{ ...done, activeRecoveryAction: {} }, child], [completed, review], "parent", "lead")).toBeUndefined();
+    expect(diagnose([{ ...done, status: "blocked" }, child])).toBeUndefined();
+    expect(diagnose([], [])).toBeUndefined();
+  });
+  it("waits when separately fetched snapshots lack review evidence or timestamps", () => {
+    expect(diagnose([done, { ...child, interactions: [] }])).toBeUndefined();
+    expect(diagnose([done, child], [completed])).toBeUndefined();
+    expect(diagnose([done, child], [{ ...completed, finishedAt: "" }, review])).toBeUndefined();
+    expect(diagnose([done, child], [completed, { ...review, startedAt: "" }])).toBeUndefined();
+    expect(diagnose([done, child], [review])).toBeUndefined();
+  });
+  it("does not reject a completed workflow with the required timing", () => {
+    expect(diagnose([done, child], [{ ...completed, finishedAt: review.startedAt }, review])).toBeUndefined();
   });
 });
 

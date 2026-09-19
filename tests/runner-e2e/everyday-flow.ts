@@ -694,7 +694,7 @@ export async function runEverydayFlow(input: Input) {
           );
           return failed
             ? `Review handoff prerequisite failed: ${failed.errorCode}: ${failed.error}`
-            : storyUnexercisedReviewBoundary(state.issues, state.runs);
+            : storyUnexercisedReviewBoundary(state.issues, state.runs, parent!.id, fixtures.agent.id);
         },
       });
       const child = boundary.issues.find((issue) => issue.parentId === parent!.id)!;
