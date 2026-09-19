@@ -22,6 +22,20 @@ subscription quota exhaustion merely because ACP labels them `limit`.
   environment env (or host env), or a Claude Code subscription login
   available to the execution target
 
+### AWS Bedrock with EKS IRSA
+
+For a local Claude ACP run on EKS with IAM Roles for Service Accounts (IRSA),
+the child process receives `AWS_ROLE_ARN`,
+`AWS_WEB_IDENTITY_TOKEN_FILE`, and the optional `AWS_ROLE_SESSION_NAME` from
+the local host environment. These variables join the existing allowlist of
+Claude and AWS settings. The local Claude environment
+probe accepts the same values when they are supplied in adapter configuration;
+it does not copy arbitrary host environment values. The web-identity token
+file must be readable by the Claude child process. Runner-backed remote
+sandboxes do not receive host credentials through this projection; configure
+AWS authentication in the target environment or through its explicit adapter
+configuration, with a token file path that exists on that target.
+
 ## Configuration Fields
 
 | Field | Type | Required | Description |

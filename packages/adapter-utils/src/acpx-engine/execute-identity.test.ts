@@ -119,6 +119,9 @@ describe("acpx identity split and launch environment", () => {
       CLAUDE_CODE_USE_BEDROCK: "true",
       ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example",
       AWS_BEARER_TOKEN_BEDROCK: "bedrock-host-secret",
+      AWS_ROLE_ARN: "arn:aws:iam::111122223333:role/paperclip",
+      AWS_WEB_IDENTITY_TOKEN_FILE: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+      AWS_ROLE_SESSION_NAME: "paperclip-test",
       OPENROUTER_API_KEY: "openrouter-host-secret",
       GOOGLE_GENAI_USE_GCA: "true",
       KIMI_MODEL_NAME: "kimi-code/test",
@@ -152,6 +155,9 @@ describe("acpx identity split and launch environment", () => {
       CLAUDE_CODE_USE_BEDROCK: "true",
       ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example",
       AWS_BEARER_TOKEN_BEDROCK: "bedrock-host-secret",
+      AWS_ROLE_ARN: "arn:aws:iam::111122223333:role/paperclip",
+      AWS_WEB_IDENTITY_TOKEN_FILE: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+      AWS_ROLE_SESSION_NAME: "paperclip-test",
     });
     expect(projectAcpxInheritedHostEnvironment(inherited, "pi", true)).toEqual({
       PATH: "/usr/bin",
@@ -177,16 +183,22 @@ describe("acpx identity split and launch environment", () => {
     });
   });
 
-  it("does not project any ambient host environment across a remote boundary", () => {
-    const inherited = {
-      PATH: "/host/bin",
-      OPENAI_API_KEY: "ambient-provider-secret",
-      PAPERCLIP_NATIVE_MCP_TOKEN: "ambient-native-mcp-secret",
-      PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "ambient-bootstrap-secret",
-    };
+  it.each(["codex", "claude"] as const)(
+    "does not project any ambient host environment across a remote boundary for %s",
+    (acpxAgent) => {
+      const inherited = {
+        PATH: "/host/bin",
+        OPENAI_API_KEY: "ambient-provider-secret",
+        AWS_ROLE_ARN: "arn:aws:iam::111122223333:role/paperclip",
+        AWS_WEB_IDENTITY_TOKEN_FILE: "/var/run/secrets/eks.amazonaws.com/serviceaccount/token",
+        AWS_ROLE_SESSION_NAME: "paperclip-test",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "ambient-native-mcp-secret",
+        PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: "ambient-bootstrap-secret",
+      };
 
-    expect(projectAcpxInheritedHostEnvironment(inherited, "codex", false)).toEqual({});
-  });
+      expect(projectAcpxInheritedHostEnvironment(inherited, acpxAgent, false)).toEqual({});
+    },
+  );
 
   it("keeps explicit remote adapter and run contributions while rejecting ambient authority", () => {
     const launchEnvironment = finalizeLaunchEnvironment(
