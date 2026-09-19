@@ -498,6 +498,17 @@ describe("ensureBundledPlugins", () => {
     expect(deps.lifecycle.load).not.toHaveBeenCalled();
   });
 
+  it("ignores object key order when comparing a distribution manifest read from JSONB", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const manifest = { ...makeManifest("acme.widget", "0.1.0"), entrypoints: { worker: "dist/worker.js", ui: "dist/ui" } };
+    const reordered = { entrypoints: { ui: "dist/ui", worker: "dist/worker.js" }, capabilities: [], version: "0.1.0", apiVersion: 1, id: "acme.widget" };
+    const { deps, loadManifest, update } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "ready", packagePath: localPath, manifestJson: reordered } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("swallows a reconcile error and continues boot", async () => {
     const { deps, update } = makeDeps({
       rows: {

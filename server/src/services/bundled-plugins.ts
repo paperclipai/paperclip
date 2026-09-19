@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { assertDistributionManifestCapabilities, readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
@@ -278,7 +279,7 @@ async function reconcileBundledPluginManifest(
       requiresApproval = bundleManifest.capabilities.some((capability) => !approved.has(capability));
     }
     const rebindPackage = install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
-    const refreshDistribution = install.distribution && JSON.stringify(bundleManifest) !== JSON.stringify(existing.manifestJson);
+    const refreshDistribution = install.distribution && !isDeepStrictEqual(bundleManifest, existing.manifestJson);
     if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval && !refreshDistribution) return;
     await deps.registry.update(existing.id, {
       version: bundleManifest.version,
