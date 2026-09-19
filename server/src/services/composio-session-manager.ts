@@ -170,11 +170,19 @@ export function createComposioSessionManager(db: Db, options: ComposioSessionMan
       return resolveCached(child, cached);
     }
 
+    // Composio's session-scoped meta-tools (COMPOSIO_SEARCH_TOOLS,
+    // COMPOSIO_MULTI_EXECUTE_TOOL, ...) belong to the "composio" toolkit
+    // itself, not to config.toolkitSlug. Composio's API rejects a request
+    // that tries to scope one of them under a child toolkit's own allowlist
+    // ("Tool slugs in config.tools must be configured under their owning
+    // toolkit"), so only toolkit-owned tool names go into `tools.enable`;
+    // the meta-tools stay implicitly available via tool_router_tools.
+    const toolkitScopedTools = tools.filter((tool) => !tool.startsWith("COMPOSIO_"));
     const client = options.composioClientFactory?.(apiKey) ?? createComposioClient({ apiKey });
     const session = await client.createSession(`paperclip:${child.companyId}`, {
       mcp: true,
       toolkits: [config.toolkitSlug],
-      ...(tools.length > 0 ? { tools: { [config.toolkitSlug]: { enable: tools } } } : {}),
+      ...(toolkitScopedTools.length > 0 ? { tools: { [config.toolkitSlug]: { enable: toolkitScopedTools } } } : {}),
       ...(config.connectedAccountId ? { connectedAccounts: { [config.toolkitSlug]: [config.connectedAccountId] } } : {}),
     });
     if (!session.mcp?.url) throw unprocessable("Composio did not return a hosted MCP URL.", { code: "composio_session_invalid" });
@@ -187,9 +195,18 @@ export function createComposioSessionManager(db: Db, options: ComposioSessionMan
       configPath: `${prefix}.url`,
       value: session.mcp.url,
     });
+    // Composio's tool_router/session response does not always echo back an
+    // x-api-key entry in mcp.headers, but the returned MCP endpoint still
+    // requires one on every call ("API key is required...", HTTP 401). Fall
+    // back to the parent connection's own project API key so a session with
+    // no explicit auth headers from Composio is still callable.
+    const mcpHeaders = { ...(session.mcp.headers ?? {}) };
+    if (!Object.keys(mcpHeaders).some((name) => name.toLowerCase() === "x-api-key")) {
+      mcpHeaders["x-api-key"] = apiKey;
+    }
     const priorHeaders = new Map((cached?.headerRefs ?? []).map((ref) => [ref.name.toLowerCase(), ref]));
     const headerRefs: SessionRef[] = [];
-    for (const [name, value] of Object.entries(session.mcp.headers ?? {})) {
+    for (const [name, value] of Object.entries(mcpHeaders)) {
       headerRefs.push(await createOrRotateRef({
         child,
         cached: priorHeaders.get(name.toLowerCase()),
