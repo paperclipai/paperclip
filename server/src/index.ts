@@ -35,6 +35,8 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  pruneDatabaseBackups,
+  DEFAULT_BACKUP_TIMEOUT_SECONDS,
   authUsers,
   companies,
   companyMemberships,
@@ -43,6 +45,10 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import {
+  createDatabaseBackupInFlightGuard,
+  resolveDatabaseBackupTimings,
+} from "./database-backup-in-flight-guard.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -811,20 +817,76 @@ async function startServerWithDatabaseTeardown(
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
-  let databaseBackupInFlight = false;
+  // The deadline and the guard's staleness threshold are resolved together,
+  // because a threshold below the deadline would let the next scheduled run
+  // take the lease over while the first backup is still inside its own valid
+  // deadline. See `resolveDatabaseBackupTimings`.
+  const { timeoutSeconds: databaseBackupTimeoutSeconds, staleAfterMs: databaseBackupStaleAfterMs } =
+    resolveDatabaseBackupTimings({
+      defaultTimeoutSeconds: DEFAULT_BACKUP_TIMEOUT_SECONDS,
+      onInvalid: (name, value) => {
+        logger.warn(
+          { setting: name, value },
+          `Ignoring ${name}: expected a positive, finite number of minutes`,
+        );
+      },
+      onRaisedToFloor: (name, requestedMinutes, effectiveMinutes) => {
+        logger.warn(
+          { setting: name, requestedMinutes, effectiveMinutes },
+          `Raising ${name} from ${requestedMinutes} to ${effectiveMinutes} minutes: ` +
+            `the staleness threshold must stay at least twice the backup deadline, ` +
+            `or a scheduled run could take the guard over while the backup holding ` +
+            `it is still inside its own deadline`,
+        );
+      },
+    });
+  const databaseBackupGuard = createDatabaseBackupInFlightGuard({
+    staleAfterMs: databaseBackupStaleAfterMs,
+  });
+  const pruneDatabaseBackupsOnSkip = async (): Promise<void> => {
+    try {
+      const { backupRetention } = await backupSettingsSvc.getGeneral();
+      const prunedCount = pruneDatabaseBackups({
+        backupDir: config.databaseBackupDir,
+        retention: backupRetention,
+        filenamePrefix: "paperclip",
+        orphanGraceSeconds: databaseBackupTimeoutSeconds,
+      });
+      if (prunedCount > 0) {
+        logger.info(
+          { prunedCount, backupDir: config.databaseBackupDir },
+          `Pruned ${prunedCount} old backup(s) while a previous backup was still running`,
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, backupDir: config.databaseBackupDir }, "Backup retention pruning failed");
+    }
+  };
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
   ): Promise<InstanceDatabaseBackupRunResult | null> => {
-    if (databaseBackupInFlight) {
+    const lease = databaseBackupGuard.acquire();
+    if (!lease.ok) {
       const message = "Database backup already in progress";
       if (trigger === "scheduled") {
-        logger.warn("Skipping scheduled database backup because a previous backup is still running");
+        logger.warn(
+          { heldForMs: lease.heldForMs, staleAfterMs: databaseBackupStaleAfterMs },
+          "Skipping scheduled database backup because a previous backup is still running",
+        );
+        // Retention must not be hostage to the backup finishing: a stuck backup
+        // stops pruning too, and the disk it is filling is often what stuck it.
+        await pruneDatabaseBackupsOnSkip();
         return null;
       }
       throw conflict(message);
     }
+    if (lease.tookOverAfterMs !== null) {
+      logger.error(
+        { abandonedAfterMs: lease.tookOverAfterMs, staleAfterMs: databaseBackupStaleAfterMs },
+        "Previous database backup never finished; treating it as abandoned and starting a new one",
+      );
+    }
 
-    databaseBackupInFlight = true;
     const startedAt = new Date();
     const startedAtMs = Date.now();
     const label = trigger === "scheduled" ? "Automatic" : "Manual";
@@ -839,6 +901,7 @@ async function startServerWithDatabaseTeardown(
         backupDir: config.databaseBackupDir,
         retention,
         filenamePrefix: "paperclip",
+        timeoutSeconds: databaseBackupTimeoutSeconds,
       });
       const finishedAt = new Date();
       const response: InstanceDatabaseBackupRunResult = {
@@ -867,7 +930,7 @@ async function startServerWithDatabaseTeardown(
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
       throw err;
     } finally {
-      databaseBackupInFlight = false;
+      lease.release();
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();

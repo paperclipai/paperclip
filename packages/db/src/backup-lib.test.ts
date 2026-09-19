@@ -1,10 +1,18 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  DatabaseBackupTimeoutError,
+  applyLocalBackupTimeouts,
+  createBufferedTextFileWriter,
+  pruneDatabaseBackups,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -71,6 +79,227 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+describe("runDatabaseBackup deadline", () => {
+  /**
+   * Accepts the connection and then answers nothing, ever. This is the shape
+   * that broke production: not a backup that *died* — a killed backup already
+   * recovers — but one that never settles, so every `finally` waiting on it,
+   * including the caller's in-flight guard, waits forever too.
+   */
+  async function startBlackHolePostgres(): Promise<string> {
+    const sockets: net.Socket[] = [];
+    const server = net.createServer((socket) => {
+      sockets.push(socket);
+      // Read the startup packet and reply with nothing.
+      socket.resume();
+    });
+    await new Promise<void>((resolveListening, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListening);
+    });
+    cleanups.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("black-hole postgres did not bind a TCP port");
+    }
+    return `postgres://paperclip:paperclip@127.0.0.1:${address.port}/paperclip`;
+  }
+
+  /**
+   * Same black hole, but it keeps what the client said first. The startup
+   * packet is the only thing a transaction-mode pooler inspects before it
+   * decides whether to accept the connection at all, so asserting on these
+   * bytes is what actually proves the backup can reach a pooled database.
+   */
+  async function startStartupPacketRecorder(): Promise<{
+    connectionString: string;
+    startupPacket: Promise<string>;
+  }> {
+    const sockets: net.Socket[] = [];
+    let resolvePacket: (packet: string) => void = () => {};
+    const startupPacket = new Promise<string>((resolve) => {
+      resolvePacket = resolve;
+    });
+    const server = net.createServer((socket) => {
+      sockets.push(socket);
+      socket.once("data", (chunk: Buffer) => {
+        resolvePacket(chunk.toString("latin1"));
+      });
+    });
+    await new Promise<void>((resolveListening, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolveListening);
+    });
+    cleanups.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("startup-packet recorder did not bind a TCP port");
+    }
+    return {
+      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${address.port}/paperclip`,
+      startupPacket,
+    };
+  }
+
+  it("keeps pooler-incompatible parameters out of the startup packet", async () => {
+    const { connectionString, startupPacket } = await startStartupPacketRecorder();
+    const backupDir = createTempDir("paperclip-db-backup-startup-packet-");
+
+    await expect(
+      runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+        filenamePrefix: "paperclip-startup",
+        connectTimeoutSeconds: 120,
+        timeoutSeconds: 2,
+        statementTimeoutSeconds: 30,
+      }),
+    ).rejects.toThrow(DatabaseBackupTimeoutError);
+
+    const packet = await startupPacket;
+
+    // pgbouncer and Supavisor track only a small set of startup parameters and
+    // refuse the connection outright on any other — so naming the timeouts here
+    // does not merely go unapplied, it stops the backup from connecting at all
+    // on every deployment that points `DATABASE_URL` at a transaction pooler.
+    // They belong in a `set_config` after connect instead.
+    expect(packet).toContain("application_name");
+    expect(packet).toContain("paperclip-backup");
+    expect(packet).not.toContain("statement_timeout");
+    expect(packet).not.toContain("idle_in_transaction_session_timeout");
+  }, 60_000);
+
+  it("rejects the caller when the backup never settles", async () => {
+    const connectionString = await startBlackHolePostgres();
+    const backupDir = createTempDir("paperclip-db-backup-deadline-");
+    const startedAtMs = Date.now();
+
+    // connect_timeout is deliberately far past the deadline: the point is that
+    // the *overall* deadline is what releases the caller, not a bound that only
+    // covers connection setup.
+    const backup = runDatabaseBackup({
+      connectionString,
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+      filenamePrefix: "paperclip-deadline",
+      connectTimeoutSeconds: 120,
+      timeoutSeconds: 1,
+    });
+
+    await expect(backup).rejects.toThrow(DatabaseBackupTimeoutError);
+    await expect(backup).rejects.toMatchObject({ timeoutMs: 1_000 });
+    expect(Date.now() - startedAtMs).toBeLessThan(30_000);
+  }, 60_000);
+
+  it("applies retention even though the backup never completes", async () => {
+    const connectionString = await startBlackHolePostgres();
+    const backupDir = createTempDir("paperclip-db-backup-deadline-retention-");
+    const ancient = path.join(backupDir, "paperclip-deadline-ancient.sql.gz");
+    const corpse = path.join(backupDir, "paperclip-deadline-20260911-015107.sql");
+
+    fs.writeFileSync(ancient, "an archive well past retention");
+    fs.writeFileSync(corpse, "a partial dump from a run that never unwound");
+    const longAgo = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(ancient, longAgo, longAgo);
+    fs.utimesSync(corpse, longAgo, longAgo);
+
+    await expect(
+      runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+        filenamePrefix: "paperclip-deadline",
+        connectTimeoutSeconds: 120,
+        timeoutSeconds: 1,
+      }),
+    ).rejects.toThrow(DatabaseBackupTimeoutError);
+
+    // Retention that only runs after a successful backup stops running exactly
+    // when a stuck backup makes it matter: here the disk keeps filling while
+    // nothing is ever pruned again.
+    expect(fs.existsSync(ancient)).toBe(false);
+    expect(fs.existsSync(corpse)).toBe(false);
+  }, 60_000);
+
+  it("leaves no compressed backup behind when the deadline fires", async () => {
+    const connectionString = await startBlackHolePostgres();
+    const backupDir = createTempDir("paperclip-db-backup-deadline-artifacts-");
+
+    await expect(
+      runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+        filenamePrefix: "paperclip-deadline",
+        connectTimeoutSeconds: 120,
+        timeoutSeconds: 1,
+      }),
+    ).rejects.toThrow(DatabaseBackupTimeoutError);
+
+    expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql.gz"))).toEqual([]);
+  }, 60_000);
+});
+
+describe("pruneDatabaseBackups", () => {
+  it("deletes raw .sql files a wedged run left behind, and spares recent ones", () => {
+    const backupDir = createTempDir("paperclip-db-backup-orphans-");
+    const corpse = path.join(backupDir, "paperclip-20260911-015107.sql");
+    const inProgress = path.join(backupDir, "paperclip-20260917-020000.sql");
+    const keptArchive = path.join(backupDir, "paperclip-20260917-010000.sql.gz");
+
+    fs.writeFileSync(corpse, "partial dump from a backup that never unwound");
+    fs.writeFileSync(inProgress, "a backup running right now, in another process");
+    fs.writeFileSync(keptArchive, "a real backup");
+
+    const sixDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(corpse, sixDaysAgo, sixDaysAgo);
+
+    const prunedCount = pruneDatabaseBackups({
+      backupDir,
+      retention: { dailyDays: 30, weeklyWeeks: 4, monthlyMonths: 12 },
+      filenamePrefix: "paperclip",
+      orphanGraceSeconds: 60 * 60,
+    });
+
+    expect(prunedCount).toBe(1);
+    expect(fs.existsSync(corpse)).toBe(false);
+    // Younger than the grace period: it may well be an active backup.
+    expect(fs.existsSync(inProgress)).toBe(true);
+    expect(fs.existsSync(keptArchive)).toBe(true);
+  });
+
+  it("applies retention without a backup having to succeed first", () => {
+    const backupDir = createTempDir("paperclip-db-backup-standalone-prune-");
+    const recent = path.join(backupDir, "paperclip-recent.sql.gz");
+    const ancient = path.join(backupDir, "paperclip-ancient.sql.gz");
+    const foreign = path.join(backupDir, "other-prefix-ancient.sql.gz");
+
+    for (const file of [recent, ancient, foreign]) fs.writeFileSync(file, "backup");
+    const longAgo = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(ancient, longAgo, longAgo);
+    fs.utimesSync(foreign, longAgo, longAgo);
+
+    const prunedCount = pruneDatabaseBackups({
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+      filenamePrefix: "paperclip",
+    });
+
+    expect(prunedCount).toBe(1);
+    expect(fs.existsSync(recent)).toBe(true);
+    expect(fs.existsSync(ancient)).toBe(false);
+    // A different prefix belongs to a different instance sharing the directory.
+    expect(fs.existsSync(foreign)).toBe(true);
   });
 });
 
@@ -599,6 +828,112 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       } finally {
         await restoreSql.end();
       }
+    },
+    20_000,
+  );
+});
+
+describeEmbeddedPostgres("runDatabaseBackup streaming COPY path", () => {
+  it(
+    "streams COPY data from inside the timeout-bounded transaction",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-copy-txn-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."copy_txn_rows" (
+            "id" integer PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+          CREATE TABLE "public"."copy_txn_skipped" ("id" integer PRIMARY KEY);
+          INSERT INTO "public"."copy_txn_rows" ("id", "payload")
+          SELECT g, 'row-' || g FROM generate_series(1, 500) AS g;
+        `);
+
+        // `excludeTables` is a transform, so pg_dump is not eligible while the
+        // engine still resolves to `auto` — the only combination that reaches
+        // the streaming COPY branch, and therefore the only one that exercises
+        // the transaction the COPY's `statement_timeout` is scoped to.
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-copy-txn",
+          backupEngine: "auto",
+          excludeTables: ["copy_txn_skipped"],
+          statementTimeoutSeconds: 30,
+        });
+
+        const backupSql = gunzipSync(await fs.promises.readFile(result.backupFile)).toString("utf8");
+        // Guards the test itself: without this the assertions below would still
+        // pass on the row-cursor path and prove nothing about COPY.
+        // Guards the test itself: without this the assertions below would still
+        // pass on the row-cursor path and prove nothing about COPY.
+        expect(backupSql).toContain(`COPY "public"."copy_txn_rows" ("id", "payload") FROM stdin;`);
+
+        // Every row has to survive the round trip through the transaction, not
+        // just the first chunk — a COPY that the transaction cut short would
+        // still emit the header and a truncated body.
+        const copyBody = backupSql
+          .split(`COPY "public"."copy_txn_rows" ("id", "payload") FROM stdin;\n`)[1]
+          ?.split("\n\\.")[0] ?? "";
+        const copiedRows = copyBody.split("\n").filter((line) => line.length > 0);
+        expect(copiedRows).toHaveLength(500);
+        expect(copiedRows[0]).toBe("1\trow-1");
+        expect(copiedRows.at(-1)).toBe("500\trow-500");
+      } finally {
+        await sourceSql.end();
+      }
+    },
+    60_000,
+  );
+});
+
+describeEmbeddedPostgres("applyLocalBackupTimeouts", () => {
+  it(
+    "binds the backup timeouts to the transaction, not to the session",
+    async () => {
+      const connectionString = await createTempDatabase();
+      const sql = postgres(connectionString, { max: 1 });
+      cleanups.push(async () => {
+        await sql.end({ timeout: 5 });
+      });
+
+      // `pg_settings.setting` reports the raw value in the GUC's own base unit
+      // (ms), so this does not depend on how PostgreSQL chooses to spell the
+      // interval back at us the way `current_setting` would.
+      const readTimeouts = async (handle: postgres.Sql) =>
+        await handle<{ name: string; setting: string }[]>`
+          SELECT name, setting
+          FROM pg_settings
+          WHERE name IN ('statement_timeout', 'idle_in_transaction_session_timeout')
+          ORDER BY name
+        `;
+
+      const before = await readTimeouts(sql);
+
+      const inside = await sql.begin(async (tx) => {
+        await applyLocalBackupTimeouts(tx, 7_000);
+        return await readTimeouts(tx as unknown as postgres.Sql);
+      });
+
+      // In force on the backend that runs the guarded statement — this is the
+      // half that a standalone, session-scoped `set_config` cannot guarantee
+      // through a transaction-mode pooler, because the pooler is free to run
+      // the protected statement on a different backend.
+      expect(inside).toEqual([
+        { name: "idle_in_transaction_session_timeout", setting: "7000" },
+        { name: "statement_timeout", setting: "7000" },
+      ]);
+
+      // ...and gone again the moment the transaction ends. A pooler hands that
+      // backend to the next client, so a setting that outlived the transaction
+      // would be a cross-tenant leak rather than a backstop.
+      const after = await readTimeouts(sql);
+      expect(after).toEqual(before);
+      expect(after.map((row) => row.setting)).not.toContain("7000");
     },
     20_000,
   );

@@ -1264,6 +1264,27 @@ Environment overrides:
   stale-backup warning threshold
 - `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
   wrappers surface the last failed backup in `/api/health`
+- `PAPERCLIP_DB_BACKUP_TIMEOUT_MINUTES=<minutes>` bounds a single backup run.
+  The default is `60`. A backup that exceeds it fails with a timeout instead of
+  waiting forever, and its database connections are destroyed so an abandoned
+  backend cannot keep pinning the cluster's vacuum horizon. Clamped to between
+  one minute and ~24.8 days — the longest delay Node's timer can hold, above
+  which it would silently fire at once and fail every backup. A value that is
+  not a positive, finite number of minutes is ignored with a warning and the
+  default applies.
+- `PAPERCLIP_DB_BACKUP_STALE_AFTER_MINUTES=<minutes>` is the backstop for the
+  in-flight guard: once a backup has held it this long it is treated as
+  abandoned and the next scheduled run takes over. It exists because a guard
+  released only in a `finally` is not enough — a `finally` runs when a promise
+  settles, and a deadlocked backup never settles at all.
+  **This setting can only raise the threshold, never lower it.** The floor is
+  twice `PAPERCLIP_DB_BACKUP_TIMEOUT_MINUTES` (and at least one minute), which
+  is also the default. A threshold below the backup deadline would let the next
+  scheduled run take the lease over while the first backup is still inside its
+  own valid deadline, running two database- and disk-intensive backups at once —
+  the overlap the guard exists to prevent. A value below the floor is raised to
+  it and logged at `warn`, naming both the requested and the effective value, so
+  the substitution is visible instead of silent.
 - `PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS=<days>` sets how long the
   terminal-workspace reaper waits after an issue tree becomes terminal before it
   archives the execution workspace and deletes the worktree. A person can reopen
