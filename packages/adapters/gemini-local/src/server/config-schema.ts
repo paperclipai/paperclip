@@ -23,6 +23,17 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.",
       },
       {
+        key: "cliCompat",
+        label: "CLI compatibility",
+        type: "select",
+        default: "gemini",
+        options: [
+          { value: "gemini", label: "Gemini CLI" },
+          { value: "agy", label: "Antigravity CLI (agy)" },
+        ],
+        hint: "When using the CLI lane, adapt flag/output parsing to the target CLI. agy shares stream-json/--prompt with Gemini but uses --dangerously-skip-permissions instead of --approval-mode yolo. Selecting agy forces the CLI lane (agy has no ACP server).",
+      },
+      {
         key: "agentCommand",
         label: "ACP server command",
         type: "text",

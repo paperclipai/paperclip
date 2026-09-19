@@ -3,6 +3,7 @@ import {
   detectGeminiAuthRequired,
   isGeminiTransientNetworkError,
   isGeminiSessionUnrecoverableError,
+  parseAgyJsonl,
   parseGeminiJsonl,
 } from "./parse.js";
 
@@ -211,5 +212,101 @@ describe("isGeminiTransientNetworkError", () => {
     expect(
       isGeminiTransientNetworkError("", "Error: unknown session 'abc-123'"),
     ).toBe(false);
+  });
+});
+
+describe("parseAgyJsonl", () => {
+  it("extracts conversation id, streamed text, response, and usage", () => {
+    const stdout = [
+      JSON.stringify({ event: "init", conversation_id: "conv-1", init: { cwd: "C:\\ws" } }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: { conversation_id: "conv-1", step_index: 0, state: "DONE", step_type: "user_input" },
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: { conversation_id: "conv-1", step_index: 2, state: "ACTIVE", step_type: "agent_response", text_delta: "PONG" },
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: "conv-1",
+          step_index: 2,
+          state: "DONE",
+          step_type: "agent_response",
+          text_delta: "\n",
+          duration_seconds: 1.7,
+          usage: { input_tokens: 21962, output_tokens: 67, cache_read_tokens: 0, total_tokens: 22029 },
+        },
+      }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conv-1",
+          status: "SUCCESS",
+          response: "PONG\n",
+          duration_seconds: 2.7,
+          num_turns: 1,
+          usage: { input_tokens: 22060, output_tokens: 70, thinking_tokens: 65, cache_read_tokens: 0, total_tokens: 22130 },
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parseAgyJsonl(stdout);
+
+    expect(parsed.sessionId).toBe("conv-1");
+    expect(parsed.summary).toBe("PONG");
+    expect(parsed.errorMessage).toBeNull();
+    expect(parsed.resultEvent).toMatchObject({ event: "result", status: "SUCCESS", response: "PONG\n" });
+    expect(parsed.usage.inputTokens).toBe(44022); // 21962 + 22060
+    expect(parsed.usage.outputTokens).toBe(137); // 67 + 70
+  });
+
+  it("accumulates streamed text across multiple agent_response deltas", () => {
+    const stdout = [
+      JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", state: "ACTIVE", text_delta: "Hel" } }),
+      JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", state: "ACTIVE", text_delta: "lo " } }),
+      JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", state: "DONE", text_delta: "world" } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "Hello world" } }),
+    ].join("\n");
+
+    const parsed = parseAgyJsonl(stdout);
+
+    expect(parsed.summary).toBe("Hello world");
+  });
+
+  it("reports a non-success result status as an error", () => {
+    const stdout = [
+      JSON.stringify({ event: "result", result: { status: "ERROR", response: "Something broke", error: "rate limited" } }),
+    ].join("\n");
+
+    const parsed = parseAgyJsonl(stdout);
+
+    expect(parsed.errorMessage).toBe("rate limited");
+    expect(parsed.summary).toBe("Something broke");
+  });
+
+  it("extracts an error event", () => {
+    const stdout = [
+      JSON.stringify({ event: "error", error: "not authenticated" }),
+    ].join("\n");
+
+    const parsed = parseAgyJsonl(stdout);
+
+    expect(parsed.errorMessage).toBe("not authenticated");
+  });
+
+  it("ignores unrelated event types", () => {
+    const stdout = [
+      JSON.stringify({ event: "init", conversation_id: "conv-9" }),
+      JSON.stringify({ event: "some_unknown", payload: { x: 1 } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "ok" } }),
+    ].join("\n");
+
+    const parsed = parseAgyJsonl(stdout);
+
+    expect(parsed.sessionId).toBe("conv-9");
+    expect(parsed.summary).toBe("ok");
+    expect(parsed.errorMessage).toBeNull();
   });
 });
