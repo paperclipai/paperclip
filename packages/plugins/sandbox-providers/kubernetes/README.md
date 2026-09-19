@@ -1,18 +1,23 @@
-# @paperclipai/plugin-kubernetes (alpha)
+# @paperclipai/plugin-kubernetes
 
 First-party Paperclip sandbox-provider plugin for Kubernetes.
 
-**Alpha:** the default backend (`sandbox-cr`) is built on `kubernetes-sigs/agent-sandbox` v1alpha1 — expect breaking changes as that CRD evolves toward Beta. A stable fallback backend (`job`, using `batch/v1` Job) is available for clusters without agent-sandbox installed, but it does NOT support multi-command exec (paperclip-server's adapter-install pattern requires sandbox-cr).
+**Maturity:** `sandbox-cr` is the default and fully supported backend. It runs on the
+[`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox)
+controller, which graduated its API to `v1beta1` in v0.5.0. The plugin discovers which
+version a cluster serves and addresses that one, so both a current controller (v0.5.0+,
+`v1beta1`) and an older one (`v1alpha1`) work without configuration. `job` is a
+dispatch-only backend for clusters that cannot run the controller.
 
 ## Prerequisites
 
 ### For `sandbox-cr` backend (default, recommended)
 
 1. A Kubernetes cluster running k8s 1.27+
-2. [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) controller installed in the cluster (alpha — installs the `sandboxes.agents.x-k8s.io/v1alpha1` CRD and controller)
+2. [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) controller installed in the cluster (installs the `sandboxes.agents.x-k8s.io` CRD and controller). v0.5.0 or newer serves `v1beta1`; older releases serve `v1alpha1` and are addressed as such.
 3. Paperclip-server running with access to the cluster (in-cluster via `inCluster: true` or external via `kubeconfig`)
 
-### For `job` backend (stable fallback)
+### For `job` backend (dispatch-only)
 
 1. A Kubernetes cluster running k8s 1.27+
 2. Paperclip-server with cluster access — no additional controllers or CRDs required
@@ -33,18 +38,18 @@ paperclipai plugin install --local /path/to/paperclip/packages/plugins/sandbox-p
 
 The plugin supports two backend modes, selected via the `backend` config field:
 
-| Backend | Default | Stability | Multi-command exec | Requires |
+| Backend | Default | Multi-command exec | Native file sync | Requires |
 |---|---|---|---|---|
-| `sandbox-cr` | Yes | Alpha | Yes | `kubernetes-sigs/agent-sandbox` controller |
-| `job` | No | Stable | No | Nothing beyond k8s 1.27+ |
+| `sandbox-cr` | Yes | Yes | Yes | `kubernetes-sigs/agent-sandbox` controller |
+| `job` | No | No | No | Nothing beyond k8s 1.27+ |
 
-**`sandbox-cr` (default):** Creates a `Sandbox` CR (`agents.x-k8s.io/v1alpha1`) whose controller provisions a long-lived pod running `sleep infinity`. paperclip-server execs individual commands into the running pod — this is the multi-command adapter-install pattern. When you `releaseLease`, the Sandbox CR is deleted and the controller tears down the pod.
+**`sandbox-cr` (default):** Creates a `Sandbox` CR in the `agents.x-k8s.io` group whose controller provisions a long-lived pod running `sleep infinity`. paperclip-server execs individual commands into the running pod — this is the multi-command adapter-install pattern. The API version is picked per cluster from discovery (`v1beta1` preferred, `v1alpha1` otherwise) and recorded on the lease, so a worker restart or a controller upgrade mid-lease still addresses the object it created. When you `releaseLease`, the Sandbox CR is deleted and the controller tears down the pod.
 
-**`job` (stable fallback):** Creates a `batch/v1` Job. The container entrypoint runs once and exits — no multi-command exec possible. Use this when you cannot install agent-sandbox, or when you need strictly stable Kubernetes APIs. Note: paperclip-server's adapter-install pattern will not work in job mode.
+**`job` (dispatch-only):** Creates a `batch/v1` Job. The container entrypoint runs once and exits, so there is no exec channel: no multi-command adapter install, and no native file sync (the server keeps its base64 fallback). Use it where the agent-sandbox controller cannot be installed, paired with a runtime image that already carries its adapter.
 
 ### Migrating from `job` to `sandbox-cr`
 
-1. Install the agent-sandbox controller: `kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/install.yaml`
+1. Install the agent-sandbox controller: `kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/sandbox.yaml`
 2. Update your environment config to set `backend: "sandbox-cr"` (or remove `backend` since `sandbox-cr` is the default)
 3. New leases will use the Sandbox CR backend. Existing leases created with `job` mode continue to use job semantics until they are released.
 
@@ -60,7 +65,7 @@ Common optional fields:
 
 | Field | Default | Purpose |
 |---|---|---|
-| `backend` | `"sandbox-cr"` | `sandbox-cr` (alpha, requires agent-sandbox controller) or `job` (stable, one-shot entrypoint). |
+| `backend` | `"sandbox-cr"` | `sandbox-cr` (requires the agent-sandbox controller; CR API version auto-detected) or `job` (dispatch-only, one-shot entrypoint). |
 | `adapterType` | `"claude_local"` | One of the supported adapter types (claude_local, codex_local, gemini_local, cursor_local, opencode_local, pi_local). Determines runtime image + env keys + egress allow-list. |
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
@@ -113,7 +118,7 @@ NetworkPolicy      paperclip-egress-allow         (DNS + paperclip-server callba
 For each agent run (sandbox-cr backend):
 
 ```
-Sandbox CR         pc-{ulid}                       (agents.x-k8s.io/v1alpha1; explicit delete on release)
+Sandbox CR         pc-{ulid}                       (agents.x-k8s.io, version auto-detected; explicit delete on release)
 Pod                pc-{ulid}-{podSuffix}           (managed by Sandbox controller; torn down on CR delete)
 Secret             pc-{ulid}-env                   (owned by Sandbox CR; cascade-deleted)
 ```
@@ -151,7 +156,7 @@ For stronger isolation, install [Kata Containers](https://github.com/kata-contai
 - **Phase A (done):** `sandbox-cr` backend — multi-command exec via agent-sandbox Sandbox CRD.
 - **Phase B:** Warm pool support — pre-provisioned Sandbox CRs for sub-second cold starts. The `SandboxOrchestrator` interface reserves optional `pause?`/`resume?` extension slots.
 - **Phase C:** Kata-FC + snapshots — `runtimeClassName: kata-fc` with VM snapshot for fast restore.
-- **Phase D:** Contribute back to agent-sandbox upstream if their Beta model diverges from our needs. The `SandboxOrchestrator` interface (`src/sandbox-orchestrator.ts`) is the clean swap point — a new implementation can be added without touching `plugin.ts` business logic.
+- **Phase D:** Contribute back to agent-sandbox upstream where their model diverges from our needs. The `SandboxOrchestrator` interface (`src/sandbox-orchestrator.ts`) is the clean swap point — a new implementation can be added without touching `plugin.ts` business logic.
 
 ## Lessons learned (from openclaw-operator)
 

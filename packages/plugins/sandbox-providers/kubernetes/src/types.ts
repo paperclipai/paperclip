@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { adapterRegistrySchema } from "./adapter-registry.js";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
+import type { SandboxApiVersion } from "./sandbox-api-version.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
@@ -56,14 +57,18 @@ export const kubernetesProviderConfigSchema = z
     /**
      * The sandbox backend to use.
      *
-     * - `"sandbox-cr"` (default, alpha) — uses the kubernetes-sigs/agent-sandbox
-     *   Sandbox CRD (agents.x-k8s.io/v1alpha1). Creates a long-lived pod that
-     *   paperclip-server can exec into for multi-command adapter-install workflows.
-     *   Requires the agent-sandbox controller to be installed in the cluster.
+     * - `"sandbox-cr"` (default) — uses the kubernetes-sigs/agent-sandbox Sandbox
+     *   CRD (`agents.x-k8s.io`). Creates a long-lived pod that paperclip-server
+     *   can exec into for multi-command adapter-install workflows. Requires the
+     *   agent-sandbox controller in the cluster; the served API version is
+     *   discovered per cluster (`v1beta1` preferred, `v1alpha1` for controllers
+     *   older than agent-sandbox v0.5.0).
      *
-     * - `"job"` — uses batch/v1 Job (stable fallback). One-shot entrypoint; does
-     *   NOT support multi-command exec. Use this for clusters without agent-sandbox
-     *   installed, or when you need stable (non-alpha) k8s APIs.
+     * - `"job"` — uses batch/v1 Job. Dispatch-only: the container entrypoint runs
+     *   once and exits, so there is no exec channel and therefore no
+     *   multi-command adapter install and no native file sync. Use it on clusters
+     *   where the agent-sandbox controller cannot be installed, and pair it with a
+     *   runtime image that carries its adapter preinstalled.
      */
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
   })
@@ -90,6 +95,14 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * Served Sandbox API version this lease's CR was created through
+   * (`v1beta1` or `v1alpha1`), recorded at acquisition so every later call
+   * addresses the same object even after a worker restart or a controller
+   * upgrade mid-lease. Absent on `job` leases (no CR) and on leases acquired
+   * before this field existed, where the version is rediscovered instead.
+   */
+  sandboxApiVersion?: SandboxApiVersion;
   scopedNetworkPolicyName: string | null;
   scopedNetworkEgress: {
     allowFqdns: string[];
