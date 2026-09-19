@@ -32,6 +32,7 @@ vi.mock("@/components/AsciiArtAnimation", () => ({
 vi.mock("../context/ThemeContext", () => ({
   useTheme: () => ({
     theme: "dark",
+    themePreference: "dark",
     setTheme: vi.fn(),
     toggleTheme: vi.fn(),
   }),
