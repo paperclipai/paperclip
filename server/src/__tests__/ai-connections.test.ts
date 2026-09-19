@@ -694,6 +694,7 @@ describe("managed AI connections", () => {
     app.use("/api", agentRoutes(db));
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     const selected = { provider: "openai", method: "api_key", mode: "responsible_user" } as const;
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 200 }));
     try {
       // Target resolution can return only warning checks. Adoption still must
       // fail closed, rather than quietly running the probe on the server host.
@@ -701,6 +702,7 @@ describe("managed AI connections", () => {
       const unavailable = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
       expect(unavailable.status, JSON.stringify(unavailable.body)).toBe(422);
       expect(probe).not.toHaveBeenCalled();
+      expect(providerRequest).not.toHaveBeenCalled();
       expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
       const saved = await request(app).patch(`/api/agents/${id}`).send({ runtimeConfig: { aiConnection: selected } });
       expect(saved.status, JSON.stringify(saved.body)).toBe(200);
@@ -708,10 +710,14 @@ describe("managed AI connections", () => {
       expect(saved.body.runtimeConfig.aiConnection).toEqual(selected);
       expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ companyId, environment: expect.objectContaining({ id: environment.id }) }));
       expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target, config: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol", managedAiConnection: expect.any(Object) }) }));
+      expect(providerRequest).toHaveBeenCalledWith("https://api.openai.com/v1/models", expect.objectContaining({
+        headers: { Authorization: "Bearer fixture-adoption-key" },
+        redirect: "error",
+      }));
       expect(release).toHaveBeenCalledTimes(2);
       expect(JSON.stringify(saved.body)).not.toContain("fixture-adoption-key");
     } finally {
-      probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
+      providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
   });
