@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import * as cloudIdentity from "../cloud-runtime-identity.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import {
@@ -156,6 +157,25 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: {},
       }),
     ).rejects.toThrow("paperclip_runner_tool_not_advertised");
+  });
+
+  it("returns public task URLs from the current claimed origin in context and search results", async () => {
+    const origin = vi.spyOn(cloudIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://board.example");
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    try {
+      expect(await authority.execute({ tool: "get_task_context", callId: "public-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { id: issueId, url: `https://board.example/issues/${issueId}` } });
+      expect(await authority.execute({ tool: "search_tasks", callId: "search-public-task-url", arguments: { query: "Exercise real runner tools" } }))
+        .toMatchObject({ tasks: expect.arrayContaining([expect.objectContaining({ id: issueId, url: `https://board.example/issues/${issueId}` })]) });
+      origin.mockReturnValue("https://renamed.example");
+      expect(await authority.execute({ tool: "get_task_context", callId: "renamed-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { url: `https://renamed.example/issues/${issueId}` } });
+      origin.mockReturnValue("https://localhost");
+      expect(await authority.execute({ tool: "get_task_context", callId: "unsafe-task-url", arguments: {} }))
+        .toMatchObject({ activeTask: { url: null } });
+    } finally {
+      origin.mockRestore();
+    }
   });
 
   it("exposes existing child tasks on continuation without crossing company boundaries", async () => {

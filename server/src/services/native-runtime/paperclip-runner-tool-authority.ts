@@ -1,3 +1,4 @@
+import { publicChatTaskUrl } from "../chat-task-url.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { authorizationService } from "../authorization.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
@@ -1657,6 +1658,7 @@ function redactedActor(actor: {
 function redactedTask(task: typeof issues.$inferSelect) {
   return {
     id: task.id,
+    url: publicChatTaskUrl(task.id),
     companyId: task.companyId,
     identifier: task.identifier,
     title: task.title,

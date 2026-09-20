@@ -1456,7 +1456,8 @@ connector proposal or PR. No separate private validation issue is required.
 
 Chat task links must use the server-resolved public board origin, including the
 current claimed Cloud origin. Supply the exact task URL in fresh and resumed
-agent context. Keep webhook ingress and internal API addresses separate from
+agent context. The native `get_task_context` and `search_tasks` tools also return
+a nullable `url` on task records. Keep webhook ingress and internal API addresses separate from
 human-facing task links. If no safe public URL is configured, say so instead of
 constructing a link. Keep the external-publication URL filter in place.
 
