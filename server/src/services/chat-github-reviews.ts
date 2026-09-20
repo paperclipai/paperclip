@@ -547,7 +547,9 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     if (name === "read_pull_request") {
       const parsed = readSchema.parse(input);
       if (parsed.section === "metadata") {
-        const review = await reviewForHead(source, pull);
+        const configuration = (source.delivery.normalizedEvent.githubManual ?? source.delivery.normalizedEvent.githubAutomatic) as
+          | { policy: GitHubReviewPolicy; revision: number }
+          | undefined;
         const previous = await githubPreviousAssessment(
           db,
           source.endpoint,
@@ -557,9 +559,8 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         return {
           untrusted: true,
           pull,
-          reviewId: review.id,
-          reviewPolicy: review.policySnapshot,
-          configurationRevision: review.configurationRevision,
+          reviewPolicy: configuration?.policy ?? source.policy,
+          configurationRevision: configuration?.revision ?? source.config.revision,
           previousAssessment: previous
             ? {
                 reviewedCommit: previous.headSha,
@@ -666,6 +667,14 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         sha: result.sha,
         size: result.size,
       };
+    }
+    if (name === "begin_review") {
+      const parsed = z.object({ reviewedCommit: githubCommitSchema }).strict().safeParse(input);
+      if (!parsed.success) throw new HttpError(400, "Provide the reviewedCommit from PR metadata");
+      if (parsed.data.reviewedCommit !== pull.head.sha)
+        throw conflict("The PR head changed. Read current metadata before starting a review.");
+      const review = await reviewForHead(source, pull);
+      return { reviewId: review.id, reviewedCommit: review.headSha, state: review.state };
     }
     if (name === "submit_review") {
       const review = await reviewForHead(source, pull);

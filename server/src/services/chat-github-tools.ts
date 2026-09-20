@@ -77,10 +77,21 @@ export const GITHUB_BOT_TOOLS = [
     ),
   },
   {
+    name: "begin_review",
+    title: "Start a pull request assessment",
+    description:
+      "Start or resume this run's assessment of an exact PR head and mark its Paperclip Review check pending. Call only when the authorized request is to review/re-review the PR, before analysis. Do not call for ordinary discussion or a standalone permission check. Metadata/file reads never change the rating.",
+    risk: "write",
+    schema: objectSchema(
+      { reviewedCommit: { type: "string", pattern: "^[a-fA-F0-9]{40}$" } },
+      ["reviewedCommit"],
+    ),
+  },
+  {
     name: "submit_review",
     title: "Submit a review assessment",
     description:
-      "Submit a structured assessment for this task's exact PR head. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Coverage reviewedPaths and omittedPaths name only allowed changed files from read_pull_request(files); describe additional context in the rationale. Follow the schema length limits. Incomplete analysis cannot pass. This never formally approves a PR.",
+      "Submit a structured assessment for this task's exact PR head. Use begin_review before starting an explicitly requested review. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Coverage reviewedPaths and omittedPaths name only allowed changed files from read_pull_request(files); describe additional context in the rationale. Follow the schema length limits. Incomplete analysis cannot pass. This never formally approves a PR.",
     risk: "write",
     // Share the input contract with server validation so discovery includes every
     // length/array bound; hidden limits caused real agents to abandon publication.

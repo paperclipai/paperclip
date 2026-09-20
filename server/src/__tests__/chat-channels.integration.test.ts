@@ -2312,10 +2312,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issues)
         .where(eq(issues.id, reviews[0].issueId));
       expect(task).toMatchObject({
+        title: "PR #81: Check review routing",
         assigneeAgentId: f.assignedAgentId,
         responsibleUserId: "owner-user",
         originKind: "chat_channel",
       });
+      const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.issueId, task.id));
+      expect(conversation.providerUrl).toBe("https://github.com/paperclipai/paperclip/pull/81");
       expect(reviews[0].event.sender.id).toBe("77");
       expect(reviews[0].event.author.id).toBe("42");
       expect(reviews[0].policySnapshot.ratingThreshold).toBe(5);
@@ -2395,7 +2398,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         issueId: conversation.issueId,
         runId: run.id,
       };
-      expect(await githubBotToolsForSession(db, session)).toHaveLength(5);
+      expect(await githubBotToolsForSession(db, session)).toHaveLength(6);
       expect(
         await githubBotToolsForSession(db, { ...session, issueId: randomUUID() }),
       ).toHaveLength(0);
@@ -2484,6 +2487,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await service.execute(session, "read_pull_request", {
         section: "metadata",
       });
+      // Merely discussing or inspecting a PR must not invalidate its rating.
+      expect(await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.endpointId, f.endpoint.id))).toHaveLength(0);
+      expect(mutations).toHaveLength(0);
+      await expect(service.execute(session, "begin_review", { reviewedCommit: "f".repeat(40) })).rejects.toThrow("head changed");
+      await service.execute(session, "begin_review", { reviewedCommit: head });
+      expect(await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.endpointId, f.endpoint.id))).toHaveLength(1);
       const assessment = {
         reviewedCommit: head,
         score: 2,
