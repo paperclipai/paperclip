@@ -950,6 +950,7 @@ async function buildReusableSandboxLeaseFingerprint(input: {
   companyId: string;
   environment: Environment;
   executionWorkspaceId: string | null;
+  issueId: string | null;
   agentId: string | null;
   adapterType: string | null;
   provider: string;
@@ -974,6 +975,7 @@ async function buildReusableSandboxLeaseFingerprint(input: {
         driver: input.environment.driver,
       },
       executionWorkspaceId: input.executionWorkspaceId,
+      ...(input.executionWorkspaceId ? {} : { projectlessIssueId: input.issueId }),
       agentId: input.agentId,
       adapterType: input.adapterType,
       provider: input.provider,
@@ -989,6 +991,7 @@ function buildReusableSandboxLeaseScope(input: {
   companyId: string;
   environmentId: string;
   executionWorkspaceId: string | null;
+  issueId: string | null;
   agentId: string | null;
   adapterType: string | null;
   provider: string;
@@ -996,7 +999,9 @@ function buildReusableSandboxLeaseScope(input: {
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   providerMetadata?: Record<string, unknown> | null;
 }): Record<string, unknown> | null {
-  if (!input.executionWorkspaceId || !input.agentId) return null;
+  // Chat tasks need not have a project workspace. Their task + agent identity
+  // is a stable, narrower reuse boundary; unscoped/ad-hoc probes cannot match it.
+  if ((!input.executionWorkspaceId && !input.issueId) || !input.agentId) return null;
   const providerMetadata = input.providerMetadata ?? {};
   const adapterType = input.adapterType ?? null;
   const remoteCwd = readString(providerMetadata.remoteCwd);
@@ -1008,6 +1013,7 @@ function buildReusableSandboxLeaseScope(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     executionWorkspaceId: input.executionWorkspaceId,
+    ...(input.executionWorkspaceId ? {} : { projectlessIssueId: input.issueId }),
     agentId: input.agentId,
     adapterType,
     provider: input.provider,
@@ -1029,6 +1035,7 @@ function reusableSandboxLeaseScopeMatches(input: {
   companyId: string;
   environmentId: string;
   executionWorkspaceId: string | null;
+  issueId: string | null;
   agentId: string | null;
   adapterType: string | null;
   provider: string;
@@ -1036,7 +1043,7 @@ function reusableSandboxLeaseScopeMatches(input: {
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   allowLegacyRuntimeFingerprint?: boolean;
 }): boolean {
-  if (!input.executionWorkspaceId || !input.agentId) return false;
+  if ((!input.executionWorkspaceId && !input.issueId) || !input.agentId) return false;
   const scope = input.lease.metadata?.reusableSandboxLease;
   if (!isRecord(scope)) return false;
   const adapterType = input.adapterType ?? null;
@@ -1044,6 +1051,7 @@ function reusableSandboxLeaseScopeMatches(input: {
     scope.companyId === input.companyId &&
     scope.environmentId === input.environmentId &&
     scope.executionWorkspaceId === input.executionWorkspaceId &&
+    (input.executionWorkspaceId !== null || scope.projectlessIssueId === input.issueId) &&
     scope.agentId === input.agentId &&
     scope.adapterType === adapterType &&
     scope.provider === input.provider;
@@ -1813,13 +1821,14 @@ function createSandboxEnvironmentDriver(
           supportsReusableLeases &&
           parsed.config.reuseLease &&
           input.heartbeatRunId !== null &&
-          input.executionWorkspaceId !== null &&
+          (input.executionWorkspaceId !== null || input.issueId !== null) &&
           input.agentId !== null
             ? await buildReusableSandboxLeaseFingerprint({
                 db,
                 companyId: input.companyId,
                 environment: input.environment,
                 executionWorkspaceId: input.executionWorkspaceId,
+                issueId: input.issueId,
                 agentId: input.agentId,
                 adapterType: input.adapterType,
                 provider: parsed.config.provider,
@@ -1842,13 +1851,14 @@ function createSandboxEnvironmentDriver(
           supportsReusableLeases &&
           parsed.config.reuseLease &&
           input.heartbeatRunId !== null &&
-          input.executionWorkspaceId !== null &&
+          (input.executionWorkspaceId !== null || input.issueId !== null) &&
           input.agentId !== null
           ? (await environmentsSvc.listLeases(input.environment.id))
               .filter((lease) =>
                 lease.leasePolicy === "reuse_by_environment" &&
                 reusableLeaseCanBeResumed({ lease, heartbeatRunId: input.heartbeatRunId }) &&
                 lease.executionWorkspaceId === input.executionWorkspaceId &&
+                (input.executionWorkspaceId !== null || lease.issueId === input.issueId) &&
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
@@ -1858,6 +1868,7 @@ function createSandboxEnvironmentDriver(
             companyId: input.companyId,
             environmentId: input.environment.id,
             executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issueId,
             agentId: input.agentId,
             adapterType: input.adapterType,
             provider: parsed.config.provider,
@@ -1880,7 +1891,7 @@ function createSandboxEnvironmentDriver(
           supportsReusableLeases &&
           parsed.config.reuseLease &&
           input.heartbeatRunId !== null &&
-          input.executionWorkspaceId !== null &&
+          (input.executionWorkspaceId !== null || input.issueId !== null) &&
           input.agentId !== null
           ? findReusableSandboxLeaseId({ config: storedConfig, leases: reusableExistingLeases })
           : null;
@@ -2044,6 +2055,7 @@ function createSandboxEnvironmentDriver(
               companyId: input.companyId,
               environmentId: input.environment.id,
               executionWorkspaceId: input.executionWorkspaceId,
+              issueId: input.issueId,
               agentId: input.agentId,
               adapterType: input.adapterType,
               provider: parsed.config.provider,
@@ -2179,13 +2191,14 @@ function createSandboxEnvironmentDriver(
         supportsReusableLeases &&
         parsed.config.reuseLease &&
         input.heartbeatRunId !== null &&
-        input.executionWorkspaceId !== null &&
+        (input.executionWorkspaceId !== null || input.issueId !== null) &&
         input.agentId !== null
           ? await buildReusableSandboxLeaseFingerprint({
               db,
               companyId: input.companyId,
               environment: input.environment,
               executionWorkspaceId: input.executionWorkspaceId,
+              issueId: input.issueId,
               agentId: input.agentId,
               adapterType: input.adapterType,
               provider: parsed.config.provider,
@@ -2196,13 +2209,14 @@ function createSandboxEnvironmentDriver(
         supportsReusableLeases &&
         parsed.config.reuseLease &&
         input.heartbeatRunId !== null &&
-        input.executionWorkspaceId !== null &&
+        (input.executionWorkspaceId !== null || input.issueId !== null) &&
         input.agentId !== null
           ? (await environmentsSvc.listLeases(input.environment.id))
               .filter((lease) =>
                 lease.leasePolicy === "reuse_by_environment" &&
                 reusableLeaseCanBeResumed({ lease, heartbeatRunId: input.heartbeatRunId }) &&
                 lease.executionWorkspaceId === input.executionWorkspaceId &&
+                (input.executionWorkspaceId !== null || lease.issueId === input.issueId) &&
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
@@ -2212,6 +2226,7 @@ function createSandboxEnvironmentDriver(
           companyId: input.companyId,
           environmentId: input.environment.id,
           executionWorkspaceId: input.executionWorkspaceId,
+          issueId: input.issueId,
           agentId: input.agentId,
           adapterType: input.adapterType,
           provider: parsed.config.provider,
@@ -2234,7 +2249,7 @@ function createSandboxEnvironmentDriver(
         supportsReusableLeases &&
         parsed.config.reuseLease &&
         input.heartbeatRunId !== null &&
-        input.executionWorkspaceId !== null &&
+        (input.executionWorkspaceId !== null || input.issueId !== null) &&
         input.agentId !== null
           ? findReusableSandboxLeaseId({ config: parsed.config, leases: reusableExistingLeases })
         : null;
@@ -2284,6 +2299,7 @@ function createSandboxEnvironmentDriver(
             companyId: input.companyId,
             environmentId: input.environment.id,
             executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issueId,
             agentId: input.agentId,
             adapterType: input.adapterType,
             provider: parsed.config.provider,

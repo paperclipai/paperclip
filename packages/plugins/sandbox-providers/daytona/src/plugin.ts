@@ -535,10 +535,10 @@ function parseProbeInteger(value: string | undefined | null): number | null {
 }
 
 function workspaceSentinelToken(input: {
-  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "adapterType">;
+  params: Pick<PluginEnvironmentAcquireLeaseParams, "companyId" | "environmentId" | "agentId" | "executionWorkspaceId" | "issueId" | "adapterType">;
   config: DaytonaDriverConfig;
 }): string | null {
-  if (!input.config.reuseLease || !input.params.agentId || !input.params.executionWorkspaceId) {
+  if (!input.config.reuseLease || !input.params.agentId || (!input.params.executionWorkspaceId && !input.params.issueId)) {
     return null;
   }
   return createHash("sha256")
@@ -548,6 +548,7 @@ function workspaceSentinelToken(input: {
       environmentId: input.params.environmentId,
       agentId: input.params.agentId,
       executionWorkspaceId: input.params.executionWorkspaceId,
+      ...(input.params.executionWorkspaceId ? {} : { projectlessIssueId: input.params.issueId }),
       adapterType: input.params.adapterType ?? null,
       image: input.config.image,
       snapshot: input.config.snapshot,
@@ -588,6 +589,7 @@ async function writeWorkspaceSentinel(input: {
       environmentId: input.params.environmentId,
       agentId: input.params.agentId,
       executionWorkspaceId: input.params.executionWorkspaceId,
+      ...(input.params.executionWorkspaceId ? {} : { projectlessIssueId: input.params.issueId }),
       adapterType: input.params.adapterType ?? null,
       provider: "daytona",
       writtenAt: new Date().toISOString(),

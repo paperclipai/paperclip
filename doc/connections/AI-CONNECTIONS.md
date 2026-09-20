@@ -151,6 +151,14 @@ identity before reusing the session; changing identity retires the previous owne
 Other managed harnesses retain per-turn cleanup. A suspended native execution
 whose credential identity changed must restart as a new execution.
 
+Warm sandbox execution requires both `reuseLease: true` and
+`runnerLifecycleMode: "warm"` on the environment. `runnerIdleTimeoutMs` bounds
+idle process retention. Chat tasks without a project reuse a sandbox only within
+the same company, environment, task, agent, and runtime configuration. They do
+not need an artificial project workspace. Other tasks, other agents, and ad-hoc
+connection tests cannot claim that retained sandbox. Daytona verifies a matching
+workspace sentinel before accepting either a workspace-scoped or task-scoped lease.
+
 Revocation blocks new invocations and refresh persistence. A running provider
 process may already hold credentials. The revoke confirmation lists attributed
 active runs and exposes the existing Stop action; it does not promise immediate

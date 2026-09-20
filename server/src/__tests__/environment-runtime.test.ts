@@ -21,6 +21,7 @@ import {
   environments,
   executionWorkspaces,
   heartbeatRuns,
+  issues,
   plugins,
   projects,
 } from "@paperclipai/db";
@@ -216,6 +217,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       await rm(root, { recursive: true, force: true }).catch(() => undefined);
     }
     await db.delete(environmentLeases);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(environments);
@@ -564,6 +566,68 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect.objectContaining({ providerLeaseId: reusableLease.providerLeaseId }),
       expect.any(Number),
     );
+  });
+
+  it.each(["same task", "different task", "different agent", "no task"])(
+    "scopes projectless reusable leases to their task and agent: %s", async (scenario) => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values([issueId, otherIssueId].map(id => ({
+      id, companyId: seeded.companyId, title: "Projectless chat", status: "in_progress",
+      assigneeAgentId: seeded.agentId,
+    })));
+    const nextAgentId = scenario === "different agent" ? randomUUID() : seeded.agentId;
+    if (nextAgentId !== seeded.agentId) await db.insert(agents).values({
+      id: nextAgentId, companyId: seeded.companyId, name: "Other agent", adapterType: "paperclip_runner",
+    });
+    let acquisitions = 0;
+    const call = vi.fn(async (_pluginId: string, method: string) => {
+      if (method === "environmentAcquireLease") return {
+        providerLeaseId: `projectless-${++acquisitions}`, metadata: { remoteCwd: "/workspace" },
+      };
+      if (method === "environmentResumeLease") return {
+        providerLeaseId: "projectless-1", metadata: { remoteCwd: "/workspace" },
+      };
+      if (method === "environmentReleaseLease") return undefined;
+      throw new Error(`Unexpected projectless lease method: ${method}`);
+    });
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    const first = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, issueId,
+      agentId: seeded.agentId, heartbeatRunId: seeded.runId, persistedExecutionWorkspace: null,
+    });
+    expect(first.lease.metadata?.reusableSandboxLease).toMatchObject({
+      projectlessIssueId: issueId, executionWorkspaceId: null, agentId: seeded.agentId,
+    });
+    await runtimeWithPlugin.releaseRunLeases(seeded.runId, "released", undefined, "stop_and_retain");
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId, companyId: seeded.companyId, agentId: nextAgentId, status: "running",
+    });
+    if (scenario === "different task" || scenario === "different agent") {
+      await expect(environmentService(db).acquireLease({
+        companyId: seeded.companyId, environmentId: seeded.environment.id,
+        issueId: scenario === "different task" ? otherIssueId : issueId,
+        heartbeatRunId: nextRunId, executionWorkspaceId: null,
+        provider: "fake-plugin", providerLeaseId: first.lease.providerLeaseId,
+        leasePolicy: "reuse_by_environment", replacesReusableLeaseId: first.lease.id,
+        metadata: { agentId: nextAgentId },
+      })).rejects.toMatchObject({ status: 409 });
+    }
+    const next = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment,
+      issueId: scenario === "no task" ? null : scenario === "different task" ? otherIssueId : issueId,
+      agentId: nextAgentId, heartbeatRunId: nextRunId, persistedExecutionWorkspace: null,
+    });
+    const shouldResume = scenario === "same task";
+    expect(next.lease.providerLeaseId).toBe(shouldResume ? "projectless-1" : "projectless-2");
+    expect(acquisitions).toBe(shouldResume ? 1 : 2);
+    expect(call.mock.calls.filter((entry) => entry[1] === "environmentResumeLease")).toHaveLength(shouldResume ? 1 : 0);
   });
 
   it("resumes the same provider lease on the next per-turn run", async () => {
