@@ -395,3 +395,8 @@ navigation but not form interactions; a user refresh was requested. Personal
 identity linking, real task/run reviews, live publication, and staging remain
 unverified. No outcome has been seeded in the database or manually published as
 an agent result.
+
+The disposable fixture branch `codex/qa-discount-regression` at `76028b7` is now
+pushed to the private repository, ready for PR creation after identity linking.
+No PR, agent run, review, or check has been created yet. Storybook remains
+available on port 6017 with 49 GitHub review stories.
