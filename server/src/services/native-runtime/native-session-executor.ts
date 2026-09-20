@@ -11358,7 +11358,6 @@ async function createRunnerdBackendWithinSessionClaim(
                       throw new Error("runner_harness_state_mismatch");
                     }
                   }
-                  await materializeRemoteHarnessLaunchState();
                 } else if (remoteTarget && remoteCommandRunner) {
                   // Local and generic SSH execution retain their existing checkpoint
                   // behavior. The manifest-only failover gate applies to managed sandbox
@@ -11401,6 +11400,11 @@ async function createRunnerdBackendWithinSessionClaim(
           );
           remoteHarnessStatePrepared = true;
         }
+        // Resume can prepare/rotate durable state before the transport creates
+        // this invocation's isolated Codex auth/config. The later launch must
+        // still stage those fresh files even when history was already restored.
+        // Launch material is never recovered from a failover backup.
+        await materializeRemoteHarnessLaunchState();
         if (
           remoteTarget &&
           remoteCommandRunner &&

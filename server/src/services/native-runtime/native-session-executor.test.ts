@@ -9998,6 +9998,7 @@ describe("runnerd provider runtime wiring", () => {
     const sessionRoot = join(runtimeRoot, "sessions", createHash("sha256").update(execution.session.normalizedSessionId!).digest("hex"));
     if (scenario === "existing_state") await mkdir(sessionRoot, { recursive: true });
     if (scenario === "symlink_parent") await symlink(isolatedStateDirectory, join(runtimeRoot, "sessions"));
+    const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
       if (command.args?.[2] === "paperclip-runner-claim-unstarted-session") {
         let exitCode = 1;
@@ -10030,7 +10031,7 @@ describe("runnerd provider runtime wiring", () => {
         leaseId: "lease-resumed", providerKey: "daytona",
         effectiveCapabilities: { runnerWebSocketIngress: true },
         sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox-retained" },
-        runner: { execute: remoteExecute },
+        runner: { execute: remoteExecute, syncIn },
       } as never,
     });
     expect(backend).toBeDefined();
@@ -10056,6 +10057,21 @@ describe("runnerd provider runtime wiring", () => {
       expect((await lstat(sessionRoot)).mode & 0o777).toBe(0o700);
       // The exact same claim cannot silently reopen an existing partial root.
       expect(() => execFileSync("sh", claimCommand.args!, { stdio: "pipe" })).toThrow();
+      // Authority rotation prepares history before Codex's resume path writes
+      // the current invocation's launch files. A second preparation must stage
+      // those files without trying to claim/restore the session a second time.
+      const home = join(options.stateDirectory!, "codex-home");
+      await mkdir(home, { recursive: true });
+      await writeFile(join(home, "auth.json"), "fixture-current-credential");
+      await writeFile(join(home, "config.toml"), "fixture-current-config");
+      syncIn.mockClear();
+      await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+      for (const name of ["auth.json", "config.toml"]) {
+        expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
+          files: [expect.objectContaining({ sourcePath: join(home, name), kind: "file", mode: 0o600 })],
+        })]);
+      }
+      expect(remoteExecute.mock.calls.filter(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")).toHaveLength(1);
     } else {
       await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch");
       expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
