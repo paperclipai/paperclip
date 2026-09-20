@@ -8,7 +8,7 @@ import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
-  issues, nativeRunFinalizations, type Db,
+  issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
@@ -195,8 +195,21 @@ export async function admitExplicitNativeContinuation(input: {
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
-    if (!cancelledStartup && coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
-        coordinator.resultId || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
+    // A provider failure can finish the normal result/assessment commit path.
+    // Its accepted failed result is immutable history, not a live controller.
+    // Only a new user turn may pass this gate; the process/lease stop proofs
+    // below remain mandatory and no previous action is automatically replayed.
+    const [committedFailure] = coordinator?.phase === "committed" && coordinator.resultId && run.status === "failed"
+      ? await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+          eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
+          eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
+          eq(nativeRunResults.schemaStatus, "accepted"),
+          sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
+        )).limit(1)
+      : [];
+    if (!cancelledStartup && coordinator && (
+        (coordinator.phase !== "terminal_failure" && !committedFailure) || coordinator.leaseOwner ||
+        (coordinator.resultId && !committedFailure) || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
             : "Waiting for the previous run to finish recovery. Your message will start automatically.");
