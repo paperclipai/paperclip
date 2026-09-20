@@ -48,6 +48,7 @@ describe("typesafeApi", () => {
   });
 
   it.each([
+    [400, "typesafe_invalid_request", 422, false],
     [401, "typesafe_api_key_rejected", 502, false],
     [403, "typesafe_api_key_rejected", 502, false],
     [422, "typesafe_invalid_request", 422, false],
