@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -31,10 +32,33 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
+
+  async function seedCompanyAndAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Concurrent Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -112,5 +136,48 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  // TES-2107. The unit suite fakes the database, so only this case proves the
+  // checkout-lock and assignee lookups are valid queries against the real schema.
+  it("resolves a timer wake's scope from durable state, not the snapshot", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    // Exactly what a board/timer wake persists: no issueId, no taskId.
+    const timerSnapshot = { actorId: "local-board", wakeSource: "on_demand", triggeredBy: "board" };
+    const lockedRunId = randomUUID();
+    const looseRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: lockedRunId, companyId, agentId, status: "running", responsibleUserId: "board-user", contextSnapshot: timerSnapshot },
+      { id: looseRunId, companyId, agentId, status: "running", responsibleUserId: "board-user", contextSnapshot: timerSnapshot },
+    ]);
+
+    const checkedOutIssueId = randomUUID();
+    const ownedIssueId = randomUUID();
+    const strangerIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: checkedOutIssueId, companyId, title: "Checked out", checkoutRunId: lockedRunId, assigneeAgentId: agentId },
+      { id: ownedIssueId, companyId, title: "Owned but not checked out", assigneeAgentId: agentId },
+      { id: strangerIssueId, companyId, title: "Someone else's work" },
+    ]);
+
+    const base = { companyId, agentId, kind: "update" as const, now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT };
+
+    // The checkout lock stands in for the source issue the snapshot never wrote,
+    // so the run's own issue is free — as it would be for a snapshot wake.
+    await expect(observeCrossIssueInfluence(db, { ...base, runId: lockedRunId, targetIssueId: checkedOutIssueId }))
+      .resolves.toBeNull();
+    // Reaching past it to another issue is metered, lock or no lock.
+    await expect(observeCrossIssueInfluence(db, { ...base, runId: lockedRunId, targetIssueId: ownedIssueId }))
+      .resolves.toMatchObject({ allowed: true, count: 1 });
+
+    // With no lock at all, the agent can still dispose of its own assigned work.
+    await expect(observeCrossIssueInfluence(db, { ...base, runId: looseRunId, targetIssueId: ownedIssueId }))
+      .resolves.toMatchObject({ allowed: true, count: 1 });
+    // But an unassigned, un-checked-out issue is still unattributable.
+    await expect(observeCrossIssueInfluence(db, { ...base, runId: looseRunId, targetIssueId: strangerIssueId }))
+      .rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_influence_run_context_required" },
+      });
   });
 });
