@@ -1,9 +1,20 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals } from "@paperclipai/db";
+import { TERMINAL_GOAL_STATUSES } from "@paperclipai/shared";
 
 type GoalReader = Pick<Db, "select">;
 
+const notTerminal = notInArray(goals.status, [...TERMINAL_GOAL_STATUSES]);
+
+/**
+ * Picks the goal a new issue attaches to when the caller supplies no `goalId`.
+ *
+ * Every tier excludes achieved/cancelled goals. A company whose only
+ * company-level goal is closed out gets `null` — an unattached issue is
+ * reportable as unattached, whereas one silently bound to a finished goal
+ * disappears from goal progress entirely.
+ */
 export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
   const activeRootGoal = await db
     .select()
@@ -20,7 +31,7 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
     .then((rows) => rows[0] ?? null);
   if (activeRootGoal) return activeRootGoal;
 
-  const anyRootGoal = await db
+  const openRootGoal = await db
     .select()
     .from(goals)
     .where(
@@ -28,16 +39,19 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
         eq(goals.companyId, companyId),
         eq(goals.level, "company"),
         isNull(goals.parentId),
+        notTerminal,
       ),
     )
     .orderBy(asc(goals.createdAt))
     .then((rows) => rows[0] ?? null);
-  if (anyRootGoal) return anyRootGoal;
+  if (openRootGoal) return openRootGoal;
 
   return db
     .select()
     .from(goals)
-    .where(and(eq(goals.companyId, companyId), eq(goals.level, "company")))
+    .where(
+      and(eq(goals.companyId, companyId), eq(goals.level, "company"), notTerminal),
+    )
     .orderBy(asc(goals.createdAt))
     .then((rows) => rows[0] ?? null);
 }

@@ -565,6 +565,9 @@ export type GoalLevel = (typeof GOAL_LEVELS)[number];
 export const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
+/** Goal statuses that are closed out. New work must never be attached to one. */
+export const TERMINAL_GOAL_STATUSES = ["achieved", "cancelled"] as const;
+
 export const PROJECT_STATUSES = [
   "backlog",
   "planned",
