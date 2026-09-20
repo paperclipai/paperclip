@@ -1,3 +1,5 @@
+import { githubGuestBotConnectionForSession, githubBotToolsForSession } from "./chat-github-tools.js";
+import { githubChatReviewService } from "./chat-github-reviews.js";
 import { runIdentityContexts } from "@paperclipai/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
@@ -242,7 +244,8 @@ export type ToolGatewayProviderType =
   | "mcp_local_stdio"
   | "paperclip_self"
   | "paperclip_plugin"
-  | "paperclip_virtual";
+  | "paperclip_virtual"
+  | "paperclip_github_chat";
 
 export interface ConnectedMcpGatewayMetadata {
   applicationId: string;
@@ -2629,7 +2632,8 @@ export function createToolGatewayService(
     const connectedTools = await connectedMcpToolsForCompany(session.companyId);
     const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
-    const tool = [...allTools(), ...connectedTools, ...virtualTools]
+    const githubBotTools = await githubBotToolsForSession(db, session);
+    const tool = [...allTools(), ...connectedTools, ...virtualTools, ...githubBotTools]
       .filter(
         (candidate) =>
           session.agentId ||
@@ -2645,6 +2649,9 @@ export function createToolGatewayService(
         { tool: toolName },
       );
     }
+    const guestBotConnection = await githubGuestBotConnectionForSession(db, session);
+    if (guestBotConnection && tool.connectionId && (tool.connectionId !== guestBotConnection || tool.providerType !== "paperclip_github_chat"))
+      throw new ToolGatewayHttpError(403, "Sponsored GitHub runs can only use their bot's governed connection; sponsorship does not grant personal credentials", "guest_connection_denied");
     if (session.identityContextId && session.agentId && tool.connectionId) {
       const [connection] = await db
         .select()
@@ -2838,12 +2845,14 @@ export function createToolGatewayService(
     if (session.agentId) {
       await assertAgentInCompany(session.companyId, session.agentId);
     }
-    const allConnectedTools = await connectedMcpToolsForCompany(
+    const guestBotConnection = await githubGuestBotConnectionForSession(db, session);
+    const allConnectedTools = (await connectedMcpToolsForCompany(
       session.companyId,
-    );
+    )).filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
     const onDemandTargets = allConnectedTools.filter(isOnDemandRemoteTool);
     const tools = [
       ...allTools(),
+      ...await githubBotToolsForSession(db, session),
       ...allConnectedTools.filter((tool) => !isOnDemandRemoteTool(tool)),
     ].filter(
       (tool) =>
@@ -2902,9 +2911,14 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
     parameters: unknown,
+    invocationId?: string,
   ) {
     const params = asRecord(parameters) ?? {};
 
+    if (tool.providerType === "paperclip_github_chat") {
+      const data = await githubChatReviewService(db).execute(session, tool.upstreamToolName ?? "", parameters, invocationId);
+      return { content: JSON.stringify(data), data };
+    }
     if (tool.name === "mcp-remote-fixture:echo") {
       return {
         content: String(params.message ?? ""),
@@ -7893,7 +7907,7 @@ export function createToolGatewayService(
               ).result
             : tool.providerType !== "paperclip_plugin"
               ? await runWithTimeout(
-                  executeBuiltinTool(session, tool, parameters),
+                  executeBuiltinTool(session, tool, parameters, invocation.id),
                   executionTimeoutMs,
                 )
               : (() => {
@@ -10326,7 +10340,7 @@ export function createToolGatewayService(
                 executionTimeoutMs,
               )
             : await runWithTimeout(
-                executeBuiltinTool(session, tool, effectiveParameters),
+                executeBuiltinTool(session, tool, effectiveParameters, invocationId),
                 executionTimeoutMs,
               );
 

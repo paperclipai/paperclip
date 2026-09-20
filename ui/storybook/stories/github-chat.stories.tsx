@@ -23,6 +23,15 @@ export const StartHere: Story = {
   args: { persistKey: "github-chat-design-draft-v3" },
 };
 export const ChooseAgent: Story = { name: "01 · Choose agent" };
+export const StandardTrustWarning: Story = {
+  name: "01 · Agent without low-trust review",
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.selectOptions(canvas.getByRole("combobox", { name: /Paperclip agent/ }), "Atlas");
+    await expect(canvas.getByRole("alert")).toHaveTextContent("Atlas is not configured for low-trust review");
+    await expect(canvas.getByRole("link", { name: /Learn about low-trust agents/ })).toHaveAttribute("href", "https://docs.paperclip.ing/administration/trust-and-low-trust-review/");
+  },
+};
 export const CreateApp: Story = {
   name: "02 · Create GitHub App",
   args: { initialStep: 1 },

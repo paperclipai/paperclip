@@ -343,6 +343,8 @@ export {
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
+export * from "./types/chat-github.js";
+export * from "./validators/chat-github.js";
 export * from "./validators/chat-channels.js";
 export {
   humanizeConnectionDisplayName,

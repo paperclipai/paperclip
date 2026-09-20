@@ -1,4 +1,6 @@
 import { defaultSlackAppName, slackBotNameForAgent } from "./slack-app-name";
+import { GitHubChatSetup } from "./GitHubChatSetup";
+import { GitHubAgentTrustWarning } from "@/components/GitHubAgentTrustWarning";
 import { SetupWizardFooter } from "@/components/SetupWizard";
 import { ChatSetupNavigation } from "@/components/chat/ChatSetupNavigation";
 import { SlackAvatarStep } from "./SlackAvatarStep";
@@ -103,7 +105,7 @@ export function isChatEndpointRepairing(
 
 export function ChatEndpointSetup() {
   const [params] = useSearchParams();
-  return params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
+  return params.get("provider") === "github" ? <GitHubChatSetup /> : params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
 }
 function ChatSdkEndpointSetup() {
   const [params, setParams] = useSearchParams();
@@ -480,6 +482,7 @@ function ChatSdkEndpointSetup() {
               placeholder="Choose an active agent"
               emptyMessage="No active agents are available."
             />}
+            {provider === "github" && <GitHubAgentTrustWarning agent={selectedAgent} />}
             <SetupWizardFooter onSaveExit={() => navigate("/apps")}>
               <Button
                 disabled={!agentId || createEndpoint.isPending}

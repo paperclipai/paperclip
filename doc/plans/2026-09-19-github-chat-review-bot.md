@@ -1,14 +1,15 @@
 # GitHub chat connector with agent-powered PR reviews
 
 Date: 2026-09-19
-Status: Storybook design review; functional implementation awaits user approval.
+Status: Design approved on 2026-09-19. Functional implementation and private-repository local/staging browser qualification authorized.
 
 ## Source and milestone
 
 Freshly fetched origin/master worktrees:
 
 - Paperclip: `codex/github-chat-review-bot`, base `04546c82d`.
-- Cloud: `codex/github-chat-review-ingress`, base `6072ef7`.
+- Cloud: `codex/github-chat-review-ingress`, base `6072ef7`; ingress implementation `c74f786`.
+- Docs: `codex/github-low-trust-docs`, base `480c133`; trust guide update `0eedb32`.
 
 The first deliverable is an interactive, simulated Storybook journey. It does not
 implement a connector, store credentials, call GitHub, or prove agent execution.
@@ -43,7 +44,7 @@ must not enable reviews or broaden permissions.
 Use the shared design system, setup sidebar, visible field help, step-owned
 footer, and saved/resumable progress. Steps:
 
-1. Choose the permanent agent assignment.
+1. Choose the permanent agent assignment. Warn immediately if the selected agent is not configured for `low_trust_review`; link the maintained Paperclip Docs trust guide. Do not silently change permissions. Verify boundary and sandbox prerequisites separately.
 2. Connect GitHub App, preferring manifest registration; support existing App
    credentials and reconnect. Explain public HTTPS before registration. Keep raw
    manifests, URLs, and recovery diagnostics behind supporting links.
@@ -181,11 +182,11 @@ The agent submits a structured assessment; server validation and a deterministic
 comparison with the saved threshold determine the check. The agent cannot submit
 an arbitrary passing conclusion. Validate score, coverage, head SHA, findings,
 line locations, rationale, and execution identity. Incomplete analysis has no
-passing score regardless of threshold. A proposed rubric for implementation:
+passing score regardless of threshold. The implementation uses this rubric:
 
 | Score | Meaning |
 | --- | --- |
-| 0 | Fundamentally broken or an immediate critical risk |
+| 0 | Incomplete analysis or no reliable assessment; cannot pass |
 | 1 | Critical defects prevent safe use |
 | 2 | Major correctness/security defects remain |
 | 3 | Material actionable defects remain |
@@ -268,3 +269,48 @@ require browser login.
 Initial scope is GitHub.com, UI-managed configuration, and the selected agent's
 repository context. Cross-repository indexing, learned feedback, repository config
 files, and auto-fix are deferred.
+
+
+## Implementation qualification log (2026-09-19)
+
+The approved setup and management UI, database migration, task admission, bot
+capability bridge, structured assessment/publication outbox, and narrow Cloud
+routes are implemented in the worktrees named above. The UI warns for standard
+agents and links the existing Paperclip Docs low-trust guide; a separate Docs
+worktree adds GitHub-specific guidance to that guide.
+
+Verified so far:
+
+- Workspace typecheck and application build; subsequent focused server/UI
+  typechecks; token gates; Storybook build.
+- Focused integration cases use an isolated real database and mocked GitHub
+  responses: signed PR event admission into ordinary tasks, delivery deduplication,
+  member/guest access and sponsor revocation, registration state expiry/replay,
+  current repository access checks, task-scoped tools, exact-head scoring,
+  disabled/enabled formal review, immutable assessments, idempotent retries,
+  previous assessment/delta context, failing-to-passing checks, one current
+  summary, and incomplete checks. These do not establish live agent behavior.
+- Cloud: 1,617 tests passed, 33 skipped, no failures on Node 22; smoke:qa and
+  server/web builds passed. Docs: static build passed (258 pages).
+- Browser: Storybook agent warning; real isolated authenticated setup with the
+  warning, documentation link, existing-App form, Back navigation and saved
+  stage after restart. A disposable private GitHub repository was created.
+- GitHub rejected a manifest callback URL containing the registration state.
+  Fixed the implementation to send state in the registration URL and leave the
+  callback URL plain, following GitHub's manifest protocol. The corrected form
+  still needs a successful live registration.
+
+The latest GitHub-focused selection passed 173 tests; policy validation passed
+11 tests. A separate guest test confirms no GitHub credential export. The full
+connector suite passed 1,012 of 1,013 tests; the existing rapid Slack callback
+ordering case failed once under load and passed its focused rerun. Do not report
+this as a completely green full-suite run.
+
+Qualification is incomplete. The complete Paperclip test command is running.
+Chrome reports that an extension popup blocks automation on the GitHub setup
+page; the user has been asked to dismiss it. No GitHub App installation, real
+agent PR-review run, live tool invocation, live review/check, or staging deployment
+has been claimed as successful. The local AWS staging profile is unavailable;
+the existing pre-merge staging deployment workflow is the next deployment path
+to qualify after the local GitHub workflow succeeds. No production rollout or
+merge has occurred.

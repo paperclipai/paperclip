@@ -1,5 +1,6 @@
 import { isRemoteMcpConnectorMethod, connectionPurposeTransportSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
+import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
@@ -16559,6 +16560,23 @@ export function toolAccessService(
   }
 
   return {
+    /** Identity-only verification: no bot installation/repository access required. */
+    verifyPersonalGitHubIdentity: async (companyId: string, connectionId: string, userId: string) => {
+      const [connection] = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.enabled, true)));
+      if (!connection || (connection.config.sourceTemplateKey !== "github" && connection.transportConfig?.sourceTemplateKey !== "github")) throw notFound("GitHub connection not found");
+      const [ownGrant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, userId), eq(connectionGrants.status, "active")));
+      if (!ownGrant) throw forbidden("Connect your own GitHub account first. Shared and agent connections cannot prove your identity.");
+      const actor = { actorType: "user" as const, actorId: userId };
+      const grant = await refreshOAuthGrantCredentials({ companyId, connectionId, grantId: ownGrant.id, actor });
+      const accessRef = grant.credentialSecretRefs.find(ref => ref.configPath === "oauth.access_token");
+      if (!accessRef) throw unprocessable("Reconnect your personal GitHub connection");
+      const { value } = await resolveOAuthGrantSecret(connection, grant, accessRef, actor, undefined);
+      const identity = await githubBotRequest<{ id?: number; login?: string; avatar_url?: string }>(fetch, value, "/user");
+      if (!Number.isSafeInteger(identity.id) || !identity.id || !identity.login || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(identity.login)) throw unprocessable("GitHub returned an invalid account identity");
+      const [current] = await db.select({ id: connectionGrants.id }).from(connectionGrants).where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, companyId), eq(connectionGrants.subjectUserId, userId), eq(connectionGrants.status, "active")));
+      if (!current) throw forbidden("Your GitHub connection was revoked. Connect it again.");
+      return { githubUserId: String(identity.id), login: identity.login, avatarUrl: identity.avatar_url ?? null, connectionId, grantId: grant.id };
+    },
     preflightGalleryAppMetadata,
     approvedStdioTemplates: async (
       companyId: string,

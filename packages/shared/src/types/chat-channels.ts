@@ -188,6 +188,13 @@ export interface SlackAppConfiguration {
 }
 
 export interface ChatEndpointSetupState {
+  github?: {
+    stage: "connect" | "install" | "repositories" | "verify" | "identity" | "behavior" | "test";
+    appSlug?: string;
+    installationUrl?: string;
+    managementUrl?: string;
+    registrationStatus?: "pending" | "completed" | "failed";
+  };
   step: "choose_agent" | "provider_setup" | "test" | "complete";
   /** Server-generated boundary; only provider events at or after this time can complete setup. */
   testStartedAt?: string | null;

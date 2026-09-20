@@ -1,5 +1,6 @@
 import { publicChatTaskUrl } from "./chat-task-url.js";
 import { toolActionDeliveryService } from "./tool-action-delivery.js";
+import { githubBotConnectionIdsForRun } from "./chat-github-tools.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
@@ -4552,6 +4553,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     )
     .map(({ id, name }) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
+  const githubBotConnectionIds = await githubBotConnectionIdsForRun(input.db, input.agent.companyId, input.agent.id, input.runId);
   const assignedConnections = resolvedInstalledConnections.filter(
     (connection) =>
       permittedConnectionIds.has(connection.id) &&
@@ -4562,7 +4564,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           connection.transportConfig?.sourceTemplateKey === "github")) ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
       (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio"),
+        connection.transport === "local_stdio" || githubBotConnectionIds.has(connection.id)),
   );
   const unhealthyConnections = resolvedInstalledConnections.filter(
     (connection) =>

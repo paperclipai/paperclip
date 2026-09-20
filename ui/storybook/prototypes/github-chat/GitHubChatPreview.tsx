@@ -1,3 +1,4 @@
+import { GitHubAgentTrustWarning } from "@/components/GitHubAgentTrustWarning";
 import { AccessEditor } from "./AccessEditor";
 import { useState, type ReactNode } from "react";
 import {
@@ -961,6 +962,7 @@ export function GitHubChatPreview({
                       <strong>{draft.agent}</strong>. Linked people use their
                       Paperclip permissions.
                     </Notice>
+                    <GitHubAgentTrustWarning agent={{ name: draft.agent, permissions: { trustPreset: draft.agent === "Code Reviewer" ? "low_trust_review" : "standard" } }} />
                     {footer("Continue", () => go(1))}
                   </>
                 )}

@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   finishSlackSetup: vi.fn(),
   generateSetupSecret: vi.fn(),
   listPrincipals: vi.fn(),
+  listResources: vi.fn().mockResolvedValue([]),
   createLinkIntent: vi.fn(),
   confirmIdentityLink: vi.fn(),
   pushToast: vi.fn(),
@@ -34,6 +35,10 @@ const mocks = vi.hoisted(() => ({
   setParams: vi.fn(),
 }));
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: mocks }));
+vi.mock("@/api/githubChat", () => ({ githubChatApi: {
+  configuration: async () => ({ revision: 0, configuration: {} }),
+  progress: async () => mocks.get(),
+} }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "owner-user", name: "Owner" } }) } }));
 vi.mock("@/api/health", () => ({ healthApi: { get: async () => ({ deploymentMode: "authenticated" }) } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: mocks.listAgents, get: mocks.getAgent } }));
@@ -587,9 +592,9 @@ describe("chat setup and identity-link clipboard actions", () => {
     "lets %s setup revisit the agent without duplicating the connection or losing provider fields",
     async (provider) => {
       await render(provider);
-      const nav = container.querySelector('aside nav[aria-label="Connection setup progress"]')!;
+      const nav = container.querySelector(provider === "github" ? 'nav[aria-label="Setup progress"]' : 'aside nav[aria-label="Connection setup progress"]')!;
       expect(nav).not.toBeNull();
-      expect(container.querySelector("main nav")).toBeNull();
+      if (provider !== "github") expect(container.querySelector("main nav")).toBeNull();
       const steps = [...nav.querySelectorAll("button")];
       expect(steps[1].getAttribute("aria-current")).toBe("step");
       expect(steps[2].disabled).toBe(true);
@@ -603,13 +608,14 @@ describe("chat setup and identity-link clipboard actions", () => {
       expect([...container.querySelectorAll("main input")]).toEqual(fields);
       expect(mocks.create).not.toHaveBeenCalled();
       await click("1Choose agent");
-      await click(provider === "slack" ? "2Create Slack app" : "2Connect provider");
+      await click(provider === "slack" ? "2Create Slack app" : provider === "github" ? "2Connect GitHub App" : "2Connect provider");
       expect(steps[1].getAttribute("aria-current")).toBe("step");
     },
   );
 
   it("copies the one-time webhook secret through the same fallback", async () => {
     await render("github");
+    await click("Use an existing App");
     await click("Generate webhook secret");
     await click("Copy webhook secret");
     expect(copied).toEqual([secret]);
@@ -618,6 +624,7 @@ describe("chat setup and identity-link clipboard actions", () => {
 
   it("reports a failed secret copy without exposing the secret or an unhandled rejection", async () => {
     await render("github");
+    await click("Use an existing App");
     await click("Generate webhook secret");
     execCommand.mockReturnValue(false);
     await click("Copy webhook secret");
@@ -634,6 +641,7 @@ describe("chat setup and identity-link clipboard actions", () => {
   // once and then nothing. The inline state has to answer every click.
   it("still shows a repeated copy failure the toast would have deduplicated", async () => {
     await render("github");
+    await click("Use an existing App");
     await click("Generate webhook secret");
     execCommand.mockReturnValue(false);
 

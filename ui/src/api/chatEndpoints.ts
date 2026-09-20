@@ -30,6 +30,7 @@ export type ChatEndpointSetupAction =
   "configure" | "verify" | "pause" | "resume" | "reconnect" | "remove";
 
 export interface ChatEndpointResource {
+  metadata?: Record<string, unknown>;
   id: string;
   type: string;
   providerResourceId: string;
@@ -41,6 +42,8 @@ export interface ChatEndpointResource {
 }
 
 export interface ChatIdentityLink {
+  githubUserId?: string;
+  githubLogin?: string | null;
   id: string;
   principalId: string;
   /** Latest discovery-only connect command received by this endpoint. */
@@ -120,6 +123,7 @@ export interface ChatEndpoint {
   conversations?: ChatConversation[];
   activity?: ChatActivityItem[];
   setup?: {
+    github?: import("@paperclipai/shared").ChatEndpointSetupState["github"];
     step: string;
     testStartedAt?: string | null;
     testSkipped?: boolean;
