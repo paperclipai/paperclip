@@ -289,6 +289,7 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
   it.each([
     [429, 429, "typesafe_rate_limited", true],
     [529, 503, "typesafe_overloaded", true],
+    [400, 422, "typesafe_invalid_request", false],
     [422, 422, "typesafe_invalid_request", false],
     [401, 502, "typesafe_api_key_rejected", false],
   ])("surfaces provider %i as %i without retrying", async (providerStatus, status, code, retryable) => {

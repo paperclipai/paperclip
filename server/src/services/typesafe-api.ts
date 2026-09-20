@@ -40,12 +40,19 @@ const UNREACHABLE: TypesafeFailure = {
   httpStatus: 503,
   retryable: true,
 };
-// 529 is not a registered status; 503 carries the same meaning to HTTP clients.
+const INVALID_REQUEST: TypesafeFailure = {
+  code: "typesafe_invalid_request",
+  httpStatus: 422,
+  retryable: false,
+};
 const FAILURES: Record<number, TypesafeFailure> = {
+  // Undocumented: the live API answers 400 for an unknown model name.
+  400: INVALID_REQUEST,
   401: KEY_REJECTED,
   403: KEY_REJECTED,
-  422: { code: "typesafe_invalid_request", httpStatus: 422, retryable: false },
+  422: INVALID_REQUEST,
   429: { code: "typesafe_rate_limited", httpStatus: 429, retryable: true },
+  // 529 is not a registered status; 503 carries the same meaning to HTTP clients.
   529: { code: "typesafe_overloaded", httpStatus: 503, retryable: true },
 };
 

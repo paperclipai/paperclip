@@ -34,7 +34,8 @@ The connection is identified by `config.sourceTemplateKey === "typesafe"`.
 Health and catalog refresh resolve the vaulted key and call `GET /v1/models`.
 This proves the key. It does not prove the model: the list holds aliases only,
 and TypeSafe accepts versioned IDs that the list omits. A wrong model name
-surfaces as 422 on the first question.
+surfaces as 422 `typesafe_invalid_request` on the first question. The provider
+answers 400 for an unknown model, which its error table does not list.
 
 | Provider result | Health code | HTTP |
 | --- | --- | --- |
@@ -72,7 +73,7 @@ full contract is in `skills/typesafe/SKILL.md`.
 
 | Provider status | Response | Code |
 | --- | --- | --- |
-| 422 | 422 | `typesafe_invalid_request` |
+| 400 or 422 | 422 | `typesafe_invalid_request` |
 | 429 | 429 | `typesafe_rate_limited`, `retryable: true` |
 | 529 | 503 | `typesafe_overloaded`, `retryable: true` |
 | 401 or 403 | 502 | `typesafe_api_key_rejected` |
@@ -110,5 +111,23 @@ decides whether to retry.
 
 ## Live proof
 
-Pending. Deterministic fixtures cover every path above; the provider contract
-still needs one run against the real API with an operator-supplied key.
+Run on 2026-09-20 against `https://api.typesafe.ai/v1` with an operator key,
+through the real service code and an embedded database. Only the key was
+external. No key, state or answer text is recorded here.
+
+| Step | Result |
+| --- | --- |
+| `GET /v1/models` | 200. Body is `{ models: [{ name, description, release_date }] }`. It lists `jev-latest` and `jev-preview` only. |
+| Connect with an invalid key | 422 `typesafe_api_key_rejected`. No connection and no secret remain. |
+| Connect with a valid key | Health "ok", "TypeSafe API key is connected.", empty catalog. |
+| Finish with all agents, then ask 3 questions (`noul`, `choice`, `score`) | 200. Provider model `jev-1.13.0`. Usage 390 input and 73 output tokens. All three answer shapes parse. |
+| Ask with the pinned model `jev-1.13.0` | 200. The list omits this ID and the provider accepts it. |
+| Ask with an unknown model | Provider 400 `api_usage_error`. Paperclip returns 422 `typesafe_invalid_request`. |
+| Activity rows | Model, question count and token usage only. The pinned model shows as redacted, as described above. |
+| Remove the install, then ask | 403. |
+
+Not covered by this run: the setup screens in the browser, and the 429 and 529
+paths, which the provider did not produce.
+
+One difference from the provider documentation: the API accepts a `score` with
+one level. Paperclip keeps the documented minimum of two.
