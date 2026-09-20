@@ -237,6 +237,13 @@ RUN set -eu; \
     test -f "$dir/dist/manifest.js" || { echo "ERROR: $dir is missing dist/manifest.js after build" >&2; exit 1; }; \
   done
 
+# Native ACPX/OpenCode sessions stage a verified, build-owned provider pack
+# into the managed sandbox. Global CLI installs are not that artifact.
+FROM build AS cloud-runner-providers
+RUN PAPERCLIP_RUNNER_SOURCE_REVISION="$PAPERCLIP_BUILD_COMMIT" \
+    node packages/paperclip-runner/scripts/build-provider-pack.mjs /opt/paperclip/runner-provider-pack \
+  && test -f /opt/paperclip/runner-provider-pack/provider-pack.json
+
 # The hosted image variant ships selected optional peer packages
 # pre-installed. A managed tenant then needs no separate install step.
 # The self-hosted image stays on the opt-in contract: it never runs this
@@ -294,6 +301,8 @@ RUN set -eu; \
   pnpm add --ignore-workspace --no-lockfile $specifiers
 
 FROM production AS cloud
+COPY --chown=node:node --from=cloud-runner-providers /opt/paperclip/runner-provider-pack /opt/paperclip/runner-provider-pack
+ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip/runner-provider-pack
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
 # Land the isolated install inside the server's own `node_modules`, the
 # directory Node's module resolution walks up to from `/app/server` for
