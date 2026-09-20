@@ -104,6 +104,16 @@ type NewIssueDialogViewportStyle = CSSProperties & {
 function readVisualViewportLayout(): VisualViewportLayout | null {
   if (typeof window === "undefined" || !window.visualViewport) return null;
   const { height, offsetTop } = window.visualViewport;
+  // Mobile browsers can briefly report unusable geometry while the visual
+  // viewport initializes or animates. Applying it collapses the dialog.
+  if (
+    !Number.isFinite(height)
+    || height <= 0
+    || !Number.isFinite(offsetTop)
+    || offsetTop < 0
+  ) {
+    return null;
+  }
   return {
     height,
     offsetTop,

@@ -35,9 +35,9 @@ async function installVisualViewport(page: Page, layoutHeight: number) {
   }, { initialHeight: layoutHeight });
 }
 
-async function renderDialog(page: Page, viewport: ViewportCase) {
+async function renderDialog(page: Page, viewport: ViewportCase, initialVisualHeight = viewport.layoutHeight) {
   await page.setViewportSize({ width: viewport.width, height: viewport.layoutHeight });
-  await installVisualViewport(page, viewport.layoutHeight);
+  await installVisualViewport(page, initialVisualHeight);
   await page.goto(`/iframe.html?id=${STORY_ID}&viewMode=story`, { waitUntil: "load" });
   await page.waitForFunction(() => {
     const body = document.body;
@@ -53,6 +53,25 @@ async function renderDialog(page: Page, viewport: ViewportCase) {
   await expect(page.getByRole("button", { name: "Create Task" })).toBeEnabled();
   return dialog;
 }
+
+test("does not collapse the new-task dialog during a transient zero-height visual viewport reading", async ({ page }) => {
+  const viewport = VIEWPORT_CASES[0];
+  const dialog = await renderDialog(page, viewport, 0);
+
+  await expect.poll(async () => dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  })).toEqual({ top: 16, bottom: viewport.layoutHeight - 16 });
+
+  await constrainVisualViewport(page, viewport);
+  await expect.poll(async () => dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom };
+  })).toEqual({
+    top: viewport.offsetTop + 16,
+    bottom: viewport.offsetTop + viewport.visualHeight - 16,
+  });
+});
 
 async function constrainVisualViewport(page: Page, viewport: ViewportCase) {
   await page.evaluate(({ height, offsetTop }) => {
