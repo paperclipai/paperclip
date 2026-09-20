@@ -158,6 +158,40 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
 
   const oldEnough = () => new Date(Date.now() - 60 * 60 * 1000);
 
+  it.each([false, true])("releases an interrupted local run's bookkeeping lease (deleted environment: %s)", async (deletedEnvironment) => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db.delete(environments).where(eq(environments.driver, "local"));
+    await db.update(environments).set({ driver: "local", config: {} }).where(eq(environments.id, environmentId));
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "interrupted" });
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({
+      id: leaseId, companyId, environmentId, heartbeatRunId: runId,
+      status: "active", leasePolicy: "ephemeral", provider: "local",
+      providerLeaseId: null, metadata: { driver: "local" }, updatedAt: oldEnough(),
+    });
+    if (deletedEnvironment) await db.delete(environments).where(eq(environments.id, environmentId));
+
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 0 });
+
+    expect(await leaseRow(leaseId)).toMatchObject({ status: "expired", cleanupStatus: "success" });
+    expect((await leaseRow(leaseId))?.releasedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not discard an unexpected provider resource from a local lease", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db.delete(environments).where(eq(environments.driver, "local"));
+    await db.update(environments).set({ driver: "local", config: {} }).where(eq(environments.id, environmentId));
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "interrupted" });
+    const leaseId = await insertActiveLease({ companyId, environmentId, heartbeatRunId: runId,
+      updatedAt: oldEnough(), provider: "local", providerLeaseId: "unexpected-resource" });
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", metadata: { driver: "local" } })
+      .where(eq(environmentLeases.id, leaseId));
+
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 0 });
+
+    expect(await leaseRow(leaseId)).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
+  });
+
   it("test_flips_an_active_lease_when_its_run_is_failed", async () => {
     const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
     const runId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });

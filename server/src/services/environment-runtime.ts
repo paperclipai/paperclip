@@ -1128,6 +1128,16 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       return await environmentsSvc.releaseLease(input.lease.id, input.status);
     },
 
+    async retryPendingSandboxTeardown({ lease }) {
+      // A restart can strand a local bookkeeping lease after its run ends.
+      // There is no provider sandbox to destroy; process ownership is checked
+      // separately by conversation continuation before another run is admitted.
+      // Never treat an unexpected provider resource as a local no-op cleanup.
+      if (lease.provider !== "local" || lease.providerLeaseId !== null) {
+        throw new Error("Local lease cleanup cannot release a provider resource.");
+      }
+    },
+
     async realizeWorkspace(input) {
       const record = buildWorkspaceRealizationRecordFromDriverInput({
         environment: input.environment,
