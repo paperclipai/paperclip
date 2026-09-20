@@ -306,7 +306,28 @@ connector suite passed 1,012 of 1,013 tests; the existing rapid Slack callback
 ordering case failed once under load and passed its focused rerun. Do not report
 this as a completely green full-suite run.
 
-Qualification is incomplete. The complete Paperclip test command is running.
+Follow-up revision `72bb47c1b` pins automatic tool requests to the commit admitted
+by their causal event, preserves the event's policy/prompt revision, and fixes
+published links to include the company prefix and the underlying run. Both the
+signed-event/head-fence and governed-publication integration cases passed after
+this change; server typecheck passed.
+
+The UI suite passed all 6,478 tests in 620 files. The broad workspace run exposed
+pre-existing timing-sensitive tests and embedded PostgreSQL startup failures on
+this host. Its shared-memory segment inventory was close to the macOS 32-segment
+limit, so a skipped database suite is not counted as validation. The affected
+suites are being rerun with bounded concurrency and isolated configuration. The
+CLI import timeout passed its rerun; three database-heavy worktree cases still
+need a clean run. The serialized server suite's initial import timeout passed
+when rerun after the high-concurrency jobs finished.
+
+Private live fixture: https://github.com/cryppadotta/paperclip-github-review-qa-20260919
+at baseline `d4f8bd2` (three deterministic invoice tests pass). A local evaluation
+branch `codex/qa-discount-regression` at `76028b7` deliberately breaks percentage
+conversion and fails the expected test; it has not been pushed or opened as a PR.
+This fixture does not count as an agent evaluation result.
+
+Qualification is incomplete. The remaining broad Paperclip tests are running.
 Chrome reports that an extension popup blocks automation on the GitHub setup
 page; the user has been asked to dismiss it. No GitHub App installation, real
 agent PR-review run, live tool invocation, live review/check, or staging deployment
