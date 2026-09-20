@@ -1,5 +1,6 @@
 import { githubChatManagementService } from "../services/chat-github-management.js";
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
+import { githubReviewCheckService } from "../services/chat-github-checks.js";
 import { githubBotToolsForSession } from "../services/chat-github-tools.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
@@ -2413,6 +2414,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       >();
       let head = "b".repeat(40);
+      let check = { id: 99, status: "completed", external_id: `${f.endpoint.id}:91:${head}`, app: { id: Number(f.endpoint.botExternalId) } };
       const pull = () => ({
         number: 91,
         title: "Test PR",
@@ -2438,6 +2440,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             id,
             html_url: `https://github.com/test/receipt/${mutations.length}`,
           };
+          if (url.includes("/check-runs")) check = { ...check, id, status: String(body.status) };
           if (
             url.endsWith("/issues/91/comments") ||
             url.includes("/issues/comments/")
@@ -2480,7 +2483,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             },
           ]);
         if (url.includes("/check-runs?"))
-          return Response.json({ check_runs: [] });
+          return Response.json({ check_runs: [check] });
         return Response.json([]);
       });
       const service = githubChatReviewService(db, f.providerFetch);
@@ -2493,6 +2496,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await expect(service.execute(session, "begin_review", { reviewedCommit: "f".repeat(40) })).rejects.toThrow("head changed");
       await service.execute(session, "begin_review", { reviewedCommit: head });
       expect(await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.endpointId, f.endpoint.id))).toHaveLength(1);
+      await githubReviewCheckService(db, f.providerFetch).processPending();
+      expect(mutations.at(-1)).toMatchObject({
+        url: "https://api.github.com/repos/paperclipai/paperclip/check-runs",
+        body: { status: "in_progress", external_id: `${f.endpoint.id}:91:${head}` },
+      });
+      expect(mutations.at(-1)?.body).not.toHaveProperty("conclusion");
       const assessment = {
         reviewedCommit: head,
         score: 2,
@@ -2534,7 +2543,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
       expect(publication.status).toBe("processed");
       expect(
-        mutations.find((m) => m.url.endsWith("/check-runs"))?.body,
+        mutations.find((m) => m.body.conclusion === "failure")?.body,
       ).toMatchObject({
         name: "Paperclip Review",
         head_sha: head,

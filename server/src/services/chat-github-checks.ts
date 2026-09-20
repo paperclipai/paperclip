@@ -191,7 +191,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
           (delivery?.state === "filtered" || delivery?.state === "failed");
         const terminal =
           !!run &&
-          ["succeeded", "failed", "cancelled", "timed_out"].includes(
+          ["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(
             run.status,
           );
         const state =
@@ -256,6 +256,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
           const checks = await request<{
             check_runs: Array<{
               id: number;
+              status?: string;
               external_id?: string;
               app?: { id?: number };
             }>;
@@ -267,10 +268,14 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
               check.external_id === externalId &&
               String(check.app?.id) === source.endpoint.botExternalId,
           );
+          // GitHub retains a completed check's conclusion when PATCHed back to
+          // queued/in_progress. A fresh attempt needs a new check run with the
+          // same stable name; otherwise a prior success still looks passing.
+          const updateCheck = check && !(check.status === "completed" && status !== "completed");
           const posted = await request<{ id: number; html_url: string }>(
-            check ? `/check-runs/${check.id}` : "/check-runs",
+            updateCheck ? `/check-runs/${check.id}` : "/check-runs",
             {
-              method: check ? "PATCH" : "POST",
+              method: updateCheck ? "PATCH" : "POST",
               body: {
                 name: "Paperclip Review",
                 head_sha: event.headSha,
