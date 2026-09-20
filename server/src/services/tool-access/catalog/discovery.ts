@@ -23,6 +23,7 @@ import { isSlackMcpAccessDisabledResponse } from "../../slack-mcp-error.js";
 import { initializeMcpHttpSession, McpHttpInitializationError, getMcpHttpSession, forgetMcpHttpSessions, readMcpHttpResponse, mcpHttpRequestHeaders } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
 import { agentmailApi } from "../../agentmail-api.js";
+import { isTypesafeConnection, typesafeApi } from "../../typesafe-api.js";
 import { createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, normalizeRailwayToolName, RAILWAY_TOOLS, RAILWAY_TOOL_PREFIX, RailwayError } from "../../railway.js";
 import { isPaperclipCloudConnectorStrategy } from "../../paperclip-cloud-connector.js";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
@@ -49,6 +50,7 @@ type DiscoveryDependencies = {
   now: () => Date;
   audit: ToolAccessAudit;
   secrets: ReturnType<typeof secretService>;
+  typesafeFetch?: typeof fetch;
   credentials: ConnectionCredentialAccess;
   vercel: VercelCredentialService;
   vercelConnect: VercelConnectClient | null;
@@ -59,7 +61,7 @@ type DiscoveryDependencies = {
   localTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]>;
 };
 
-export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, credentials, vercel, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools }: DiscoveryDependencies) {
+export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, typesafeFetch, credentials, vercel, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools }: DiscoveryDependencies) {
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentials;
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercel;
   const { assertConnectorConnectionSetupEnabled } = setupPolicy;
@@ -418,6 +420,34 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     await agentmailApi(key).whoami();
   }
 
+  async function validateTypesafeConnection(
+    connection: typeof toolConnections.$inferSelect,
+  ) {
+    const configPath = "credentials.apiKey";
+    const ref = connection.credentialSecretRefs.find(
+      (candidate) => candidate.configPath === configPath,
+    );
+    if (!ref) {
+      throw unprocessable("Reconnect TypeSafe to restore its API key", {
+        code: "missing_secret",
+      });
+    }
+    const key = await secrets.resolveSecretValue(
+      connection.companyId,
+      ref.secretId,
+      ref.versionSelector ?? "latest",
+      {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath,
+        actorType: "system",
+        actorId: null,
+      },
+    );
+    // The list holds aliases only, so it proves the key, not the configured model.
+    await typesafeApi(key, typesafeFetch).listModels();
+  }
+
   async function discoverTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
@@ -448,6 +478,10 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       await validateAgentMailConnection(connection);
       return [];
     }
+    if (isTypesafeConnection(connection)) {
+      await validateTypesafeConnection(connection);
+      return [];
+    }
     if (connection.transport === "mcp_remote")
       return remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices);
     if (connection.transport !== "local_stdio") {
@@ -457,6 +491,6 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     await validateCogneeConnection(connection, actor);
     return localTools(connection);
   }
-  return { remoteTools, validateCogneeConnection, validateAgentMailConnection, discoverTools };
+  return { remoteTools, validateCogneeConnection, validateAgentMailConnection, validateTypesafeConnection, discoverTools };
 }
 export type ToolCatalogDiscovery = ReturnType<typeof createToolCatalogDiscovery>;

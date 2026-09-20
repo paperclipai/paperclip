@@ -21,6 +21,7 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
+import { isTypesafeConnection, TYPESAFE_HEALTH_MESSAGE } from "../../typesafe-api.js";
 import { healthFailureHttpStatus, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
@@ -41,7 +42,7 @@ type HealthDependencies = {
 };
 
 export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, discovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId }: HealthDependencies) {
-  const { discoverTools, remoteTools, validateAgentMailConnection, validateCogneeConnection } = discovery;
+  const { discoverTools, remoteTools, validateAgentMailConnection, validateTypesafeConnection, validateCogneeConnection } = discovery;
   const { assertConnectorConnectionSetupEnabled } = setupPolicy;
   async function updateConnectionHealth(
     connection: typeof toolConnections.$inferSelect,
@@ -131,6 +132,8 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         await discoverTools(connection, undefined, actor);
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
+      } else if (isTypesafeConnection(connection)) {
+        await validateTypesafeConnection(connection);
       } else if (connection.transport === "mcp_remote") {
         const canProbeWithoutAuthorization =
           options.allowUnauthenticatedProbe === true &&
@@ -171,9 +174,11 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
             ? "Browser Use API key is connected."
           : isAgentMailConnection(connection)
             ? "AgentMail API key is connected."
-            : connection.transport === "local_stdio"
-              ? "Approved stdio template is ready."
-              : "Remote MCP server responded to tools/list.",
+            : isTypesafeConnection(connection)
+              ? TYPESAFE_HEALTH_MESSAGE
+              : connection.transport === "local_stdio"
+                ? "Approved stdio template is ready."
+                : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
