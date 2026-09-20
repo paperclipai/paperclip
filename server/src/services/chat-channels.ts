@@ -62,6 +62,7 @@ import {
   readChatControlChronology,
   teamsConversationId,
 } from "./chat-control-chronology.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
 import {
   createDurableChatWakeupRequest,
@@ -14103,91 +14104,95 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     deliveryId: string,
     attachmentResult: Awaited<ReturnType<typeof ingestAttachments>>,
   ) {
-    await db.transaction(async (tx) => {
-      const action = await tx
-        .select()
-        .from(chatActions)
-        .where(
-          and(
-            eq(chatActions.deliveryId, deliveryId),
-            eq(chatActions.kind, "inbound_wakeup"),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (!action) throw new Error("chat_inbound_wakeup_intent_missing");
-      const { delivery } = await authorizeInboundWakeup(tx, action);
-      if (delivery.state === "processed") return;
-      if (delivery.state !== "processing")
-        throw new Error("chat_inbound_wakeup_delivery_claim_lost");
-      if (action.status !== "preparing") {
-        const existingReceipt = await tx
+    // Retry the rolled-back authorization/admission transaction only. A
+    // concurrent ingress may briefly own the endpoint lock; provider I/O
+    // and task creation have already completed and must not be repeated.
+    await retryChatControlAdmission(() =>
+      db.transaction(async (tx) => {
+        const action = await tx
           .select()
-          .from(agentWakeupRequests)
-          .where(eq(agentWakeupRequests.id, action.id))
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.deliveryId, deliveryId),
+              eq(chatActions.kind, "inbound_wakeup"),
+            ),
+          )
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (!existingReceipt)
+        if (!action) throw new Error("chat_inbound_wakeup_intent_missing");
+        const { delivery } = await authorizeInboundWakeup(tx, action);
+        if (delivery.state === "processed") return;
+        if (delivery.state !== "processing")
+          throw new Error("chat_inbound_wakeup_delivery_claim_lost");
+        if (action.status !== "preparing") {
+          const existingReceipt = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, action.id))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!existingReceipt)
+            throw new Error("chat_inbound_wakeup_action_claim_lost");
+          assertDurableChatWakeupReceipt(
+            createDurableChatWakeupRequest({
+              id: action.id,
+              companyId: action.companyId,
+              agentId: String(action.payload.agentId),
+              issueId: String(action.payload.issueId),
+              commentId: String(action.payload.commentId),
+              requestedByActorType: action.payload.requestedByActorType as
+                "user" | "system",
+              requestedByActorId: String(action.payload.requestedByActorId),
+              requestedAt: action.createdAt,
+              authorize: async () => {},
+            }),
+            existingReceipt,
+          );
+        }
+        const accepted = await tx
+          .update(chatDeliveries)
+          .set({
+            state: "processed",
+            processedAt: new Date(),
+            redactedError: attachmentOmissionDetail(attachmentResult),
+            nextAttemptAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatDeliveries.id, deliveryId),
+              eq(chatDeliveries.state, "processing"),
+              eq(chatDeliveries.updatedAt, delivery.updatedAt),
+            ),
+          )
+          .returning({ id: chatDeliveries.id });
+        if (accepted.length !== 1)
+          throw new Error("chat_inbound_wakeup_delivery_claim_lost");
+        // An operator can repair a failed delivery ledger after its wake was
+        // already committed. Keep the immutable receipt and never admit twice.
+        if (action.status !== "preparing") return;
+        const issued = await tx
+          .update(chatActions)
+          .set({
+            status: "issued",
+            payload: {
+              ...action.payload,
+              attachmentOmissionReasons: attachmentResult.omissionReasons,
+            },
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatActions.id, action.id),
+              eq(chatActions.status, "preparing"),
+            ),
+          )
+          .returning({ id: chatActions.id });
+        if (issued.length !== 1)
           throw new Error("chat_inbound_wakeup_action_claim_lost");
-        assertDurableChatWakeupReceipt(
-          createDurableChatWakeupRequest({
-            id: action.id,
-            companyId: action.companyId,
-            agentId: String(action.payload.agentId),
-            issueId: String(action.payload.issueId),
-            commentId: String(action.payload.commentId),
-            requestedByActorType: action.payload.requestedByActorType as
-              | "user"
-              | "system",
-            requestedByActorId: String(action.payload.requestedByActorId),
-            requestedAt: action.createdAt,
-            authorize: async () => {},
-          }),
-          existingReceipt,
-        );
-      }
-      const accepted = await tx
-        .update(chatDeliveries)
-        .set({
-          state: "processed",
-          processedAt: new Date(),
-          redactedError: attachmentOmissionDetail(attachmentResult),
-          nextAttemptAt: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(chatDeliveries.id, deliveryId),
-            eq(chatDeliveries.state, "processing"),
-            eq(chatDeliveries.updatedAt, delivery.updatedAt),
-          ),
-        )
-        .returning({ id: chatDeliveries.id });
-      if (accepted.length !== 1)
-        throw new Error("chat_inbound_wakeup_delivery_claim_lost");
-      // An operator can repair a failed delivery ledger after its wake was
-      // already committed. Keep the immutable receipt and never admit twice.
-      if (action.status !== "preparing") return;
-      const issued = await tx
-        .update(chatActions)
-        .set({
-          status: "issued",
-          payload: {
-            ...action.payload,
-            attachmentOmissionReasons: attachmentResult.omissionReasons,
-          },
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(chatActions.id, action.id),
-            eq(chatActions.status, "preparing"),
-          ),
-        )
-        .returning({ id: chatActions.id });
-      if (issued.length !== 1)
-        throw new Error("chat_inbound_wakeup_action_claim_lost");
-    });
+      }),
+    );
   }
 
   async function settleRejectedInboundWakeups(onlyDeliveryId?: string) {

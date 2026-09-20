@@ -5282,6 +5282,83 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
+  it("retries transient GitHub endpoint lock contention before accepting a wake", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredGitHubEndpoint(fixture);
+    const current = await service.get(endpoint.id);
+    const { thread, subscribe } = makeThread({
+      channelId: "paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:903",
+    });
+    let release!: () => void;
+    let acquired!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    let transaction: Promise<unknown> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    subscribe.mockImplementationOnce(async () => {
+      transaction = db.transaction(async (tx) => {
+        await tx
+          .select({ id: chatEndpoints.id })
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpoint.id))
+          .for("no key update");
+        acquired();
+        await held;
+      });
+      await locked;
+      timer = setTimeout(release, 250);
+      return undefined;
+    });
+    try {
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "github",
+        thread,
+        trigger: "mention",
+        message: makeMessage({
+          id: "github-contended-admission",
+          userId: "42",
+          userName: "octocat",
+          mentioned: true,
+          text: `@${current.botUsername} review after concurrent ingress`,
+        }),
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await transaction;
+    }
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    const deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(
+      deliveries.filter((delivery) => delivery.state === "processed"),
+    ).toHaveLength(1);
+    const wakes = await db
+      .select()
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.endpointId, endpoint.id),
+          eq(chatActions.kind, "inbound_wakeup"),
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].status).toBe("processed");
+    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(
+      1,
+    );
+  });
+
   it("atomically admits only one first GitHub repository under concurrent root mentions", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, webhookSecret } =
