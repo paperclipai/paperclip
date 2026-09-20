@@ -64,6 +64,22 @@ describe("typesafeApi", () => {
     expect(rendered).not.toContain("private-state");
   });
 
+  it.each([
+    ["a network failure", () => new TypeError("fetch failed: private-host.internal")],
+    ["a timeout", () => new DOMException("The operation timed out: private-host.internal", "TimeoutError")],
+  ])("reports %s as unreachable and retryable", async (_name, failure) => {
+    const mock = vi.fn(async () => {
+      throw failure();
+    });
+    const error = await typesafeApi(KEY, mock as unknown as typeof fetch)
+      .listModels()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TypesafeApiError);
+    expect(error).toMatchObject({ code: "typesafe_unreachable", httpStatus: 503, retryable: true });
+    expect(`${(error as Error).message} ${JSON.stringify(error)}`).not.toContain("private-host");
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry a rate-limited request", async () => {
     const { mock, fetch } = fetcherFor(() => json({}, 429));
     await typesafeApi(KEY, fetch).listModels().catch(() => null);

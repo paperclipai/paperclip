@@ -77,6 +77,7 @@ full contract is in `skills/typesafe/SKILL.md`.
 | 529 | 503 | `typesafe_overloaded`, `retryable: true` |
 | 401 or 403 | 502 | `typesafe_api_key_rejected` |
 | A body Paperclip cannot read | 502 | `typesafe_invalid_response` |
+| Timeout or network failure | 503 | `typesafe_unreachable`, `retryable: true` |
 | Any other failure | 502 | `typesafe_request_failed` |
 
 One table in `server/src/services/typesafe-api.ts` holds these mappings. A

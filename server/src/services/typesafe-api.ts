@@ -35,6 +35,11 @@ const INVALID_RESPONSE: TypesafeFailure = {
   httpStatus: 502,
   retryable: false,
 };
+const UNREACHABLE: TypesafeFailure = {
+  code: "typesafe_unreachable",
+  httpStatus: 503,
+  retryable: true,
+};
 // 529 is not a registered status; 503 carries the same meaning to HTTP clients.
 const FAILURES: Record<number, TypesafeFailure> = {
   401: KEY_REJECTED,
@@ -56,7 +61,9 @@ export class TypesafeApiError extends Error {
     super(
       failure === INVALID_RESPONSE
         ? "TypeSafe returned a response Paperclip could not read"
-        : `TypeSafe request failed (${status})`,
+        : failure === UNREACHABLE
+          ? "TypeSafe did not respond"
+          : `TypeSafe request failed (${status})`,
     );
     this.code = failure.code;
     this.httpStatus = failure.httpStatus;
@@ -111,6 +118,9 @@ export function typesafeApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
         "Content-Type": "application/json",
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+    }).catch(() => {
+      // Timeouts and network errors carry host details; keep only the class of failure.
+      throw new TypesafeApiError(0, UNREACHABLE);
     });
     if (!response.ok) throw new TypesafeApiError(response.status);
     return response.json().catch(() => undefined);
