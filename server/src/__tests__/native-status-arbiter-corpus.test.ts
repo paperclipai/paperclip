@@ -2108,6 +2108,17 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, incomplete.issueId))).toHaveLength(0);
   }, 30_000);
 
+  it("rejects wrong, missing, and duplicate criterion IDs before accepting completion", async () => {
+    const seeded = await seedFixture({ ...corpus.fixtures[0]!, id: `criteria-feedback-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const valid = stored!.resultJson.result as import("../vendor/paperclip-runner/index.js").PrpStructuredRunResult;
+    for (const criteria of [[], [{ criterionId: "invented", status: "satisfied", evidenceRefs: [] }], [...valid.completionClaim.criteria, ...valid.completionClaim.criteria]]) {
+      await expect(nativeCompletionFeedback(db, seeded.runId, { ...valid, completionClaim: { ...valid.completionClaim, criteria } } as never)).rejects.toThrow("exactly these criterion IDs");
+    }
+    await expect(nativeCompletionFeedback(db, seeded.runId, valid)).resolves.toEqual(expect.any(String));
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toHaveLength(0);
+  }, 30_000);
+
   it("keeps genuine approval actionable in the finish response and in finalization", async () => {
     const seeded = await seedAutomaticReview();
     const genuine = await issueThreadInteractionService(db).create((await issueService(db).getById(seeded.issueId))!, {

@@ -11,6 +11,7 @@ import {
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { reportRunFailure } from "./run-failure-report.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -202,9 +203,19 @@ export async function reconcileAbandonedExecutionControl(
                 sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${run.agentId} and ${heartbeatRuns.status} = 'running')`,
               ),
             );
+          const nativeReviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+          const nativeReviewAssignment = nativeReviewContext && task
+            ? await getNativeReviewAssignment(tx as unknown as Db, {
+                companyId: run.companyId,
+                issueId: task.id,
+                agentId: run.agentId,
+                contextSnapshot: nativeReviewContext,
+              })
+            : null;
           const review = task?.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
-          const isCurrentReviewer = review?.status === "pending" &&
-            review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
+          const isCurrentReviewer = (review?.status === "pending" &&
+            review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId)
+            || nativeReviewAssignment?.interaction.status === "pending";
           if (
             !task ||
             (task.assigneeAgentId !== run.agentId && !isCurrentReviewer) ||

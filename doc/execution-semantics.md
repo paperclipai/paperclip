@@ -88,6 +88,26 @@ Execution work is paused because the next move belongs to a reviewer or approver
 
 An external review service can also be a valid review path when the issue keeps an agent assignee and has an active one-shot monitor that will wake that assignee to check the service later.
 
+For a native completion review addressed to an agent, the server saves the review
+card and a durable reviewer wake in the same transaction. The reviewer can act
+on the child task even when its own parent task waits for that child. The child
+keeps its worker assignee and the parent keeps its dependency. The review run
+can read the submitted work and accept or reject its assigned card. It cannot
+use that role to change ordinary task assignments or dependencies.
+
+Accepting the last required native completion review marks the child Done and
+makes its dependents eligible to continue. Rejection returns the requested
+changes to the worker. A review run that ends without a decision cannot mark
+the child Done. It retains the review and records a bounded recovery action.
+See [native status arbitration](architecture/native-status-arbitration.md#agent-review-handoff)
+for the authorization checks and completion-report rules.
+
+The parent receives recent child review decisions in its continuation evidence
+and through `get_task_context`. Each record names the child, decision, reviewer,
+and review run. The server reads these records from saved review state; it does
+not depend on the parent session remembering a separate review session. These
+records are evidence and do not grant permission to resolve another review.
+
 ### `done`
 
 The work is complete and terminal.
@@ -1321,3 +1341,42 @@ card. A resolved card from that same source run, or its queued continuation, is 
 valid live path. A stale agent handback to a human cannot cancel the run and orphan
 a queued response. This does not make an old resolved card a review path for a
 later run, or prevent an explicit board reassignment.
+
+### Persistent sandbox cleanup
+
+A lost bridge cannot indefinitely prevent Daytona termination. Ordinary lease release
+and destruction wait briefly for bridge activity, then call the provider for the exact
+recorded sandbox. Drain timeout is not a stop receipt. Reusable sandboxes prefer
+stop; failed stop falls back to deletion. Stop/delete transport hangs are bounded
+and leave cleanup pending unless the provider confirms termination.
+
+The pending-cleanup sweep retains a durable attempt identity and a 15-minute
+in-flight deadline. It retries after restart, waits at least 30 seconds between
+failed attempts, and slows to 30 minutes after five failures. It reports that
+operator attention is needed at that threshold, while automatic cleanup continues.
+Provider outages never convert a live sandbox into an abandoned manual task.
+Explicit Retry can skip the cooldown after a failed cleanup, but cannot take over
+a live cleanup attempt. Active startup cancellation still stops the sandbox first.
+
+A live cleanup attempt renews its durable claim every 30 seconds. Another sweep in the same controller cannot overlap it, even if the deadline passes. Completion writes require the current attempt identity. After controller loss, cleanup can repeat destruction of the exact quarantined provider resource; providers must make that operation idempotent. A timeout or claim expiry does not prove termination.
+
+Renewal updates only the ownership deadline, never the retry cooldown. Cleanup
+does not await an outstanding renewal; a stalled database response cannot retain
+process-local cleanup ownership. Late responses still require the same active
+attempt, and completed attempts use only the persisted retry cooldown.
+
+
+### Follow-up completion instructions
+
+Generated native completion contracts interpret pending comments within the current
+task brief, assigned-skill instructions, and approval gates. Later human direction
+replaces conflicting scope; clarification alone does not approve execution. A
+wake from a server-verified human card response references that entry in
+`humanResponses`, whose answer is already present in the current request context.
+Agent/tool outcomes and generated summaries are not promoted to human direction.
+
+These are model instructions, not additional execution or permission gates.
+Contracts reference the existing brief and answers instead of copying them again.
+Resumed sessions keep the existing message-delta path; fresh sessions receive the
+full covered history. Stable wording and bounded references avoid adding another
+full brief on each comment, but provider cache hits must be measured separately.

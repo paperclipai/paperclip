@@ -68,8 +68,8 @@ export class RunnerApi {
 }
 
 export class ObservedStateTimeout extends Error {
-  constructor(label: string, readonly failureClass: "candidate_failure" | "transient_infrastructure") {
-    super(`Timed out waiting for ${label}; the observed state did not satisfy the condition. See the saved state evidence.`);
+  constructor(label: string, readonly failureClass: "candidate_failure" | "transient_infrastructure", detail?: string) {
+    super(`Timed out waiting for ${label}; ${detail ?? "the observed state did not satisfy the condition"}. See the saved state evidence.`);
     this.name = "ObservedStateTimeout";
   }
 }
@@ -82,6 +82,7 @@ export async function pollUntil<T>(input: {
   reject?: (value: T) => string | undefined;
   intervalMs?: number;
   timeoutFailureClass?: "candidate_failure" | "transient_infrastructure";
+  timeoutDetail?: (value: T | undefined) => string | undefined;
 }): Promise<T> {
   let last: T | undefined;
   let lastError: unknown;
@@ -110,5 +111,9 @@ export async function pollUntil<T>(input: {
   if (lastError instanceof Error) {
     throw new Error(`Timed out waiting for ${input.label}: ${lastError.message}`, { cause: lastError });
   }
-  throw new ObservedStateTimeout(input.label, input.timeoutFailureClass ?? "candidate_failure");
+  throw new ObservedStateTimeout(
+    input.label,
+    input.timeoutFailureClass ?? "candidate_failure",
+    input.timeoutDetail?.(last),
+  );
 }

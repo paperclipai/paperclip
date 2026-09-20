@@ -1,3 +1,5 @@
+import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
+import { SetupWizardNavigation, SetupWizardFooter } from "../components/SetupWizard";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
 import { AnnouncementCard } from "@/components/AnnouncementCard";
@@ -5,6 +7,9 @@ import { announcementPreview, announcementAnimationPreview, announcementAnimatio
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
+import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentCharacter } from "@/components/AgentCharacter";
+import { AGENT_PALETTE_IDS, appearanceForPalette } from "@paperclipai/shared";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
@@ -493,6 +498,7 @@ function AgentChatPickerExample() {
 }
 
 export function DesignGuide() {
+  const [wizardStep, setWizardStep] = useState(0);
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -1507,20 +1513,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
-      <Section title="Identity">
+      <Section title="Agent personas">
+        <SubSection title="Stable palette identities">
+          <div className="flex flex-wrap gap-3">{AGENT_PALETTE_IDS.map(palette => <AgentAvatar key={palette} appearance={appearanceForPalette(palette)} size={48} label={palette} />)}</div>
+        </SubSection>
+        <SubSection title="Onboarding and live character">
+          <p className="text-sm text-muted-foreground">Place one live character beside the agent name. Onboarding uses a larger padded frame. Onboarding and agent headers follow the pointer across the page; other placements track within their region. Full-page examples are in Storybook under Agents / Personas / Full pages.</p>
+          <div className="flex gap-4"><AgentCharacter muted state="sleepy" motion="still" size={128} /><AgentCharacter size={128} /></div>
+        </SubSection>
+      </Section>
+      <Section title="Human identity">
         <SubSection title="Sizes">
           <div className="flex items-center gap-6">
-            <Identity name="Agent Alpha" size="sm" />
-            <Identity name="Agent Alpha" />
-            <Identity name="Agent Alpha" size="lg" />
+            <Identity name="Alex Morgan" size="sm" />
+            <Identity name="Alex Morgan" />
+            <Identity name="Alex Morgan" size="lg" />
           </div>
         </SubSection>
 
         <SubSection title="Initials derivation">
           <div className="flex flex-col gap-2">
-            <Identity name="CEO Agent" size="sm" />
+            <Identity name="Casey Jordan" size="sm" />
             <Identity name="Alpha" size="sm" />
-            <Identity name="Quality Assurance Lead" size="sm" />
+            <Identity name="Quinn Lee" size="sm" />
           </div>
         </SubSection>
 
@@ -1678,6 +1693,13 @@ export function DesignGuide() {
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
+        <SubSection title="Setup wizard">
+          <p className="text-sm text-muted-foreground">Shared by connection setup and trigger previews. Setup navigation takes over the section sidebar; each step owns a single footer.</p>
+          <div className="max-w-sm space-y-6">
+            <SetupWizardNavigation inline labels={["Choose trigger", "Configure", "Review"]} step={wizardStep} availableStep={2} onSelect={setWizardStep} />
+            <SetupWizardFooter onSaveExit={() => setWizardStep(0)}><Button onClick={() => setWizardStep((wizardStep + 1) % 3)}>Continue</Button></SetupWizardFooter>
+          </div>
+        </SubSection>
         <SubSection title="Agent chat picker">
           <AgentChatPickerExample />
         </SubSection>
@@ -2327,6 +2349,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  INLINE BANNER + BUILT-IN AGENTS                              */}
       {/* ============================================================ */}
+      <Section title="Webhook URL warnings">
+        <div className="space-y-3">
+          {["http://localhost:3100", "https://paperclip.internal", "https://paperclip.example-tailnet.ts.net", "http://paperclip.example.com", "not-a-url"].map((url) => <WebhookUrlWarning key={url} url={url} />)}
+        </div>
+      </Section>
+
       <Section title="Inline Banner">
         <p className="text-sm text-muted-foreground">
           Token-backed full-width notice (<span className="font-mono">brandBanner</span> tones). Use{" "}

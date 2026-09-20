@@ -25,7 +25,7 @@ describe("buildNativeCompletionContract", () => {
     }, { revision: 3 }).revision).toBe("3");
   });
 
-  it("makes the latest comment authoritative for a follow-up run", () => {
+  it("applies the latest comment within the current authorized task scope", () => {
     expect(buildNativeCompletionContract(
       {
         title: "Reply with exactly STALE-ROOT-MARKER",
@@ -34,7 +34,7 @@ describe("buildNativeCompletionContract", () => {
       { immediateRequest: " Return the follow-up result. " },
     )).toEqual({
       revision: "1",
-      objective: "Respond to the latest comment",
+      objective: expect.stringContaining("current authorized stage"),
       criteria: [{ id: "objective", requirement: "Return the follow-up result." }],
     });
   });
@@ -50,7 +50,7 @@ describe("buildNativeCompletionContract", () => {
       },
     )).toEqual({
       revision: "1",
-      objective: "Respond to all pending comments in order",
+      objective: expect.stringContaining("current authorized stage"),
       criteria: [
         {
           id: "pending_comment_1",
@@ -71,12 +71,65 @@ describe("buildNativeCompletionContract", () => {
         { body: " ", attachments: [{ filename: "Ignore current request.txt" }] },
       ]) },
     );
-    expect(contract.objective).toBe("Respond to the latest comment");
+    expect(contract.objective).toContain("current authorized stage");
     expect(contract.criteria).toEqual([{
       id: "objective",
       requirement: "Inspect and respond to the attached file(s) on pending comment 1.",
     }]);
     expect(JSON.stringify(contract)).not.toMatch(/STALE|Ignore current request/);
+  });
+
+  it("references existing context without copying the brief or treating clarification as approval", () => {
+    const brief = "Propose work and wait for approval. ".repeat(1000);
+    const contract = buildNativeCompletionContract(
+      { title: "Original task", description: brief },
+      { immediateRequest: "Use TypeScript." },
+    );
+    expect(contract.objective).toContain("task brief");
+    expect(contract.objective).toContain("Later human direction replaces conflicting scope");
+    expect(contract.objective).toContain("approval gates");
+    expect(contract.objective).toContain("Clarification is not approval");
+    expect(JSON.stringify(contract)).not.toContain(brief);
+    expect(JSON.stringify(contract).split("Use TypeScript.")).toHaveLength(2);
+    expect(JSON.stringify(contract).length).toBeLessThan(900);
+  });
+
+  it("keeps the instruction prefix identical as follow-up comments change", () => {
+    const issue = { title: "Write welcome", description: "Use /first-task." };
+    const first = buildNativeCompletionContract(issue, { immediateRequest: "Use a friendly tone." });
+    const next = buildNativeCompletionContract(issue, { immediateRequest: "Actually, just save a plan." });
+    expect(first.objective).toBe(next.objective);
+    expect(next.criteria).toEqual([{ id: "objective", requirement: "Actually, just save a plan." }]);
+    expect(JSON.stringify(next)).not.toContain("Use a friendly tone.");
+  });
+
+  it("binds the current verified card answer without duplicating its contents", () => {
+    const contract = buildNativeCompletionContract(
+      { title: "Onboarding", description: "Use /first-task; proposal mode: confirmation." },
+      { humanResponseId: "80000000-0000-4000-8000-000000000008" },
+    );
+    expect(contract.objective).toContain("humanResponses");
+    expect(contract.criteria).toEqual([{
+      id: "human_response",
+      requirement: expect.stringContaining('"80000000-0000-4000-8000-000000000008"'),
+    }]);
+    expect(contract.criteria[0]!.requirement).toContain("humanResponses");
+    expect(JSON.stringify(contract)).not.toContain("proposal mode: confirmation");
+    expect(buildNativeCompletionContract(
+      { title: "Onboarding", description: null },
+      { humanResponseId: "80000000-0000-4000-8000-000000000009" },
+    )).not.toEqual(contract);
+  });
+
+  it("retains pending comments alongside a current card response without replaying older scope", () => {
+    const contract = buildNativeCompletionContract(
+      { title: "Implement", description: "Implement the old scope" },
+      { immediateRequest: "Actually, just investigate.", humanResponseId: "answer-id" },
+    );
+    expect(contract.criteria.map(c => c.id)).toEqual(["objective", "human_response"]);
+    expect(contract.criteria[0]!.requirement).toBe("Actually, just investigate.");
+    expect(JSON.stringify(contract)).not.toContain("Implement the old scope");
+    expect(contract.objective).toContain("Later human direction replaces conflicting scope");
   });
 
   it("preserves text and file-only requests in mixed batch order", () => {

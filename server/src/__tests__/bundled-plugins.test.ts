@@ -215,12 +215,13 @@ type LooseRow = {
   version?: string;
   manifestJson?: Record<string, unknown>;
   lastError?: string | null;
+  packagePath?: string | null;
 };
 
 // Build a minimal manifest for a persisted row or a shipped bundle. The reconcile
 // step compares the bundle version with the persisted version.
 function makeManifest(pluginKey: string, version: string) {
-  return { id: pluginKey, apiVersion: 1, version } as unknown as import("@paperclipai/shared").PaperclipPluginManifestV1;
+  return { id: pluginKey, apiVersion: 1, version, capabilities: [] } as unknown as import("@paperclipai/shared").PaperclipPluginManifestV1;
 }
 
 function makeDeps(overrides?: {
@@ -399,6 +400,112 @@ describe("ensureBundledPlugins", () => {
       bundleVersionByKey: { [DAYTONA.pluginKey]: "0.1.2" },
     });
     await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "/old/plugins/widget"])("adopts a selected distribution path from %s even at the same version", async (packagePath) => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    for (const status of ["ready", "disabled", "error"]) {
+      const { deps, loadManifest, update, installPlugin, updateStatus } = makeDeps({
+        rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status, version: "0.1.0", packagePath } },
+        // Distribution packages may declare a manifest outside dist/manifest.js.
+        bundleManifestExists: () => false,
+      });
+      const manifest = makeManifest("acme.widget", "0.1.0");
+      loadManifest.mockResolvedValue(manifest);
+      await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+      // Same row: retain config/state and operator-disabled status; only error
+      // gets the existing one-shot boot retry. No reinstall/capability reset.
+      expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { packagePath: localPath, version: "0.1.0", manifest });
+      expect(installPlugin).not.toHaveBeenCalled();
+      expect(updateStatus).toHaveBeenCalledTimes(status === "error" ? 1 : 0);
+      expect(loadManifest).toHaveBeenCalledExactlyOnceWith(localPath);
+      expect(deps.logger.error).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not rebind a distribution install whose new manifest fails validation", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update, updateStatus } = makeDeps({
+      rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "error", packagePath: "/old/widget" } },
+    });
+    loadManifest.mockRejectedValue(new Error("Distribution manifest entrypoints do not match the verified package"));
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).not.toHaveBeenCalled();
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(deps.logger.error).toHaveBeenCalled();
+  });
+
+  it.each(["ready", "error", "disabled"])("gates same-version distribution capability additions from %s atomically", async (status) => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const oldManifest = makeManifest("acme.widget", "0.1.0");
+    const { deps, loadManifest, update, updateStatus, installPlugin } = makeDeps({
+      rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status, packagePath: localPath, manifestJson: { ...oldManifest } } },
+    });
+    const replacement = { ...oldManifest, capabilities: ["issues.read" as const] };
+    loadManifest.mockResolvedValue(replacement);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { version: "0.1.0", manifest: replacement, status: "upgrade_pending" });
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(deps.lifecycle.load).not.toHaveBeenCalled();
+
+    // A later boot must leave the approval gate in place.
+    vi.mocked(deps.registry.getByKey).mockResolvedValue({ id: "row-widget", pluginKey: "acme.widget", status: "upgrade_pending", version: "0.1.0", packagePath: localPath, manifestJson: replacement });
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(updateStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not save an inconsistent distribution manifest", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "ready", packagePath: localPath } } });
+    const manifest = makeManifest("acme.widget", "0.1.0");
+    manifest.ui = { slots: [{ type: "appShellOverlay", id: "overlay", displayName: "Overlay", exportName: "Overlay" }] };
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).not.toHaveBeenCalled();
+    expect(deps.logger.error).toHaveBeenCalled();
+  });
+
+  it("does not replace an operator uninstall with a distribution approval request", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update, updateStatus, installPlugin } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "uninstalled" } } });
+    loadManifest.mockResolvedValue({ ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read"] });
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a same-version rollback while retaining the pending operator decision", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const pending = { ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read", "issues.update"] };
+    const { deps, loadManifest, update, updateStatus } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "upgrade_pending", packagePath: localPath, manifestJson: pending } } });
+    // A smaller capability set is not proof that every remaining capability
+    // was approved, or that the plugin was enabled before the pending upgrade.
+    const rollback = { ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read" as const] };
+    loadManifest.mockResolvedValue(rollback);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { version: "0.1.0", manifest: rollback });
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(deps.lifecycle.load).not.toHaveBeenCalled();
+  });
+
+  it("ignores object key order when comparing a distribution manifest read from JSONB", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const manifest = { ...makeManifest("acme.widget", "0.1.0"), entrypoints: { worker: "dist/worker.js", ui: "dist/ui" } };
+    const reordered = { entrypoints: { ui: "dist/ui", worker: "dist/worker.js" }, capabilities: [], version: "0.1.0", apiVersion: 1, id: "acme.widget" };
+    const { deps, loadManifest, update } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "ready", packagePath: localPath, manifestJson: reordered } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
     expect(update).not.toHaveBeenCalled();
   });
 

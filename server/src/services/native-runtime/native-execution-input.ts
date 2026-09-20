@@ -1,3 +1,4 @@
+import { buildNativeContinuationPrompt } from "./native-continuation.js";
 import type {
   NativeAcpxAgent,
   NativeAcpxPermissionMode,
@@ -18,16 +19,6 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   renderPaperclipWakePrompt,
 } from "@paperclipai/adapter-utils/server-utils";
-
-const NATIVE_QUESTION_GUIDANCE = [
-  "## Questions that need a user response",
-  "A request for clickable choices, buttons, or a decision needed before continuing is not a self-contained text answer. The zero-API-call shortcut does not prohibit the structured question tool.",
-  'Use the available request_human_input tool with interactionKind="questions", continuationPolicy="wake_assignee", a title, prompt, and a stable idempotencyKey. For choices, use payload.questions with stable id and prompt, selectionMode="single" or "multi", and at least two distinct meaningful options with stable id and label fields. For open-ended answers, include payload.questionSet with schema="paperclip.question_set.v1" and questions containing id, prompt, answerMode="text", and no options or customAnswer. Include matching payload.questions entries with the same IDs/prompts and a freeText option only for storage compatibility; questionSet supplies the text-field presentation. Never present a lone "Other" or "I will describe it" choice. Reuse the same key if that creation call must be retried.',
-  "Paperclip renders the supported question controls and authenticates the answer. Never fabricate answer URLs, query-string choice links, callback tokens, or fake Markdown buttons. Do not manually post a duplicate question card or use call_api as a substitute.",
-  "For one question at a time, read the current request and authoritative prior answers, then create only the next unanswered question. Wait for its real answer before asking another; do not infer a selection or answer your own interaction. Keep completion and disposition truthful while waiting, and preserve existing review or approval gates.",
-  "If the tool is unavailable or creation fails, report that actual limitation plainly; do not pretend interactive controls were created.",
-  "A completion summary saying that you asked a question does not create a question. Create the actual question before yielding; never claim to be waiting for a response to an interaction you have not created.",
-].join("\n");
 
 const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
   "## GitHub attachment recovery navigation",
@@ -55,6 +46,7 @@ export function buildNativeExecutionInput(input: {
    */
   wakePayload?: unknown;
   resumedSession?: boolean;
+  previousTurn?: { runId: string; task: { title: string; description: string | null } } | null;
   conversationMode?: boolean;
   agentId: string;
   workspace: {
@@ -156,7 +148,7 @@ export function buildNativeExecutionInput(input: {
         }
       : input.wakePayload;
   const wakePrompt = renderPaperclipWakePrompt(wakePayload, {
-    resumedSession: input.resumedSession === true,
+    resumedSession: false,
     conversationMode: input.conversationMode === true,
     suppressIssueDescription: input.taskPrompt.trim().length > 0,
     nativeWakeReaderAvailable: true,
@@ -166,7 +158,9 @@ export function buildNativeExecutionInput(input: {
     isPaperclipExternalChatQuestionResponseTurn(wakePayload);
   const taskPrompt = [
     wakePrompt,
-    NATIVE_QUESTION_GUIDANCE,
+    // Durable task questions must survive the current provider turn.
+    // Keep routing visible before deferred tool discovery; usage belongs in the tool schema.
+    "Use Paperclip's request_human_input for durable task questions.",
     externalChatTurn && wake?.externalChatProvider === "github"
       ? NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE
       : "",
@@ -176,6 +170,14 @@ export function buildNativeExecutionInput(input: {
     .join("\n\n");
   return parseNativeExecutionInput({
     schema: "paperclip.native-execution-input.v4",
+    ...(input.resumedSession && input.previousTurn && !input.conversationMode ? {
+      continuationPrompt: buildNativeContinuationPrompt({
+        wakePayload: input.wakePayload,
+        previousRunId: input.previousTurn.runId,
+        previousIssue: input.previousTurn.task,
+        issue: input.issue,
+      }),
+    } : {}),
     executionMode,
     planningContext: input.planningContext ?? null,
     binding: {
@@ -238,7 +240,7 @@ export function buildNativeExecutionInput(input: {
           kind: "acpx",
           agent: acpxProfile!.agent,
           model: input.model,
-          permissionMode: input.acpxPermissionMode ?? "approve-reads",
+          permissionMode: input.acpxPermissionMode ?? "approve-all",
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,
@@ -256,7 +258,7 @@ export function buildNativeExecutionInput(input: {
         ? {
             kind: "opencode",
             model: input.model,
-            permissionMode: input.opencodePermissionMode ?? "ask",
+            permissionMode: input.opencodePermissionMode ?? "allow",
           }
         : {
             kind: "codex",

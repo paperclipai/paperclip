@@ -1,3 +1,4 @@
+import { AgentIdentity } from "../components/AgentIdentity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
 import {
@@ -24,7 +25,6 @@ import { StatusIcon } from "../components/StatusIcon";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { ActivityRow } from "../components/ActivityRow";
-import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
@@ -537,7 +537,7 @@ export function Dashboard() {
                               {issue.assigneeAgentId && (() => {
                                 const name = agentName(issue.assigneeAgentId);
                                 return name
-                                  ? <Identity name={name} size="sm" className="max-w-32" />
+                                  ? <AgentIdentity agent={agents?.find(agent => agent.id === issue.assigneeAgentId) ?? { id: issue.assigneeAgentId ?? undefined, name }} size="sm" className="max-w-32" />
                                   : null;
                               })()}
                             </span>

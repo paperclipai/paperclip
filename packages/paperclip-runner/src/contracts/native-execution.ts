@@ -80,7 +80,7 @@ export interface NativeAwsAgentCoreProfileSnapshot {
 export type NativeAcpxAgent = "pi" | "claude" | "codex";
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
-export type NativeAcpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
+export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 
 export interface NativeAcpxProfileSnapshot {
   driverKind: "acpx_runtime";
@@ -194,6 +194,8 @@ export interface NativeExecutionInputV3 extends Omit<NativeExecutionInputV2, "sc
 export interface NativeExecutionInputV4 extends Omit<NativeExecutionInputV3, "schema" | "provider"> {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA;
   provider: NativeProviderConfigV4;
+  /** Used only after the runtime proves provider-session recovery succeeded. */
+  continuationPrompt?: string | null;
 }
 
 export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4;
@@ -290,6 +292,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     "credentialBindings",
     ...(isV2 ? ["executionMode", "planningContext"] : []),
     ...(isV3 ? ["runtimeContext"] : []),
+    ...(isV4 ? ["continuationPrompt"] : []),
   ], "input");
   if (!isV2 && input.schema !== NATIVE_EXECUTION_INPUT_SCHEMA_V1) {
     throw new NativeExecutionInputError(
@@ -531,8 +534,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       throw new NativeExecutionInputError("input.provider.agent must be pi, claude, or codex");
     }
     if (isV4) {
-      if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
-        throw new NativeExecutionInputError("input.provider.permissionMode must be approve-all, approve-reads, or deny-all");
+      if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
+        throw new NativeExecutionInputError("input.provider.permissionMode must be approve-all, approve-paperclip, approve-reads, or deny-all");
       }
     } else if (provider.permissionPolicy !== "interactive") {
       throw new NativeExecutionInputError("input.provider.permissionPolicy must be interactive");
@@ -713,11 +716,30 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   return {
     ...withRuntimeContext,
     schema: NATIVE_EXECUTION_INPUT_SCHEMA,
+    ...(input.continuationPrompt !== undefined ? { continuationPrompt: nullableText(input.continuationPrompt, "input.continuationPrompt") } : {}),
     provider: parsedProvider as NativeProviderConfigV4,
   };
 }
 
-export function buildNativeModelEnvelope(input: NativeExecutionInput): NativeModelEnvelopeV1 | NativeModelEnvelopeV2 {
+export interface NativeContinuationEnvelope {
+  schema: "paperclip.native-continuation.v1";
+  events: string;
+  completion: { revision: string; criterionIds: string[] };
+}
+
+export function buildNativeModelEnvelope(input: NativeExecutionInput, options: { resumedSession: true }): NativeModelEnvelopeV1 | NativeModelEnvelopeV2 | NativeContinuationEnvelope;
+export function buildNativeModelEnvelope(input: NativeExecutionInput): NativeModelEnvelopeV1 | NativeModelEnvelopeV2;
+export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: { resumedSession: boolean }): NativeModelEnvelopeV1 | NativeModelEnvelopeV2 | NativeContinuationEnvelope {
+  if (options?.resumedSession && "continuationPrompt" in input && input.continuationPrompt) {
+    return {
+      schema: "paperclip.native-continuation.v1",
+      events: input.continuationPrompt,
+      completion: {
+        revision: input.completionContract.contract.revision,
+        criterionIds: input.completionContract.contract.criteria.map((criterion) => criterion.id),
+      },
+    };
+  }
   if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V1) {
     return {
       schema: NATIVE_MODEL_ENVELOPE_SCHEMA_V1,

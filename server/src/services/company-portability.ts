@@ -1,3 +1,4 @@
+import { agentAppearanceSchema } from "@paperclipai/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
@@ -702,6 +703,7 @@ type ProjectLike = {
   targetDate: string | null;
   color: string | null;
   icon: string | null;
+  appearance?: import("@paperclipai/shared").AgentAppearance | null;
   status: string;
   env: Record<string, unknown> | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
@@ -3238,6 +3240,7 @@ function buildManifestFromPackageFiles(
       role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
       title,
       icon: asString(extension.icon),
+      appearance: extension.appearance == null ? undefined : agentAppearanceSchema.parse(extension.appearance),
       capabilities: asString(extension.capabilities),
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       reportsToExistingAgentId: asString(extension.reportsToExistingAgentId),
@@ -4254,6 +4257,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const extension = stripEmptyValues({
           role: agent.role !== "agent" ? agent.role : undefined,
           icon: agent.icon ?? null,
+          appearance: agent.appearance,
           capabilities: agent.capabilities ?? null,
           adapter: {
             type: agent.adapterType,
@@ -5592,6 +5596,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             role: manifestAgent.role,
             title: manifestAgent.title,
             icon: manifestAgent.icon,
+            ...(manifestAgent.appearance ? { appearance: manifestAgent.appearance } : {}),
             capabilities: manifestAgent.capabilities,
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,

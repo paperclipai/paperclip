@@ -1,3 +1,4 @@
+import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -68,6 +69,7 @@ const CONFIG_REVISION_FIELDS = [
   "role",
   "title",
   "icon",
+  "appearance",
   "reportsTo",
   "capabilities",
   "adapterType",
@@ -167,6 +169,7 @@ function buildConfigSnapshot(
     role: row.role,
     title: row.title,
     icon: row.icon,
+    appearance: row.appearance,
     reportsTo: row.reportsTo,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
@@ -202,6 +205,7 @@ function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
   const patch: Partial<typeof agents.$inferInsert> = {};
   if (typeof payload.name === "string") patch.name = payload.name;
   if (typeof payload.role === "string") patch.role = payload.role;
+  if (payload.appearance != null) patch.appearance = agentAppearanceSchema.parse(payload.appearance);
   if (Object.prototype.hasOwnProperty.call(payload, "title")) {
     patch.title = typeof payload.title === "string" ? payload.title : null;
   }
@@ -374,8 +378,11 @@ export function agentService(db: Db) {
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
     return rows.map((row) => {
       const base = normalizeAgentBaseRow(row);
+      const appearance = resolveAgentAppearance(row.appearance, row.id);
       return {
         ...base,
+        appearance,
+        avatarUrl: agentAvatarUrl(appearance),
         orgChainHealth: getAgentWorkEligibility({
           agent: toEligibilityAgent(row),
           agents: eligibilityAgents,
@@ -913,6 +920,7 @@ export function agentService(db: Db) {
           .values({
             ...data,
             name: uniqueName,
+            appearance: data.appearance == null ? randomAgentAppearance() : agentAppearanceSchema.parse(data.appearance),
             companyId,
             role,
             adapterType,

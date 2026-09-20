@@ -1,3 +1,4 @@
+import { continuationTasks } from "./continuation-cases.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
@@ -82,6 +83,7 @@ function commonAgent(
           ...(adapterType === "paperclip_runner"
             ? []
             : [
+                "Read the assigned paperclip skill before using the Paperclip API. Use its documented request payloads rather than guessing fields from memory.",
                 'For a planning task, do not inspect the OpenAPI schema. PUT /api/issues/$PAPERCLIP_TASK_ID/documents/plan with {title:"Plan",format:"markdown",body,changeSummary}; read latestRevisionId and latestRevisionNumber from that response. Then POST /api/issues/$PAPERCLIP_TASK_ID/interactions with {kind:"request_confirmation",continuationPolicy:"wake_assignee",payload:{version:1,prompt,acceptLabel:"Approve",rejectLabel:"Reject",rejectRequiresReason:true,target:{type:"issue_document",key:"plan",revisionId,revisionNumber}}}, and PATCH the issue to {status:"in_review"}. Include Authorization and X-Paperclip-Run-Id on every write.',
               ]),
           "Never print, persist, or expose credential values, and never create unrelated work.",
@@ -191,6 +193,19 @@ function nativeProfile(input: {
             : {}),
         },
       });
+    },
+  };
+}
+
+/** Chat acceptance exercises the shipped provider defaults, not full-auto fixtures. */
+function defaultPermissionProfile(profile: RunnerProfileFixture): RunnerProfileFixture {
+  if (profile.generation !== "native") return profile;
+  return {
+    ...profile,
+    buildAgent(input) {
+      const payload = profile.buildAgent(input);
+      const { codexPermissionMode: _codex, acpxPermissionMode: _acpx, ...adapterConfig } = payload.adapterConfig as Record<string, unknown>;
+      return { ...payload, adapterConfig };
     },
   };
 }
@@ -452,7 +467,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         "Complete this task in a single run.",
         `The exact marker also appears unescaped in the task title: PAPERCLIP_E2E_OK_${nonce}`,
         `Your final visible task-thread response must be exactly this marker: PAPERCLIP_E2E_OK_${nonce}`,
-        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_OK_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_OK_${nonce} once as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_OK_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_OK_${nonce} once as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_OK_${nonce}"}. Do not POST to /comments, and do not include the marker in any other write.`,
         "The visible task-thread response is asserted; hidden reasoning or provider terminal output alone does not count.",
         "Use underscore characters exactly as shown and do not insert backslashes.",
@@ -519,7 +534,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         "Only after the revised plan is accepted, implement it by posting one final visible task-thread response containing exactly " +
           `PAPERCLIP_E2E_PLAN_DONE_${nonce}` +
           " and mark the task Done.",
-        `For a native runner, remain in the requested planning collaboration mode. Call write_document for key \`plan\`, then call request_human_input exactly once with interactionKind \`confirmation\`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy \`wake_assignee\`. For both the initial Plan and the revised Plan, those two tool calls form one indivisible response sequence: immediately after write_document succeeds, request_human_input must be your next action using that call's returned latestRevisionId. Do not emit assistant text, end the response or heartbeat, or stop after write_document alone before the matching confirmation request succeeds. Do not call paperclip_finish while waiting for either Plan confirmation. When an acceptance wake arrives, first call get_task_context. Treat the wake as valid only when that control-plane result is for the current task and identifies the exact revised Plan revision used as the confirmation target as accepted; otherwise do not finish and continue waiting for the matching revision-bound confirmation. After that verification succeeds, your immediate next action must be the paperclip_finish tool call. Do not call list_documents or any other tool, and do not emit any assistant text, acknowledgement, progress note, or preamble between verification and paperclip_finish. Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_PLAN_DONE_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit only PAPERCLIP_E2E_PLAN_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `For a native runner, remain in the requested planning collaboration mode. Call write_document for key \`plan\`, then call request_human_input exactly once with interactionKind \`confirmation\`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy \`wake_assignee\`. For both the initial Plan and the revised Plan, those two tool calls form one indivisible response sequence: immediately after write_document succeeds, request_human_input must be your next action using that call's returned latestRevisionId. Do not emit assistant text, end the response or heartbeat, or stop after write_document alone before the matching confirmation request succeeds. Do not call paperclip_finish while waiting for either Plan confirmation. When an acceptance wake arrives, first call get_task_context. Treat the wake as valid only when that control-plane result is for the current task and identifies the exact revised Plan revision used as the confirmation target as accepted; otherwise do not finish and continue waiting for the matching revision-bound confirmation. After that verification succeeds, your immediate next action must be the paperclip_finish tool call. Do not call list_documents or any other tool, and do not emit any assistant text, acknowledgement, progress note, or preamble between verification and paperclip_finish. Use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal). Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_PLAN_DONE_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit only PAPERCLIP_E2E_PLAN_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         `For a legacy runner, use the public Paperclip API. The first PUT of the \`plan\` issue document creates it. For every later PUT, first GET the current document and set \`baseRevisionId\` to its \`latestRevisionId\`; a 409 means you must GET again and retry with the new latest revision. Create a \`request_confirmation\` targeting the successful PUT response's \`latestRevisionId\` with \`continuationPolicy: wake_assignee\`, and move the issue to \`in_review\` while waiting. After the revised Plan is accepted, write PAPERCLIP_E2E_PLAN_DONE_${nonce} exactly once through one atomic issue PATCH with status \`done\` and that exact comment; do not POST a separate comment or perform a second write.`,
         "Do not create files, child tasks, or unrelated work, and do not expose credentials.",
       ].join("\n"),
@@ -570,7 +585,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         `Your final visible task-thread answer must be exactly this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
         "Do not create or modify files, do not create a plan or additional work, and do not expose credentials.",
         "After posting the direct answer, mark this task Done.",
-        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"E2E_ASK_12_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. For the entire run, paperclip_finish must be your only tool call: never call report_progress or any other tool before or after it. Wait for that tool call to succeed, then emit exactly E2E_ASK_12_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds.`,
+        `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"E2E_ASK_12_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. For the entire run, paperclip_finish must be your only tool call: never call report_progress or any other tool before or after it. Wait for that tool call to succeed, then emit exactly E2E_ASK_12_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds.`,
         `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"E2E_ASK_12_${nonce}"}. Do not POST to /comments, do not PATCH the status separately, and do not include the marker in any other API write.`,
       ].join("\n"),
     buildMatchers(nonce, execution) {
@@ -651,7 +666,7 @@ const structuredQuestionResumeTask = {
       'In a legacy runner, after that POST returns 2xx, PATCH $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID with exactly {"status":"in_review"}. Do not include `reviewInteractionId`: it only designates confirmation interactions, not `ask_user_questions`. If the PATCH fails, retry only that PATCH and never POST the interaction again.',
       "In a legacy runner, after those two writes succeed, end the current response and heartbeat immediately. Do not wait, sleep, poll, or fetch the interaction; `wake_assignee` will start a new heartbeat after the user answers.",
       `After the answer arrives, if it is Cobalt, publish exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} once as the complete visible response and mark the task Done.`,
-      `In a native runner, after the answer arrives, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_QUESTION_DONE_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+      `In a native runner, after the answer arrives, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_QUESTION_DONE_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
       `In a legacy runner, make exactly one completion write: PATCH $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_QUESTION_DONE_${nonce}"}. Do not POST a separate comment or perform a second write containing the marker.`,
       "Do not create files, plans, child tasks, or unrelated work, and do not expose credentials.",
     ].join("\n"),
@@ -710,7 +725,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
       [
         "Complete this deterministic hello task in one turn.",
         "Your first response action must be the paperclip_finish tool call. Do not emit any assistant text, acknowledgement, or preamble before calling it.",
-        `Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("H", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("H", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `Use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal). Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("H", nonce)}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("H", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         "Do not create files, plans, interactions, or additional work.",
       ].join("\n"),
     buildMatchers: (nonce, execution) =>
@@ -737,7 +752,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
         `Call request_human_input exactly once with idempotencyKey \`question-${nonce}\`, interactionKind \`questions\`, title \`Verification word\`, prompt \`Choose the verification word\`, continuationPolicy \`wake_assignee\`, and payload {version:1,questions:[{id:\`verification-word\`,prompt:\`Choose the verification word.\`,selectionMode:\`single\`,required:true,options:[{id:\`cobalt\`,label:\`Cobalt\`},{id:\`amber\`,label:\`Amber\`}]}]}.`,
         `Before the answer arrives, do not spell, quote, repeat, announce, or include ${breadthMarker("Q_C", nonce)} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
         "Do not call paperclip_finish while the question is pending.",
-        `After the answer arrives, if it is Cobalt, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("Q_C", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("Q_C", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `After the answer arrives, if it is Cobalt, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("Q_C", nonce)}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("Q_C", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         "Do not create files, plans, or additional work.",
       ].join("\n"),
     buildMatchers: (nonce, execution) =>
@@ -765,7 +780,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
         "Call write_document for key `plan`, then call request_human_input exactly once with interactionKind `confirmation`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy `wake_assignee`.",
         `Before that exact Plan revision is accepted, do not spell, quote, repeat, announce, or include ${breadthMarker("P_OK", nonce)} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
         "Do not call paperclip_finish while confirmation is pending.",
-        `After that exact Plan revision is accepted, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("P_OK", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("P_OK", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `After that exact Plan revision is accepted, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("P_OK", nonce)}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("P_OK", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         "Do not create files, child tasks, or unrelated work.",
       ].join("\n"),
     buildMatchers: (nonce, execution) =>
@@ -805,7 +820,7 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
       ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
       : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
     `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
-    `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
+    `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
     legacyCompletion,
     `In a legacy runner, the PATCH comment is the complete visible response. After its 2xx response, finish silently: do not print, echo, or emit ${marker} again as assistant text.`,
     `Do not include ${marker} in any other visible response or write. Do not recreate, truncate, reorder, or duplicate prior lines.`,
@@ -893,10 +908,22 @@ const everydayProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "continuation", label: "Task continuation",
+    description: "Human direction, approval boundaries, untrusted evidence, and completed actions across turns.",
+    groups: ["local"], environments: [localEnvironment],
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(productionStoryProfile),
+    tasks: continuationTasks, expectedMatrixSize: 23,
+    excludedExecutionIds: [
+      ...["legacy-codex", "legacy-claude"].map(profile => `continuation.${profile}.local.question-tool-documentation`),
+      ...["legacy-codex", "legacy-claude", "runner-codex"].map(profile => `continuation.${profile}.local.provider-question-bridge`),
+    ],
+    definitionMetadata: { version: 3, grading: "durable-state-and-approval-boundaries", instructions: "production" },
+  },
+  {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
     groups: ["native"], profiles: everydayProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
-    tasks: everydayTasks, expectedMatrixSize: 35,
+    tasks: everydayTasks, expectedMatrixSize: 38,
     excludedExecutionIds: [...everydayProfiles.flatMap(profile => everydayTasks
       .filter(task => !["build-revise", "delegate-feedback", "recover-controller", "create-skill-studio"].includes(task.id))
       .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`))],
@@ -914,9 +941,10 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "agent-chat", label: "Persistent Agent Chat",
     description: "Task-backed conversations, session resets, and project plan handoff.",
     groups: ["chat"],
-    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
-    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 24,
-    definitionMetadata: { version: 1, resetRunsCountedSeparately: true },
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(defaultPermissionProfile),
+    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 28,
+    excludedExecutionIds: ["legacy-codex", "legacy-claude"].flatMap(profile => ["reassign-task", "create-backlog"].map(task => `agent-chat.${profile}.local.${task}`)),
+    definitionMetadata: { version: 4, resetRunsCountedSeparately: true, permissions: "production-defaults" },
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {
@@ -1079,6 +1107,7 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 export function validateRunnerCatalog(): MatrixExecution[] {
   const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...continuationTasks,
     ...everydayTasks,
     ...runnerTasks,
     ...localIntegrityTasks,

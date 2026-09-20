@@ -2772,6 +2772,8 @@ export function Inbox() {
                               defaultProjectWorkspaceIdByProjectId,
                             })}
                             assigneeName={agentName(issue.assigneeAgentId)}
+                            assigneeAgent={agents?.find((agent) => agent.id === issue.assigneeAgentId)}
+                            creatorAgent={agents?.find((agent) => agent.id === issue.createdByAgentId)}
                             assigneeUserName={
                               formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
                               ?? assigneeUserProfile?.label

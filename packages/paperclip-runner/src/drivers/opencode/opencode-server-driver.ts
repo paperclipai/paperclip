@@ -887,53 +887,71 @@ class OpenCodeHarnessSession implements HarnessSession {
       { turnId, itemId: call.callId },
     );
     if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
-      const validation = validatePrpStructuredRunResult(call.arguments);
-      if (!validation.ok) throw new Error("Invalid semantic result");
-      if (
-        (tool === PRP_BLOCK_TOOL_NAME &&
-          validation.result.reportedWorkDisposition !== "blocked") ||
-        (tool === PRP_COMPLETION_TOOL_NAME &&
-          validation.result.reportedWorkDisposition === "blocked")
-      )
-        throw new Error(
-          "Semantic result disposition does not match the terminal tool",
-        );
-      if (
-        validation.result.completionClaim.contractRevision !==
-        this.#taskEnvelope.completionContract.revision
-      ) {
-        throw new Error(
-          "Semantic result completion contract revision does not match",
-        );
-      }
-      const fingerprint = canonicalJson(validation.result);
-      if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
-        throw new Error("A different semantic result was already committed");
-      if (!this.#resultFingerprint) {
-        this.#result = structuredClone(validation.result);
-        this.#resultFingerprint = fingerprint;
-        this.#resultCallId = call.callId;
-        this.#resultTurnId = turnId;
-        this.#semanticResultTextBoundary = this.#completedTextParts.length;
-        this.#emit("run.result.proposed", validation.result, {
-          turnId,
-          itemId: call.callId,
-        });
-      }
-      this.#emit(
-        "item.completed",
-        {
-          kind: "dynamicToolCall",
-          item: {
-            type: "tool_result",
-            id: call.callId,
-            tool_use_id: call.callId,
-            result: "Semantic completion accepted.",
+      try {
+        const validation = validatePrpStructuredRunResult(call.arguments);
+        if (!validation.ok) throw new Error("Invalid semantic result");
+        if (
+          (tool === PRP_BLOCK_TOOL_NAME &&
+            validation.result.reportedWorkDisposition !== "blocked") ||
+          (tool === PRP_COMPLETION_TOOL_NAME &&
+            validation.result.reportedWorkDisposition === "blocked")
+        )
+          throw new Error(
+            "Semantic result disposition does not match the terminal tool",
+          );
+        if (
+          validation.result.completionClaim.contractRevision !==
+          this.#taskEnvelope.completionContract.revision
+        ) {
+          throw new Error(
+            "Semantic result completion contract revision does not match",
+          );
+        }
+        const expectedIds = this.#taskEnvelope.completionContract.criteria.map((criterion) => criterion.id);
+        const receivedIds = validation.result.completionClaim.criteria.map((criterion) => criterion.criterionId);
+        if (receivedIds.length !== expectedIds.length || new Set(receivedIds).size !== receivedIds.length || receivedIds.some((id) => !expectedIds.includes(id))) {
+          // Reject at the tool boundary so the provider can repair its claim.
+          // Emitting a bad result here kills runnerd's strict outer validation.
+          throw new Error(`Semantic result criteria must contain exactly these criterionIds, once each: ${JSON.stringify(expectedIds)}. Keep contractRevision ${JSON.stringify(this.#taskEnvelope.completionContract.revision)}.`);
+        }
+        const fingerprint = canonicalJson(validation.result);
+        if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
+          throw new Error("A different semantic result was already committed");
+        if (!this.#resultFingerprint) {
+          this.#result = structuredClone(validation.result);
+          this.#resultFingerprint = fingerprint;
+          this.#resultCallId = call.callId;
+          this.#resultTurnId = turnId;
+          this.#semanticResultTextBoundary = this.#completedTextParts.length;
+          this.#emit("run.result.proposed", validation.result, {
+            turnId,
+            itemId: call.callId,
+          });
+        }
+        this.#emit(
+          "item.completed",
+          {
+            kind: "dynamicToolCall",
+            item: {
+              type: "tool_result",
+              id: call.callId,
+              tool_use_id: call.callId,
+              result: "Semantic completion accepted.",
+            },
           },
-        },
-        { turnId, itemId: call.callId },
-      );
-      return { accepted: true };
+          { turnId, itemId: call.callId },
+        );
+        return { accepted: true };
+      } catch (error) {
+        // A rejected semantic call still completes its tool activity item.
+        // Otherwise a later question can appear to have an in-flight tool.
+        this.#emit("item.completed", {
+          kind: "dynamicToolCall",
+          item: { type: "tool_result", id: call.callId, tool_use_id: call.callId,
+            is_error: true, error: error instanceof Error ? error.message : String(error) },
+        }, { turnId, itemId: call.callId });
+        throw error;
+      }
     }
     if (!this.#dynamicToolHandler)
       throw new Error("Unsupported Paperclip operation");

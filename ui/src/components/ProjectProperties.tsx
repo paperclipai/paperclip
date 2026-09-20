@@ -63,7 +63,7 @@ const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
   {
     value: "serialize",
     label: "Serialize",
-    help: "Runs always take turns in the shared project workspace.",
+    help: "Sandbox runs take turns in the shared project workspace. Local/SSH folders allow concurrent runs.",
   },
   {
     value: "allow",

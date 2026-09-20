@@ -1,3 +1,4 @@
+import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import type {
   PaperclipJsonSchema,
   PaperclipSemanticActionDescriptor,
@@ -7,7 +8,7 @@ import type {
 import { createSkillAction } from "../protocol-actions/create-skill.js";
 import { searchApiAction } from "../protocol-actions/search-api.js";
 import { callApiAction } from "../protocol-actions/call-api.js";
-import { projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
+import { projectIconSchema, projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
@@ -415,6 +416,9 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     outputSchema: operationReceipt,
   }),
   descriptor({
+    ...reassignTaskAction.live.descriptor, placement: "optional", effect: "write",
+  }),
+  descriptor({
     operationId: "set_dependencies",
     title: "Set task dependencies",
     description: "Replace the active task's first-class blocker set.",
@@ -460,7 +464,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       },
       workspace: openObject, status: { enum: ["backlog", "planned", "in_progress", "completed", "cancelled"] },
       goalId: nullableText("Goal ID."), goalIds: stringArray("Goal IDs."), leadAgentId: nullableText("Lead agent ID."),
-      targetDate: nullableText("Target date."), color: nullableText("Project color."), icon: nullableText("Project icon."),
+      targetDate: nullableText("Target date."), color: nullableText("Project color."), icon: projectIconSchema,
       env: openObject, executionWorkspacePolicy: openObject, archivedAt: nullableText("Archive timestamp."),
     }, ["idempotencyKey", "name"]),
     outputSchema: openObject,
@@ -468,7 +472,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
   descriptor({
     operationId: "create_task",
     title: "Create task",
-    description: "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution.",
+    description: "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
     placement: "optional",
     effect: "write",
     requiredClaims: ["delegation:tasks:create"],
@@ -478,9 +482,10 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         ...idempotency,
         title: text("Task title.", 500),
         projectId: nullableText("Project identifier for the new task."),
-        initialPlan: nullableText("Relevant markdown plan to persist on the new task before it starts."),
+        initialPlan: nullableText("Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate."),
         description: nullableText("Child task description."),
         assigneeActorId: nullableText("Optional actor assignee.", 200),
+        status: { enum: ["backlog", "todo"], description: "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved)." },
         priority: { enum: ["critical", "high", "medium", "low"] },
         blockedByTaskIds: stringArray("Initial blocker task identifiers."),
       },

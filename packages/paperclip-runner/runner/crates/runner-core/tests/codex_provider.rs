@@ -3521,7 +3521,7 @@ fn durable_backend_rotates_tool_authority_for_fresh_run_attach() {
 }
 
 #[test]
-fn durable_backend_drains_a_bounded_completed_turn_tail_during_warm_attach() {
+fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_attach() {
     let directory = temporary_directory("durable-warm-attach-tail");
     let config = provider_config(
         &directory,

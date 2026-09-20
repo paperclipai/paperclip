@@ -634,7 +634,7 @@ describe("codex execute", () => {
         commentIds: ["comment-1", "comment-2"],
       });
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
-      expect(capture.prompt).toContain("Treat this wake payload as the highest-priority change for the current heartbeat.");
+      expect(capture.prompt).toContain("Use this wake to continue the task, applying new user direction and preserving its approval gates.");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain(
         "acknowledge the latest comment and explain how it changes your next action.",

@@ -7,7 +7,7 @@ import type { StrictCompletionContractInput } from "../../vendor/paperclip-runne
 import { nativeSha256 } from "./canonical.js";
 
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
-export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v3";
+export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v4";
 
 export function nativeCompletionRequestsForComments(
   comments: readonly {
@@ -51,6 +51,8 @@ export function buildNativeCompletionContract(
     readonly revision?: number;
     readonly immediateRequest?: string | null;
     readonly immediateRequests?: readonly string[] | null;
+    /** ID of this wake's server-verified humanResponses entry; its content is already in task context. */
+    readonly humanResponseId?: string | null;
   } = {},
 ): StrictCompletionContractInput {
   const immediateRequests = (
@@ -59,22 +61,27 @@ export function buildNativeCompletionContract(
   )
     .map((request) => request.trim())
     .filter((request) => request.length > 0);
-  const hasFollowUp = immediateRequests.length > 0;
+  const humanResponseId = options.humanResponseId?.trim();
+  const hasFollowUp = immediateRequests.length > 0 || Boolean(humanResponseId);
+  // Reference existing context rather than copying the brief/history into every
+  // follow-up contract. Keep this guidance stable across comments and resumes.
+  const followUpObjective = "Complete the current authorized stage using the task brief and current user direction in the supplied context. Later human direction replaces conflicting scope; preserve other requirements, assigned-skill instructions, and approval gates. Apply authenticated humanResponses only to their question or decision. Clarification is not approval. If acceptance is required, propose or save the requested plan and wait before executing.";
   return {
     revision: String(options.revision ?? 1),
     objective: hasFollowUp
-      ? immediateRequests.length === 1
-        ? "Respond to the latest comment"
-        : "Respond to all pending comments in order"
+      ? followUpObjective
       : issue.title,
     criteria: hasFollowUp
-      ? immediateRequests.map((request, index) => ({
-          id:
-            immediateRequests.length === 1
-              ? "objective"
-              : `pending_comment_${index + 1}`,
-          requirement: request,
-        }))
+      ? [
+          ...immediateRequests.map((request, index) => ({
+            id: immediateRequests.length === 1 ? "objective" : `pending_comment_${index + 1}`,
+            requirement: request,
+          })),
+          ...(humanResponseId ? [{
+            id: "human_response",
+            requirement: `Apply the server-verified humanResponses entry with id ${JSON.stringify(humanResponseId)} in the supplied current request context, within its question or decision scope and subject to later user direction.`,
+          }] : []),
+        ]
       : [
           {
             id: "objective",
@@ -97,6 +104,7 @@ export async function ensureNativeCompletionContract(input: {
   actorId: string;
   immediateRequest?: string | null;
   immediateRequests?: readonly string[] | null;
+  humanResponseId?: string | null;
 }) {
   return input.db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${[
@@ -120,6 +128,7 @@ export async function ensureNativeCompletionContract(input: {
       revision: latestRevision,
       immediateRequest: input.immediateRequest,
       immediateRequests: input.immediateRequests,
+      humanResponseId: input.humanResponseId,
     });
     const latestCandidateSha256 = nativeSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
@@ -136,6 +145,7 @@ export async function ensureNativeCompletionContract(input: {
       revision: nextRevision,
       immediateRequest: input.immediateRequest,
       immediateRequests: input.immediateRequests,
+      humanResponseId: input.humanResponseId,
     });
     const canonicalSha256 = nativeSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,

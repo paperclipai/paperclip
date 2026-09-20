@@ -357,12 +357,12 @@ describe("adapter routes", () => {
       }),
       expect.objectContaining({
         key: "opencodePermissionMode",
-        default: "ask",
+        default: "allow",
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
       }),
       expect.objectContaining({
         key: "acpxPermissionMode",
-        default: "approve-reads",
+        default: "approve-all",
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       }),
       expect.objectContaining({

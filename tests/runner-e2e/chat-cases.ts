@@ -10,6 +10,8 @@ export function chatMarker(
 }
 
 export const CHAT_CASES = [
+  ["create-backlog", "Save a planned task without starting work", 2],
+  ["reassign-task", "Reassign existing work and preserve queued context", 2],
   ["continuity-restart", "Conversation continuity across restart", 3],
   ["new-session", "Fresh context within preserved history", 2],
   ["stop-new-resume", "Stop, reset, and resume", 3],

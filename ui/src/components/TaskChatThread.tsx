@@ -1656,6 +1656,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               agentName:
                 meta?.agentName ??
                 (meta?.agentId ? agentMap?.get(meta.agentId)?.name : undefined),
+              agent: meta?.agentId ? agentMap?.get(meta.agentId) ?? { id: meta.agentId } : undefined,
               agentIcon: meta?.agentId
                 ? agentMap?.get(meta.agentId)?.icon
                 : undefined,
@@ -1873,7 +1874,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             agentName:
               meta?.agentName ??
               (meta?.agentId ? agentMap?.get(meta.agentId)?.name : undefined),
-            agentIcon: meta?.agentId
+            agent: meta?.agentId ? agentMap?.get(meta.agentId) ?? { id: meta.agentId } : undefined,
+              agentIcon: meta?.agentId
               ? agentMap?.get(meta.agentId)?.icon
               : undefined,
             standaloneHeader: sourceIsPaperclipRunner,
@@ -1963,6 +1965,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 (liveRun.agentId
                   ? agentMap?.get(liveRun.agentId)?.name
                   : undefined),
+              agent: liveRun.agentId ? agentMap?.get(liveRun.agentId) ?? { id: liveRun.agentId } : undefined,
               agentIcon: liveRun.agentId
                 ? agentMap?.get(liveRun.agentId)?.icon
                 : undefined,
@@ -2273,6 +2276,28 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
     ) => {
+      const projected = (interactions ?? []).find((interaction) =>
+        interaction.kind === "ask_user_questions" && interaction.sourceRunId === item.runId &&
+        interaction.payload.runtimeRequestId === item.requestId);
+      if (projected?.kind === "ask_user_questions") {
+        if (projected.status !== "pending") throw new Error("This question has already been answered or closed.");
+        if (decision.action === "cancel") {
+          if (!onCancelInteraction) throw new Error("Cancelling this question is unavailable.");
+          await onCancelInteraction(projected);
+          return;
+        }
+        if (decision.action !== "submit" || !("response" in decision) || !projected.payload.questionSet || !onSubmitInteractionAnswers) {
+          throw new Error("Submit the answer through the saved question card.");
+        }
+        const response = decision.response;
+        await onSubmitInteractionAnswers(projected, projected.payload.questionSet.questions.map(question => {
+          const answer = response.answers[question.id];
+          const otherText = question.answerMode === "text" ? answer?.text?.trim() : answer?.customText?.trim();
+          return { questionId: question.id, optionIds: question.answerMode === "text" ? [] : (answer?.selectedOptionIds ?? []),
+            ...(otherText ? { otherText } : {}) };
+        }));
+        return;
+      }
       if (!item.turnId || !item.requestKind) {
         throw new Error(
           "This runtime request is missing the provider turn identity needed to resolve it.",
@@ -2308,14 +2333,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         resolution,
       });
     },
-    [],
+    [interactions, onSubmitInteractionAnswers, onCancelInteraction],
   );
   const pendingComposerInputs = useMemo<PendingComposerInput[]>(() => {
     const result: PendingComposerInput[] = [];
     const runtimeKey = pendingRuntimeRequest
       ? `runtime:${pendingRuntimeRequest.runId}:${pendingRuntimeRequest.requestId}`
       : null;
-    if (pendingRuntimeRequest && runtimeKey) {
+    // A projected card owns the durable answer and forwards it to the live
+    // provider. Bypassing it leaves a pending card that blocks completion.
+    const projectedRuntime = pendingRuntimeRequest && (interactions ?? []).some(interaction =>
+      interaction.kind === "ask_user_questions" && interaction.sourceRunId === pendingRuntimeRequest.runId &&
+      interaction.payload.runtimeRequestId === pendingRuntimeRequest.requestId);
+    if (pendingRuntimeRequest && runtimeKey && !projectedRuntime) {
       result.push({
         key: runtimeKey,
         kind: "runtime",
@@ -2343,7 +2373,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ? `runtime:${interaction.sourceRunId}:${interaction.payload.runtimeRequestId}`
           : null;
       const key = recoveredRuntimeKey ?? `interaction:${interaction.id}`;
-      if (key === runtimeKey) continue;
+
       result.push({
         key,
         kind: "durable",
@@ -2684,6 +2714,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     initialHistoryPending ||
     planLoading ||
     initialRuns.some((run) => {
+      // A scheduled retry has not started and has no log to hydrate yet.
+      if (run.status === "scheduled_retry") return false;
       if (
         run.runtimeMode === "native" &&
         (hydratedNativeRunIds
@@ -2859,6 +2891,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                   }
                                   agentName={visibleTailAgentName}
                                   agentIcon={visibleTailAgentIcon}
+                            agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
                                   items={tailItems}
                                   status={
                                     optimisticRunnerStartup

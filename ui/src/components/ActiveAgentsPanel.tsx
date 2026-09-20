@@ -1,3 +1,4 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -8,7 +9,6 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { Clock3 } from "lucide-react";
-import { Identity } from "./Identity";
 import { StatusGlyph } from "./StatusGlyph";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -190,7 +190,7 @@ export const AgentRunCard = memo(function AgentRunCard({
           aria-label={`${run.agentName} — ${statusLabel}. View run`}
           className="flex min-w-0 items-center gap-2 rounded-md text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Identity name={run.agentName} className="gap-2 font-medium" />
+          <AgentIdentity agent={{ id: run.agentId, name: run.agentName, appearance: run.agentAppearance }} size="sm" className="gap-2 font-medium" />
         </Link>
 
         {run.issueId ? (

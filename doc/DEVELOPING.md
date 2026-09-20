@@ -479,6 +479,68 @@ preserves all companies, agents, and secrets and ignores the bootstrap flags.
 The worktree execution setting is the only value it may reconcile in that
 case.
 
+### Slack chat setup in a test drive
+
+Enable **Chat connectors** in Instance Settings, then open **Connectors → Slack →
+Chat with an agent**. Before connecting, configure a public HTTPS URL that Slack
+can reach. The setup page shows this requirement above the app details.
+Slack app name, bot display name, and slash command are editable while the
+connection is a draft; valid edits save when a field loses focus. **Create Slack
+app** opens Slack with the generated manifest prefilled. **View Slack App Manifest**
+opens the read-only manifest in a modal to inspect or copy it. Once connected,
+the app details are locked so reconnecting cannot silently change the registered
+command. Slack still requires workspace selection, installation approval, and
+copying the bot token and signing secret back into Paperclip.
+
+After Slack verifies its Events Request URL, the wizard asks you to send
+`/<your-command> connect`. This command works before a sender or channel is
+allowed to start work. It records the Slack identity and sends a private,
+one-time confirmation link that expires after 15 minutes; it creates no task
+and grants no access. You can confirm **This is my Slack account** in the wizard,
+or follow the private link and sign into Paperclip. Both paths check company
+membership before linking, and future messages use the linked user's current
+permissions. The wizard only lists identities that sent the connect command to
+this endpoint during the current test.
+
+New Slack connections disable **Allow unlinked people** by default. The Access
+page includes the shareable connect command and instructions for other users.
+Other Slack users join through the same connect command after setup. A signed-in
+nonmember can **Request access** from the confirmation page. This creates a
+pending human join request in the company's existing admin approval queue; it
+does not grant membership or link the identity. After approval, confirm the
+identity, or send the connect command again if the link has expired. Successful
+confirmation also queues a private Slack acknowledgement.
+
+Slack identity invitation pages retain the cloud authentication and bootstrap
+checks. Signed-in nonmembers may open a valid private invitation to request
+membership, but confirmation still requires membership in the invitation's
+company. Preview, access-request, and confirmation APIs also enforce the chat
+connector rollout flag on the server; invitees cannot read board experimental
+settings before they join. Expired or consumed tokens grant no access.
+
+The final wizard step suggests `@<your-bot> you there?`, then continuing in
+the agent's thread. Select the bot from Slack's @mention suggestions so the
+message includes a real mention. It detects a message or task command from the current user's
+linked Slack identity during this setup session and shows a checkmark. This
+conversation test is optional: **I've sent the test message** and **Skip test and
+finish** both finish setup once webhook verification and account linking are
+complete. The separate strict connection-test API retains its conversation and
+delivery checks.
+
+### Chat activity pagination and callback diagnostics
+
+The connection Activity tab loads 25 records per page. `GET /api/chat-endpoints/:id/activity?limit=25`
+returns `{ items, nextCursor }`; pass `cursor` to read older records. The limit must be 1–100.
+A timestamp and ID cursor preserves records with equal timestamps and avoids shifts from new arrivals.
+The first page refreshes automatically; older pages do not poll. Mutable action status can move an
+entry forward in time, so this is a live ledger, not a historical snapshot. Requests without pagination
+parameters retain the recent-100 array response for existing clients.
+
+Slack callback diagnostics tolerate HTTP between a TLS proxy and Paperclip when the public host,
+port, and path still match. A changed authority or path remains stale. This comparison only affects
+health display; it does not trust forwarded headers or alter Slack signature verification.
+
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:
@@ -959,10 +1021,33 @@ cancellation remain enforced; the snapshot is removed when the provider exits.
 Native Codex is qualified only with `codexPermissionMode: "never"`. The create
 and edit surfaces do not offer `on-request` or `untrusted`, and a persisted
 unsupported value fails with remediation instead of being silently coerced.
-OpenCode retains `allow`, `ask`, and `deny`; ACPX retains `approve-all`,
-`approve-reads`, and `deny-all`. Codex conversion keeps a non-empty model and
+OpenCode defaults to `allow`, with explicit `ask` and `deny` options; ACPX
+defaults to `approve-all`, with explicit `approve-paperclip`, `approve-reads`,
+and `deny-all` options. Codex conversion keeps a non-empty model and
 otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
 applies the same default to older runner rows whose model is missing or blank.
+
+For an Agent Chat test drive, enable **Agent Chat** in Experimental settings and
+configure two agents with Paperclip Runner: native Codex and ACPX Claude. Connect
+the Claude account through the agent's **AI connection** section (or supply an
+explicit supported provider credential); an ambient Claude CLI login alone is
+not a credential source for its isolated runner home. The default
+`approve-all` setting approves harness operations across assigned tools and
+connections, including provider-native tools. Company permissions, approval
+gates, and workspace isolation still apply. Explicit restrictive modes remain
+restrictive; omitted settings use full auto.
+
+Test questions, saved plan revisions, approval before task handoff, status
+lookups, and `/new` preserving chat history. Hiring additionally requires the
+operator-controlled [runner API tools](runner-api-tools.md) rollout; enabling
+Agent Chat does not enable that API surface. Failed-turn retries restore the
+selected run's user comments so the agent can answer the original request.
+
+A native continuation that requires reconciliation shows **Recovery needed**
+with **Inspect run**; inspect the original outcome before resolving its recovery
+hold. A generic retry cannot resolve this incident. The runner's
+`get_task_context` includes up to 100 existing direct child tasks and a truncation
+flag so resumed agents can reuse delegated work and inspect completed results.
 
 For native Codex runs, Paperclip passes the resolved execution workspace as
 `PAPERCLIP_WORKSPACE_CWD` and uses it as the provider containment boundary. A
@@ -1004,6 +1089,20 @@ that classification finishes.
 - A verified live runner re-registers its existing PRP authority and reconnects
   with the same operating-system PID. Paperclip does not spawn a competing
   runner.
+- For a running sandbox session, recovery checks the original provider lease,
+  remote workspace, durable runner identity, and process marker inside that
+  sandbox. The process marker must include the Linux boot ID and start ticks;
+  recovery compares them with the live process before adoption and signaling.
+  Collection uses the required Node runtime and is optional for fresh launches. Older
+  markers or images without that proof remain blocked for recovery. Remote
+  PIDs are never interpreted as controller-local PIDs. The runner must
+  authenticate to its existing PRP authority; reconnection neither
+  launches another provider nor consumes a provider retry. A replacement
+  sandbox or mismatched identity blocks adoption without overwriting evidence.
+- Shutdown waits up to 30 seconds for an in-progress native startup to reach
+  its detach acknowledgement. It reports a startup deadline failure instead
+  of claiming that an unfinished bootstrap detached safely. A queued turn
+  waits for the previous executor to finish releasing its task resources.
 - A verified dead runner starts a replacement from the same durable root and
   resumes the same provider checkpoint. Only the operating-system PID changes.
 - A runner that died before its first authenticated connection can restart on
@@ -1439,6 +1538,12 @@ Networking behavior for this smoke script:
 
 See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.
 
+### Agent persona Storybook
+
+See [agent-personas.md](agent-personas.md) for the dynamic avatar endpoint, cache,
+and character stories. Set `PAPERCLIP_STORYBOOK_API_URL` to your isolated
+Paperclip API URL when running dev Storybook. Published Storybook builds automatically
+package avatar PNGs using the API renderer; static hosting needs no API proxy.
 
 ### Investigating polling load
 

@@ -14,6 +14,10 @@ import {
   emailConnectionSchema,
   emailSendSchema,
   // Agent
+  AGENT_PALETTE_IDS,
+  AGENT_AVATAR_SIZES,
+  CHARACTER_STATES,
+  agentAppearanceSchema,
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
@@ -621,6 +625,12 @@ const registry = new OpenAPIRegistry();
 
 // ─── Common schemas ──────────────────────────────────────────────────────────
 
+// Match the route's isUuidLike check without its whitespace trimming. Spell
+// out both cases because OpenAPI patterns do not carry RegExp flags.
+const heartbeatRunIdParamSchema = z.string()
+  .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/)
+  .describe("Heartbeat run UUID; malformed values return 400");
+
 const ErrorSchema = registry.register("Error", z.object({ error: z.string() }));
 
 const responses = {
@@ -860,6 +870,8 @@ const chatIdentityLinkIntentResponseSchema = z
 
 const chatIdentityLinkPreviewResponseSchema = z
   .object({
+    selfService: z.boolean().optional(),
+    canConfirm: z.boolean().optional(),
     endpointId: z.string().uuid(),
     companyId: z.string().uuid(),
     companyName: z.string(),
@@ -1262,6 +1274,7 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
 ]);
 
 const PUBLIC_OPERATIONS = new Set([
+  "GET /api/agent-avatars/{version}/{palette}/{file}",
   "GET /api/health",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
@@ -1474,6 +1487,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/setup",
   "POST /api/chat-endpoints/{endpointId}/setup-secret",
   "POST /api/chat-endpoints/{endpointId}/test",
+  "POST /api/chat-endpoints/{endpointId}/finish",
+  "GET /api/chat-endpoints/{endpointId}/test-status",
   "POST /api/chat-endpoints/{endpointId}/photon/inspect",
   "GET /api/chat-endpoints/{endpointId}/resources",
   "PUT /api/chat-endpoints/{endpointId}/resources",
@@ -1482,6 +1497,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/chat-endpoints/{endpointId}/principals/{principalId}/link",
   "POST /api/chat-identity-links/confirm",
   "GET /api/chat-identity-links/preview",
+  "POST /api/chat-identity-links/request-access",
   "GET /api/chat-endpoints/{endpointId}/conversations",
   "GET /api/chat-endpoints/{endpointId}/activity",
   "POST /api/chat-endpoints/{endpointId}/deliveries/{deliveryId}/replay",
@@ -2224,6 +2240,27 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post", path: "/api/chat-endpoints/{endpointId}/finish", tags: ["chat-channels"],
+  summary: "Finish Slack onboarding with an optional conversation test",
+  description: "Requires a verified Slack webhook and an authorized identity linked to the current user. Records that a full conversation test was not required.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: { 200: r.ok(chatEndpointResponseSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+registry.registerPath({
+  method: "get", path: "/api/chat-endpoints/{endpointId}/test-status", tags: ["chat-channels"],
+  summary: "Check for the current user's first setup message",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: { 200: r.ok(z.object({ messageReceivedAt: z.string().nullable() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "post", path: "/api/chat-identity-links/request-access", tags: ["chat-channels"],
+  summary: "Request company membership using a private Slack identity link",
+  description: "Creates a pending human join request for admin approval. Requires a valid, unexpired self-service token and a signed-in user. Does not grant access or link an identity.",
+  request: { body: jsonBody(confirmChatIdentityLinkSchema) },
+  responses: { 200: r.ok(z.object({ status: z.enum(["member", "pending_approval"]) })), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/chat-endpoints/{endpointId}/test",
   tags: ["chat-channels"],
@@ -2346,7 +2383,7 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Preview an external identity-link intent",
   description:
-    "Returns the company and provider identity that a valid, unexpired confirmation token would link. Company membership is checked before returning the preview.",
+    "Returns the company and provider identity that a valid, unexpired confirmation token would link. Admin-created links require company access. Private links issued to a signed Slack sender allow a signed-in recipient to preview that identity and request company access.",
   request: {
     query: z.object({ token: z.string().min(32).max(4096) }).strict(),
   },
@@ -2399,10 +2436,11 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "List chat endpoint delivery and publication activity",
   description:
-    "Returns the endpoint's recent redacted inbound-delivery and outbound-publication ledger, including whether a failed item can be replayed.",
-  request: { params: z.object({ endpointId: z.string().uuid() }) },
+    "Returns the endpoint's recent redacted inbound-delivery and outbound-publication ledger, including whether a failed item can be replayed. Supply limit (1–100) for a page object and follow nextCursor for older activity. Requests without pagination parameters retain the legacy recent-100 array.",
+  request: { params: z.object({ endpointId: z.string().uuid() }), query: z.object({ limit: z.coerce.number().int().min(1).max(100).optional(), cursor: z.string().max(256).optional() }) },
   responses: {
-    200: r.ok(z.array(chatActivityResponseSchema)),
+    200: r.ok(z.union([z.array(chatActivityResponseSchema), z.object({ items: z.array(chatActivityResponseSchema), nextCursor: z.string().nullable() })])),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2534,10 +2572,11 @@ registry.registerPath({
   tags: ["chat-channels", "issues"],
   summary: "Get a task's external chat binding",
   description:
-    "Returns the task's current external conversation binding, or `null` when it has none. A binding in another company is reported as not found.",
+    "Returns the task's current external conversation binding, or `null` when it has none. Requires a task UUID; synthetic agent-chat view IDs are invalid. A binding in another company is reported as not found.",
   request: { params: z.object({ issueId: z.string().uuid() }) },
   responses: {
     200: r.ok(externalChannelBindingResponseSchema.nullable()),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2633,6 +2672,33 @@ for (const route of [
 }
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
+
+registry.register("AgentAppearance", agentAppearanceSchema);
+registry.registerPath({
+  method: "get",
+  path: "/api/agent-avatars/{version}/{palette}/{file}",
+  tags: ["agents"],
+  summary: "Render or retrieve a public preset agent portrait",
+  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
+  request: {
+    params: z.object({
+      version: z.literal("cap-v1"),
+      palette: z.enum([...AGENT_PALETTE_IDS, "muted-dream"]),
+      file: z.enum(CHARACTER_STATES.map(pose => `${pose}.png`)),
+    }),
+    query: z.object({
+      size: z.enum(AGENT_AVATAR_SIZES.map(String)).optional().default("512"),
+      scale: z.enum(["1", "2"]).optional().default("1"),
+    }).strict(),
+  },
+  responses: {
+    200: { description: "PNG portrait; Cache-Control: public, max-age=31536000, immutable; ETag: SHA-256 of PNG bytes", content: { "image/png": { schema: { type: "string", format: "binary" } } } },
+    304: { description: "If-None-Match matches the cached content ETag" },
+    400: r.badRequest,
+    429: { description: "Cold-render admission limit for this client; Cache-Control: no-store; Retry-After in seconds. Cached portraits remain available." },
+    503: { description: "Retryable rendering/storage failure; Cache-Control: no-store; Retry-After: 5" },
+  },
+});
 
 registry.registerPath({
   method: "get",
@@ -6521,8 +6587,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}",
   tags: ["runs"],
   summary: "Get a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -6530,8 +6596,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/cancel",
   tags: ["runs"],
   summary: "Cancel a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6539,9 +6605,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace",
   tags: ["runs"],
   summary: "Inspect a redacted provider trace",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6553,9 +6620,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace/reproject-workspace-diffs",
   tags: ["runs"],
   summary: "Reproject retained Codex workspace diffs into run events",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6569,7 +6637,7 @@ registry.registerPath({
   summary: "Reveal one exact provider trace frame",
   request: {
     params: z.object({
-      runId: z.string(),
+      runId: heartbeatRunIdParamSchema,
       frameId: z.coerce.number().int().positive(),
     }),
   },
@@ -6587,9 +6655,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace/download",
   tags: ["runs"],
   summary: "Download an exact provider trace as NDJSON",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6601,9 +6670,10 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/provider-trace",
   tags: ["runs"],
   summary: "Permanently delete a provider trace",
-  request: { params: z.object({ runId: z.string() }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: {
     200: r.ok(),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -6746,7 +6816,7 @@ registry.registerPath({
   tags: ["runs"],
   summary: "Resolve a pending Paperclip runner runtime request",
   request: {
-    params: z.object({ runId: z.string(), requestId: z.string() }),
+    params: z.object({ runId: heartbeatRunIdParamSchema, requestId: z.string() }),
     body: jsonBody(
       z.object({
         turnId: z.string().min(1).max(160),
@@ -6796,7 +6866,7 @@ registry.registerPath({
   tags: ["runs"],
   summary: "Submit watchdog decisions for a run",
   request: {
-    params: z.object({ runId: z.string() }),
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
     body: jsonBody(
       z.object({
         decision: z.enum(["snooze", "continue", "dismissed_false_positive"]),
@@ -6806,7 +6876,7 @@ registry.registerPath({
       }),
     ),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6814,8 +6884,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/events",
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6823,8 +6893,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/log",
   tags: ["runs"],
   summary: "Get log for a heartbeat run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6832,8 +6902,8 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/workspace-operations",
   tags: ["runs"],
   summary: "List workspace operations for a run",
-  request: { params: z.object({ runId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

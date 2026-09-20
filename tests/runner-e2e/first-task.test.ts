@@ -20,6 +20,7 @@ import {
   digestText,
   snapshotInstruction,
   gradeFirstTask,
+  gradeNativeSessionContinuity,
   firstTaskCompletionSettled,
   type FirstTaskEvidence,
   type FirstTaskCheckpoint,
@@ -1215,4 +1216,45 @@ describe("accept-while-running overlap evidence", () => {
     expect(check.passed).toBe(overlap);
     expect(Boolean(check.notReached)).toBe(!overlap);
   });
+});
+
+
+describe("native provider session continuity", () => {
+  const row = (id: string) => ({ id, nativeIssueId: "parent", nativeSessionId: "native", usageJson: { sessionReused: true }, runnerProfileJson: { sessionCheckpoint: { providerSessionId: "provider" }, nativeExecutionInput: { binding: { executionWorkspaceId: "workspace" } } } });
+  it("accepts stable parent identity, deduplicates checkpoints, and excludes children", () => {
+    expect(gradeNativeSessionContinuity([row("one"), row("one"), row("two"), { ...row("child"), nativeIssueId: "child", nativeSessionId: "different" }], "parent").passed).toBe(true);
+  });
+  it("rejects a fresh provider despite generic sessionReused metadata", () => {
+    const next = row("two"); next.runnerProfileJson.sessionCheckpoint.providerSessionId = "fresh";
+    expect(gradeNativeSessionContinuity([row("one"), next], "parent").passed).toBe(false);
+    expect(gradeNativeSessionContinuity([row("one")], "parent").passed).toBe(false);
+  });
+});
+
+it("allows first-response native question waits but never treats unfinished journeys as successful", () => {
+  const e = recording("interview-first-response");
+  const last = e.checkpoints.at(-1)!;
+  last.runs = [{ id: "native-wait", status: "running" }];
+  last.interactions.push({ id: "native-card", kind: "ask_user_questions", status: "pending", sourceRunId: "native-wait", payload: { runtimeRequestId: "request" } });
+  const providerPassed = () => gradeFirstTask(e).find(c => c.id === "provider-runs-succeeded")?.passed;
+  expect(providerPassed()).toBe(true);
+  e.caseId = "interview-plan-accept";
+  expect(providerPassed()).toBe(false);
+  e.caseId = "interview-first-response";
+  last.interactions.at(-1)!.status = "answered";
+  expect(providerPassed()).toBe(false);
+  last.interactions.at(-1)!.status = "pending";
+  last.runs[0].status = "failed";
+  expect(providerPassed()).toBe(false);
+});
+
+it("retains suppressed unstarted wakes without failing successful execution", () => {
+  const e = recording();
+  const last = e.checkpoints.at(-1)!;
+  const wake = { id: "blocked-wake", status: "cancelled", errorCode: "issue_dependencies_blocked", startedAt: null as string | null };
+  last.runs.push(wake);
+  const passed = () => gradeFirstTask(e).find(c => c.id === "provider-runs-succeeded")?.passed;
+  expect(passed()).toBe(true);
+  wake.startedAt = "2026-09-18";
+  expect(passed()).toBe(false);
 });

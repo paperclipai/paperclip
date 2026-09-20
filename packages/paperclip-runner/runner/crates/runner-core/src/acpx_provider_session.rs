@@ -29,6 +29,7 @@ const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 #[serde(rename_all = "kebab-case")]
 pub enum AcpxPermissionMode {
     ApproveAll,
+    ApprovePaperclip,
     ApproveReads,
     DenyAll,
 }
@@ -444,9 +445,11 @@ impl AcpxProviderSession {
                             return Err(self.fail_closed(error));
                         }
                         // These built-ins are authorized by the same ledger as
-                        // dynamic tools, but the server dispatcher must never
-                        // execute them as ordinary semantic operations.
-                        expose_event = false;
+                        // dynamic tools. Project the input through the normal
+                        // authenticated semantic bridge so runnerd can ask
+                        // the server for completion feedback before resolving
+                        // the provider call. The result is still reconciled
+                        // by the reserved receipt ledger below.
                         if next_bridge.has_call_receipt(call_id) {
                             return Err(self.fail_closed(LocalRunnerError::invalid(
                                 "ACPX reused a dynamic call id for a reserved terminal invocation",
@@ -579,7 +582,13 @@ impl AcpxProviderSession {
         let mut next_state = self.state.clone();
         next_state.complete_tool(&result.call_id, &result.operation_id)?;
         let mut next_bridge = self.tool_bridge.clone();
-        next_bridge.apply_result(result.clone()).map_err(|error| {
+        let mut next_reserved_bridge = self.reserved_tool_bridge.clone();
+        let bridge = if is_reserved_terminal_operation(&result.operation_id) {
+            &mut next_reserved_bridge
+        } else {
+            &mut next_bridge
+        };
+        bridge.apply_result(result.clone()).map_err(|error| {
             LocalRunnerError::invalid(format!("ACPX tool result is invalid: {error}"))
         })?;
         let resolution = if result.is_error {
@@ -587,10 +596,15 @@ impl AcpxProviderSession {
             // retry bookkeeping, but provider-facing failures expose only a
             // fixed diagnostic. Internal dispatcher payloads must not cross
             // the sidecar boundary on the separate success-result channel.
+            let message = if is_reserved_terminal_operation(&result.operation_id) {
+                reserved_terminal_feedback(&result.result)
+            } else {
+                "Paperclip semantic operation failed".to_owned()
+            };
             json!({
                 "callId":result.call_id,
                 "turnId":turn_id,
-                "error":{"message":"Paperclip semantic operation failed"},
+                "error":{"message":message},
             })
         } else {
             json!({
@@ -610,6 +624,7 @@ impl AcpxProviderSession {
         self.verify_resolution(&response, "tool")?;
         self.state = next_state;
         self.tool_bridge = next_bridge;
+        self.reserved_tool_bridge = next_reserved_bridge;
         Ok(())
     }
 
@@ -837,6 +852,30 @@ impl AcpxProviderSession {
     }
 }
 
+fn reserved_terminal_feedback(result: &Value) -> String {
+    const MAX_FEEDBACK_CHARS: usize = 2_000;
+    if result.get("success").and_then(Value::as_bool) != Some(false) {
+        return "Paperclip semantic operation failed".to_owned();
+    }
+    let text = result
+        .get("contentItems")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("inputText"))
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("Paperclip semantic operation failed");
+    let mut bounded = text.chars().take(MAX_FEEDBACK_CHARS).collect::<String>();
+    if text.chars().count() > MAX_FEEDBACK_CHARS {
+        bounded.push_str("…");
+    }
+    if bounded.trim().is_empty() {
+        "Paperclip semantic operation failed".to_owned()
+    } else {
+        bounded
+    }
+}
+
 fn is_reserved_terminal_result(result: &crate::acpx_provider_state::AcpxSemanticResult) -> bool {
     is_reserved_terminal_operation(&result.operation_id)
 }
@@ -898,20 +937,43 @@ fn reserved_terminal_tool_set() -> Result<AuthorizedToolSet, LocalRunnerError> {
         "../../../../protocol/schemas/result.schema.json"
     ))
     .map_err(|_| LocalRunnerError::invalid("embedded Paperclip result schema is invalid"))?;
+    // Older sidecars echo the validated report as their semantic result. The
+    // server-backed path instead returns the controller's tool acknowledgement.
+    // Inputs remain constrained to the report schema in both paths.
+    let response_schema = json!({
+        "anyOf": [result_schema.clone(), {
+            "type":"object", "additionalProperties":false,
+            "required":["success","contentItems"],
+            "properties":{
+                "success":{"const":true},
+                "contentItems":{
+                    "type":"array", "minItems":1, "maxItems":1,
+                    "items":{
+                        "type":"object", "additionalProperties":false,
+                        "required":["type","text"],
+                        "properties":{
+                            "type":{"const":"inputText"},
+                            "text":{"type":"string", "minLength":1, "maxLength":2000}
+                        }
+                    }
+                }
+            }
+        }]
+    });
     let operations = vec![
         AuthorizedTool {
             operation_id: PRP_COMPLETION_TOOL_NAME.to_owned(),
             version: 1,
             description: "Return the authoritative Paperclip completion result.".to_owned(),
             input_schema: result_schema.clone(),
-            response_schema: result_schema.clone(),
+            response_schema: response_schema.clone(),
         },
         AuthorizedTool {
             operation_id: PRP_BLOCK_TOOL_NAME.to_owned(),
             version: 1,
             description: "Return the authoritative Paperclip blocked result.".to_owned(),
             input_schema: result_schema.clone(),
-            response_schema: result_schema,
+            response_schema,
         },
     ];
     let catalog_digest = authorized_tool_catalog_digest(&operations).map_err(|error| {
@@ -1243,5 +1305,30 @@ mod tests {
             })
         );
         assert!(sidecar_tools[0].get("operationId").is_none());
+    }
+}
+
+#[cfg(test)]
+mod permission_mode_tests {
+    use super::AcpxPermissionMode;
+
+    #[test]
+    fn paperclip_permission_mode_round_trips_without_widening_legacy_modes() {
+        for (name, mode) in [
+            ("approve-paperclip", AcpxPermissionMode::ApprovePaperclip),
+            ("approve-reads", AcpxPermissionMode::ApproveReads),
+            ("approve-all", AcpxPermissionMode::ApproveAll),
+            ("deny-all", AcpxPermissionMode::DenyAll),
+        ] {
+            let value = serde_json::json!(name);
+            assert_eq!(
+                serde_json::from_value::<AcpxPermissionMode>(value.clone()).unwrap(),
+                mode
+            );
+            assert_eq!(serde_json::to_value(mode).unwrap(), value);
+        }
+        assert!(
+            serde_json::from_value::<AcpxPermissionMode>(serde_json::json!("unknown")).is_err()
+        );
     }
 }

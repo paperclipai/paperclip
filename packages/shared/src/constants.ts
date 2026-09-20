@@ -1483,6 +1483,7 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "sidebarPanel",
   "projectSidebarItem",
   "globalToolbarButton",
+  "appShellOverlay",
   "toolbarButton",
   "contextMenuItem",
   "commentAnnotation",

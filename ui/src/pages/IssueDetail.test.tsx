@@ -41,6 +41,7 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
 import { ApiError } from "../api/client";
+import type { issuesApi } from "../api/issues";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -5288,6 +5289,93 @@ describe("IssueDetail", () => {
       "Draft follow-up message",
     );
     localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
+  });
+
+  describe.each([false, true])("composer tree control (mobile=%s)", (isMobile) => {
+    const treeControlKey = ["issues", "tree-control-state", "PAP-1"];
+    const composerProps = () => mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      composerDisabledReason: string | null;
+      composerPause: TaskComposerPause | null;
+      onAdd: (body: string) => Promise<void>;
+    };
+
+    async function renderWithPendingTreeControl() {
+      mockSidebarState.isMobile = isMobile;
+      mockIssuesApi.get.mockResolvedValue(createIssue());
+      let resolve!: (value: Awaited<ReturnType<typeof issuesApi.getTreeControlState>>) => void;
+      let reject!: (reason: Error) => void;
+      const promise = new Promise<Awaited<ReturnType<typeof issuesApi.getTreeControlState>>>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      const response = { promise, resolve, reject };
+      mockIssuesApi.getTreeControlState.mockReturnValue(response.promise);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.getTreeControlState).toHaveBeenCalledWith("PAP-1");
+        expect(mockIssueChatThreadRender).toHaveBeenCalled();
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("pending");
+        expect(queryClient.getQueryState(treeControlKey)?.fetchStatus).toBe("fetching");
+      });
+      return response;
+    }
+
+    it("allows a message while tree control is pending and remains enabled after success", async () => {
+      mockIssuesApi.addComment.mockClear().mockResolvedValue(createIssueComment({ body: "Keep working" }));
+      const response = await renderWithPendingTreeControl();
+      expect(composerProps().composerDisabledReason).toBeNull();
+      expect(composerProps().composerPause).toBeNull();
+      await act(async () => {
+        await composerProps().onAdd("Keep working");
+      });
+      expect(mockIssuesApi.addComment).toHaveBeenCalledWith(
+        "PAP-1", "Keep working", undefined, undefined, undefined, expect.any(String),
+      );
+      expect(queryClient.getQueryState(treeControlKey)?.status).toBe("pending");
+
+      response.resolve({ activePauseHold: null });
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("success");
+        expect(composerProps().composerDisabledReason).toBeNull();
+        expect(composerProps().composerPause).toBeNull();
+      });
+    });
+
+    it("blocks the composer when the pending tree control request fails", async () => {
+      const response = await renderWithPendingTreeControl();
+      response.reject(new Error("tree control unavailable"));
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("error");
+        expect(composerProps().composerDisabledReason).toBe(
+          "Couldn’t check whether this task is paused. Refresh to try again.",
+        );
+      });
+    });
+
+    it.each([true, false])("applies a late pause response (root=%s)", async (isRoot) => {
+      const response = await renderWithPendingTreeControl();
+      response.resolve({
+        activePauseHold: {
+          holdId: "hold-1",
+          rootIssueId: isRoot ? "issue-1" : "parent-1",
+          issueId: "issue-1",
+          isRoot,
+          mode: "pause",
+          reason: null,
+          releasePolicy: { strategy: "manual" },
+        },
+      });
+      await waitForAssertion(() => {
+        expect(composerProps().composerPause?.scope).toBe(isRoot ? "leaf" : "subtree");
+        expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+      });
+    });
   });
 
   it("renders a quiet task pause notice and defaults leaf resume to wake the assignee", async () => {

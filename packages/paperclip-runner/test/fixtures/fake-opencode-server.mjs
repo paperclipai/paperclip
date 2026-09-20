@@ -204,6 +204,14 @@ async function callTerminalTool(promptBody) {
         }
       : {}),
   };
+  if (String(prompt.message ?? "").includes("repair-criteria")) {
+    const bad = structuredClone(result);
+    bad.completionClaim.criteria = String(prompt.message).includes("repair-criteria-missing") ? []
+      : String(prompt.message).includes("repair-criteria-duplicate") ? [...result.completionClaim.criteria, ...result.completionClaim.criteria]
+      : [{ criterionId: "invented", status: "satisfied", evidenceRefs: [] }];
+    const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: bad });
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-criteria-repair.json"), JSON.stringify(rejected));
+  }
   return mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,

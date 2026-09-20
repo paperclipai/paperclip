@@ -34,6 +34,7 @@ import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { issueService } from "../issues.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 
 export type RemoteWorkspaceFileReader = (input: Pick<NativeRunnerFileHandoffInput, "contentRef" | "byteSize" | "sha256">) => Promise<Buffer>;
 
@@ -816,6 +817,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
     .select({
       contextSnapshot: heartbeatRuns.contextSnapshot,
       agentStatus: agents.status,
+      assigneeAgentId: issues.assigneeAgentId,
     })
     .from(heartbeatRuns)
     .innerJoin(
@@ -842,7 +844,6 @@ export async function stageNativeRunnerWakeAttachments(input: {
         inArray(heartbeatRuns.status, ["queued", "running"]),
         eq(issues.id, input.binding.issueId),
         eq(issues.companyId, input.binding.companyId),
-        eq(issues.assigneeAgentId, input.binding.agentId),
         eq(issues.executionRunId, input.binding.runId),
         eq(agents.id, input.binding.agentId),
         eq(agents.companyId, input.binding.companyId),
@@ -855,6 +856,18 @@ export async function stageNativeRunnerWakeAttachments(input: {
       run.agentStatus,
     )
   ) {
+    throw new Error("paperclip_runner_attachment_staging_not_authorized");
+  }
+  const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+  const nativeReview = reviewContext
+    ? await getNativeReviewAssignment(input.db, {
+        companyId: input.binding.companyId,
+        issueId: input.binding.issueId,
+        agentId: input.binding.agentId,
+        contextSnapshot: reviewContext,
+      })
+    : null;
+  if (run.assigneeAgentId !== input.binding.agentId && !nativeReview) {
     throw new Error("paperclip_runner_attachment_staging_not_authorized");
   }
   const selections = wakeAttachmentSelections(run.contextSnapshot);

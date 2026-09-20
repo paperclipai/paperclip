@@ -1710,8 +1710,17 @@ export async function prepareGitHubOperationLaunchers(input: {
   const managedPath = basePath ? `${directory}:${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
-  const profile = `export PATH=${shellQuote(managedPath)}\n`;
+  // Empty merge overrides clear host identity before launch, but Git treats
+  // them as an explicit empty author. Remove them once the shell has inherited
+  // its final environment; preserve nonempty per-operation identity values.
+  const clearEmptyGitIdentity = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
+    .map((key) => `if [ -z "\${${key}-}" ]; then unset ${key}; fi\n`)
+    .join("");
+  const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
   const files: Record<string, string> = Object.fromEntries([
+    // Remote launchers live beneath the checkout. Pin their own package scope
+    // so an enclosing project's "type": "module" cannot reinterpret require().
+    ["package.json", '{"type":"commonjs"}\n'],
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);

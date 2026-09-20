@@ -84,7 +84,15 @@ jobs:
             echo "RUNNER_E2E_ALLOWED_ACTOR_IDS must be a non-empty JSON array of numeric GitHub user IDs." >&2
             exit 1
           fi
-          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          # Retry transient transport/server failures, but never proceed without
+          # a successfully resolved identity and the allowlist checks below.
+          for attempt in 1 2 3; do
+            if triggering_actor_id="$(timeout 30s gh api "users/$TRIGGERING_ACTOR" --jq .id)"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
           if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
             echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
             exit 1
@@ -779,7 +787,15 @@ jobs:
           set -euo pipefail
           test "$REF" = "refs/heads/$DEFAULT_BRANCH"
           jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
-          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          # Retry transient transport/server failures, but never proceed without
+          # a successfully resolved identity and the allowlist checks below.
+          for attempt in 1 2 3; do
+            if triggering_actor_id="$(timeout 30s gh api "users/$TRIGGERING_ACTOR" --jq .id)"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
           jq -e --argjson candidate "$triggering_actor_id" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
           jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
 
@@ -928,7 +944,12 @@ jobs:
 
       - name: Install pinned legacy Claude CLI
         if: matrix.profileId == 'legacy-claude'
-        run: npm install --global --omit=dev @anthropic-ai/claude-code@2.1.19
+        run: |
+          npm install --global --omit=dev --ignore-scripts @anthropic-ai/claude-code@2.1.277
+          launcher="$(npm root --global)/@anthropic-ai/claude-code/cli-wrapper.cjs"
+          chmod +x "$launcher"
+          ln -sf "$launcher" "$(npm prefix --global)/bin/claude"
+          claude --version
 
       - name: Qualify preinstalled Chrome
         if: needs.authorize.outputs.playwright_channel == 'chrome'
@@ -971,7 +992,7 @@ jobs:
       # This definition executes only from the authorized default-branch workflow.
       # Provision host policy before credentials reach target-controlled tests.
       - name: Provision Codex sandbox on the disposable trusted runner
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini')
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini' || matrix.profileId == 'runner-acpx-codex')
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";
@@ -1003,7 +1024,7 @@ jobs:
           NODE
 
       - name: Prepare pinned Python artifact oracle image
-        if: matrix.suiteId == 'everyday-workflows' && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
+        if: matrix.suiteId == 'everyday-workflows' && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
         run: |
           set -euo pipefail
           oracle_image='python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
@@ -1069,6 +1090,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # Resolve from this trusted checkout only. Never use the target branch's
+      # lockfile or install scripts in the publication job.
+      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
       - run: pnpm install --frozen-lockfile
 
       - name: Resolve workflow job attempts

@@ -297,7 +297,7 @@ function AgentMailJourney({
     </div>
   );
   const humanLabel =
-    humanAccess === "organization" ? "Any human in the company" : "Just me";
+    humanAccess === "organization" ? "Any human in the organization" : "Just me";
   const agentLabel =
     agentAccess === "all"
       ? "Any agent"

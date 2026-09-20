@@ -589,6 +589,9 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
   const callId = boundedIdentity(call.callId, "callId");
   if (tools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
+  if (tools.size >= MAX_PENDING_TOOLS) {
+    throw new Error("ACPX pending tool limit reached");
+  }
   if (
     operationId === PRP_COMPLETION_TOOL_NAME ||
     operationId === PRP_BLOCK_TOOL_NAME
@@ -606,9 +609,12 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
         "ACPX semantic result disposition does not match its terminal operation",
       );
     }
-    // The authenticated runner bridge admitted this built-in invocation. Send
-    // that fact across the sidecar boundary before its locally produced result
-    // so runnerd can authorize and correlate the terminal claim.
+    // The authenticated runner bridge must admit this built-in invocation
+    // before the provider sees a result. Keep the call pending until runnerd
+    // sends tool.resolve after the server's completion feedback accepts it.
+    // This is the same roundtrip used by ordinary dynamic tools; emitting a
+    // local semantic_result here would let an invalid review handoff appear
+    // accepted before the server has checked it.
     emit(
       "runtime.tool_called",
       {
@@ -618,21 +624,22 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       },
       activeTurnId,
     );
-    emit(
-      "runtime.event",
-      {
-        type: "semantic_result",
-        callId,
-        operationId,
-        ok: true,
-        result: validation.result,
-      },
-      activeTurnId,
-    );
-    return { accepted: true };
-  }
-  if (tools.size >= MAX_PENDING_TOOLS) {
-    throw new Error("ACPX pending tool limit reached");
+    return await new Promise((settle, reject) => {
+      const abort = () => {
+        const pending = tools.get(callId);
+        if (!pending || !tools.delete(callId)) return;
+        pending.cleanup();
+        reject(new Error("ACPX tool call was cancelled"));
+      };
+      call.signal.addEventListener("abort", abort, { once: true });
+      tools.set(callId, {
+        turnId: activeTurnId,
+        settle,
+        reject,
+        cleanup: () => call.signal.removeEventListener("abort", abort),
+      });
+      if (call.signal.aborted) abort();
+    });
   }
   emit(
     "runtime.tool_called",
@@ -1126,13 +1133,14 @@ function requiredPermissionMode(
 ): AcpxSidecarOpenParams["permissionMode"] {
   if (
     value === "approve-all" ||
+    value === "approve-paperclip" ||
     value === "approve-reads" ||
     value === "deny-all"
   ) {
     return value;
   }
   throw new Error(
-    "permissionMode must be approve-all, approve-reads, or deny-all",
+    "permissionMode must be approve-all, approve-paperclip, approve-reads, or deny-all",
   );
 }
 

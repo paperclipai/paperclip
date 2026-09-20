@@ -1448,6 +1448,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
                 if descendant_notifications {
+                    // Real Codex announces a child's MCP startup before its
+                    // thread/started notification establishes parent lineage.
+                    send(json!({"method":"mcpServer/startupStatus/updated","params":{
+                        "threadId":"descendant-0", "name":"paperclip", "status":"starting", "error":null
+                    }}))?;
                     // Codex can announce a helper through the root's spawn receipt
                     // before emitting any thread/started notification for that helper.
                     send(json!({"method": "item/completed", "params": {
@@ -1632,6 +1637,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if emit_post_completion_passive_statuses {
                         for notification in [
+                            json!({
+                                "method": "thread/tokenUsage/updated",
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id,
+                                    "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12},
+                                        "last": {"inputTokens": 20, "outputTokens": 2}}}
+                            }),
                             json!({
                                 "method": "remoteControl/status/changed",
                                 "params": {"status": "disabled", "environmentId": null}

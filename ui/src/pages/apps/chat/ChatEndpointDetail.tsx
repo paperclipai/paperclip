@@ -3,6 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ArrowDownLeft,
+  ArrowUpRight,
+  ChevronDown,
+  Check,
+  Activity as ActivityIcon,
   Copy,
   ExternalLink,
   Loader2,
@@ -31,9 +36,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { PageTabBar } from "@/components/PageTabBar";
+import { AppLogo } from "../AppLogo";
 import { StatusBadge } from "@/components/StatusBadge";
-import { Tabs } from "@/components/ui/tabs";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { formatDateTime } from "@/lib/utils";
@@ -306,22 +310,9 @@ export function ChatEndpointDetail() {
               Continue setup
             </Button>
           ) : null}
-          <StatusBadge status={endpoint.status} />
+          {endpoint.status !== "active" && <StatusBadge status={endpoint.status} />}
         </div>
       </header>
-      <Tabs
-        value={activeTab}
-        onValueChange={(next) => navigate(`/apps/chat/${endpoint.id}/${next}`)}
-      >
-        <PageTabBar
-          items={tabItems}
-          value={activeTab}
-          onValueChange={(next) =>
-            navigate(`/apps/chat/${endpoint.id}/${next}`)
-          }
-          align="start"
-        />
-      </Tabs>
       {activeTab === "settings" && (
         <Settings endpointId={endpoint.id} endpoint={endpoint} />
       )}
@@ -329,6 +320,7 @@ export function ChatEndpointDetail() {
         <Access
           endpointId={endpoint.id}
           allowUnlinked={endpoint.allowUnlinkedPeople}
+          endpoint={endpoint}
         />
       )}
       {activeTab === "conversations" && (
@@ -350,6 +342,8 @@ function Settings({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const [messageCopied, setMessageCopied] = useState(false);
+  const mentionMessage = `@${(endpoint.botUsername ?? endpoint.botLabel ?? endpoint.assignedAgentName).replace(/^@/, "")} you there?`;
   const resourcesQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.resources(endpointId),
     queryFn: () => chatEndpointsApi.listResources(endpointId),
@@ -393,19 +387,15 @@ function Settings({
   return (
     <section className="max-w-3xl space-y-7">
       {endpoint.provider === "imessage-photon" && <p className="text-sm text-muted-foreground">{endpoint.photonAllocation === "shared" ? "Shared Photon project · direct messages only. Enroll senders in Photon and link their Messages identities in Access. Groups cannot be enabled." : "Enable each group individually. Agent replies are visible to everyone in that group; only authorized senders can start work."}</p>}
-      {endpoint.provider === "slack" && endpoint.setup?.command && (
-        <div className="space-y-2">
-          <h2 className="text-lg font-semibold">Slack command</h2>
-          <div className="rounded-lg border border-border p-3 text-sm">
-            <code>{endpoint.setup.command}</code>
-            <p className="mt-2 text-muted-foreground">
-              Start work with{" "}
-              <code>{endpoint.setup.command} investigate this</code>. In a
-              direct message, use <code>{endpoint.setup.command} status</code>,{" "}
-              <code>{endpoint.setup.command} new</code>, or{" "}
-              <code>{endpoint.setup.command} close</code>. Slack&apos;s bare{" "}
-              <code>/status</code> command is not a Paperclip control.
-            </p>
+      {endpoint.provider === "slack" && (
+        <div className="space-y-2 text-sm">
+          <h2 className="text-lg font-semibold">Chat in Slack</h2>
+          <p>Invite the bot to a channel, then mention it to start a conversation.</p>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+            <code>{mentionMessage}</code>
+            <Button size="icon" variant="ghost" aria-label={messageCopied ? "Message copied" : "Copy message"} onClick={() => {
+              void copyTextToClipboard(mentionMessage).then(() => setMessageCopied(true), () => pushToast({ title: "Couldn’t copy the message", body: "Select and copy it manually.", tone: "error" }));
+            }}>{messageCopied ? <Check className="size-4" /> : <Copy className="size-4" />}</Button>
           </div>
         </div>
       )}
@@ -428,13 +418,9 @@ function Settings({
       )}
       <div>
         <h2 className="text-lg font-semibold">Where this agent can work</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Provider membership makes a destination available. Paperclip responds
-          only where you enable it.
-        </p>
       </div>
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">Destinations</h3>
+        <h3 className="text-sm font-semibold">{endpoint.provider === "slack" ? "Allowed Channels" : "Destinations"}</h3>
         {resourcesQuery.isLoading ? (
           <p className="text-sm text-muted-foreground">Loading destinations…</p>
         ) : destinationResources.length === 0 ? (
@@ -538,13 +524,17 @@ function SettingToggle({
 function Access({
   endpointId,
   allowUnlinked,
+  endpoint,
 }: {
   endpointId: string;
   allowUnlinked: boolean;
+  endpoint: ChatEndpoint;
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [confirmationUrl, setConfirmationUrl] = useState<string | null>(null);
+  const [joinCommandCopied, setJoinCommandCopied] = useState(false);
+  const joinCommand = `${endpoint.setup?.slackApp?.command ?? endpoint.setup?.command ?? "/paperclip"} connect`;
   const linksQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.principals(endpointId),
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
@@ -557,6 +547,7 @@ function Access({
         queryKeys.chatEndpoints.detail(endpointId),
         next,
       ),
+    onError: (error) => pushToast({ title: "Couldn’t update access", body: error instanceof Error ? error.message : "Try again.", tone: "error" }),
   });
   const createIntent = useMutation({
     mutationFn: (principalId: string) =>
@@ -591,11 +582,26 @@ function Access({
     <section className="max-w-3xl space-y-7">
       <div>
         <h2 className="text-lg font-semibold">External identity access</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Linked identities act as their current Paperclip user. Unlinked
-          people, when allowed, receive a fixed restricted profile.
-        </p>
       </div>
+      {endpoint.provider === "slack" && (
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold">Invite others to connect their Slack accounts</h3>
+          <ol className="list-decimal space-y-3 pl-5 text-sm">
+            <li>
+              Ask them to send this command in your Slack workspace:
+              <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+                <code>{joinCommand}</code>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  void copyTextToClipboard(joinCommand).then(() => setJoinCommandCopied(true), () => pushToast({ title: "Couldn't copy the command", body: "Select and copy it manually.", tone: "error" }));
+                }}><Copy className="size-4" />{joinCommandCopied ? "Copied" : "Copy command"}</Button>
+              </div>
+            </li>
+            <li>Open the private link from the bot, sign into Paperclip, and confirm their Slack account. The link expires in 15 minutes and works once.</li>
+            <li>If they aren’t a member of this organization, choose <strong>Request access</strong>. An admin must approve their request before they can link their account.</li>
+          </ol>
+          <p className="text-sm text-muted-foreground">Each person links their own account and uses their own Paperclip permissions. They don’t need to create another Slack app or share credentials.</p>
+        </div>
+      )}
       <SettingToggle
         label="Allow unlinked people"
         detail="They are restricted guests. Their tasks run only with an isolated workspace and sandbox environment; otherwise Paperclip safely refuses the request. They cannot approve, hire, spend, manage access, or reassign agents."
@@ -707,41 +713,24 @@ function Conversations({
           start one.
         </p>
       ) : (
-        <div className="divide-y divide-border border-y border-border">
+        <ul aria-label="Conversations" className="divide-y divide-border overflow-x-auto border-y border-border">
           {rows.map((row) => (
-            <div key={row.id} className="grid gap-3 py-4 md:grid-cols-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {row.externalLabel}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {providerNames[provider]}
-                </p>
+            <li key={row.id} className="flex min-w-xl items-center gap-3 px-2 py-3 text-sm transition-colors hover:bg-accent/50">
+              <AppLogo name={providerNames[provider]} brandKey={provider} compact className="size-5! rounded-sm bg-transparent" />
+              <div className="flex min-w-0 max-w-56 items-center gap-2">
+                <span className="truncate font-medium" title={row.externalLabel}>{row.externalLabel}</span>
+                {row.externalUrl && <a href={row.externalUrl} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline">Open {providerNames[provider]}<ExternalLink className="size-3" /></a>}
               </div>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">
-                  {row.issueIdentifier ? `${row.issueIdentifier} · ` : ""}
-                  {row.issueTitle ?? "Waiting for task"}
-                </p>
-                <StatusBadge status={row.state} />
+              <span aria-hidden="true" className="text-muted-foreground">·</span>
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <span className="truncate" title={row.issueTitle ?? undefined}>{row.issueTitle ?? "Waiting for task"}</span>
+                {row.issueId && <Link to={`/issues/${row.issueId}`} className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline">Open task<ExternalLink className="size-3" /></Link>}
               </div>
-              <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                {row.externalUrl && (
-                  <Button asChild size="sm" variant="outline">
-                    <a href={row.externalUrl} target="_blank" rel="noreferrer">
-                      Open {providerNames[provider]} <ExternalLink />
-                    </a>
-                  </Button>
-                )}
-                {row.issueId && (
-                  <Button asChild size="sm" variant="outline">
-                    <Link to={`/issues/${row.issueId}`}>Open task</Link>
-                  </Button>
-                )}
-              </div>
-            </div>
+              <span className="hidden shrink-0 text-xs text-muted-foreground xl:inline">{row.issueIdentifier}</span>
+              {row.state !== "active" && <StatusBadge status={row.state} />}
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </section>
   );
@@ -761,10 +750,14 @@ function Activity({
   const [resolutionItem, setResolutionItem] = useState<ChatActivityItem | null>(
     null,
   );
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const cursor = cursors[cursors.length - 1];
+  useEffect(() => setCursors([undefined]), [endpointId]);
   const query = useQuery({
-    queryKey: queryKeys.chatEndpoints.activity(endpointId),
-    queryFn: () => chatEndpointsApi.listActivity(endpointId),
+    queryKey: [...queryKeys.chatEndpoints.activity(endpointId), cursor ?? null],
+    queryFn: () => chatEndpointsApi.listActivityPage(endpointId, cursor),
     ...liveChatQueryOptions,
+    refetchInterval: cursor ? false : liveChatQueryOptions.refetchInterval,
   });
   const replay = useMutation({
     mutationFn: (item: ChatActivityItem) =>
@@ -873,7 +866,7 @@ function Activity({
         tone: "error",
       }),
   });
-  const rows = query.data ?? [];
+  const rows = query.data?.items ?? [];
   const { status } = endpoint;
   const health = connectionHealthPresentation(endpoint);
   const lifecycleAction = lifecycle.variables;
@@ -887,7 +880,7 @@ function Activity({
   return (
     <section className="space-y-5">
       <h2 className="text-lg font-semibold">Connection activity</h2>
-      {(health.message || health.error) && (
+      {((status !== "active" && health.message) || health.error) && (
         <div
           className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${status === "attention" || status === "revoked" ? "border-destructive/40 bg-destructive/5 text-destructive" : "border-border bg-muted/30 text-foreground"}`}
         >
@@ -911,21 +904,30 @@ function Activity({
           </div>
         </div>
       )}
+      <details className="group rounded-lg border border-border">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-sm font-medium chat-connection-health-summary">
+          <span>Connection health and controls</span>
+          <span className="flex items-center gap-2">
+            {endpoint.setup?.callbacksNeedUpdate && <span className="text-xs text-(--status-task-blocked)">Callback URLs need attention</span>}
+            <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+          </span>
+        </summary>
+        <div className="space-y-5 border-t border-border p-4">
       {endpoint.provider === "slack" && callbackSurfaceRows.length > 0 && (
         <div
-          className={`rounded-lg border p-3 text-sm ${endpoint.setup?.callbacksNeedUpdate ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/30"}`}
+          className="space-y-3 text-sm"
         >
           <p className="font-medium">Slack callback health</p>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {endpoint.setup?.callbacksNeedUpdate
               ? "Slack callback URLs need an update. Save the current App Manifest, then exercise Events, Interactivity, and the registered command again."
               : "Paperclip records each callback surface independently after Slack successfully calls it."}
           </p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <div className="divide-y divide-border border-y border-border">
             {callbackSurfaceRows.map(([label, surface]) => (
-              <div key={label} className="rounded-md border border-border p-2">
+              <div key={label} className="flex flex-wrap items-center justify-between gap-3 py-2">
                 <p className="text-xs font-medium">{label}</p>
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   {surface.status === "current"
                     ? "Current"
                     : surface.status === "stale"
@@ -933,7 +935,7 @@ function Activity({
                       : "Not observed"}
                 </p>
                 {surface.observedAt && (
-                  <p className="mt-1 text-xs text-muted-foreground">
+                  <p className="text-xs text-muted-foreground">
                     Last observed{" "}
                     <time
                       dateTime={surface.observedAt}
@@ -952,7 +954,7 @@ function Activity({
         </div>
       )}
       {status !== "archived" && (
-        <div className="space-y-2 border-y border-border py-3">
+        <div className="space-y-3 pt-2">
           <div className="flex flex-wrap items-center gap-2">
             {status === "active" && (
               <Button
@@ -1022,9 +1024,11 @@ function Activity({
           )}
         </div>
       )}
+        </div>
+      </details>
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">
-          Delivery and publication history
+          Recent activity
         </h3>
         <div className="divide-y divide-border border-y border-border">
           {query.isLoading && (
@@ -1052,23 +1056,20 @@ function Activity({
             rows.map((item) => (
               <div
                 key={item.id}
-                className="flex flex-wrap items-start gap-3 py-3"
+                className="flex items-start gap-3 px-2 py-3 transition-colors hover:bg-accent/50"
               >
+                <span className="mt-0.5 text-muted-foreground" aria-hidden="true">
+                  {item.kind === "delivery" ? <ArrowDownLeft className="size-4" /> : item.kind === "publication" ? <ArrowUpRight className="size-4" /> : <ActivityIcon className="size-4" />}
+                </span>
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {activityKindLabels[item.kind]}
-                    </span>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <p className="min-w-0 flex-1 text-sm font-medium">{item.summary}</p>
                     <StatusBadge status={item.status} />
-                    <time
-                      dateTime={item.createdAt}
-                      title={item.createdAt}
-                      className="font-mono text-xs text-muted-foreground"
-                    >
+                    <time dateTime={item.createdAt} title={item.createdAt} className="shrink-0 text-xs tabular-nums text-muted-foreground">
                       {formatDateTime(item.createdAt, { includeSeconds: true })}
                     </time>
                   </div>
-                  <p className="mt-2 text-sm font-medium">{item.summary}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{activityKindLabels[item.kind]}</p>
                   {item.fileTransfer && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       {item.fileTransfer.filename} —{" "}
@@ -1118,6 +1119,13 @@ function Activity({
           )}
         </div>
       </div>
+      <nav aria-label="Activity pagination" className="flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground">Page {cursors.length}</span>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors((pages) => pages.slice(0, -1))}>Previous</Button>
+          <Button size="sm" variant="outline" disabled={!query.data?.nextCursor || query.isFetching || query.isError} onClick={() => { if (query.data?.nextCursor) setCursors((pages) => [...pages, query.data.nextCursor!]); }}>Next</Button>
+        </div>
+      </nav>
       <AlertDialog
         open={resolutionItem !== null}
         onOpenChange={(open) => !open && setResolutionItem(null)}

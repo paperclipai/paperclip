@@ -40,11 +40,14 @@ async function main() {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
-      GIT_AUTHOR_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_NAME: '', GIT_COMMITTER_EMAIL: '',
-      GIT_CONFIG_COUNT: '4', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
+      // The inherited identity was deleted above. Empty identity env values
+      // override even explicit repository/command config and break local commits.
+      // Require configured identity instead of guessing the OS user's details.
+      GIT_CONFIG_COUNT: '5', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
       GIT_CONFIG_KEY_1: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_1: 'git@github.com:',
       GIT_CONFIG_KEY_2: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_2: 'ssh://git@github.com/',
       GIT_CONFIG_KEY_3: 'core.askPass', GIT_CONFIG_VALUE_3: '',
+      GIT_CONFIG_KEY_4: 'user.useConfigOnly', GIT_CONFIG_VALUE_4: 'true',
     });
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     try {

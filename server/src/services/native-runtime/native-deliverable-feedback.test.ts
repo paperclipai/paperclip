@@ -11,6 +11,7 @@ describe("explicit file output requirements", () => {
     "Do not use external services. Create a file with the results.",
     "Make a file but do not send it to anyone else.",
     "Export a summary of this PDF as CSV.",
+    "Create no temporary files; export the results as CSV.",
   ])("recognizes an explicit output request: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(true);
   });
@@ -26,6 +27,10 @@ describe("explicit file output requirements", () => {
     "Write a summary of this PDF in chat.",
     "Create a review of README.md; reply inline.",
     "Give me advice on file permissions.",
+    "Post exactly one durable progress comment whose entire body is TRACKED, then finish this child task. Create no files and do not delegate or create any further tasks.",
+    "Create no files.",
+    "Generate no attachments and answer in chat.",
+    "Write a reply without any files.",
   ])("does not require a file for a text or source-review request: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(false);
   });

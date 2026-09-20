@@ -274,7 +274,7 @@ export function Connections() {
       return appConnections.map((connection) => {
         const owner = connectionOwnerProfile(connection, userProfileById);
         const type = connectionTypeLabel(connection.credentialPolicy);
-        const displayName = type === "Company"
+        const displayName = type === "Organization"
           ? connectionNameForCredentialPolicy(
               humanizeConnectionDisplayName(connection),
               connection.credentialPolicy,

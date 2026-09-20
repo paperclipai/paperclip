@@ -33,6 +33,22 @@ describe("runner E2E catalog", () => {
     expect(connectionReviewSuite.tasks.every(task => task.flow === "governed_tool_review")).toBe(true);
   });
 
+  it("tests native chat plans, tasks, and reassignment with production permission defaults", () => {
+    const suite = runnerSuites.find(suite => suite.id === "agent-chat")!;
+    for (const id of ["runner-codex", "runner-acpx-claude"]) {
+      const profile = suite.profiles.find(profile => profile.id === id)!;
+      const payload = profile.buildAgent({
+        executionId: "default-permissions", workspacePath: "/workspace", environmentId: "env-1", environmentFixtureId: "local",
+        secretRefs: {
+          [profile.credential]: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
+        },
+      });
+      expect(payload.adapterConfig).not.toHaveProperty("acpxPermissionMode");
+      expect(payload.adapterConfig).not.toHaveProperty("codexPermissionMode");
+      expect(suite.tasks.map(task => task.id)).toEqual(expect.arrayContaining(["plan-handoff", "reassign-task", "create-backlog"]));
+    }
+  });
+
   it("validates the core, local-integrity, breadth, and warm suites", () => {
     expect(runnerProfiles).toHaveLength(7);
     expect(openRouterBreadthProfiles).toHaveLength(4);
@@ -41,10 +57,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      35, 52, 24, 42, 14, 10, 2,
+      23, 38, 52, 28, 42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(179);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(179);
+    expect(validateRunnerCatalog()).toHaveLength(209);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(209);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -68,7 +84,7 @@ describe("runner E2E catalog", () => {
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(300);
+    ).toBe(371);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
@@ -504,6 +520,7 @@ describe("runner E2E selectors", () => {
       "local",
     ]);
     expect(selectRunnerExecutions(options).map((entry) => entry.id)).toEqual([
+      ...runnerMatrix.filter(entry => entry.suite.id === "continuation" && ["legacy-codex", "runner-codex"].includes(entry.profile.id)).map(entry => entry.id),
       ...runnerMatrix.filter(entry => entry.suite.id === "first-task" && ["legacy-codex", "runner-codex"].includes(entry.profile.id)).map(entry => entry.id),
       ...runnerMatrix.filter(entry => entry.suite.id === "agent-chat" && ["legacy-codex", "runner-codex"].includes(entry.profile.id)).map(entry => entry.id),
       "core-compatibility.legacy-codex.local.message-marker",
@@ -560,10 +577,10 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(144);
+    expect(jobs).toHaveLength(171);
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(23);
-    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(121);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(144);
+    expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(148);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(171);
     expect(
       jobs.find(
         (job) =>

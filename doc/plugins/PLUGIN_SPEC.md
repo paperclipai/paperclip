@@ -360,6 +360,7 @@ export interface PaperclipPluginManifestV1 {
         | "sidebarPanel"
         | "projectSidebarItem"
         | "globalToolbarButton"
+        | "appShellOverlay"
         | "toolbarButton"
         | "contextMenuItem"
         | "commentAnnotation"

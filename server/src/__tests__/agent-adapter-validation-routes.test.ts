@@ -65,6 +65,7 @@ const mockApprovalService = vi.hoisted(() => ({
 }));
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
   getExperimental: vi.fn(async () => ({ enableNativeRunner: false })),
 }));

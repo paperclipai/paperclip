@@ -2693,7 +2693,7 @@ function StreamlinedInbox() {
         <BlockedInboxView
           companyId={selectedCompanyId!}
           searchQuery={searchQuery}
-          agentNameById={agentById}
+          agentNameById={agentById} agents={agents}
           userLabelById={companyUserLabelMap}
           issueLinkState={issueLinkState}
           groupBy={blockedGroupBy}
@@ -2906,6 +2906,8 @@ function StreamlinedInbox() {
                               defaultProjectWorkspaceIdByProjectId,
                             })}
                             assigneeName={agentName(issue.assigneeAgentId)}
+                            assigneeAgent={agents?.find((agent) => agent.id === issue.assigneeAgentId)}
+                            creatorAgent={agents?.find((agent) => agent.id === issue.createdByAgentId)}
                             assigneeUserName={
                               formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
                               ?? assigneeUserProfile?.label

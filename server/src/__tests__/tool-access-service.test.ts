@@ -5098,9 +5098,10 @@ describeEmbeddedPostgres("tool access service", () => {
         "google-people",
         "google-workspace-search",
         "github",
+        "youcom",
       ]),
     );
-    expect(res.body.apps).toHaveLength(47);
+    expect(res.body.apps).toHaveLength(48);
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,

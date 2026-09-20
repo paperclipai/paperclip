@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "@paperclipai/shared";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
@@ -31,6 +32,8 @@ export interface ActiveRunForIssue {
   createdAt: string | Date;
   agentId: string;
   agentName: string;
+  agentAppearance?: AgentAppearance | null;
+  avatarUrl?: string;
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
@@ -62,6 +65,8 @@ export interface LiveRunForIssue {
   createdAt: string;
   agentId: string;
   agentName: string;
+  agentAppearance?: AgentAppearance | null;
+  avatarUrl?: string;
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;

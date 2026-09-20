@@ -403,6 +403,85 @@ describe("runner E2E report aggregation", () => {
     });
   });
 
+  it("materializes declared screenshots from hashed Playwright attachments", async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), "runner-e2e-report-screenshot-alias-")
+    );
+    cleanupDirectories.push(root);
+    const executionId = "daytona-warm-continuity.legacy-codex.daytona.warm-three-turn";
+    const directory = path.join(root, "attempt-1");
+    const attachment =
+      "playwright-output/warm-turn/attachments/warm-turn-1-deadbeef.png";
+    await mkdir(path.join(directory, path.dirname(attachment)), {
+      recursive: true,
+    });
+    await writeFile(path.join(directory, "final-state.png"), "final-png");
+    await writeFile(path.join(directory, attachment), "warm-turn-png");
+    await writeFile(
+      path.join(directory, "result.json"),
+      JSON.stringify({
+        schema: "paperclip.runner-e2e.result/v1",
+        executionId,
+        attempt: 1,
+        status: "passed",
+        profileId: "legacy-codex",
+        environmentId: "daytona",
+        caseId: "warm-three-turn",
+        provider: "codex",
+        model: "fixture-model",
+        runtimeMode: "legacy",
+        startedAt: "2026-08-26T00:00:00.000Z",
+        finishedAt: "2026-08-26T00:00:01.000Z",
+        durationMs: 1_000,
+        cleanup: "passed",
+        screenshots: [
+          {
+            id: "warm-turn-1",
+            label: "Warm Daytona turn 1 awaiting review",
+            file: "warm-turn-1.png",
+          },
+          {
+            id: "final-state",
+            label: "Final visible task state",
+            file: "final-state.png",
+          },
+        ],
+      } satisfies RunnerE2EResult),
+    );
+    await writeFile(
+      path.join(directory, "evidence-manifest.json"),
+      JSON.stringify({
+        files: ["final-state.png", attachment],
+        leaks: [],
+        missing: [],
+      }),
+    );
+
+    const output = path.join(root, "merged");
+    await execFileAsync(
+      process.execPath,
+      [
+        path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"),
+        path.join(repositoryRoot, "tests/runner-e2e/report.ts"),
+      ],
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root,
+          PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
+          PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]),
+        },
+      },
+    );
+    expect(
+      await readFile(
+        path.join(output, "evidence", executionId, "attempt-1", "warm-turn-1.png"),
+        "utf8",
+      ),
+    ).toBe("warm-turn-png");
+  });
+
   it("constructs the public root JUnit from fixed markup and escaped fields", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "runner-e2e-report-junit-test-"),

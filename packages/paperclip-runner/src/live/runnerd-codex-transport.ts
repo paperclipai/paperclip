@@ -863,7 +863,7 @@ async function awaitAdoptedRunnerAuthentication(input: {
   }
 }
 
-function bridgedCodexQuestionParams(
+export function bridgedCodexQuestionParams(
   request: Record<string, unknown>,
   method: string,
   threadId: string,
@@ -884,6 +884,12 @@ function bridgedCodexQuestionParams(
         ? request.itemId
         : String(request.requestId ?? "runtime-input"),
   };
+  // ACPX has already normalized and bound these IDs in Rust. Reconstructing a
+  // Codex form here would change option IDs and break the answer's return path.
+  if (method === "elicitation/create") {
+    return { ...common, questionSet, origin: request.origin,
+      message: questionSet.description ?? questionSet.title ?? "A tool needs your input" };
+  }
   if (method === "mcpServer/elicitation/request") {
     const required: string[] = [];
     const properties = Object.fromEntries(
@@ -3027,22 +3033,15 @@ function authorizedToolSet(
   };
 }
 
-const ACPX_RESERVED_TERMINAL_TOOLS = new Set([
-  "paperclip_finish",
-  "paperclip_block",
-]);
-
 export function authorizedToolSetForProvider(
-  provider: CapabilityRunnerdCodexTransportOptions["provider"],
+  _provider: CapabilityRunnerdCodexTransportOptions["provider"],
   tools: readonly Readonly<Record<string, unknown>>[],
 ): Record<string, unknown> {
-  return authorizedToolSet(
-    provider === "acpx"
-      ? tools.filter(
-          (tool) => !ACPX_RESERVED_TERMINAL_TOOLS.has(String(tool.name ?? "")),
-        )
-      : tools,
-  );
+  // ACPX terminal calls are resolved through the authenticated semantic
+  // bridge before the provider receives a result. Keep them in the provider
+  // authority catalog so the sidecar can project the call and await
+  // server-side completion feedback.
+  return authorizedToolSet(tools);
 }
 
 /**
@@ -3085,7 +3084,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
       PAPERCLIP_OPENCODE_PERMISSION_MODE:
-        input.options.opencodePermissionMode ?? "ask",
+        input.options.opencodePermissionMode ?? "allow",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
         input.options.opencodeRuntimeDirectory ??
         resolve(input.options.stateDirectory ?? tmpdir(), "opencode"),
@@ -3156,7 +3155,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
 export function resolveRunnerdAcpxPermissionMode(
   configured: CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"],
 ): NonNullable<CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"]> {
-  return configured ?? "approve-reads";
+  return configured ?? "approve-all";
 }
 
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
@@ -5455,7 +5454,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "PRP semantic tool call no longer belongs to an admitted turn",
       );
     }
-    return unwrapToolResponse(
+    const outcome = unwrapToolResponse(
       await this.#handler({
         id: call.callId,
         method: "item/tool/call",
@@ -5476,6 +5475,29 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           : {}),
       }),
     );
+    if (call.operationId === "call_api") {
+      const result = record(outcome.result);
+      if (
+        result.operationId !== call.operationId ||
+        result.callId !== call.callId
+      ) {
+        // HTTP receipts also contain `ok` and `operationId` (the HTTP route).
+        // Bind that application value inside a real semantic envelope so the
+        // runner cannot mistake the route for the provider tool's identity.
+        return {
+          ...outcome,
+          result: {
+            ok: !outcome.isError,
+            operationId: call.operationId,
+            callId: call.callId,
+            ...(outcome.isError
+              ? { error: outcome.result }
+              : { result: outcome.result }),
+          },
+        };
+      }
+    }
+    return outcome;
   }
 
   async #startTurn(
@@ -5896,7 +5918,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           params &&
           (method === "item/tool/requestUserInput" ||
             method === "tool/requestUserInput" ||
-            method === "mcpServer/elicitation/request") &&
+            method === "mcpServer/elicitation/request" ||
+            method === "elicitation/create") &&
           !this.#bridgedRuntimeInputs.has(requestId)
         ) {
           this.#bridgedRuntimeInputs.set(requestId, {

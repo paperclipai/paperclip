@@ -2465,6 +2465,21 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
   });
 
+  it("excludes removed schedules from dispatch and resumes them after Undo", async () => {
+    const { routine, svc, wakeups } = await seedFixture({ runtimeEnv: {} });
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "schedule", cronExpression: "0 9 * * *", timezone: "UTC" }, {});
+    await svc.updateTrigger(trigger.id, { archived: true }, {});
+    const due = new Date("2026-09-19T09:00:00Z");
+    await db.update(routineTriggers).set({ nextRunAt: due }).where(eq(routineTriggers.id, trigger.id));
+    expect(await svc.tickScheduledTriggers(due)).toEqual({ triggered: 0 });
+    expect(wakeups).toHaveLength(0);
+    expect(await db.select().from(routineRuns)).toHaveLength(0);
+    await svc.updateTrigger(trigger.id, { archived: false }, {});
+    await db.update(routineTriggers).set({ nextRunAt: due }).where(eq(routineTriggers.id, trigger.id));
+    expect(await svc.tickScheduledTriggers(due)).toEqual({ triggered: 1 });
+    expect(wakeups).toHaveLength(1);
+  });
+
   it("coalesces multiple missed sub-hourly ticks into one catch-up run", async () => {
     const { routine, svc } = await seedFixture();
     await db.update(routines).set({

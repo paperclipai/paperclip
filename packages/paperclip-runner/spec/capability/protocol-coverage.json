@@ -7,7 +7,7 @@
     "src/scenarios/scenario-plan.ts"
   ],
   "counts": {
-    "actions": 46,
+    "actions": 47,
     "legacyRequirements": 106
   },
   "actions": [
@@ -1423,6 +1423,26 @@
       "legacyRequirementCases": [],
       "deterministicOwners": [
         "src/catalog/protocol-action-contracts.test.ts::set_dependencies has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "reassign_task",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "scenario",
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:reassign_task",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::reassign_task has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:reassign_task"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::reassign_task has a schema-valid canonical example and every declared projection",
         "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
       ]
     },

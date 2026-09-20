@@ -209,7 +209,11 @@ describe("ACPX runtime host", () => {
     } finally { await host.close({ reason: "gateway test complete" }); }
   });
 
-  it("automatically permits only admitted Paperclip reads in the Claude SDK", async () => {
+  it.each([
+    ["approve-reads", ["mcp__paperclip__get_task_context"]],
+    ["approve-paperclip", ["mcp__paperclip__create_task", "mcp__paperclip__get_task_context", "mcp__paperclip__reassign_task", "mcp__paperclip__write_document"]],
+    ["deny-all", undefined],
+  ] as const)("binds exact assigned Claude tools to %s before provider launch", async (permissionMode, allow) => {
     const fixture = await hostFixture();
     const dependencies = fixture.dependencies({
       openRuntime: async (options) => {
@@ -217,9 +221,7 @@ describe("ACPX runtime host", () => {
           join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "settings.json"),
           "utf8",
         ));
-        expect(settings.permissions).toEqual({
-          allow: ["mcp__paperclip__get_task_context"],
-        });
+        expect(settings.permissions).toEqual(allow ? { allow } : undefined);
         expect(options.mcpServers).toMatchObject([
           { name: "paperclip", runnerOwned: true },
         ]);
@@ -232,9 +234,9 @@ describe("ACPX runtime host", () => {
       ...fixture.options,
       agent: "claude",
       model: "claude-sonnet-5",
-      permissionMode: "approve-reads",
+      permissionMode,
       semanticTools: {
-        tools: ["get_task_context", "write_document", "unknown_read"].map((name) => ({
+        tools: ["get_task_context", "write_document", "create_task", "reassign_task", "unknown_read"].map((name) => ({
           name,
           inputSchema: { type: "object" },
           // Supplied hints cannot grant write or unknown operations read access.

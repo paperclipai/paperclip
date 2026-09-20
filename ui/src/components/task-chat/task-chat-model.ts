@@ -126,6 +126,7 @@ export interface TaskChatMessageItem {
   }>;
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
+  agent?: import("../AgentAvatar").AvatarAgent;
   /**
    * Responsible user's display name, set only when this agent comment is a
    * cross-issue write (the author is not the assignee). Renders as a
@@ -506,6 +507,7 @@ export interface TaskChatTurnItem {
   /** Agent identity retained when a live runner turn becomes durable history. */
   agentName?: string;
   agentIcon?: string | null;
+  agent?: import("../AgentAvatar").AvatarAgent;
   /**
    * The in-flight run's status line, hoisted to be THE turn's single visible
    * row while collapsed (PAP-354 parent-row model). Absent once settled.

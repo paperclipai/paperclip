@@ -311,7 +311,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     const headers = Array.from(container.querySelectorAll("th")).map((th) => th.textContent?.trim());
     expect(headers).toEqual(["Connection", "Type", "Connected by", "Status", "Actions", "Last used", ""]);
     expect(text).toContain("Personal");
-    expect(text).toContain("Company");
+    expect(text).toContain("Organization");
     // 4. Actions column reflects enabled catalog entries per account; missing profile => 0 on.
     expect(text).toContain("3 on");
     expect(text).toContain("0 on");
@@ -334,8 +334,8 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     expect(rowButtonLabel("Notion")).toBe("Permissions");
     // 8. Generic connection names inherit the originating user's first name.
     expect(text).toContain("Dotta’s GitHub");
-    expect(text).toContain("Slack for the company");
-    expect(text).toContain("Slack Team for the company");
+    expect(text).toContain("Slack for the organization");
+    expect(text).toContain("Slack Team for the organization");
     expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
     // Custom account labels remain untouched.
     expect(text).toContain("Slack Team");
@@ -392,7 +392,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub for the company connection"]',
+      'button[aria-label="Delete GitHub for the organization connection"]',
     );
     expect(deleteButton).toBeTruthy();
 
@@ -449,7 +449,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
 
     await renderApps();
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete Composio for the company connection"]',
+      'button[aria-label="Delete Composio for the organization connection"]',
     );
     await act(async () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -483,7 +483,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub for the company connection"]',
+      'button[aria-label="Delete GitHub for the organization connection"]',
     );
     await act(async () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -533,7 +533,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await renderApps();
 
     const deleteButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Delete GitHub for the company connection"]',
+      'button[aria-label="Delete GitHub for the organization connection"]',
     );
     await act(async () => {
       deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

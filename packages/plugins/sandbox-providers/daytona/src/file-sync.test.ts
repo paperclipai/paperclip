@@ -318,7 +318,7 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
         for (const upload of uploads) {
           // BSD tar can list a child directory before its parent's files, then
           // visit that child later. GNU tar must not finalize its 0555 mode early.
-          const archive = spawnSync("tar", ["-c", "--no-xattrs", "--no-recursion", "-f", upload.destination, "-C", source,
+          const archive = spawnSync(gnuTar!, ["-c", "--owner=12345", "--group=12345", "--no-xattrs", "--no-recursion", "-f", upload.destination, "-C", source,
             "references", "references/agents", "references/overview.md", "references/agents/qa.md"], { encoding: "utf8", env: { ...process.env, COPYFILE_DISABLE: "1" } });
           expect(archive.status, archive.stderr).toBe(0);
         }
@@ -327,9 +327,27 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
     });
     await performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
       operations: [{ operationId: "readonly-skill", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] });
+    // A resumed sandbox already contains the previous read-only skill bundle.
+    await fs.writeFile(path.join(target, "unrelated.txt"), "keep me");
+    await performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "readonly-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] });
+    expect(await fs.readFile(path.join(target, "unrelated.txt"), "utf8")).toBe("keep me");
     expect(await fs.readFile(path.join(target, "references", "agents", "qa.md"), "utf8")).toBe("QA instructions");
     expect((await fs.stat(path.join(target, "references", "agents"))).mode & 0o777).toBe(0o555);
     expect((await fs.stat(path.join(target, "references", "agents", "qa.md"))).mode & 0o777).toBe(0o444);
+    // Never treat a corrupted read-only bundle as a cache hit, even if its
+    // file size, permissions and timestamp still match the source archive.
+    const qa = path.join(target, "references", "agents", "qa.md");
+    const before = await fs.stat(qa);
+    await fs.chmod(qa, 0o644);
+    await fs.writeFile(qa, "XX instructions");
+    await fs.chmod(qa, 0o444);
+    await fs.utimes(qa, before.atime, before.mtime);
+    await expect(performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "corrupt-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] })).rejects.toThrow("syncIn extract");
+    expect(await fs.readFile(qa, "utf8")).toBe("XX instructions");
+    expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
+
   } finally {
     for (const base of [source, target]) {
       for (const dir of ["references/agents", "references"]) await fs.chmod(path.join(base, dir), 0o700).catch(() => undefined);

@@ -26,6 +26,7 @@ import {
   type ChatChannelServiceOptions,
 } from "../services/chat-channels.js";
 import { accessService } from "../services/access.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { recordChatWebhookStage } from "../services/chat-webhook-diagnostics.js";
 import {
   createInviteRateLimiter,
@@ -86,6 +87,18 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   const router = Router();
   const service = options.service ?? chatChannelService(db, options);
   const access = accessService(db);
+
+  async function assertIdentityLinkAccess(req: ExpressRequest): Promise<string> {
+    assertBoard(req);
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    // Enforce rollout here: invited nonmembers cannot read the board's
+    // experimental-settings API. A private token never bypasses this gate.
+    if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) {
+      throw forbidden("Chat connectors are not enabled on this instance");
+    }
+    return userId;
+  }
 
   async function assertConnectionManager(
     req: ExpressRequest,
@@ -186,6 +199,20 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     res.json(await service.test(endpointId(req)));
   });
 
+  router.post("/chat-endpoints/:endpointId/finish", async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    res.json(await service.finishSlackSetup(endpointId(req), userId));
+  });
+  router.get("/chat-endpoints/:endpointId/test-status", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    const userId = actorUserId(req);
+    if (!userId) throw badRequest("A signed-in Paperclip user is required");
+    res.set("Cache-Control", "no-store");
+    res.json(await service.setupTestStatus(endpointId(req), userId));
+  });
+
   router.get("/chat-endpoints/:endpointId/resources", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
     res.json(await service.listResources(endpointId(req)));
@@ -244,28 +271,30 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-identity-links/confirm",
     validate(confirmChatIdentityLinkSchema),
     async (req, res) => {
-      assertBoard(req);
-      const userId = actorUserId(req);
-      if (!userId) throw badRequest("A signed-in Paperclip user is required");
+      const userId = await assertIdentityLinkAccess(req);
       res.json(await service.confirmIdentityLink(req.body.token, userId));
     },
   );
 
+  router.post("/chat-identity-links/request-access", validate(confirmChatIdentityLinkSchema), async (req, res) => {
+    const userId = await assertIdentityLinkAccess(req);
+    res.json(await service.requestIdentityAccess(req.body.token, userId, req.ip ?? "unknown"));
+  });
+
   router.get("/chat-identity-links/preview", async (req, res) => {
-    assertBoard(req);
+    const userId = await assertIdentityLinkAccess(req);
     const token = typeof req.query.token === "string" ? req.query.token : "";
     if (token.length < 32 || token.length > 4096)
       throw badRequest("A valid identity-link token is required");
-    const preview = await getAccessibleResource(
-      req,
-      res,
-      service.previewIdentityLink(token).catch((error) => {
-        // Do not distinguish a valid foreign-company token from an invalid or
-        // expired token. Confirmation keeps its own validation contract.
-        if (error instanceof HttpError && error.status === 422) return null;
-        throw error;
-      }),
-      "Identity-link request not found",
+    res.set("Cache-Control", "no-store");
+    const invitation = await service.previewIdentityLink(token, userId).catch((error) => {
+      if (error instanceof HttpError && error.status === 422) return null;
+      throw error;
+    });
+    // A link privately issued to a signed Slack sender is an invitation to
+    // request membership. Other link intents retain company-access checks.
+    const preview = invitation?.selfService ? invitation : await getAccessibleResource(
+      req, res, Promise.resolve(invitation), "Identity-link request not found",
     );
     if (!preview) return;
     res.json(preview);
@@ -278,7 +307,13 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 
   router.get("/chat-endpoints/:endpointId/activity", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
-    res.json(await service.listActivity(endpointId(req)));
+    if (req.query.limit !== undefined || req.query.cursor !== undefined) {
+      if ((req.query.limit !== undefined && (typeof req.query.limit !== "string" || !/^\d+$/.test(req.query.limit)))
+        || (req.query.cursor !== undefined && typeof req.query.cursor !== "string")) throw badRequest("Invalid activity pagination parameters");
+      res.json(await service.listActivityPage(endpointId(req), req.query.limit === undefined ? 25 : Number(req.query.limit), req.query.cursor as string | undefined));
+    } else {
+      res.json(await service.listActivity(endpointId(req)));
+    }
   });
 
   router.post(
@@ -401,7 +436,11 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 
   router.get("/issues/:issueId/chat-binding", async (req, res) => {
     assertBoard(req);
-    const binding = await service.getIssueBinding(req.params.issueId as string);
+    const issueId = req.params.issueId as string;
+    if (issueId !== issueId.trim() || !isUuidLike(issueId)) {
+      throw badRequest("Task ID must be a UUID");
+    }
+    const binding = await service.getIssueBinding(issueId);
     if (binding) {
       const endpoint = await getAccessibleResource(
         req,

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
 import {
   createHash,
   createHmac,
@@ -48,6 +49,7 @@ import {
   chatEndpoints,
   chatExternalPrincipals,
   chatIdentityLinks,
+  joinRequests,
   chatMessageLinks,
   chatPublications,
   chatSdkState,
@@ -119,6 +121,7 @@ import {
 } from "../services/chat-teams-personal-recipient.js";
 import * as discordQuestionForms from "../services/chat-discord-question-forms.js";
 import { issueService } from "../services/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { NativeChatAttachmentReadScope } from "../services/native-runtime/chat-attachment-read.js";
@@ -1575,15 +1578,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    if (overrides?.allowUnlinkedPeople !== undefined) {
-      await context.service.update(
-        endpoint.id,
-        {
-          allowUnlinkedPeople: overrides.allowUnlinkedPeople,
-        },
-        "owner-user",
-      );
-    }
+    // Most transport fixtures exercise restricted guests explicitly. Production
+    // Slack creation defaults to linked accounts only (covered separately).
+    await context.service.update(endpoint.id, {
+      allowUnlinkedPeople: overrides.allowUnlinkedPeople ?? true,
+    }, "owner-user");
     await context.service.configure(
       endpoint.id,
       {
@@ -1767,6 +1766,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         | "githubWebhookReplayBarrier"
         | "githubWebhookResponseBudgetMs"
         | "publicBaseUrl"
+        | "webhookPublicBaseUrl"
         | "scheduleDeferredWork"
         | "setupSecretActivityLogger"
         | "setupSecretCredentialPersistBarrier"
@@ -2912,6 +2912,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       assignedAgentId: fixture.assignedAgentId,
       assignedAgentName: "Maya",
       status: "draft",
+      allowUnlinkedPeople: false,
       setup: { command: expect.stringMatching(/^\/maya-[a-z0-9]{6}$/) },
     });
     const createdCommand = createResponse.body.setup.command as string;
@@ -2945,6 +2946,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect((await service.get(createResponse.body.id)).setup.command).toBe(
       createdCommand,
     );
+  });
+
+  it("persists Slack manifest draft details and the registered command, then locks them once connected", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService();
+    const app = routesApp(db, fixture.companyId, service);
+    const endpoint = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId });
+    const slackApp = { appName: "Research Ops", botName: "research-ops", command: "/research" };
+    await request(app).patch(`/api/chat-endpoints/${endpoint.id}`).send({ slackApp }).expect(200);
+    expect((await service.get(endpoint.id)).setup).toMatchObject({ slackApp, command: "/research" });
+    const [stored] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored.setup.command).toBe("/research");
+    await request(app).patch(`/api/chat-endpoints/${endpoint.id}`)
+      .send({ slackApp: { ...slackApp, command: "not-a-command" } }).expect(400);
+    await db.update(chatEndpoints).set({ status: "verifying" }).where(eq(chatEndpoints.id, endpoint.id));
+    await request(app).patch(`/api/chat-endpoints/${endpoint.id}`)
+      .send({ slackApp: { ...slackApp, command: "/different" } }).expect(409);
+    expect((await service.get(endpoint.id)).setup.command).toBe("/research");
+    const github = await service.create(fixture.companyId, { provider: "github", assignedAgentId: fixture.assignedAgentId });
+    await request(app).patch(`/api/chat-endpoints/${github.id}`).send({ slackApp }).expect(422);
   });
 
   it("rejects chat endpoints for non-invokable agents", async () => {
@@ -12546,6 +12567,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
+    expect(endpoint.allowUnlinkedPeople).toBe(false);
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
 
     const configured = await service.configure(
       endpoint.id,
@@ -12673,6 +12696,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -12733,6 +12757,117 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it.each([undefined, "https://ingress.example"])(
+    "uses a live Cloud claim after chat service startup (ingress: %s)",
+    async (webhookPublicBaseUrl) => {
+      const poolOrigin = "https://pool-fixture.staging.paperclip.app";
+      const claimedOrigin = "https://claimed-fixture.staging.paperclip.app";
+      const canonicalOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimeCanonicalOrigin").mockReturnValue(null);
+      let context: ReturnType<typeof createService> | undefined;
+      try {
+        const fixture = await seedCompany();
+        context = createService(new FakeChatSdkRuntime(), fakeSlackFetch(), {
+          publicBaseUrl: poolOrigin,
+          webhookPublicBaseUrl,
+        });
+        const { service } = context;
+        const endpoints = [];
+        for (const provider of ["slack", "github", "microsoft-teams", "telegram"] as const) {
+          endpoints.push(await service.create(fixture.companyId, {
+            provider,
+            assignedAgentId: fixture.assignedAgentId,
+          }, "owner-user"));
+        }
+        expect(endpoints[0].setup.webhookUrl).toBe(
+          `${webhookPublicBaseUrl ?? poolOrigin}/api/chat-webhooks/${endpoints[0].publicId}/slack`,
+        );
+
+        // The warm process is already serving; applying a signed claim changes
+        // the trusted identity provider without constructing another service.
+        canonicalOrigin.mockReturnValue(claimedOrigin);
+        for (const endpoint of endpoints) {
+          const updated = await service.get(endpoint.id);
+          const callback = `${webhookPublicBaseUrl ?? claimedOrigin}/api/chat-webhooks/${endpoint.publicId}/${endpoint.provider}`;
+          expect(updated.setup).toMatchObject(endpoint.provider === "microsoft-teams"
+            ? { messagingEndpoint: callback }
+            : { webhookUrl: callback });
+          const [principal] = await db.insert(chatExternalPrincipals).values({
+            companyId: fixture.companyId,
+            provider: endpoint.provider,
+            providerAccountId: "",
+            externalId: randomUUID(),
+            kind: "user",
+            isBot: false,
+          }).returning();
+          const intent = await service.createLinkIntent(endpoint.id, principal.id, 1800);
+          expect(intent.confirmationUrl).toMatch(
+            /^https:\/\/claimed-fixture\.staging\.paperclip\.app\/chat-identity\/confirm\?token=/,
+          );
+        }
+        const fresh = await service.create(fixture.companyId, {
+          provider: "slack",
+          assignedAgentId: fixture.assignedAgentId,
+        }, "owner-user");
+        expect(fresh.setup.webhookUrl).toBe(
+          `${webhookPublicBaseUrl ?? claimedOrigin}/api/chat-webhooks/${fresh.publicId}/slack`,
+        );
+      } finally {
+        try {
+          await context?.service.shutdown();
+        } finally {
+          canonicalOrigin.mockRestore();
+        }
+      }
+    },
+  );
+
+  it.each([undefined, "https://ingress.example"])(
+    "registers provider callbacks after a live Cloud claim (ingress: %s)",
+    async (webhookPublicBaseUrl) => {
+      const poolOrigin = "https://pool-fixture.staging.paperclip.app";
+      const claimedOrigin = "https://claimed-fixture.staging.paperclip.app";
+      const canonicalOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimeCanonicalOrigin").mockReturnValue(null);
+      let telegram: ReturnType<typeof createService> | undefined;
+      let github: Awaited<ReturnType<typeof configuredGitHubEndpoint>> | undefined;
+      try {
+        const fixture = await seedCompany();
+        const telegramRequests: Array<Record<string, unknown>> = [];
+        const telegramFetch = fakeTelegramFetch();
+        telegram = createService(new FakeChatSdkRuntime(), (async (input, init) => {
+          if (String(input).endsWith("/setWebhook")) {
+            telegramRequests.push(JSON.parse(String(init?.body)));
+          }
+          return telegramFetch(input);
+        }) as typeof globalThis.fetch, { publicBaseUrl: poolOrigin, webhookPublicBaseUrl });
+        const endpoint = await telegram.service.create(fixture.companyId, {
+          provider: "telegram",
+          assignedAgentId: fixture.assignedAgentId,
+        }, "owner-user");
+        github = await configuredGitHubEndpoint(fixture, { publicBaseUrl: poolOrigin, webhookPublicBaseUrl });
+        expect(github.webhookSyncRequests).toHaveLength(0);
+
+        canonicalOrigin.mockReturnValue(claimedOrigin);
+        await telegram.service.configure(endpoint.id, {
+          action: "configure",
+          credentials: { botToken: "123456:telegram-cloud-claim-test" },
+        }, "owner-user");
+        expect(telegramRequests).toEqual([expect.objectContaining({
+          url: `${webhookPublicBaseUrl ?? claimedOrigin}/api/chat-webhooks/${endpoint.publicId}/telegram`,
+        })]);
+        await github.service.configure(github.endpoint.id, { action: "reconnect" }, "owner-user");
+        expect(github.webhookSyncRequests).toEqual([expect.objectContaining({
+          url: `${webhookPublicBaseUrl ?? claimedOrigin}/api/chat-webhooks/${github.endpoint.publicId}/github`,
+        })]);
+      } finally {
+        try {
+          await Promise.all([telegram?.service.shutdown(), github?.service.shutdown()]);
+        } finally {
+          canonicalOrigin.mockRestore();
+        }
+      }
+    },
+  );
+
   it("separates verified webhook ingress from board identity links for every webhook provider", async () => {
     const fixture = await seedCompany();
     for (const publicBaseUrl of [
@@ -12792,6 +12927,140 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(intent.confirmationUrl).not.toContain("ingress.example");
       }
       await service.shutdown();
+    }
+  });
+
+  it("paginates mixed activity beyond 100 rows without losing timestamp ties", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService(new FakeChatSdkRuntime(), fakeSlackFetch());
+    const endpoint = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId }, "owner-user");
+    const other = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId }, "owner-user");
+    const createdAt = new Date("2026-01-01T00:00:00.123Z");
+    const deliveries = await db.insert(chatDeliveries).values(Array.from({ length: 110 }, (_, index) => ({
+      companyId: fixture.companyId, endpointId: endpoint.id,
+      providerEventId: `page-${index}`, deduplicationKey: `page-${index}`,
+      eventKind: "message" as const, normalizedEvent: {}, state: "processed" as const, createdAt,
+    }))).returning();
+    const actions = await db.insert(chatActions).values(Array.from({ length: 15 }, (_, index) => ({
+      companyId: fixture.companyId, endpointId: endpoint.id,
+      kind: "slack_session_sync", providerActionId: `page-${index}`,
+      // Activity for session actions follows updatedAt, not createdAt.
+      createdAt: new Date("2025-01-01T00:00:00Z"), updatedAt: createdAt,
+    }))).returning();
+    await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: other.id, kind: "slash_task_start", providerActionId: "other-endpoint", createdAt });
+    const expected = [...deliveries, ...actions].map((row) => row.id).sort((a, b) => b.localeCompare(a));
+    const found: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const result = await service.listActivityPage(endpoint.id, 25, cursor);
+      expect(result.items).toHaveLength(25);
+      found.push(...result.items.map((row) => row.id));
+      expect(Boolean(result.nextCursor)).toBe(page < 4);
+      cursor = result.nextCursor ?? undefined;
+      if (page === 0) {
+        // New arrivals must not shift the older pages.
+        await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, kind: "slash_task_start", providerActionId: "new-arrival", createdAt: new Date("2026-01-02T00:00:00Z") });
+      }
+    }
+    expect(found).toEqual(expected);
+    expect(await service.listActivity(endpoint.id)).toHaveLength(100);
+    await expect(service.listActivityPage(endpoint.id, 0)).rejects.toMatchObject({ status: 400 });
+    await expect(service.listActivityPage(endpoint.id, 101)).rejects.toMatchObject({ status: 400 });
+    await expect(service.listActivityPage(endpoint.id, 25, "invalid")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("recognizes Slack callbacks behind TLS termination without trusting forwarded headers", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, service } = await configuredSlackEndpoint(fixture);
+    const path = `/api/chat-webhooks/${endpoint.publicId}/slack`;
+    const body = JSON.stringify({ type: "url_verification", challenge: "proxy-check" });
+    const request = signedSlackWebhookRequest({ url: `http://paperclip.example${path}`, contentType: "application/json", body });
+    request.headers.set("x-forwarded-host", "untrusted.example");
+    request.headers.set("x-paperclip-cloud-forwarded-host", "untrusted.example");
+    request.headers.set("x-paperclip-cloud-forwarded-proto", "https");
+    request.headers.set("x-forwarded-proto", "https");
+    await service.handleWebhook(endpoint.publicId, "slack", request);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false, callbackSurfaces: { events: { status: "current" } } } });
+    // A different public host or port is still drift, even with TLS termination.
+    for (const publicBaseUrl of ["https://moved.example", "https://paperclip.example:8443"]) {
+      const moved = createService(new FakeChatSdkRuntime(), fakeSlackFetch(), { publicBaseUrl });
+      await expect(moved.service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true, callbackSurfaces: { events: { status: "stale" } } } });
+      await moved.service.shutdown();
+    }
+  });
+
+  it("records the public Cloud proxy host for authenticated Slack callback health", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, service } = await configuredSlackEndpoint(fixture);
+    const canonicalOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://paperclip.example");
+    const path = `/api/chat-webhooks/${endpoint.publicId}/slack`;
+    const cases = [
+      ["events", "application/json", JSON.stringify({ type: "url_verification", challenge: "cloud-proxy-check" })],
+      ["interactivity", "application/x-www-form-urlencoded", new URLSearchParams({ payload: JSON.stringify({ type: "block_actions", team: { id: "T-PAPERCLIP" } }) }).toString()],
+      ["slashCommands", "application/x-www-form-urlencoded", new URLSearchParams({ command: "/maya-paperclip", team_id: "T-PAPERCLIP" }).toString()],
+    ] as const;
+    try {
+      for (const prefix of ["x-forwarded", "x-paperclip-cloud-forwarded"]) {
+        for (const [surface, contentType, body] of cases) {
+          const request = signedSlackWebhookRequest({ url: `http://tenant.internal:3100${path}`, contentType, body });
+          request.headers.set("x-forwarded-host", "tenant.up.railway.app");
+          request.headers.set(`${prefix}-host`, "paperclip.example");
+          request.headers.set(`${prefix}-proto`, "https");
+          expect((await service.handleWebhook(endpoint.publicId, "slack", request)).ok).toBe(true);
+          await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: {
+            callbacksNeedUpdate: false, callbackSurfaces: { [surface]: { status: "current" } },
+          } });
+          // The proxy hint is evidence, not a rewrite to the adapter request.
+          expect(request.url).toBe(`http://tenant.internal:3100${path}`);
+        }
+      }
+      canonicalOrigin.mockReturnValue("https://moved.example");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: {
+        callbacksNeedUpdate: true, callbackSurfaces: { events: { status: "stale" }, interactivity: { status: "stale" }, slashCommands: { status: "stale" } },
+      } });
+    } finally {
+      await service.shutdown();
+      canonicalOrigin.mockRestore();
+    }
+  });
+
+  it("does not let rejected callbacks or malformed proxy hints establish healthy Slack callbacks", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
+    const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+    const canonicalOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimeCanonicalOrigin").mockReturnValue("https://paperclip.example");
+    const path = `/api/chat-webhooks/${endpoint.publicId}/slack`;
+    const body = JSON.stringify({ type: "url_verification", challenge: "proxy-hint-check" });
+    const send = async (host: string, protocol = "https", signed = true) => {
+      const request = signedSlackWebhookRequest({ url: `http://tenant.internal:3100${path}`, contentType: "application/json", body });
+      request.headers.set("x-paperclip-cloud-forwarded-host", host);
+      request.headers.set("x-paperclip-cloud-forwarded-proto", protocol);
+      if (!signed) request.headers.delete("x-slack-signature");
+      // The fake provider runtime supplies the adapter's authentication result.
+      providerRuntime.webhookResponse = new Response(signed ? "accepted" : "rejected", { status: signed ? 202 : 401 });
+      return service.handleWebhook(endpoint.publicId, "slack", request);
+    };
+    try {
+      // A real callback on an old public hostname must still warn.
+      await send("old.example");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      expect((await send("paperclip.example", "https", false)).status).toBe(401);
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      for (const host of ["paperclip.example, proxy.example", "paperclip.example/path", "user@paperclip.example", "paperclip.example?query=1", "paperclip.example#fragment", "paperclip.example:8443"]) {
+        await send(host);
+        await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      }
+      await send("paperclip.example", "javascript");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: true } });
+      await send("paperclip.example");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false } });
+      for (const host of ["paperclip.example:443", "PAPERCLIP.EXAMPLE:443", "paperclip.example.", "paperclip.example.:443"]) {
+        await send(host);
+        await expect(service.get(endpoint.id)).resolves.toMatchObject({ setup: { callbacksNeedUpdate: false } });
+      }
+    } finally {
+      await service.shutdown();
+      canonicalOrigin.mockRestore();
     }
   });
 
@@ -13898,6 +14167,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -14142,7 +14412,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ nextAttemptAt: null })
       .where(eq(chatDeliveries.endpointId, endpoint.id));
 
-    const processing = service.processPendingDeliveries();
+    // This suite shares its database. Drain only this fixture's conversation;
+    // a global recovery pass can renew unrelated retained deliveries with this
+    // test's failure hook and make its ownership assertion depend on test order.
+    const [firstDelivery] = await db
+      .select({ id: chatDeliveries.id })
+      .from(chatDeliveries)
+      .where(and(
+        eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.providerEventId, `${thread.thread.id}:${first.id}`),
+      ));
+    if (!firstDelivery) throw new Error("Expected first delivery");
+    const processing = service.processPendingDeliveries(25, firstDelivery.id);
     await firstDeliveryEntered;
     await renewalAttempted;
     releaseFirstDelivery();
@@ -19349,6 +19630,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await first.service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await first.service.configure(
       endpoint.id,
       {
@@ -19487,6 +19769,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -20058,6 +20341,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     const signingSecret = "durable-ingress-signing-secret";
     await service.configure(
       endpoint.id,
@@ -20711,6 +20995,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -22527,6 +22812,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
+    await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
     await service.configure(
       endpoint.id,
       {
@@ -27593,6 +27879,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
         "owner-user",
       );
+      await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
       await service.configure(
         endpoint.id,
         {
@@ -28460,6 +28747,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       [blockedEndpoint, "xoxb-blocked-outbox"],
       [readyEndpoint, "xoxb-ready-outbox"],
     ] as const) {
+      await service.update(endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
       await service.configure(
         endpoint.id,
         {
@@ -46228,6 +46516,94 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
+  it("discovers a Slack connect identity without starting work or granting access", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+    const post = vi.fn();
+    const postEphemeral = vi.fn(async () => ({ id: "connect-notice", usedFallback: false }));
+    const event = {
+      endpointId: endpoint.id, provider: "slack" as const,
+      event: {
+        channel: { id: "C-CONNECT", isDM: false, post, postEphemeral } as never,
+        command: endpoint.setup.command!, text: "connect", triggerId: "connect-discovery-1",
+        user: { userId: "U-CONNECT", userName: "connector", fullName: "Connect Person", isBot: false, isMe: false, isSystem: false },
+        raw: { trigger_id: "connect-discovery-1" }, adapter: {} as never, openModal: async () => undefined,
+      },
+    };
+    await callbacks.onSlashCommand!(event);
+    await callbacks.onSlashCommand!(event);
+    await vi.waitFor(() => expect(postEphemeral).toHaveBeenCalledTimes(1));
+    const [identity] = await service.listPrincipals(endpoint.id);
+    expect(identity).toMatchObject({ externalLabel: "Connect Person", status: "pending", paperclipUserId: null, lastConnectAt: expect.any(String) });
+    expect(await service.listConversations(endpoint.id)).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_connect")))).toHaveLength(1);
+    expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slash_task_start")))).toHaveLength(0);
+    const other = await service.create(fixture.companyId, { provider: "slack", assignedAgentId: fixture.assignedAgentId }, "owner-user");
+    await db.update(chatEndpoints).set({ status: "verifying", providerAccountId: (await service.get(endpoint.id)).providerAccountId }).where(eq(chatEndpoints.id, other.id));
+    expect((await service.listPrincipals(other.id))[0]?.lastConnectAt).toBeNull();
+    const notice = String((postEphemeral.mock.calls[0] as unknown[])[1]);
+    const token = /token=([A-Za-z0-9_-]+)/.exec(notice)![1];
+    expect(notice).toContain("Connect your Paperclip account");
+    expect((postEphemeral.mock.calls[0] as unknown[])[2]).toEqual({ fallbackToDM: false });
+    expect(await service.previewIdentityLink(token, "owner-user")).toMatchObject({ selfService: true, canConfirm: true, externalLabel: "Connect Person" });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    await expect(service.finishSlackSetup(endpoint.id, "owner-user")).rejects.toMatchObject({ status: 403 });
+    const outsiderId = `outsider-${fixture.companyId}`;
+    const now = new Date();
+    await db.insert(authUsers).values({ id: outsiderId, name: "Outside Person", email: `${outsiderId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now });
+    const outsideApp = routesApp(db, randomUUID(), service, outsiderId);
+    expect((await request(outsideApp).get(`/api/chat-identity-links/preview?token=${token}`)).body).toMatchObject({ selfService: true, canConfirm: false });
+    await expect(service.confirmIdentityLink(token, outsiderId)).rejects.toMatchObject({ status: 403 });
+    await request(outsideApp).post("/api/chat-identity-links/confirm").send({ token }).expect(403);
+    expect((await request(outsideApp).post("/api/chat-identity-links/request-access").send({ token })).body).toMatchObject({ status: "pending_approval" });
+    await service.requestIdentityAccess(token, outsiderId, "test");
+    expect(await db.select().from(joinRequests).where(eq(joinRequests.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, fixture.companyId), eq(companyMemberships.principalId, outsiderId)))).toHaveLength(0);
+    const adminOnly = await service.createLinkIntent(other.id, identity.principalId, 600);
+    const adminToken = new URL(adminOnly.confirmationUrl).searchParams.get("token")!;
+    expect((await request(outsideApp).get(`/api/chat-identity-links/preview?token=${adminToken}`)).status).toBe(404);
+    await expect(service.requestIdentityAccess(adminToken, outsiderId, "test")).rejects.toMatchObject({ status: 403 });
+    const providerRuntime = runtime.endpoints.get(endpoint.id)!;
+    const originalThread = providerRuntime.thread.bind(providerRuntime);
+    const confirmationNotice = vi.fn(async () => ({ id: "linked-notice", threadId: "C-CONNECT" }));
+    providerRuntime.thread = (id: string) => ({ ...originalThread(id), postEphemeral: confirmationNotice });
+    await service.confirmIdentityLink(token, "owner-user");
+    await vi.waitFor(() => expect(confirmationNotice).toHaveBeenCalledWith("U-CONNECT", expect.stringContaining("account is connected"), { fallbackToDM: false }));
+    expect((await service.listPrincipals(endpoint.id))[0]).toMatchObject({ status: "linked", paperclipUserId: "owner-user" });
+    await expect(service.test(endpoint.id)).rejects.toMatchObject({ details: { code: "chat_test_follow_up_missing" } });
+    await expect(service.confirmIdentityLink(token, "owner-user")).rejects.toMatchObject({ status: 422 });
+    await request(outsideApp).post("/api/chat-identity-links/request-access").send({ token }).expect(422);
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    const finished = await service.finishSlackSetup(endpoint.id, "owner-user");
+    expect(finished).toMatchObject({ status: "active", setup: { step: "complete", testSkipped: true } });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each(["message", "mention", "slash"] as const)("scopes Slack setup %s detection to the linked user and current test", async (kind) => {
+    const fixture = await seedCompany();
+    const { endpoint, service } = await configuredSlackEndpoint(fixture);
+    const now = new Date();
+    const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: (await service.get(endpoint.id)).providerAccountId!, externalId: "U-TEST", kind: "user", displayName: "Test" }).returning();
+    const intent = await service.createLinkIntent(endpoint.id, principal.id, 600);
+    const token = new URL(intent.confirmationUrl).searchParams.get("token")!;
+    await db.update(chatIdentityLinks).set({ expiresAt: new Date(now.getTime() - 1) }).where(eq(chatIdentityLinks.principalId, principal.id));
+    await expect(service.confirmIdentityLink(token, "owner-user")).rejects.toMatchObject({ status: 422 });
+    const fresh = await service.createLinkIntent(endpoint.id, principal.id, 600);
+    await service.confirmIdentityLink(new URL(fresh.confirmationUrl).searchParams.get("token")!, "owner-user");
+    await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "old-test-message", createdAt: new Date(now.getTime() - 60_000), status: "processed" });
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toEqual({ messageReceivedAt: null });
+    if (kind === "slash") {
+    await db.insert(chatActions).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, kind: "slash_task_start", providerActionId: "current-test-message", status: "processed" });
+    } else {
+      await db.insert(chatDeliveries).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, providerEventId: "current-test-message", deduplicationKey: "current-test-message", eventKind: kind, normalizedEvent: {}, state: "processed" });
+    }
+    expect(await service.setupTestStatus(endpoint.id, "owner-user")).toMatchObject({ messageReceivedAt: expect.any(String) });
+    expect(await service.setupTestStatus(endpoint.id, "someone-else")).toEqual({ messageReceivedAt: null });
+  });
+
   it("turns a Slack slash command into a new native thread and one Paperclip task", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
@@ -59251,8 +59627,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const fixture = await seedCompany();
       const { callbacks, endpoint, service, wakeup, webhookSecret } =
         await configuredGitHubEndpoint(fixture);
-      // Recovery sweeps all companies. Only this endpoint's assigned agent
-      // proves whether its bot edit incorrectly created new work.
+      // Recover only this fixture's ingress and delivery. A global sweep can
+      // drain unrelated fixtures' retries and exceed the test's time budget.
+      const processFixtureDelivery = async () => {
+        const [ingress] = await db
+          .select({ id: chatActions.id })
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "github_webhook_ingress"),
+              eq(
+                chatActions.providerActionId,
+                "github_webhook_ingress:bot-update-exact",
+              ),
+            ),
+          );
+        expect(ingress).toBeDefined();
+        await service.processPendingGitHubWebhookIngress(1, ingress!.id);
+        const [delivery] = await db
+          .select({ id: chatDeliveries.id })
+          .from(chatDeliveries)
+          .where(
+            and(
+              eq(chatDeliveries.endpointId, endpoint.id),
+              eq(chatDeliveries.eventKind, "message_updated"),
+            ),
+          );
+        expect(delivery).toBeDefined();
+        await service.processPendingDeliveries(1, delivery!.id);
+      };
       const fixtureWakeups = () =>
         wakeup.mock.calls.filter((call) => call[0] === fixture.assignedAgentId);
       const thread = makeThread({
@@ -59374,7 +59778,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           ).toHaveLength(0);
         }
         expect((await send()).ok).toBe(true);
-        await service.processPendingDeliveries();
+        await processFixtureDelivery();
         const [delivery] = await db
           .select()
           .from(chatDeliveries)
@@ -59411,7 +59815,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             filtering: { contentRetained: false },
           });
           expect((await send()).ok).toBe(true);
-          await service.processPendingDeliveries();
+          await processFixtureDelivery();
           expect(
             await db
               .select()

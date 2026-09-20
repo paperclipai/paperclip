@@ -45,6 +45,12 @@ const definitions = [
     4,
   ],
   [
+    "agent-review-handoff",
+    "Delegate work through an agent review handoff",
+    `Have Riley Builder implement the following as one child task. The child must keep its original Riley assignee throughout. Before Riley finishes, require a native needs_review report with exactly one attention request: kind review, ownerClass agent, targetAgentId set to your exact lead agent id, and a summary naming you as the reviewer. The child must remain in_review while waiting. When the durable review wake arrives, inspect the child task context, approve the review through the native resolve_review tool with decision accept, then finish the parent task. Do not patch the child status, reassign the child, self-approve the child from the parent run, or bypass the review interaction. ${SLUGIFY_REQUIREMENTS}`,
+    3,
+  ],
+  [
     "hire-reuse",
     "Hire one teammate, then reuse that agent",
     `Hire exactly one agent named Morgan QA, reporting to you, using the same available AI connection and native runner configuration as you. Have Morgan implement the following in one child task, then review the result. ${SLUGIFY_REQUIREMENTS}`,
@@ -104,3 +110,8 @@ export const everydayTasks: readonly RunnerTaskFixture[] = definitions.map(
     buildMatchers: () => [], // The workflow records independent artifact and lifecycle checks.
   }),
 );
+
+/** Only these stories execute downloaded Python ZIPs in the pinned oracle. */
+export function requiresEverydayArtifactOracle(caseId: string): boolean {
+  return ["build-revise", "delegate-feedback", "agent-review-handoff", "hire-reuse", "recover-controller", "stop-redirect"].includes(caseId);
+}

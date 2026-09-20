@@ -12,6 +12,7 @@ export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
   | "everyday_workflow"
 
+  | "continuation"
   | "first_task"
   | "agent_chat"
   | "governed_tool_review"

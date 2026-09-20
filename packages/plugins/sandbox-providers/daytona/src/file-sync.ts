@@ -901,7 +901,27 @@ async function syncInDirectoryMapping(input: {
       });
       // Extract the uploaded tarball onto the already-created target directory,
       // then remove the scratch tarball.
+      const immutable = mapping.mode !== undefined && (mapping.mode & 0o222) === 0;
       const extractScript = [
+        // A resumed sandbox can already contain these immutable 0444/0555
+        // assets. Repack a private extraction as the sandbox user: tar --diff
+        // otherwise rejects identical bytes because the host UID/GID differ.
+        // Compare content and modes, never chmod the live bundle or skip
+        // unverified old files. Extra user files in the target stay untouched.
+        ...(immutable ? [
+          `compare_dir=${shellQuote(`${remoteTar}.compare`)};`,
+          `compare_tar=${shellQuote(`${remoteTar}.normalized`)};`,
+          `compare_list=${shellQuote(`${remoteTar}.members`)};`,
+          'cleanup_compare() { if [ -d "$compare_dir" ]; then find "$compare_dir" -type d -exec chmod u+w {} +; rm -rf "$compare_dir"; fi; rm -f "$compare_tar" "$compare_list"; };',
+          "trap cleanup_compare EXIT;",
+          'mkdir -m 700 "$compare_dir" || exit 43;',
+          `tar -xf ${shellQuote(remoteTar)} --no-same-owner --delay-directory-restore -C "$compare_dir" || exit 43;`,
+          '(cd "$compare_dir" && find . -mindepth 1 -maxdepth 1 -print0) > "$compare_list" || exit 43;',
+          'tar -cf "$compare_tar" --format=pax -C "$compare_dir" --null -T "$compare_list" || exit 43;',
+          `if tar -df "$compare_tar" -C ${shellQuote(mapping.targetPath)} >/dev/null 2>&1; then rm -f ${shellQuote(remoteTar)}; exit 0; fi;`,
+          "cleanup_compare;",
+          "trap - EXIT;",
+        ] : []),
         // BSD archives may revisit a directory after its parent's files. Keep
         // GNU tar from restoring a read-only skill directory's mode before all
         // of its children are extracted; final permissions remain unchanged.

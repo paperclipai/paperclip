@@ -1,3 +1,4 @@
+import { agentAvatarRoutes } from "./routes/agent-avatars.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
@@ -131,10 +132,12 @@ import {
 } from "./services/plugin-loader.js";
 import {
   SELF_HOSTED_AUTO_INSTALL_KEYS,
+  BUNDLED_PLUGIN_CATALOG,
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
 } from "./services/bundled-plugins.js";
+import { readDistributionPluginCatalog, distributionPluginActivationGuard } from "./services/distribution-plugin-catalog.js";
 import {
   createPluginWorkerManager,
   type PluginWorkerManager,
@@ -595,12 +598,14 @@ export async function createApp(
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
+  const distributionPlugins = readDistributionPluginCatalog(bundledCatalogRoot, BUNDLED_PLUGIN_CATALOG);
   const bundledPluginInstalls = resolveBundledPluginInstalls(
     managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
     {
       catalogRoot: bundledCatalogRoot,
       env: process.env,
       enforceCatalogRoot: managedAutoInstallKeys !== null,
+      distributionPlugins,
     },
   );
   const managedBundledPluginKeys =
@@ -623,6 +628,8 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  const agentAvatars = agentAvatarRoutes();
+  api.use(agentAvatars.router);
   api.use(boardMutationGuard());
   api.use(
     "/health",
@@ -866,6 +873,7 @@ export async function createApp(
     {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
       migrationDb: opts.pluginMigrationDb,
+      assertPackageActivation: distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
     },
     {
       workerManager,
@@ -1264,7 +1272,8 @@ export async function createApp(
     { registry: pluginRegistry, loader, lifecycle, logger },
     // Managed mode reinstalls soft-uninstalled bundles (the control plane
     // owns provisioning); self-hosted leaves an operator's uninstall alone.
-    // Operator-DISABLED plugins are never touched in either mode.
+    // Disabled plugins never start automatically. Added distribution permissions
+    // still enter upgrade_pending so enabling them requires an operator decision.
     { reinstallUninstalled: managedAutoInstallKeys !== null },
   )
     .then(() => loader.loadAll())
@@ -1311,6 +1320,9 @@ export async function createApp(
       hostServiceCleanup.teardown();
       await emailChannels.shutdown();
       await chatChannels.shutdown();
+      // End the avatar worker pool, if a request ever started one, so no
+      // render outlives the HTTP teardown.
+      await agentAvatars.close();
       // Cancel every live setup-token login session and AWAIT the cancellation,
       // so each direct child stops and the server releases each lease before the
       // caller stops the database and the provider. A lease release that

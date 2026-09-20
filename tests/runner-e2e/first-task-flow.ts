@@ -1,3 +1,5 @@
+import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
 import {
@@ -256,7 +258,9 @@ export async function runFirstTaskFlow(input: {
     await input.evidence("api-state.json", checkpoint);
     return checkpoint;
   };
+  let pausedRuntimeRunIds = new Set<string>();
   const settle = async (priorRunIds: Set<string>, completion = false) => {
+    const previousPaused = pausedRuntimeRunIds;
     let stable = 0;
     await pollUntil({
       label: "first-task response and durable outcome",
@@ -265,19 +269,23 @@ export async function runFirstTaskFlow(input: {
       load: async () => ({
         runs: await allRuns(),
         tasks: await api.get<Row[]>(tasksPath),
+        interactions: await api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
       }),
       reject: ({ runs }) => {
         const bad = runs.find((r) =>
-          ["failed", "timed_out", "cancelled"].includes(r.status),
+          ["failed", "timed_out", "cancelled"].includes(r.status) && !isBlockedUnstartedWake(r),
         );
         if (bad)
           return `run status ${bad.status}: ${bad.errorCode ?? ""} ${bad.error ?? ""}`;
         if (runs.length > 12) return "first-task run count exceeded 12";
       },
-      accept: ({ runs, tasks }) => {
-        const settled =
-          runs.some((r) => !priorRunIds.has(r.id)) &&
-          activeRuns(runs).length === 0;
+      accept: ({ runs, tasks, interactions }) => {
+        const paused = answerableRuntimeRunIds(interactions);
+        const active = activeRuns(runs);
+        const waitingForAnswer = !completion && active.length > 0 && active.every((r) => paused.has(r.id));
+        const progressed = runs.some((r) => !priorRunIds.has(r.id) || previousPaused.has(r.id));
+        const settled = progressed && (active.length === 0 || waitingForAnswer);
+        pausedRuntimeRunIds = waitingForAnswer ? paused : new Set();
         const done =
           !completion ||
           firstTaskCompletionSettled(

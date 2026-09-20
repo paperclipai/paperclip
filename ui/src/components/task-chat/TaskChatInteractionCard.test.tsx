@@ -438,6 +438,13 @@ describe("TaskChatInteractionCard", () => {
     );
     await act(async () => firstAnswer?.click());
     expect(submit).not.toHaveBeenCalled();
+    // Answering stays on the question; Next is what moves on.
+    expect(container.textContent).toContain("1 of 2");
+    await act(async () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.trim() === "Next")
+        ?.click(),
+    );
 
     expect(container.textContent).toContain("2 of 2");
     expect(container.textContent).toContain(

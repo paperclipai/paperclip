@@ -212,6 +212,8 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
+
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
@@ -228,6 +230,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             source: "local_implicit",
           }
         : { type: "none", source: "none" };
+
+    // Routine ingress authenticates its own bearer/signature. Never interpret
+    // webhook credentials as agent keys or attach an ambient browser session.
+    if (req.method === "POST" && publicRoutineWebhookPath.test(req.path)) {
+      req.actor = { type: "none", source: "none" };
+      next();
+      return;
+    }
 
     const runIdHeader = req.header("x-paperclip-run-id");
 

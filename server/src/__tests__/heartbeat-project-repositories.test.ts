@@ -11,6 +11,7 @@ import { runLocalGit, setExpensiveWorkspaceGitExecutor } from "@paperclipai/adap
 import { WorkspaceGitScanError } from "../services/workspace-git-operation-scheduler.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
@@ -49,7 +50,67 @@ suite("task project repository provisioning", () => {
   afterEach(async () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     setExpensiveWorkspaceGitExecutor(null);
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: false,
+      enableIsolatedWorkspacesByDefault: false,
+    });
   });
+
+  it.each([
+    { scenario: "no configured workspace", configuredWorkspace: false, explicitIsolation: null },
+    { scenario: "configured Git workspace", configuredWorkspace: true, explicitIsolation: null },
+    { scenario: "explicit issue isolation without a workspace", configuredWorkspace: false, explicitIsolation: "issue" },
+    { scenario: "explicit project isolation without a workspace", configuredWorkspace: false, explicitIsolation: "project" },
+  ] as const)("applies default isolation safely with $scenario", async ({ configuredWorkspace, explicitIsolation }) => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+    });
+    await db.insert(companies).values({ id: companyId, name: "Research", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(projects).values({
+      id: projectId, companyId, name: "Research", status: "in_progress",
+      executionWorkspacePolicy: explicitIsolation === "project" ? { enabled: true, defaultMode: "isolated_workspace" } : null,
+    });
+    if (configuredWorkspace) {
+      const source = path.join(root, companyId, "source");
+      await mkdir(source, { recursive: true });
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: source, stdio: "ignore" });
+      git("init", "-b", "main");
+      await writeFile(path.join(source, "README.md"), "Research notes\n");
+      git("add", ".");
+      git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed");
+      await db.insert(projectWorkspaces).values({
+        id: randomUUID(), companyId, projectId, name: "Research repository", sourceType: "local_path", cwd: source, isPrimary: true,
+      });
+    }
+    await db.insert(agents).values({ id: agentId, companyId, name: "Researcher", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(issues).values({
+      id: issueId, companyId, projectId, title: "Write a report", status: "todo", assigneeAgentId: agentId,
+      executionWorkspaceSettings: explicitIsolation === "issue" ? { mode: "isolated_workspace" } : null,
+    });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect({ status: latest?.status, errorCode: latest?.errorCode }).toEqual({
+        status: explicitIsolation ? "failed" : "succeeded",
+        errorCode: explicitIsolation ? "workspace_validation_failed" : null,
+      });
+    }, { timeout: 15_000 });
+    const calls = execute.mock.calls.filter(([input]) => input.runId === run!.id);
+    expect(calls).toHaveLength(explicitIsolation ? 0 : 1);
+    if (!explicitIsolation) {
+      const workspace = calls[0]![0].context.paperclipWorkspace;
+      expect(workspace.mode).toBe(configuredWorkspace ? "isolated_workspace" : "shared_workspace");
+      if (configuredWorkspace) {
+        expect(workspace.strategy).toBe("git_worktree");
+        expect(execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: workspace.cwd, encoding: "utf8" }).trim()).toBe("true");
+      } else {
+        expect(workspace.cwd).toContain(`${projectId}/_default`);
+      }
+    }
+  }, 25_000);
 
   it.each([
     { code: "workspace_git_scan_timeout", scenario: "temporary", retryable: true },

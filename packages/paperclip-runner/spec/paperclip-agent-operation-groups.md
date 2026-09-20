@@ -6,7 +6,7 @@ Status: canonical explanatory contract for the Paperclip runner V1 surface.
 
 This document keeps three independent meanings of **group** separate. PRP families describe wire evidence and controller commands; capability placement decides who owns an operation; behavioral eval groups organize the 106 scenario corpus. None of the three axes can be used as a substitute for another.
 
-The generated totals are **105 PRP events in 31 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **46 reconciled semantic operations** (14 always, 32 optional), and **106 scenarios in 16 behavior groups**.
+The generated totals are **105 PRP events in 31 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **47 reconciled semantic operations** (14 always, 33 optional), and **106 scenarios in 16 behavior groups**.
 
 ## Axis 1: PRP v1 event and command families
 
@@ -87,7 +87,7 @@ Placement has exactly three outcomes:
 
 `answer_status_question`, `block_task`, `finish_task`, `get_task_context`, `get_task_history`, `inspect_operation_result`, `list_document_revisions`, `list_documents`, `read_document`, `register_deliverable`, `report_progress`, `request_human_input`, `request_review`, `write_document`.
 
-### Optional operations (32) and grant groups (13)
+### Optional operations (33) and grant groups (13)
 
 Grant groups are documentation/exposure bundles, not additional authority. The operation descriptor's exact `requiredClaims` remains decisive.
 
@@ -95,7 +95,7 @@ Grant groups are documentation/exposure bundles, not additional authority. The o
 | --- | --- | --- | --- |
 | `discovery` | `search_tasks`<br>`list_agents`<br>`get_agent`<br>`list_projects`<br>`list_goals` | `discovery:agents:read`<br>`discovery:goals:read`<br>`discovery:projects:read`<br>`discovery:tasks:read` | Company-visible task, agent, project, and goal discovery. |
 | `projects` | `create_project`<br>`list_project_repositories` | none | Project creation and authorized repository discovery through the live company/run authority. |
-| `delegation_dependencies` | `create_task`<br>`set_dependencies` | `delegation:tasks:create`<br>`dependencies:write` | Create delegated work and maintain dependency edges. |
+| `delegation_dependencies` | `create_task`<br>`reassign_task`<br>`set_dependencies` | `delegation:tasks:assign`<br>`delegation:tasks:create`<br>`dependencies:write` | Create or reassign delegated work and maintain dependency edges. |
 | `governance` | `list_approvals`<br>`get_approval`<br>`get_approval_context`<br>`request_approval`<br>`decide_approval`<br>`comment_on_approval` | `governance:approvals:comment`<br>`governance:approvals:decide`<br>`governance:approvals:read`<br>`governance:approvals:request` | Read, request, comment on, and decide approvals under governed-action checks. |
 | `cases` | `list_cases`<br>`upsert_case` | `cases:read`<br>`cases:write` | Read and update case summaries without reusing issue-document authority. |
 | `workspace_runtime` | `get_workspace_runtime`<br>`control_workspace_service` | `workspace:control`<br>`workspace:read` | Inspect and control the active issue workspace runtime. |
@@ -147,6 +147,7 @@ Grant groups are documentation/exposure bundles, not additional authority. The o
 | `manage_routine` | `optional_agent_tool` | `routines:write` | `standard`<br>`skill_test` | `admin` | `required` | no | `mock_extension:routines.manage` | `scenario`<br>`scenario_mock` | `unbound`<br>company admin/portability item event plus audit record<br>catalog PRP status: `audit_pending` |
 | `read_document` | `always_agent_tool` | none | `standard`<br>`ask`<br>`planning`<br>`skill_test` | `read` | `none` | no | `snapshot_read:active_task_document` | `scenario` + `live`<br>`live_codex` | `unbound`<br>read projection surfaced via a tool-result item event; no control-plane state diff<br>catalog PRP status: `audit_pending` |
 | `read_secret_value` | `optional_agent_tool` | `secrets:values:read` | `standard`<br>`skill_test` | `secret_read` | `none` | yes | `mock_extension:secrets.value` | `scenario`<br>`scenario_mock` | `unbound`<br>redacted tool-result item event; secret value never reaches the wire<br>catalog PRP status: `audit_pending` |
+| `reassign_task` | `optional_agent_tool` | `delegation:tasks:assign` | `standard` | `company_write` | `required` | no | `semantic_command:reassign_task` | `scenario` + `live`<br>`live_codex` | `PaperclipRunnerToolAuthority.reassign_task`<br>semantic-operation item event plus company-entity state diff and audit record<br>catalog PRP status: `bound` |
 | `register_deliverable` | `always_agent_tool` | none | `standard`<br>`planning`<br>`skill_test` | `task_write` | `required` | no | `semantic_command:register_deliverable` | `scenario` + `live`<br>`live_codex` | `unbound`<br>semantic-operation item event plus active-task state diff, work-assessment, and issue-status-decision events<br>catalog PRP status: `audit_pending` |
 | `report_progress` | `always_agent_tool` | none | `standard`<br>`ask`<br>`planning`<br>`skill_test` | `task_write` | `required` | no | `semantic_command:report_progress` | `scenario` + `live`<br>`live_codex` | `unbound`<br>semantic-operation item event plus active-task state diff, work-assessment, and issue-status-decision events<br>catalog PRP status: `audit_pending` |
 | `request_approval` | `optional_agent_tool` | `governance:approvals:request` | `standard`<br>`skill_test` | `governance` | `required` | no | `semantic_command:request_approval` | `scenario` + `live`<br>`live_codex` | `unbound`<br>approval lifecycle plus governed-wait continuation and audit events<br>catalog PRP status: `audit_pending` |
@@ -173,7 +174,7 @@ Behavior groups describe expected outcomes and trajectories. They do not grant t
 | [`st` — Status](#behavior-group-st-status) | always tools + control-plane arbitration | `answer_status_question`<br>`finish_task`<br>`block_task`<br>`request_review` | `reconcile_run`<br>`append_audit_record` | issue PATCH, review/liveness policy, and native finalization arbitration | `task`<br>`comments`<br>`interactions`<br>`blockers`<br>`audit`<br>`run` | 8 | semantic operation receipt, work assessment, issue-status decision, and terminal causality | Production semantic binding and additive typed operation/conflict receipts remain unimplemented. |
 | [`cm` — Comments](#behavior-group-cm-comments) | always tools | `get_task_history`<br>`report_progress` | `append_audit_record` | issue comment list/get/create routes | `task`<br>`comments`<br>`actor`<br>`idempotency`<br>`audit` | 6 | bounded read result or idempotent comment-write receipt plus audit reference | Active-task binding is unbound; cross-task comment mutation is deliberately outside V1. |
 | [`se` — Search](#behavior-group-se-search) | optional discovery tools | `search_tasks`<br>`list_agents`<br>`get_agent`<br>`list_projects`<br>`list_goals`<br>`list_project_repositories` | none | company issue search and agent/project/goal list/get routes | `company`<br>`task`<br>`actor`<br>`project`<br>`goal` | 4 | bounded redacted read projections through tool-result item events | Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher. |
-| [`su` — Subtasks](#behavior-group-su-subtasks) | optional delegation tools | `create_task` | `route_wake` | company issue create, child issue, assignment, and wake services | `company`<br>`task`<br>`actor`<br>`blockers`<br>`wake`<br>`audit` | 4 | company/task state diff, audit reference, and continuation wake evidence | create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency. |
+| [`su` — Subtasks](#behavior-group-su-subtasks) | optional delegation tools | `create_task`<br>`reassign_task` | `route_wake` | company issue create, child issue, guarded reassignment, and wake services | `company`<br>`task`<br>`actor`<br>`blockers`<br>`wake`<br>`audit` | 4 | company/task state diff, audit reference, and continuation wake evidence | create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency. |
 | [`bl` — Blockers](#behavior-group-bl-blockers) | always/optional tools + control plane | `block_task`<br>`set_dependencies` | `schedule_blocker_wake`<br>`route_wake` | issue relations, blocker projection, liveness validation, and blocker wake services | `task`<br>`blockers`<br>`wake`<br>`actor`<br>`audit`<br>`fault` | 5 | dependency diff, block receipt, attention routing, and issue-status decision | set_dependencies is production-bound for the active issue; block_task remains unbound, and cancelled-blocker receipts still need typed additive evidence. |
 | [`dp` — Documents and plans](#behavior-group-dp-documents-and-plans) | always tools; restore optional; destructive lifecycle control-plane-only | `list_documents`<br>`read_document`<br>`list_document_revisions`<br>`write_document` | `append_audit_record` | issue document list/read/upsert/revision/restore/lock/unlock/delete routes | `task`<br>`documents`<br>`interactions`<br>`idempotency`<br>`audit`<br>`fault` | 3 | bounded reads and revision-safe write/conflict/denial receipts with revision lineage | restore_document_revision is an approved optional-tool gap; lock/unlock/delete are intentionally control-plane-only. |
 | [`ix` — Interactions](#behavior-group-ix-interactions) | always tools + addressed resolver | `request_human_input` | `route_wake` | issue-thread interaction create/respond/accept/reject/withdraw services | `task`<br>`documents`<br>`interactions`<br>`wake`<br>`actor`<br>`idempotency` | 9 | interaction proposal/materialization/response/delivery and attention events | Production binding and semantic resolution receipts are unbound. |
@@ -456,9 +457,9 @@ Current responsibility-based paths are normative. Numbered `phase-*` or mileston
 
 ### Catalog split and deliberate replacement
 
-- Scenario/eval catalog: **38** operations.
-- Live dispatcher catalog: **34** operations.
-- Shared: **26**; union/canonical authority: **46**.
+- Scenario/eval catalog: **39** operations.
+- Live dispatcher catalog: **35** operations.
+- Shared: **27**; union/canonical authority: **47**.
 - Scenario-only: `administer_company`, `export_company`, `inspect_operation_result`, `list_cases`, `list_company_skills`, `list_goals`, `list_routines`, `list_secret_metadata`, `manage_routine`, `read_secret_value`, `sync_company_skills`, `upsert_case`.
 - Live-only: `call_api`, `create_project`, `get_agent`, `get_approval`, `get_approval_context`, `list_project_repositories`, `schedule_wake`, `search_api`.
 - The generated provider contract contains exactly the live catalog; the canonical union remains the migration authority until all scenario-only operations are either implemented, deferred, or removed by an explicit reconciliation decision.

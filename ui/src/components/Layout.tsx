@@ -1,3 +1,5 @@
+import { SetupWizardSidebarOutlet } from "./SetupWizard";
+import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
@@ -19,6 +21,7 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { AnnouncementWell } from "./AnnouncementWell";
+import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
@@ -205,7 +208,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const secondarySidebar = shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
-    <RoutineContextualSidebar routineId={routineId} />
+    <SetupWizardSidebarOutlet><RoutineContextualSidebar routineId={routineId} /></SetupWizardSidebarOutlet>
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "skills" ? (
     <SkillsContextualSidebar />
   ) : sharedSecondarySidebar;
@@ -614,6 +617,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
+    <ChatSetupSidebarProvider>
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
       className={cn(
@@ -785,7 +789,9 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
       <AnnouncementWell health={health} />
+      <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
     </GeneralSettingsProvider>
+    </ChatSetupSidebarProvider>
   );
 }

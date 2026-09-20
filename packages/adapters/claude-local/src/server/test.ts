@@ -32,7 +32,7 @@ import {
   readClaudeCommandVersion,
 } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
@@ -322,6 +322,7 @@ export async function testEnvironment(
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+      Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions, targetIsSandbox }));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;

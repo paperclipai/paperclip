@@ -1559,6 +1559,7 @@ export type {
   RoutineRevisionSnapshot,
   RoutineRevision,
   RoutineTrigger,
+  RoutineWebhookDelivery,
   RoutineRun,
   RoutineTriggerSecretMaterial,
   RoutineDetail,
@@ -2760,6 +2761,7 @@ export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } f
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
 
+export * from "./agent-appearance.js";
 export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";

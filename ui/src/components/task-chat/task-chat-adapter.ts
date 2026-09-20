@@ -120,6 +120,7 @@ export function commentsToTaskChatItems(
       kind: "message",
       author: kind,
       authorName,
+      agent: effectiveAgentId(comment) ? ctx.agentMap?.get(effectiveAgentId(comment)!) ?? { id: effectiveAgentId(comment)! } : undefined,
       text: comment.body,
       sourceChannel: kind === "human" ? comment.metadata?.sourceChannel : undefined,
       timestamp: formatTaskChatCommentTimestamp(comment, kind),

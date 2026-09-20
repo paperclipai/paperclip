@@ -1,3 +1,5 @@
+import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
+import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
   useCallback,
   useEffect,
@@ -634,6 +636,7 @@ export function Layout() {
   }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
+    <ChatSetupSidebarProvider>
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
         className={cn(
@@ -783,7 +786,9 @@ export function Layout() {
           onOpenChange={setShortcutsOpen}
         />
         <ToastViewport />
+        <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
     </GeneralSettingsProvider>
+    </ChatSetupSidebarProvider>
   );
 }
