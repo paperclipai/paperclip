@@ -158,10 +158,11 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     commentIds: string[];
     terminalAt: Date;
+    runStartedAt: Date;
   }): Promise<{
     allSelfAuthored: boolean;
     referencedCommentsComplete: boolean;
-    hasLiveNonSelfCommentAfterTerminalAt: boolean;
+    hasLiveNonSelfCommentAfterRunStartedAt: boolean;
   }>;
   /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
   isCompletedDelegationMention(input: {

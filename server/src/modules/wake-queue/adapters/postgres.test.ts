@@ -176,6 +176,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const agentId = await seedAgent({ companyId });
     const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
     const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ startedAt: new Date("2026-09-01T11:30:00.000Z") }).where(eq(heartbeatRuns.id, runId));
     const terminalAt = new Date("2026-09-01T12:00:00.000Z");
     const [comment] = await db.insert(issueComments).values({
       companyId, issueId, authorUserId: "responsible-user", body: "Old unresolved input",
@@ -203,6 +204,40 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       status: "cancelled", runId: null,
     });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+  });
+
+  it("promotes user direction added after the finishing run started but before it completed", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    const runStartedAt = new Date("2026-09-01T10:00:00.000Z");
+    const terminalAt = new Date("2026-09-01T12:00:00.000Z");
+    await db.update(heartbeatRuns).set({ startedAt: runStartedAt }).where(eq(heartbeatRuns.id, runId));
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorUserId: "responsible-user", body: "New direction while the run is active",
+      createdAt: new Date("2026-09-01T11:00:00.000Z"),
+    }).returning();
+    const wakeId = await seedDeferredWake({
+      companyId, agentId, issueId, requestedByActorId: "responsible-user",
+      payload: {
+        commentId: comment.id,
+        _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] },
+      },
+    });
+    await db.update(issues).set({ status: "done", completedAt: terminalAt, executionRunId: runId }).where(eq(issues.id, issueId));
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    });
+
+    const result = await release({ companyId, runId, now: new Date("2026-09-02T00:00:00.000Z") });
+
+    expect(result.outcome.kind).toBe("promoted");
+    expect(result.postCommitEffects).toContainEqual(expect.objectContaining({ kind: "issue_reopened", reopenedFrom: "done" }));
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({
+      status: "queued",
+    });
   });
 
   it.each([

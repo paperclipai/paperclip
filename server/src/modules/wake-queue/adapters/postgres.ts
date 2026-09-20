@@ -89,6 +89,7 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
     id: row.id,
     companyId: row.companyId,
     agentId: row.agentId,
+    startedAt: row.startedAt,
     status: row.status,
     runtimeMode: row.runtimeMode,
     conversationContinuation: row.runtimeMode === "legacy" && hasConversationContinuationPolicy(row.resultJson),
@@ -369,7 +370,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       };
     },
 
-    async getCommentReopenFacts({ companyId, issueId, finishingRunId, commentIds, terminalAt }) {
+    async getCommentReopenFacts({ companyId, issueId, finishingRunId, commentIds, runStartedAt }) {
       const uniqueCommentIds = [...new Set(commentIds)];
       const rows = await tx
         .select({
@@ -384,8 +385,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return {
         allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId),
         referencedCommentsComplete,
-        hasLiveNonSelfCommentAfterTerminalAt: referencedCommentsComplete && rows.some((row) =>
-          row.createdByRunId !== finishingRunId && row.createdAt > terminalAt
+        hasLiveNonSelfCommentAfterRunStartedAt: referencedCommentsComplete && rows.some((row) =>
+          row.createdByRunId !== finishingRunId && row.createdAt > runStartedAt
         ),
       };
     },

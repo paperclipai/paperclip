@@ -24,6 +24,7 @@ const RUN: RunSnapshot = {
   id: "run-1",
   companyId: "company-1",
   agentId: "finishing-agent",
+  startedAt: new Date("2026-09-01T10:00:00.000Z"),
   status: "failed",
   runtimeMode: "process",
   errorCode: null,
@@ -120,7 +121,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     getCommentReopenFacts: vi.fn(async () => ({
       allSelfAuthored: false,
       referencedCommentsComplete: true,
-      hasLiveNonSelfCommentAfterTerminalAt: true,
+      hasLiveNonSelfCommentAfterRunStartedAt: true,
     })),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
@@ -542,13 +543,14 @@ describe("releaseIssueExecution", () => {
   });
 
   it.each([
-    ["pre-terminal human comment", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: false }, true, false],
-    ["post-terminal human comment", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true }, false, true],
-    ["coalesced old and post-terminal comments", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true }, false, true],
-    ["deleted post-terminal comment", { allSelfAuthored: false, referencedCommentsComplete: false, hasLiveNonSelfCommentAfterTerminalAt: false }, true, false],
-    ["mixed deleted and live post-terminal comments", { allSelfAuthored: false, referencedCommentsComplete: false, hasLiveNonSelfCommentAfterTerminalAt: true }, true, false],
-    ["self-authored post-terminal comment", { allSelfAuthored: true, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: false }, true, false],
-    ["missing terminal timestamp", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true }, true, false],
+    ["pre-run human comment", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterRunStartedAt: false }, true, false],
+    ["active-run pre-terminal human comment", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterRunStartedAt: true }, false, true],
+    ["post-terminal human comment", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterRunStartedAt: true }, false, true],
+    ["coalesced old and post-terminal comments", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterRunStartedAt: true }, false, true],
+    ["deleted post-terminal comment", { allSelfAuthored: false, referencedCommentsComplete: false, hasLiveNonSelfCommentAfterRunStartedAt: false }, true, false],
+    ["mixed deleted and live post-terminal comments", { allSelfAuthored: false, referencedCommentsComplete: false, hasLiveNonSelfCommentAfterRunStartedAt: true }, true, false],
+    ["self-authored post-terminal comment", { allSelfAuthored: true, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterRunStartedAt: false }, true, false],
+    ["missing terminal timestamp", { allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterRunStartedAt: true }, true, false],
   ] as const)("gates terminal reopen chronology: %s", async (scenario, reopenFacts, shouldCancel, shouldReopen) => {
     const commentIds = scenario.startsWith("coalesced") || scenario.startsWith("mixed deleted") ? ["old-comment", "fresh-comment"] : ["comment-1"];
     const queue = [wakeCandidate({
@@ -588,7 +590,7 @@ describe("releaseIssueExecution", () => {
         queuedCommentIds: ["fresh-comment"], deferredCommentIds: ["fresh-comment"],
       })];
       const getCommentReopenFacts = vi.fn(async () => ({
-        allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterTerminalAt: true,
+        allSelfAuthored: false, referencedCommentsComplete: true, hasLiveNonSelfCommentAfterRunStartedAt: true,
       }));
       const transaction = createFakeTransaction({
         findNextDeferredWake: vi.fn(async () => queue.shift() ?? null), getCommentReopenFacts,
@@ -602,6 +604,7 @@ describe("releaseIssueExecution", () => {
       expect((await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() })).outcome.kind).toBe("promoted");
       expect(getCommentReopenFacts).toHaveBeenCalledWith(expect.objectContaining({
         terminalAt: status === "done" ? completedAt : cancelledAt,
+        runStartedAt: RUN.startedAt,
       }));
     }
   });
@@ -626,7 +629,7 @@ describe("releaseIssueExecution", () => {
       getCommentReopenFacts: vi.fn(async () => ({
         allSelfAuthored: scenario === "done_self",
         referencedCommentsComplete: true,
-        hasLiveNonSelfCommentAfterTerminalAt: scenario !== "done_self",
+        hasLiveNonSelfCommentAfterRunStartedAt: scenario !== "done_self",
       })),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });

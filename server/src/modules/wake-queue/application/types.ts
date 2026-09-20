@@ -13,6 +13,7 @@ export type RunSnapshot = {
   id: string;
   companyId: string;
   agentId: string;
+  startedAt: Date | null;
   status: string;
   runtimeMode: string | null;
   errorCode: string | null;

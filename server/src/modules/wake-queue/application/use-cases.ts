@@ -337,18 +337,19 @@ async function promoteDeferredWake(
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
     const terminalAt = currentIssue.status === "done" ? currentIssue.completedAt : currentIssue.cancelledAt;
-    const reopenFacts = terminalAt
+    const reopenFacts = terminalAt && run.startedAt
       ? await ports.transaction.getCommentReopenFacts({
           companyId: run.companyId,
           issueId: currentIssue.id,
           finishingRunId: run.id,
           commentIds: reopenCommentIds,
           terminalAt,
+          runStartedAt: run.startedAt,
         })
       : null;
     shouldReopen = Boolean(
       reopenFacts?.referencedCommentsComplete &&
-      reopenFacts.hasLiveNonSelfCommentAfterTerminalAt &&
+      reopenFacts.hasLiveNonSelfCommentAfterRunStartedAt &&
       !reopenFacts.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
