@@ -1981,6 +1981,31 @@ impl CodexProvider {
         Ok(())
     }
 
+    fn reject_descendant_request(
+        &mut self,
+        rpc_id: Value,
+        method: &str,
+    ) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        // A recognized helper is part of the provider conversation, but has no
+        // Paperclip task binding. Reject its RPC without borrowing root authority
+        // or quarantining the root run. Unknown foreign threads still fail closed.
+        let message = "Paperclip tools are authorized only for the parent task. Return your findings to the parent agent; it must perform Paperclip coordination and ask the user questions.";
+        let response = if method == "item/tool/call" {
+            json!({"id": rpc_id, "result": codex_tool_failure(message)})
+        } else {
+            json!({"id": rpc_id, "error": {"code": -32000, "message": message}})
+        };
+        self.send_frame(&response)?;
+        if self.notification_identity_diagnostics >= 32 {
+            return Ok(None);
+        }
+        self.notification_identity_diagnostics += 1;
+        Ok(Some(CodexProviderEvent::Notification {
+            method: "warning".to_owned(),
+            params: json!({"message": message, "providerMethod": bounded_method(method)}),
+        }))
+    }
+
     fn reject_post_terminal_request(
         &mut self,
         rpc_id: Value,
@@ -2278,6 +2303,13 @@ impl CodexProvider {
             if method == "item/tool/call" {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
                 if params.get("threadId").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+                    if params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| self.descendant_thread_ids.contains(id))
+                    {
+                        return self.reject_descendant_request(rpc_id, method);
+                    }
                     return Ok(Some(self.identity_failure(
                         method,
                         &params,
@@ -2402,6 +2434,13 @@ impl CodexProvider {
                     && params.get("threadId").and_then(Value::as_str)
                         != Some(self.thread_id.as_str())
                 {
+                    if params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| self.descendant_thread_ids.contains(id))
+                    {
+                        return self.reject_descendant_request(rpc_id, method);
+                    }
                     return Ok(Some(self.identity_failure(
                         method,
                         &params,

@@ -655,6 +655,75 @@ fn rejected_codex_goal_activation_restores_turn_reconciliation() {
 }
 
 #[test]
+fn helper_tool_requests_do_not_terminate_or_borrow_root_authority() {
+    for foreign in [false, true] {
+        let directory = temporary_directory("helper-tool-requests");
+        let mut flags = vec!["--helper-tool-requests"];
+        if foreign {
+            flags.push("--foreign-helper-tool");
+        }
+        let config = provider_config(&directory, &flags);
+        let mut provider =
+            CodexProvider::start_with_tools(&config, [task_context_tool()], None).unwrap();
+        provider
+            .start_turn("Hire a persistent teammate.", &config.cwd)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut completed = false;
+        let mut root_tool_delivered = false;
+        while std::time::Instant::now() < deadline {
+            match provider.poll().unwrap() {
+                Some(CodexProviderEvent::ProtocolFailure { diagnostic }) => {
+                    assert!(foreign, "recognized helper crashed the root: {diagnostic}");
+                    assert_eq!(diagnostic["code"], "thread_binding_mismatch");
+                    completed = true;
+                    break;
+                }
+                Some(CodexProviderEvent::RuntimeRequest { .. }) => {
+                    panic!("helper borrowed root question authority")
+                }
+                Some(CodexProviderEvent::ToolCall {
+                    call_id,
+                    operation_id,
+                    ..
+                }) => {
+                    assert!(!foreign);
+                    assert_eq!(
+                        call_id, "root-after-helper",
+                        "helper borrowed root tool authority"
+                    );
+                    provider
+                        .deliver_tool_result(&ToolResult {
+                            call_id,
+                            operation_id,
+                            result: json!({"ok":true,"task":{"id":"task-1"}}),
+                            is_error: false,
+                        })
+                        .unwrap();
+                    root_tool_delivered = true;
+                }
+                Some(CodexProviderEvent::Notification { method, .. })
+                    if method == "turn/completed" =>
+                {
+                    assert!(!foreign);
+                    assert!(root_tool_delivered);
+                    completed = true;
+                    break;
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
+        assert!(completed, "helper requests did not settle");
+        assert_eq!(
+            call_count(&directory, "helper-request:rejected"),
+            if foreign { 0 } else { 3 }
+        );
+        provider.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn codex_dynamic_tool_round_trips_through_the_provider_boundary() {
     let directory = temporary_directory("dynamic-tool");
     let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
