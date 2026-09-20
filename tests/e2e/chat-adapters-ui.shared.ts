@@ -549,7 +549,7 @@ export async function installChatControlPlaneMock(
         await fulfill(route, endpoint);
         return;
       }
-      expect(["configure", "verify"]).toContain(action);
+      expect(["configure", "verify", "reconnect"]).toContain(action);
       if (body.action === "configure") {
         state.setupAttempts += 1;
         if (body.credentials) state.configuredCredentialKeys = Object.keys(body.credentials as Record<string, string>).sort();
@@ -585,7 +585,7 @@ export async function installChatControlPlaneMock(
           );
           return;
         }
-      } else {
+      } else if (action !== "reconnect") {
         expect(provider.provider).toBe("slack");
       }
       if (provider.provider === "imessage-photon") {

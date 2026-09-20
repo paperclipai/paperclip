@@ -72,6 +72,30 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   await expect(page.getByRole("heading", { name: "Conversations", exact: true })).toBeVisible();
   await nav.getByRole("link", { name: "Activity", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Connection activity", exact: true })).toBeVisible();
+  await page.getByText("Connection health and controls", { exact: true }).click();
+  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await page.getByRole("button", { name: "Resume", exact: true }).click();
+  expect(mock.lifecycleActions).toEqual(["pause", "resume"]);
+  await page.getByRole("button", { name: "Replay failed delivery", exact: true }).click();
+  await expect.poll(() => mock.replayedDelivery).toBe(true);
+  mock.setStatus("attention");
+  await page.reload();
+  await page.getByText("Connection health and controls", { exact: true }).click();
+  await page.getByRole("button", { name: "Reconnect", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Connect GitHub App", exact: true })).toBeVisible();
+  await expect(page.getByText(/Leave the credentials blank to keep them/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Choose an agent", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Private key", { exact: true })).toHaveValue("");
+  await page.getByRole("button", { name: "Reconnect App", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Verify connection & tools", exact: true })).toBeVisible();
+  await expect.poll(() => mock.createdWithAgentId).toBe(seed.agentId);
+  mock.setStatus("active");
+  await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/activity`);
+  await page.getByText("Connection health and controls", { exact: true }).click();
+  await page.getByRole("button", { name: "Remove connection", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Remove connection", exact: true }).click();
+  await expect.poll(() => mock.removed).toBe(true);
+  await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`));
 }
 
 /**
