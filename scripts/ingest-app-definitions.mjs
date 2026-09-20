@@ -190,7 +190,7 @@ const apps = [
   ["typesafe", "TypeSafe", "Ask the Jev model yes/no, multiple-choice and scoring questions and get calibrated answers.", "ai", "typesafe.ai", ["https://docs.typesafe.ai/*"], {
     key: "api-key", label: "Connect with an API key", transport: "rest_api", auth: "api_key", ownershipModes: ["customer"],
     whenToUse: "Use a TypeSafe API key so agents can ask Jev typed questions.",
-    credentialFields: [{ key: "apiKey", label: "TypeSafe API key", type: "password", placeholder: "Paste your TypeSafe API key", required: true, secret: true }],
+    credentialFields: [{ key: "apiKey", label: "TypeSafe API key", type: "password", placeholder: "Paste your TypeSafe API key", required: true, secret: true, helperMd: "Content an agent submits for evaluation is sent to TypeSafe. Grant access only to agents whose task content may leave this instance." }],
     keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
     extensionFields: [{ key: "model", label: "Model", type: "text", placeholder: "jev-latest", defaultValue: "jev-latest", advanced: true }],
     guidanceMd: "Create an API key in your TypeSafe account and paste it here. Agents you select can then ask Jev questions about text or data from their tasks.",

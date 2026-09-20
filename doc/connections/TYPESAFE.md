@@ -101,8 +101,9 @@ decides whether to retry.
 
 ## Data handling
 
-- The `state` and the questions are sent to TypeSafe. The setup screen warns
-  the operator about this.
+- The `state` and the questions are sent to TypeSafe. The key step of setup
+  tells the operator this, under the key field. The text comes from the
+  field's `helperMd`, because provider copy stays out of the shared access step.
 - The API key stays in the vault. It is never placed in connection config, the
   skill, tool results, errors or logs. Provider error bodies are discarded
   because they can echo the submitted state.
@@ -139,8 +140,10 @@ external. No key, state or answer text is recorded here.
 | Activity rows | Model, question count and token usage only. The pinned model shows as redacted, as described above. |
 | Remove the install, then ask | 403. |
 
-Not covered by this run: the setup screens in the browser, and the 429 and 529
-paths, which the provider did not produce.
+Not covered by this run: the setup screens against the real provider in a
+browser, and the 429 and 529 paths, which the provider did not produce. The
+setup screens are covered by `AppsConnect.test.tsx` and by the interactive
+stories in `ui/storybook/stories/typesafe-connect-flow.stories.tsx`.
 
 One difference from the provider documentation: the API accepts a `score` with
 one level. Paperclip keeps the documented minimum of two.

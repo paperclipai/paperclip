@@ -51,6 +51,7 @@ const GITHUB_MANAGED = {
   },
 };
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
+const TYPESAFE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "typesafe")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
@@ -750,6 +751,25 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(buttonByText("Save and continue")?.disabled).toBe(true);
+  });
+
+  it("tells the operator on the key step that TypeSafe receives submitted content", async () => {
+    mockParams.appKey = "typesafe";
+    listGalleryMock.mockResolvedValue({ apps: [TYPESAFE] });
+    await render();
+
+    // Provider copy stays out of the shared access step.
+    expect(container.textContent).not.toContain("is sent to TypeSafe");
+
+    await act(async () => {
+      buttonByText("Save and continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Your TypeSafe key");
+    expect(container.textContent).toContain(
+      "Content an agent submits for evaluation is sent to TypeSafe.",
+    );
   });
 
   it("keeps the access selections when the wizard moves backward", async () => {

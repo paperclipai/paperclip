@@ -30,7 +30,8 @@
           "type": "password",
           "placeholder": "Paste your TypeSafe API key",
           "required": true,
-          "secret": true
+          "secret": true,
+          "helperMd": "Content an agent submits for evaluation is sent to TypeSafe. Grant access only to agents whose task content may leave this instance."
         }
       ],
       "keyPlacement": {
