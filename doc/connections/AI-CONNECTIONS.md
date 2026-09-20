@@ -142,9 +142,14 @@ Already-started native sessions retain their existing same-run recovery path;
 they must not be replaced by a fresh execution with a pre-provider receipt.
 
 Session reuse includes grant identity, responsible user, and credential
-generation. A changed identity starts a fresh provider session. Managed native
-executions use per-turn lifecycle cleanup; a suspended native execution whose
-credential identity changed must restart as a new execution.
+generation. A changed identity starts a fresh provider session. Native Codex
+(`paperclip_runner`) honors the configured warm lifecycle. It copies refreshed
+credentials back to the current invocation before deleting that invocation's
+private home. The session-owned credential stays private until idle timeout or
+explicit closure. Each follow-up rechecks current authorization and account
+identity before reusing the session; changing identity retires the previous owner.
+Other managed harnesses retain per-turn cleanup. A suspended native execution
+whose credential identity changed must restart as a new execution.
 
 Revocation blocks new invocations and refresh persistence. A running provider
 process may already hold credentials. The revoke confirmation lists attributed

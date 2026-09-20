@@ -6388,7 +6388,7 @@ describe("native warm session supervision", () => {
     });
   });
 
-  it("replaces an idle warm provider session when its pinned permission mode changes", async () => {
+  it.each(["permission", "managed credential"])("replaces an idle warm provider session when its %s changes", async (change) => {
     const firstClose = vi.fn(async () => undefined);
     const secondClose = vi.fn(async () => undefined);
     const firstSession = { close: firstClose };
@@ -6418,7 +6418,7 @@ describe("native warm session supervision", () => {
     } as unknown as NativeExecutionInputV1;
     const lowered = {
       ...base,
-      provider: { kind: "codex", model: null, approvalPolicy: "on-request" },
+      provider: change === "permission" ? { kind: "codex", model: null, approvalPolicy: "on-request" } : base.provider,
       binding: { ...base.binding, runId: "run-permission-on-request" },
     } as NativeExecutionInputV1;
     const result = {
@@ -6453,11 +6453,13 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({
         db: leaseDb(base),
         execution: base,
+        managedAiCredentialIdentity: "first-identity",
         runnerInstanceId: "runner",
       });
       await executePaperclipNativeSession({
         db: leaseDb(lowered),
         execution: lowered,
+        managedAiCredentialIdentity: change === "managed credential" ? "second-identity" : "first-identity",
         runnerInstanceId: "runner",
       });
       expect(firstClose).toHaveBeenCalledWith({

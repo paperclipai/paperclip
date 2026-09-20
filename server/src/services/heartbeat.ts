@@ -23156,7 +23156,14 @@ export function heartbeatService(
             executionTarget.transport === "sandbox"
               ? (executionTarget.runnerLifecyclePolicy ?? null)
               : null;
-          const effectiveLifecyclePolicy = managedAiRuntime ? { mode: "per_turn" as const, idleTimeoutMs: null } : environmentLifecyclePolicy ?? agentLifecyclePolicy;
+          // Native Codex owns a durable, session-scoped home. It flushes refreshed
+          // auth into each invocation's private home before that home is removed.
+          // Other managed harnesses still require per-turn credential cleanup.
+          const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
+            nativeRuntimeResolution.profile.backend === "codex_app_server";
+          const effectiveLifecyclePolicy = managedAiRuntime && !supportsManagedWarmSession
+            ? { mode: "per_turn" as const, idleTimeoutMs: null }
+            : environmentLifecyclePolicy ?? agentLifecyclePolicy;
           if (
             effectiveLifecyclePolicy.mode === "warm" &&
             executionTarget?.kind === "remote" &&
@@ -24074,6 +24081,7 @@ export function heartbeatService(
                       // Bootstrap with executable/home discovery while keeping
                       // configured provider values and the server-selected
                       // workspace boundary authoritative.
+                      managedAiCredentialIdentity: managedAiRuntime?.identity,
                       managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
                       runnerEnvironment: {
                         ...buildNativeProviderEnvironment(
