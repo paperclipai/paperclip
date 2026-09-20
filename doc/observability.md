@@ -382,7 +382,9 @@ An explicit `SENTRY_RELEASE` overrides that default. If neither is available,
 the server leaves the release unset.
 
 The browser also sets `release`, using the full `PAPERCLIP_BUILD_COMMIT`
-supplied when its bundle is built. Docker passes the same commit to both
+supplied when its bundle is built, or the checkout commit for source and npm
+builds. The server reads its packaged build stamp when no deployment marker
+is present. Docker passes the same commit to both
 application builds. A cached browser bundle keeps its own release after a
 server deployment, so its errors are attributed to the code actually loaded.
 Browser builds without a valid full commit leave the release unset. The

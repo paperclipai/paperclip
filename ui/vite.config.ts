@@ -5,14 +5,14 @@ import tailwindcss from "@tailwindcss/vite";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
 import { createApiProxy } from "./src/lib/vite-api-proxy";
 import { serviceWorkerBuildIdPlugin } from "./src/lib/vite-sw-build-id";
-import { resolveBrowserBuildCommit } from "./src/lib/vite-build-commit";
+import { readBrowserBuildCommit } from "./src/lib/vite-build-commit";
 
 const apiProxy = createApiProxy();
 
 export default defineConfig(({ mode }) => ({
   define: {
     __PAPERCLIP_BUILD_COMMIT__: JSON.stringify(
-      resolveBrowserBuildCommit(process.env.PAPERCLIP_BUILD_COMMIT),
+      readBrowserBuildCommit(__dirname),
     ),
   },
   plugins: [react(), tailwindcss(), serviceWorkerBuildIdPlugin()],

@@ -1,9 +1,26 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveBrowserBuildCommit } from "./vite-build-commit";
 
 describe("browser build attribution", () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+
+  it("uses the checkout commit for source and npm builds", () => {
+    expect(resolveBrowserBuildCommit(undefined, () => commit)).toBe(commit);
+  });
+
+  it("uses a supplied commit without requiring git in Docker", () => {
+    const readGitCommit = vi.fn(() => "ffffffffffffffffffffffffffffffffffffffff");
+    expect(resolveBrowserBuildCommit(commit, readGitCommit)).toBe(commit);
+    expect(readGitCommit).not.toHaveBeenCalled();
+  });
+
+  it("leaves builds without git or a supplied commit unattributed", () => {
+    expect(resolveBrowserBuildCommit(undefined, () => { throw new Error("no git"); })).toBeNull();
+    expect(resolveBrowserBuildCommit(undefined, () => "not-a-commit")).toBeNull();
+  });
+
   it("accepts and normalizes the full source commit supplied by image CI", () => {
     expect(resolveBrowserBuildCommit(" 0123456789ABCDEF0123456789ABCDEF01234567\n"))
       .toBe("0123456789abcdef0123456789abcdef01234567");
