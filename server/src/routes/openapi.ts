@@ -15,6 +15,7 @@ import {
   emailSendSchema,
   slackToolCallSchema,
   slackSearchConfigSchema,
+  typesafeAskSchema,
   // Agent
   AGENT_PALETTE_IDS,
   AGENT_AVATAR_SIZES,
@@ -2129,6 +2130,25 @@ registry.registerPath({ method: "get", path: "/api/slack/search/callback", tags:
   description: "Requires the same signed-in user, single-use state, linked Slack identity and workspace; redirects to connector Access. Never accepts model-supplied identity.",
   request: { query: z.object({ state: z.string(), code: z.string() }) },
   responses: { 302: { description: "Redirect to connector Access" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/typesafe/ask",
+  tags: ["TypeSafe"],
+  summary: "Ask TypeSafe typed questions about a state",
+  description:
+    "Agent only. The agent needs an active TypeSafe connection installed for the company or for that agent. The state and questions are sent to TypeSafe. Paperclip does not retry 429 or 503.",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(typesafeAskSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    422: r.unprocessable,
+  },
 });
 
 // ─── Chat Channels ─────────────────────────────────────────────────────────
