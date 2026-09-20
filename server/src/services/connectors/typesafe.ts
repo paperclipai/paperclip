@@ -67,8 +67,6 @@ type AskBinding = AgentBinding & {
 };
 
 const API_KEY_PATH = "credentials.apiKey";
-// 529 is not a registered status; 503 carries the same meaning to HTTP clients.
-const PROVIDER_STATUS: Record<number, number> = { 422: 422, 429: 429, 529: 503 };
 
 export async function assignedTypesafeConnections(
   db: Db,
@@ -173,7 +171,7 @@ export async function executeTypesafeAsk(
     });
   } catch (error) {
     if (!(error instanceof TypesafeApiError)) throw error;
-    throw new HttpError(PROVIDER_STATUS[error.status] ?? 502, error.message, {
+    throw new HttpError(error.httpStatus, error.message, {
       code: error.code,
       retryable: error.retryable,
     });

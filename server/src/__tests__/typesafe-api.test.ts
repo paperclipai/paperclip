@@ -48,16 +48,17 @@ describe("typesafeApi", () => {
   });
 
   it.each([
-    [401, "typesafe_unauthorized", false],
-    [422, "typesafe_invalid_request", false],
-    [429, "typesafe_rate_limited", true],
-    [529, "typesafe_overloaded", true],
-    [500, "typesafe_request_failed", false],
-  ])("maps %i to %s without leaking the key or body", async (status, code, retryable) => {
+    [401, "typesafe_api_key_rejected", 502, false],
+    [403, "typesafe_api_key_rejected", 502, false],
+    [422, "typesafe_invalid_request", 422, false],
+    [429, "typesafe_rate_limited", 429, true],
+    [529, "typesafe_overloaded", 503, true],
+    [500, "typesafe_request_failed", 502, false],
+  ])("maps %i to %s without leaking the key or body", async (status, code, httpStatus, retryable) => {
     const { fetch } = fetcherFor(() => json({ detail: `bad ${KEY} private-state` }, status));
     const error = await typesafeApi(KEY, fetch).listModels().catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(TypesafeApiError);
-    expect(error).toMatchObject({ status, code, retryable });
+    expect(error).toMatchObject({ status, code, httpStatus, retryable });
     const rendered = `${(error as Error).message} ${JSON.stringify(error)}`;
     expect(rendered).not.toContain(KEY);
     expect(rendered).not.toContain("private-state");
@@ -69,10 +70,16 @@ describe("typesafeApi", () => {
     expect(mock).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects a malformed provider body", async () => {
-    const { fetch } = fetcherFor(() => json({ model: "jev-1.13.0", answers: { q: { type: "essay" } }, usage: {} }));
-    await expect(
-      typesafeApi(KEY, fetch).evaluate({ state: "s", model: "jev-latest", questions: {} }),
-    ).rejects.toThrow();
+  it.each([
+    ["an unknown answer shape", () => json({ model: "jev-1.13.0", answers: { q: { type: "essay", text: "private-state" } }, usage: {} })],
+    ["a body that is not JSON", () => new Response("<html>private-state</html>", { status: 200 })],
+  ])("reports %s as an invalid provider response", async (_name, respond) => {
+    const { fetch } = fetcherFor(respond);
+    const error = await typesafeApi(KEY, fetch)
+      .evaluate({ state: "s", model: "jev-latest", questions: {} })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TypesafeApiError);
+    expect(error).toMatchObject({ code: "typesafe_invalid_response", httpStatus: 502, retryable: false });
+    expect(`${(error as Error).message} ${JSON.stringify(error)}`).not.toContain("private-state");
   });
 });
