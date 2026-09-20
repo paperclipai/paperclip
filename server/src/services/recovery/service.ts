@@ -42,6 +42,7 @@ import {
   issueAttachments,
   issueComments,
   issueApprovals,
+  issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
@@ -2836,6 +2837,40 @@ export function recoveryService(
       );
   }
 
+  async function activeAcceptedPlanChildIds(
+    issue: typeof issues.$inferSelect,
+    children: Array<{ id: string }>,
+  ) {
+    if (children.length === 0) return new Set<string>();
+    const decompositions = await db
+      .select({ childIssueIds: issuePlanDecompositions.childIssueIds })
+      .from(issuePlanDecompositions)
+      .where(
+        and(
+          eq(issuePlanDecompositions.companyId, issue.companyId),
+          eq(issuePlanDecompositions.sourceIssueId, issue.id),
+          eq(issuePlanDecompositions.status, "completed"),
+        ),
+      );
+    const childIds = new Set(
+      decompositions.flatMap((row) =>
+        Array.isArray(row.childIssueIds) ? row.childIssueIds : [],
+      ),
+    );
+    const activeChildIds = await Promise.all(
+      children
+        .filter((child) => childIds.has(child.id))
+        .map(async (child) =>
+          (await hasActiveExecutionPath(issue.companyId, child.id))
+            ? child.id
+            : null,
+        ),
+    );
+    return new Set(
+      activeChildIds.filter((childId): childId is string => childId !== null),
+    );
+  }
+
   async function healthyOpenChildIssues(issue: typeof issues.$inferSelect, sameWorkspaceOnly = false) {
     if (sameWorkspaceOnly && !issue.projectWorkspaceId) return [];
     const childCandidates = await db
@@ -2868,10 +2903,20 @@ export function recoveryService(
   async function resolveContinuationWaitingOnReview(
     issue: typeof issues.$inferSelect,
   ) {
-    const [existingBlockers, openChildren] = await Promise.all([
+    const [allExistingBlockers, allOpenChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
       openChildIssues(issue),
     ]);
+    const activeDeliveryChildIds = await activeAcceptedPlanChildIds(
+      issue,
+      allOpenChildren,
+    );
+    const existingBlockers = allExistingBlockers.filter(
+      (row) => !activeDeliveryChildIds.has(row.id),
+    );
+    const openChildren = allOpenChildren.filter(
+      (row) => !activeDeliveryChildIds.has(row.id),
+    );
     const blockedByIssueIds = [
       ...new Set([
         ...existingBlockers.map((row) => row.id),
