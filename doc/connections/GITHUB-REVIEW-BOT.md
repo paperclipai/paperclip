@@ -88,6 +88,9 @@ old runs cannot publish over the latest head. One current summary is updated in
 place, with history and task/run links retained. Stable finding keys prevent
 duplicate inline comments on repeated reviews.
 
+The check's **Details** link opens its Paperclip task on the current instance
+hostname, or the connector's Reviews page when no task has been created yet.
+
 Formal **APPROVE** and **REQUEST_CHANGES** are separate governed tools, each off
 by default. Enabling either does not automatically perform it. A score of 5/5
 alone never approves a PR.

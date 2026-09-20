@@ -11,10 +11,12 @@ import {
   chatGitHubConfigurations,
   chatGitHubReviews,
   chatMessageLinks,
+  companies,
   heartbeatRuns,
   type Db,
 } from "@paperclipai/db";
 import type { GitHubReviewEventContext } from "@paperclipai/shared";
+import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import {
   githubBotRepositoryToken,
   githubBotRequest,
@@ -94,8 +96,10 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
               endpoint: chatEndpoints,
               resource: chatEndpointResources,
               configuration: chatGitHubConfigurations.configuration,
+              companyPrefix: companies.issuePrefix,
             })
             .from(chatEndpoints)
+            .innerJoin(companies, eq(companies.id, chatEndpoints.companyId))
             .innerJoin(
               chatGitHubConfigurations,
               eq(chatGitHubConfigurations.endpointId, chatEndpoints.id),
@@ -293,6 +297,13 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
             return;
           }
           if (fresh.result?.state !== state) {
+            const origin = runtimePublicOrigin();
+            const detailsPath = review
+              ? `issues/${review.issueId}`
+              : `apps/chat/${source.endpoint.id}/reviews`;
+            const detailsUrl = origin
+              ? `${origin}/${encodeURIComponent(source.companyPrefix)}/${detailsPath}`
+              : null;
             const externalId = `${action.endpointId}:${event.pullNumber}:${event.headSha}`;
             const checks = await request<{
               check_runs: Array<{
@@ -323,6 +334,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
                   name: "Paperclip Review",
                   head_sha: event.headSha,
                   external_id: externalId,
+                  ...(detailsUrl ? { details_url: detailsUrl } : {}),
                   status,
                   ...(status === "completed"
                     ? { conclusion: "action_required" }

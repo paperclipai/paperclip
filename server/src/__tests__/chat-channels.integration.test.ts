@@ -42,7 +42,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -2559,8 +2559,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, late.id)))[0].state).toBe("superseded");
       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, unrelated.id)))[0].state).toBe("queued");
     });
-    it("uses task-bound bot tools and deterministic checks, then denies revoked people", async () => {
+    it("links a gated GitHub check to the current vanity review page before a task exists", async () => {
+      const publicOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimePublicOrigin").mockReturnValue("https://current-vanity.example");
+      onTestFinished(() => publicOrigin.mockRestore());
       const f = await reviewBotFixture();
+      const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+      const head = "b".repeat(40);
+      const event = githubAutomaticReviewEvent({
+        action: "opened", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 83, title: "Manual review required", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: head },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      }, randomUUID())!;
+      const writes: Record<string, unknown>[] = [];
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/pulls/83")) return Response.json({ head: { sha: head } });
+        if (url.includes("/check-runs?")) return Response.json({ check_runs: [] });
+        if (url.endsWith("/check-runs") && init?.method === "POST") {
+          writes.push(JSON.parse(String(init.body)));
+          return Response.json({ id: 83, html_url: "https://github.com/checks/83" });
+        }
+        return undefined;
+      });
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [activeEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
+      await checks.enqueue(activeEndpoint, event, false, "manual_required");
+      await checks.processPending();
+      expect(writes).toEqual([expect.objectContaining({
+        status: "completed", conclusion: "action_required", head_sha: head,
+        details_url: `https://current-vanity.example/${company.issuePrefix}/apps/chat/${f.endpoint.id}/reviews`,
+      })]);
+      expect(await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.endpointId, f.endpoint.id))).toHaveLength(0);
+    });
+    it("uses task-bound bot tools and deterministic checks, then denies revoked people", async () => {
+      const publicOrigin = vi.spyOn(cloudRuntimeIdentity, "runtimePublicOrigin").mockReturnValue("https://current-vanity.example");
+      onTestFinished(() => publicOrigin.mockRestore());
+      const f = await reviewBotFixture();
+      const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
       const thread = makeThread({
         channelId: "paperclipai/paperclip",
         id: "github:paperclipai/paperclip:91",
@@ -2712,7 +2752,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await githubReviewCheckService(db, f.providerFetch).processPending();
       expect(mutations.at(-1)).toMatchObject({
         url: "https://api.github.com/repos/paperclipai/paperclip/check-runs",
-        body: { status: "in_progress", external_id: `${f.endpoint.id}:91:${head}` },
+        body: {
+          status: "in_progress", external_id: `${f.endpoint.id}:91:${head}`,
+          details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
+        },
       });
       expect(mutations.at(-1)?.body).not.toHaveProperty("conclusion");
       const assessment = {
@@ -2761,6 +2804,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         name: "Paperclip Review",
         head_sha: head,
         conclusion: "failure",
+        details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
       });
       const publishedCount = mutations.length;
       const retried = await service.execute(
@@ -2829,6 +2873,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         mutations.find((m) => m.body.event === "APPROVE")?.body.commit_id,
       ).toBe(head);
       head = "c".repeat(40);
+      publicOrigin.mockReturnValue("https://renamed-vanity.example");
       const updated = await service.execute(session, "read_pull_request", {
         section: "metadata",
       });
@@ -2865,7 +2910,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       expect(
         mutations.filter((m) => m.url.endsWith("/check-runs")).at(-1)?.body,
-      ).toMatchObject({ head_sha: head, conclusion: "success" });
+      ).toMatchObject({
+        head_sha: head, conclusion: "success",
+        details_url: `https://renamed-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
+      });
       expect(comments.size).toBe(1);
       expect([...comments.values()][0]?.body).toContain("Addition is correct");
       expect(mutations.some((m) => m.url.includes("/issues/comments/"))).toBe(
