@@ -111,6 +111,12 @@ vi.mock("../services/instance-settings.js", async (importOriginal) => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+// This suite's db is a select-only stub; no agent here has a TypeSafe connection.
+vi.mock("../services/connectors/typesafe.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/connectors/typesafe.js")>()),
+  assignedTypesafeConnections: vi.fn(async () => []),
+}));
+
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
