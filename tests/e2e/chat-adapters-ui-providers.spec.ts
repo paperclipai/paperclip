@@ -86,11 +86,20 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
   await expect(page.getByText(/Leave the credentials blank to keep them/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Choose an agent", exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Private key", { exact: true })).toHaveValue("");
+  const reconnectResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/chat-endpoints/endpoint-github/setup") &&
+    response.request().method() === "POST" &&
+    response.request().postDataJSON().action === "reconnect",
+  );
   await page.getByRole("button", { name: "Reconnect App", exact: true }).click();
+  const reconnected = await reconnectResponse;
+  expect(reconnected.request().postDataJSON()).toEqual({ action: "reconnect" });
+  expect(await reconnected.json()).toMatchObject({ assignedAgentId: seed.agentId, assignedAgentName: "Maya" });
   await expect(page.getByRole("heading", { name: "Verify connection & tools", exact: true })).toBeVisible();
-  await expect.poll(() => mock.createdWithAgentId).toBe(seed.agentId);
   mock.setStatus("active");
-  await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/activity`);
+  await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/settings`);
+  await expect(page.getByText(/Maya is permanently assigned to this bot/)).toBeVisible();
+  await nav.getByRole("link", { name: "Activity", exact: true }).click();
   await page.getByText("Connection health and controls", { exact: true }).click();
   await page.getByRole("button", { name: "Remove connection", exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove connection", exact: true }).click();
