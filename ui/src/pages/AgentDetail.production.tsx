@@ -63,6 +63,7 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
+import { tryCreateWebSocket } from "../lib/websocket";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
@@ -4037,7 +4038,11 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(run.companyId)}/events/ws`,
       );
-      socket = new WebSocket(url);
+      socket = tryCreateWebSocket(url);
+      if (!socket) {
+        scheduleReconnect();
+        return;
+      }
 
       socket.onopen = () => {
         setIsStreamingConnected(true);

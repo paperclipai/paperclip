@@ -159,6 +159,12 @@ PostgreSQL backends and checks rejection, pool recovery, and transaction isolati
 Remove the patch when an upstream release passes these tests. Installs of the
 unmodified `postgres` package outside this workspace do not include the patch.
 
+Trusted-header actor synchronization retries transient connection failures,
+including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
+idempotent actor synchronization operations, not arbitrary transactions. A
+persistent outage still fails the request after the bounded retries; each
+connection attempt remains subject to the configured database connect timeout.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:

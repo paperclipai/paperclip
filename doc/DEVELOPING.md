@@ -1575,3 +1575,12 @@ from stored configuration problems. Verify connection transport and endpoint
 fields before disabling a connection. Verify workspace ownership, active runs,
 Git state, and runtime-service readiness before closing a workspace. A missing
 URL or old workspace timestamp alone does not prove that a row is disposable.
+
+### Browser realtime connection recovery
+
+If a browser cannot construct a WebSocket, the live-update and run transcript
+clients use their disconnected retry paths. While the company event stream is
+disconnected, visible active queries refresh every 15 seconds. This fallback
+stops when the socket opens, the tab is hidden, or the provider unmounts. A
+reconnected socket also refreshes visible queries to recover missed events.
+Run log views retain their existing HTTP polling fallback.

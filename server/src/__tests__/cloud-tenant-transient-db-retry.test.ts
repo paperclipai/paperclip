@@ -6,16 +6,17 @@ import {
 } from "../middleware/auth.ts";
 
 /** The shape drizzle produces: a wrapper whose `cause` is the driver error. */
-function driverClosedError(code: string): Error {
+function driverConnectionError(code: string): Error {
   const driver = Object.assign(new Error(`write ${code} db.example.internal:5432`), { code });
   return new Error("Failed query: insert into \"companies\" (…)", { cause: driver });
 }
 
 describe("isTransientDbConnectionError", () => {
-  it("detects a closed-connection code anywhere on the cause chain", () => {
-    expect(isTransientDbConnectionError(driverClosedError("CONNECTION_CLOSED"))).toBe(true);
-    expect(isTransientDbConnectionError(driverClosedError("CONNECTION_ENDED"))).toBe(true);
-    expect(isTransientDbConnectionError(driverClosedError("CONNECTION_DESTROYED"))).toBe(true);
+  it("detects a transient connection code anywhere on the cause chain", () => {
+    expect(isTransientDbConnectionError(driverConnectionError("CONNECT_TIMEOUT"))).toBe(true);
+    expect(isTransientDbConnectionError(driverConnectionError("CONNECTION_CLOSED"))).toBe(true);
+    expect(isTransientDbConnectionError(driverConnectionError("CONNECTION_ENDED"))).toBe(true);
+    expect(isTransientDbConnectionError(driverConnectionError("CONNECTION_DESTROYED"))).toBe(true);
     const bare = Object.assign(new Error("write CONNECTION_CLOSED host:5432"), {
       code: "CONNECTION_CLOSED",
     });
@@ -26,6 +27,7 @@ describe("isTransientDbConnectionError", () => {
     expect(isTransientDbConnectionError(new Error("boom"))).toBe(false);
     const unique = Object.assign(new Error("duplicate key"), { code: "23505" });
     expect(isTransientDbConnectionError(unique)).toBe(false);
+    expect(isTransientDbConnectionError(driverConnectionError("28P01"))).toBe(false);
     expect(isTransientDbConnectionError(new Error("outer", { cause: unique }))).toBe(false);
     expect(isTransientDbConnectionError("CONNECTION_CLOSED")).toBe(false);
     expect(isTransientDbConnectionError(undefined)).toBe(false);
@@ -33,11 +35,11 @@ describe("isTransientDbConnectionError", () => {
 });
 
 describe("retryOnTransientDbConnectionError", () => {
-  it("retries after a transient closed connection", async () => {
+  it.each(["CONNECT_TIMEOUT", "CONNECTION_CLOSED"])("retries after %s", async (code) => {
     let calls = 0;
     const result = await retryOnTransientDbConnectionError(async () => {
       calls += 1;
-      if (calls === 1) throw driverClosedError("CONNECTION_CLOSED");
+      if (calls === 1) throw driverConnectionError(code);
       return "ok";
     });
     expect(result).toBe("ok");
@@ -50,7 +52,7 @@ describe("retryOnTransientDbConnectionError", () => {
     let calls = 0;
     const result = await retryOnTransientDbConnectionError(async () => {
       calls += 1;
-      if (calls <= 2) throw driverClosedError("CONNECTION_CLOSED");
+      if (calls <= 2) throw driverConnectionError("CONNECTION_CLOSED");
       return "ok";
     });
     expect(result).toBe("ok");
@@ -68,12 +70,12 @@ describe("retryOnTransientDbConnectionError", () => {
     expect(calls).toBe(1);
   });
 
-  it("propagates the failure once the replay budget is spent", async () => {
+  it.each(["CONNECT_TIMEOUT", "CONNECTION_CLOSED"])("propagates %s once the replay budget is spent", async (code) => {
     let calls = 0;
     await expect(
       retryOnTransientDbConnectionError(async () => {
         calls += 1;
-        throw driverClosedError("CONNECTION_CLOSED");
+        throw driverConnectionError(code);
       }),
     ).rejects.toThrow("Failed query");
     expect(calls).toBe(3);

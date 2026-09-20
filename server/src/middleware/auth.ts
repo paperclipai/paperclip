@@ -542,13 +542,15 @@ export function cloudActorHeaderSourceFromHeaders(
 }
 
 /**
- * postgres.js codes for a connection the server side closed out from under
- * an in-flight query — a pooled Postgres endpoint recycling or suspending
+ * postgres.js codes for connection establishment timing out or for a
+ * connection the server side closed out from under an in-flight query —
+ * a pooled Postgres endpoint recycling or suspending
  * (observed 2026-09-03 with a managed pooler closing the socket mid-INSERT).
  * The driver reconnects transparently on the next query; only the statement
  * that was on the wire is lost.
  */
 const transientDbConnectionCodes = new Set([
+  "CONNECT_TIMEOUT",
   "CONNECTION_CLOSED",
   "CONNECTION_ENDED",
   "CONNECTION_DESTROYED",
@@ -556,7 +558,7 @@ const transientDbConnectionCodes = new Set([
 
 /**
  * True when the error chain (drizzle wraps the driver error as `cause`)
- * carries a postgres.js closed-connection code. Exported for tests.
+ * carries a postgres.js transient connection code. Exported for tests.
  */
 export function isTransientDbConnectionError(error: unknown): boolean {
   for (let current: unknown = error; current instanceof Error; current = current.cause) {
@@ -568,7 +570,7 @@ export function isTransientDbConnectionError(error: unknown): boolean {
 
 /**
  * Runs `run` and retries it up to twice when it fails on a transient
- * closed-connection error. Two replays, not one: when a pooled endpoint
+ * connection error. Two replays, not one: when a pooled endpoint
  * suspends or recycles, EVERY pooled socket is dead at once, so the first
  * replay can draw another stale socket from the pool and fail identically
  * (observed 2026-09-12: retried actor resolution still surfacing
@@ -587,7 +589,7 @@ export async function retryOnTransientDbConnectionError<T>(run: () => Promise<T>
 }
 
 /**
- * Trusted-header actor resolution with a single transient-connection retry.
+ * Trusted-header actor resolution with bounded transient-connection retries.
  * The tenant sync inside is idempotent end to end — every write is an
  * upsert/on-conflict/delete and the write debounce records only after the
  * whole sync succeeds — so replaying it after a dropped connection is safe,

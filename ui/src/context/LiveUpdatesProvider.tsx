@@ -49,10 +49,12 @@ import { extractCompanyPrefixFromPath, toCompanyRelativePath } from "../lib/comp
 import { useLocation } from "../lib/router";
 import { agentRouteRef } from "../lib/utils";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
+import { tryCreateWebSocket } from "../lib/websocket";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+const DISCONNECTED_POLL_INTERVAL_MS = 15_000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set([
@@ -1903,6 +1905,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     let closed = false;
     let reconnectAttempt = 0;
     let reconnectTimer: number | null = null;
+    let pollTimer: number | null = null;
     let socket: WebSocket | null = null;
 
     const clearReconnect = () => {
@@ -1912,8 +1915,23 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    const stopPolling = () => {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const startPolling = () => {
+      if (closed || pollTimer !== null) return;
+      // Visible queries still need fresh state when realtime is unavailable.
+      pollTimer = window.setInterval(() => {
+        void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+      }, DISCONNECTED_POLL_INTERVAL_MS);
+    };
+
     const scheduleReconnect = () => {
-      if (closed) return;
+      if (closed || reconnectTimer !== null) return;
       reconnectAttempt += 1;
       const delayMs = Math.min(
         15000,
@@ -1930,7 +1948,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`,
       );
-      const nextSocket = new WebSocket(url);
+      const nextSocket = tryCreateWebSocket(url);
+      if (!nextSocket) {
+        startPolling();
+        scheduleReconnect();
+        return;
+      }
       socket = nextSocket;
 
       nextSocket.onopen = () => {
@@ -1938,13 +1961,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           closeSocketQuietly(nextSocket, "stale_connection");
           return;
         }
+        stopPolling();
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
-          // Reconcile after a gap: events missed while disconnected can't be
-          // replayed yet, so refetch the event-sourced live-runs list once.
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.liveRuns(liveCompanyId),
-          });
+          // Reconcile all visible data after a gap: missed events cannot be replayed.
+          void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
         }
         reconnectAttempt = 0;
       };
@@ -1989,6 +2010,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         if (socket !== nextSocket) return;
         socket = null;
         if (closed) return;
+        startPolling();
         scheduleReconnect();
       };
     };
@@ -2002,6 +2024,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       closed = true;
       window.clearTimeout(connectTimer);
       clearReconnect();
+      stopPolling();
       const activeSocket = socket;
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");
