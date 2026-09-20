@@ -45,10 +45,9 @@ import {
   unadmittedChatWakeupCondition,
   type DurableChatWakeupRequest,
 } from "./durable-chat-wakeup.js";
-import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
+import { prepareHeartbeatGitHubLaunchers } from "./heartbeat-github-launchers.js";
 import {
   cleanupGitHubOperationLaunchers,
-  prepareGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
@@ -22270,27 +22269,25 @@ export function heartbeatService(
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
       context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
       if (!useHostGitHub) {
-        const githubBrokerToken = createRuntimeToolsToken({
+        const githubLaunchers = await prepareHeartbeatGitHubLaunchers({
+          native: agent.adapterType === "paperclip_runner",
+          githubConfigured: githubSelection.configured,
           agentId: agent.id,
-          companyId: agent.companyId,
           runId: run.id,
-          responsibleUserId: responsibleUserId ?? "",
-          scope: "github_credentials",
-        });
-        const githubBrokerEnv = githubBrokerEnvironment(gitExecutionEnv, {
-          url: configuredPaperclipApiBaseUrl() ?? "",
-          token: githubBrokerToken?.token ?? "",
-        });
-        githubLauncherLocation = { runId: run.id, target: executionTarget };
-        runtimeConfig = {
-          ...runtimeConfig,
-          env: await prepareGitHubOperationLaunchers({
+          target: executionTarget,
+          cwd: executionWorkspace.cwd,
+          env: gitExecutionEnv,
+          brokerUrl: configuredPaperclipApiBaseUrl() ?? "",
+          createBrokerToken: () => createRuntimeToolsToken({
+            agentId: agent.id,
+            companyId: agent.companyId,
             runId: run.id,
-            target: executionTarget,
-            cwd: executionWorkspace.cwd,
-            env: githubBrokerEnv,
-          }),
-        };
+            responsibleUserId: responsibleUserId ?? "",
+            scope: "github_credentials",
+          })?.token ?? "",
+        });
+        githubLauncherLocation = githubLaunchers.cleanupLocation;
+        runtimeConfig = { ...runtimeConfig, env: githubLaunchers.env };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
       context.paperclipEnvironment = {
