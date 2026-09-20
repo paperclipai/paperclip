@@ -375,7 +375,21 @@ sends, so an operator can read what the feature does before turning it on.
 Each Sentry integration name below is verified against the default
 integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
-**Server attribute this feature sets**
+**Release attribution**
+
+The server sets `release` to the full source commit from its build metadata.
+An explicit `SENTRY_RELEASE` overrides that default. If neither is available,
+the server leaves the release unset.
+
+The browser also sets `release`, using the full `PAPERCLIP_BUILD_COMMIT`
+supplied when its bundle is built. Docker passes the same commit to both
+application builds. A cached browser bundle keeps its own release after a
+server deployment, so its errors are attributed to the code actually loaded.
+Browser builds without a valid full commit leave the release unset. The
+browser does not read a release from the current server, page URL, or session.
+These fields contain build identifiers; they add no tenant or user identity.
+
+**Server identity**
 
 - `server_name` — every server event carries the host name of the process.
   The `@sentry/node` client already sets this value by default when the

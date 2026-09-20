@@ -128,16 +128,17 @@ COPY --from=deps /app /app
 COPY . .
 RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
+# Both the browser bundle and server stamp need the source commit. Declare it
+# after the stable dependency layers, before either application build.
+ARG PAPERCLIP_BUILD_COMMIT=""
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
-# next RUN as an environment variable, so declare it here — in the build
-# stage — before the server build. The production stage below declares the
+# next RUN as an environment variable. The production stage below declares the
 # same ARG again for the runtime fallback; an ARG goes out of scope at the
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
-ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)

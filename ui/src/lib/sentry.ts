@@ -155,6 +155,11 @@ export function captureBrowserException(error: unknown): void {
 export function buildBrowserSentryInitOptions(dsn: string): BrowserSentryInitOptions {
   return {
     dsn,
+    // Use the loaded bundle's build, even when the server has since deployed.
+    release:
+      typeof __PAPERCLIP_BUILD_COMMIT__ === "string"
+        ? __PAPERCLIP_BUILD_COMMIT__
+        : undefined,
     tracesSampleRate: 0,
     sendDefaultPii: false,
     integrations: (defaults) =>

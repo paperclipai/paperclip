@@ -56,6 +56,7 @@
 // `instrumentation.ts`.
 
 import os from "node:os";
+import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 
@@ -200,12 +201,13 @@ export function shutdownSentry(): Promise<void> {
  */
 interface SentryModuleLike {
   httpIntegration(options: { breadcrumbs: boolean }): { name: string };
-  onUnhandledRejectionIntegration(options: { mode: string }): { name: string };
+  onUnhandledRejectionIntegration(options: { mode: "strict" }): { name: string };
 }
 
 /** The `Sentry.init` options this gate builds. */
 export interface SentryInitOptions {
   dsn: string;
+  release?: string;
   skipOpenTelemetrySetup: boolean;
   tracesSampleRate: number;
   sendDefaultPii: boolean;
@@ -225,6 +227,7 @@ export function buildSentryInitOptions(
 ): SentryInitOptions {
   return {
     dsn,
+    release: process.env.SENTRY_RELEASE?.trim() || readBuildCommit() || undefined,
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,

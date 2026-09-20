@@ -296,6 +296,29 @@ function resolveIntegrations(
 }
 
 describe("buildBrowserSentryInitOptions", () => {
+  it("keeps the loaded bundle's release when the server version changes", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", commit);
+    vi.stubEnv("PAPERCLIP_BUILD_COMMIT", "abcdef0123456789abcdef0123456789abcdef01");
+    try {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      expect(buildBrowserSentryInitOptions(DSN).release).toBe(commit);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not invent a release for an unstamped bundle", async () => {
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", null);
+    try {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      expect(buildBrowserSentryInitOptions(DSN).release).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("sets the recorded built-in privacy options", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
@@ -366,6 +389,21 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
     });
     return Sentry;
   }
+
+  it("attaches the bundle release to an emitted event without page context", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", commit);
+    try {
+      let captured: Record<string, unknown> | null = null;
+      const Sentry = await initRealSentryForTest((event) => { captured = event; });
+      Sentry.captureException(new Error("bundle attribution check"));
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({ release: commit });
+      expect(captured).not.toHaveProperty("request");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("an event from a page URL that holds a test capability value carries no request URL, no query string, and no referrer", async () => {
     window.history.pushState({}, "", "/dashboard?token=test-capability-value");
