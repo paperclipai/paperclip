@@ -122,18 +122,16 @@ export async function executeTypesafeAsk(
   const connections = await assignedTypesafeConnections(db, binding);
   if (!connections.length)
     throw forbidden("No TypeSafe connection is assigned to this agent");
-  const connection = input.connectionId
-    ? connections.find((candidate) => candidate.id === input.connectionId)
-    : connections.length === 1
-      ? connections[0]
-      : null;
-  if (input.connectionId && !connection)
-    throw forbidden("That TypeSafe connection is not assigned to this agent");
-  if (!connection)
+  if (!input.connectionId && connections.length > 1)
     throw unprocessable("Choose a TypeSafe connection", {
       code: "typesafe_connection_required",
       connectionIds: connections.map((candidate) => candidate.id),
     });
+  const connection = input.connectionId
+    ? connections.find((candidate) => candidate.id === input.connectionId)
+    : connections[0];
+  if (!connection)
+    throw forbidden("That TypeSafe connection is not assigned to this agent");
 
   const ref = connection.credentialSecretRefs.find(
     (candidate) => candidate.configPath === API_KEY_PATH,
