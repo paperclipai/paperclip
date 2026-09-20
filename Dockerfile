@@ -243,7 +243,9 @@ FROM build AS cloud-runner-providers
 RUN mkdir -p /opt/paperclip \
   && PAPERCLIP_RUNNER_SOURCE_REVISION="$PAPERCLIP_BUILD_COMMIT" \
     node packages/paperclip-runner/scripts/build-provider-pack.mjs /opt/paperclip/runner-provider-pack \
-  && test -f /opt/paperclip/runner-provider-pack/provider-pack.json
+  && test -f /opt/paperclip/runner-provider-pack/provider-pack.json \
+  && chmod 644 /opt/paperclip/runner-provider-pack/provider-pack.json \
+  && gosu 65534:65534 node -e 'JSON.parse(require("node:fs").readFileSync("/opt/paperclip/runner-provider-pack/provider-pack.json", "utf8"))'
 
 # The hosted image variant ships selected optional peer packages
 # pre-installed. A managed tenant then needs no separate install step.
@@ -302,7 +304,9 @@ RUN set -eu; \
   pnpm add --ignore-workspace --no-lockfile $specifiers
 
 FROM production AS cloud
-COPY --chown=node:node --from=cloud-runner-providers /opt/paperclip/runner-provider-pack /opt/paperclip/runner-provider-pack
+# Cloud remaps the runtime UID for its mounted volume. This immutable code
+# artifact must stay readable by that UID without being writable by the agent.
+COPY --chown=root:root --from=cloud-runner-providers /opt/paperclip/runner-provider-pack /opt/paperclip/runner-provider-pack
 ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip/runner-provider-pack
 COPY --chown=node:node --from=cloud-plugins /app/packages/plugins/sandbox-providers /app/packages/plugins/sandbox-providers
 # Land the isolated install inside the server's own `node_modules`, the
