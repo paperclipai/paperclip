@@ -1,6 +1,7 @@
 import { githubChatManagementService } from "../services/chat-github-management.js";
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { githubReviewCheckService } from "../services/chat-github-checks.js";
+import { githubAutomaticReviewEvent } from "../services/chat-github-events.js";
 import { githubBotToolsForSession } from "../services/chat-github-tools.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
@@ -2345,6 +2346,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         issueId: task.id,
         runId: run.id,
       }, "read_pull_request", { section: "metadata" })).rejects.toThrow("older pull request head");
+    });
+    it("supersedes a late review projection after its check already rejected the old head", async () => {
+      const f = await reviewBotFixture();
+      const deliveryId = randomUUID();
+      const payload = {
+        action: "synchronize",
+        installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 82, title: "Rapid pushes", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" },
+          head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      };
+      f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/82")
+        ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } })
+        : undefined);
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [activeEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
+      await checks.enqueue(activeEndpoint, githubAutomaticReviewEvent(payload, deliveryId)!, true, "authorized");
+      await checks.processPending();
+      const [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_review_check"),
+      ));
+      expect(action).toMatchObject({ status: "cancelled", result: { code: "stale_head" } });
+      expect((await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: deliveryId, payload, webhookSecret: f.webhookSecret,
+      }))).status).toBeLessThan(300);
+      await expect.poll(async () => (await db.select().from(chatGitHubReviews)
+        .where(eq(chatGitHubReviews.endpointId, f.endpoint.id))).length, { timeout: 10000 }).toBe(1);
+      const [late] = await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.endpointId, f.endpoint.id));
+      const [unrelated] = await db.insert(chatGitHubReviews).values({
+        companyId: late.companyId, endpointId: late.endpointId, issueId: late.issueId,
+        repositoryId: late.repositoryId, repository: late.repository, pullNumber: late.pullNumber,
+        headSha: late.headSha, deliveryId: randomUUID(), configurationRevision: late.configurationRevision,
+        policySnapshot: late.policySnapshot, event: late.event, state: "queued",
+      }).returning();
+      await checks.processPending();
+      expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, late.id)))[0].state).toBe("superseded");
+      expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, unrelated.id)))[0].state).toBe("queued");
     });
     it("uses task-bound bot tools and deterministic checks, then denies revoked people", async () => {
       const f = await reviewBotFixture();

@@ -1,4 +1,4 @@
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   chatActions,
   chatDeliveries,
@@ -338,6 +338,30 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
     });
   }
   async function processPending(limit = 10) {
+    // Check delivery and task admission run independently. A rapid push can
+    // cancel an obsolete check before admission inserts its review projection.
+    // Reconcile that late row from the durable cancellation receipt, without
+    // starting work or borrowing another delivery's authority.
+    await db.update(chatGitHubReviews).set({
+      state: "superseded",
+      updatedAt: new Date(),
+    }).where(and(
+      inArray(chatGitHubReviews.state, ["queued", "running"]),
+      isNull(chatGitHubReviews.assessment),
+      sql`exists (
+        select 1 from ${chatActions} action
+        join ${chatDeliveries} delivery
+          on delivery.id::text = ${chatGitHubReviews.deliveryId}
+        where action.company_id = ${chatGitHubReviews.companyId}
+          and action.endpoint_id = ${chatGitHubReviews.endpointId}
+          and delivery.endpoint_id = action.endpoint_id
+          and action.kind = 'github_review_check'
+          and action.status = 'cancelled'
+          and action.result->>'code' = 'stale_head'
+          and action.payload->'event'->>'deliveryId' =
+            delivery.normalized_event->'githubAutomatic'->'context'->>'deliveryId'
+      )`,
+    ));
     const rows = await db
       .select({ id: chatActions.id })
       .from(chatActions)
