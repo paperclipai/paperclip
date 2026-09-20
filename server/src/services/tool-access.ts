@@ -13911,7 +13911,14 @@ export function toolAccessService(
         .set({ status: "active", updatedAt: new Date() })
         .where(eq(toolApplications.id, connection.applicationId));
       if (isTypesafeConnection(connection)) {
-        // Connector tools resolve access from installs; only OAuth setup creates them.
+        // Connector tools resolve access from installs, which API-key setup does not otherwise create.
+        const installTargets =
+          input.access === "all_agents"
+            ? [{ targetType: "company" as const, targetId: companyId }]
+            : [...new Set(input.access.agentIds)].map((agentId) => ({
+                targetType: "agent" as const,
+                targetId: agentId,
+              }));
         if (!input.preserveExistingAccess)
           await tx
             .delete(toolConnectionInstalls)
@@ -13921,26 +13928,21 @@ export function toolAccessService(
                 eq(toolConnectionInstalls.connectionId, connection.id),
               ),
             );
-        await tx
-          .insert(toolConnectionInstalls)
-          .values(
-            (input.access === "all_agents"
-              ? [{ targetType: "company" as const, targetId: companyId }]
-              : [...new Set(input.access.agentIds)].map((agentId) => ({
-                  targetType: "agent" as const,
-                  targetId: agentId,
-                }))
-            ).map((target) => ({
-              ...target,
-              companyId,
-              connectionId: connection.id,
-              createdByAgentId:
-                actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
-              createdByUserId:
-                actor?.actorType === "user" ? (actor.actorId ?? null) : null,
-            })),
-          )
-          .onConflictDoNothing();
+        if (installTargets.length > 0)
+          await tx
+            .insert(toolConnectionInstalls)
+            .values(
+              installTargets.map((target) => ({
+                ...target,
+                companyId,
+                connectionId: connection.id,
+                createdByAgentId:
+                  actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+                createdByUserId:
+                  actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+              })),
+            )
+            .onConflictDoNothing();
       }
 
       return { profileId, profileBindings, policies, updatedConnection };
