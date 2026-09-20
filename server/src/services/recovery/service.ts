@@ -69,6 +69,11 @@ import {
   RECOVERY_ORIGIN_KINDS,
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
+import {
+  BLOCKED_WITHOUT_WAKE_PATH_ACTION,
+  resolveAutoBlockedUnblockDescriptor,
+} from "./blocked-wake-path.js";
+import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../routable-blocked.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
@@ -2269,7 +2274,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const unblockDescriptor = resolveAutoBlockedUnblockDescriptor({
+      blockerIssueIds: blockerIds,
+      ownerAgentId: null,
+      action: "Inspect the failed run evidence, restore a live execution path or record the manual resolution, then move this recovery issue out of `blocked`.",
+    });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -2967,8 +2981,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         eq(issueRecoveryActions.companyId, input.issue.companyId),
       ));
 
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const unblockDescriptor = resolveAutoBlockedUnblockDescriptor({
+      blockerIssueIds: blockerIds,
+      ownerAgentId: null,
+      action: "Inspect the evidence and choose whether to repair, retry the original owner, explicitly reassign, or resolve the source issue.",
+    });
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
     });
     if (!updated) return null;
     const sourceAssigneePreserved =
@@ -3186,9 +3207,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // A provider-quota wait already has a durable monitor wake path. Every other
+    // automatic escalation must leave a first-class unblock owner: with no
+    // unresolved blocker edge the issue would otherwise be `blocked` with no
+    // wake path at all (no blocker, monitor, interaction, or owner).
+    const unblockDescriptor = isProviderQuotaWait
+      ? null
+      : resolveAutoBlockedUnblockDescriptor({
+        blockerIssueIds: blockerIds,
+        ownerAgentId: recoveryAction.ownerAgentId,
+        action: recoveryAction.nextAction,
+      });
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3513,6 +3546,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
+      blockedWakePathRepaired: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -4289,8 +4323,141 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.escalated += activeRecovery.escalated;
     result.skipped += activeRecovery.skipped;
     result.issueIds.push(...activeRecovery.issueIds);
+
+    const blockedWakePath = await reconcileBlockedWithoutWakePath();
+    result.blockedWakePathRepaired += blockedWakePath.repaired;
+    result.skipped += blockedWakePath.skipped;
+    result.issueIds.push(...blockedWakePath.issueIds);
     result.issueIds = [...new Set(result.issueIds)];
 
+    return result;
+  }
+
+  // Backstop for issues that were auto-blocked after the routable-blocked
+  // rollout but still landed with no wake path (before the automatic-transition
+  // invariant was enforced, or via a caller that still bypasses it): a blocked
+  // issue with no unresolved blocker, no pending interaction/approval, no
+  // persisted monitor, and no unblockDescriptor is a silent dead end — nothing
+  // wakes an agent and nothing surfaces it on the board. Backfill a board-owned
+  // descriptor so the issue re-enters the board attention queue, and leave an
+  // auditable system notice.
+  //
+  // Scoped to `blockedTransitionAt >= ROUTABLE_BLOCKED_ROLLOUT_AT` so it stays
+  // prospective, exactly like the route-level enforcement: pre-rollout
+  // prose-blocked issues are not retroactively rewritten into a board-attention
+  // storm. Idempotent: repaired issues now carry a descriptor and drop out of
+  // the candidate set.
+  async function reconcileBlockedWithoutWakePath() {
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          isNull(issues.unblockDescriptor),
+          isNull(issues.hiddenAt),
+          gte(issues.blockedTransitionAt, ROUTABLE_BLOCKED_ROLLOUT_AT),
+        ),
+      )
+      .orderBy(asc(issues.updatedAt))
+      .limit(500);
+
+    const result = { repaired: 0, skipped: 0, issueIds: [] as string[] };
+    for (const issue of candidates) {
+      // A scheduled monitor is itself a first-class wake path.
+      if (issue.monitorNextCheckAt) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const [blockerIds, pendingInteraction, pendingApproval] = await Promise.all([
+        existingUnresolvedBlockerIssueIds(issue.companyId, issue.id),
+        db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: approvals.id })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+          .where(
+            and(
+              eq(issueApprovals.companyId, issue.companyId),
+              eq(issueApprovals.issueId, issue.id),
+              eq(approvals.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+      ]);
+      if (blockerIds.length > 0 || pendingInteraction || pendingApproval) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const updated = await issuesSvc.update(issue.id, {
+        unblockDescriptor: {
+          owner: "board",
+          action: BLOCKED_WITHOUT_WAKE_PATH_ACTION,
+        },
+      });
+      if (!updated) {
+        result.skipped += 1;
+        continue;
+      }
+      result.repaired += 1;
+      result.issueIds.push(issue.id);
+
+      await issuesSvc.addComment(
+        issue.id,
+        [
+          "Paperclip detected this issue was `blocked` with no wake path: no unresolved blocker, no pending interaction or approval, no scheduled monitor, and no unblock owner.",
+          "",
+          "- Restored a board-owned unblock descriptor so the issue is visible for intervention again.",
+          `- Next action: ${BLOCKED_WITHOUT_WAKE_PATH_ACTION}`,
+        ].join("\n"),
+        {},
+        {
+          authorType: "system",
+          presentation: compactRecoveryPresentation("Recovery: blocked issue had no wake path — board notified"),
+          metadata: {
+            version: 1,
+            sections: [{
+              title: "Recovery",
+              rows: [
+                { type: "key_value", label: "Cause", value: "blocked_without_wake_path" },
+                { type: "key_value", label: "Unblock owner", value: "board" },
+              ],
+            }],
+          },
+        },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "blocked",
+          source: "recovery.reconcile_blocked_without_wake_path",
+          unblockOwner: "board",
+        },
+      });
+    }
     return result;
   }
 
@@ -4890,6 +5057,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileBlockedWithoutWakePath,
     sweepStaleIssueLocks,
     reconcileResolvedDependencyWakeBackstop,
     readRecoveryTimerIntervalMs,

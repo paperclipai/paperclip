@@ -1461,6 +1461,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [afterFirst] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
     expect(afterFirst?.status).toBe("blocked");
     expect(afterFirst?.assigneeAgentId).toBe(coderId);
+    // A stranded auto-block with no unresolved blocker edge must still leave a
+    // first-class unblock owner; otherwise the issue is a silent dead end.
+    expect(afterFirst?.unblockDescriptor).toMatchObject({ owner: "board" });
 
     const secondLatestRun = {
       ...firstLatestRun,
@@ -1497,6 +1500,70 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).not.toContain("Recovery action:");
     expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, actionRows[0]!.id)).toBe(true);
     expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+  });
+
+  it("repairs a blocked issue that has no first-class wake path", async () => {
+    const { sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        blockedTransitionAt: new Date("2026-09-20T08:36:00.000Z"),
+        blockedOwnerNotifiedAt: null,
+        unblockDescriptor: null,
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const result = await recovery.reconcileBlockedWithoutWakePath();
+
+    expect(result.repaired).toBe(1);
+    const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(repaired?.status).toBe("blocked");
+    expect(repaired?.unblockDescriptor).toMatchObject({ owner: "board" });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("no wake path");
+
+    // Idempotent: a repaired issue now carries a descriptor and is skipped.
+    const second = await recovery.reconcileBlockedWithoutWakePath();
+    expect(second.repaired).toBe(0);
+  });
+
+  it("leaves a blocked issue whose unresolved blocker edge is the wake path", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Open blocker",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        blockedTransitionAt: new Date("2026-09-20T08:36:00.000Z"),
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const result = await recovery.reconcileBlockedWithoutWakePath();
+
+    expect(result.repaired).toBe(0);
+    const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(untouched?.unblockDescriptor).toBeNull();
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {

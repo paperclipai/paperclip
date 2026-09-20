@@ -6957,7 +6957,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
     expect(result.escalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
@@ -8033,6 +8033,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
     expect(result.escalated).toBe(1);
+    // The source issue was inserted directly as `blocked` with no
+    // blocked-transition timestamp, so the prospective wake-path backstop
+    // leaves it alone; only the recovery issue is reported as changed.
     expect(result.issueIds).toEqual([issueId]);
 
     const recoveryIssues = await db

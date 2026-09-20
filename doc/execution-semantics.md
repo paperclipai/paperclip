@@ -78,9 +78,11 @@ Entering `blocked` requires a routable waiting path. An issue may transition int
 
 When a structured unblock descriptor is the waiting path, Paperclip immediately notifies the named owner: an agent owner gets a wake, a user or board owner gets an inbox notification. Prose-only blocked — free-text that names an owner or action in a comment without any of the paths above — routes to nobody. It is rejected at the API or auto-classified as `needs_attention` with a board notification, never silently accepted as a healthy waiting state.
 
+Automatic transitions are held to the same invariant. Recovery escalations persist `blocked` through the issue service rather than the API route, so they derive the waiting path themselves: when no unresolved blocker edge exists, the escalation writes a structured unblock descriptor (the recovery owner if one is named, otherwise the board). A failed agent run must never leave an issue `blocked` with `blockedBy`, monitor, interaction, and owner all empty.
+
 A permission denial is not, by itself, a blocker. If an instructed step is denied at an authorization boundary but the issue's own deliverable is complete, the right disposition is `done`, not `blocked` (see the review-delegation rules in §6).
 
-This requirement is prospective-only on rollout: it applies to transitions into `blocked` made after the feature ships, gated on the blocked-transition timestamp against the rollout marker, not on issue `createdAt`. Issues already blocked at upgrade time are untouched — no backfilled notifications, no retroactive validation, no `needs_attention` storm on deploy. Triage of pre-existing prose-blocked issues is a one-time opt-in digest, not a default.
+This requirement is prospective-only on rollout: it applies to transitions into `blocked` made after the feature ships, gated on the blocked-transition timestamp against the rollout marker, not on issue `createdAt`. Issues already blocked at upgrade time are untouched — no backfilled notifications, no retroactive validation, no `needs_attention` storm on deploy. Triage of pre-existing prose-blocked issues is a one-time opt-in digest, not a default. A bounded recovery backstop repairs post-rollout blocked issues that still have no wake path (no unresolved blocker, monitor, interaction/approval, or descriptor) by restoring a board-owned descriptor and leaving an auditable notice; it is scoped to the rollout marker so pre-rollout issues are not retroactively rewritten.
 
 ### `in_review`
 
