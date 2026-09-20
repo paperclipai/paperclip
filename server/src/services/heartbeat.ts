@@ -5746,6 +5746,7 @@ export function shouldDeferFollowupWakeForSameIssue(input: {
   return false;
 }
 
+const SESSION_AI_CREDENTIAL_IDENTITY_KEY = "paperclipAiCredentialIdentity";
 const SESSION_CONFIGURED_MODEL_KEY = "__paperclipConfiguredModel";
 const SESSION_CONFIG_FINGERPRINT_KEY = "__paperclipConfigFingerprint";
 const SESSION_CONFIG_FINGERPRINT_VERSION_KEY =
@@ -5754,6 +5755,7 @@ const SESSION_CONFIG_CATEGORIES_KEY = "__paperclipConfigCategories";
 const SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY =
   "__paperclipConfigCategoryFingerprints";
 const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
+  SESSION_AI_CREDENTIAL_IDENTITY_KEY,
   SESSION_CONFIGURED_MODEL_KEY,
   SESSION_CONFIG_FINGERPRINT_KEY,
   SESSION_CONFIG_FINGERPRINT_VERSION_KEY,
@@ -6746,6 +6748,15 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
   };
 }
 
+/** Read server-owned identity before adapter codecs discard unknown metadata. */
+export function isTaskSessionCredentialCompatible(
+  storedSessionParams: Record<string, unknown> | null | undefined,
+  managedAiCredentialIdentity: string | undefined,
+): boolean {
+  if (!managedAiCredentialIdentity) return true;
+  return storedSessionParams?.[SESSION_AI_CREDENTIAL_IDENTITY_KEY] === managedAiCredentialIdentity;
+}
+
 function readConfiguredModelFromAdapterConfig(
   adapterConfig: Record<string, unknown> | null | undefined,
 ) {
@@ -6761,7 +6772,7 @@ function attachPaperclipSessionMetadataToSessionParams(
   const next = { ...(sessionParams ?? {}) };
   if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
   if (configMetadata) {
-    if (configMetadata.aiCredentialIdentity) next.paperclipAiCredentialIdentity = configMetadata.aiCredentialIdentity;
+    if (configMetadata.aiCredentialIdentity) next[SESSION_AI_CREDENTIAL_IDENTITY_KEY] = configMetadata.aiCredentialIdentity;
     next[SESSION_CONFIG_FINGERPRINT_KEY] = configMetadata.fingerprint;
     next[SESSION_CONFIG_FINGERPRINT_VERSION_KEY] = configMetadata.version;
     next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
@@ -22487,9 +22498,13 @@ export function heartbeatService(
         delete context.paperclipPreviousSessionId;
       }
 
+      const taskSessionCredentialCompatible = isTaskSessionCredentialCompatible(
+        taskSession?.sessionParamsJson,
+        managedAiRuntime?.identity,
+      );
       if (managedAiRuntime) {
         sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
-        if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
+        if (!taskSessionCredentialCompatible) {
           runtimeSessionIdForAdapter = null;
           runtimeSessionParamsForAdapter = null;
           previousSessionDisplayId = null;
@@ -23021,7 +23036,7 @@ export function heartbeatService(
                     return requests.length > 0 ? requests : undefined;
                   })(),
                 });
-          const taskNativeSessionId = managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity ? null : readNonEmptyString(
+          const taskNativeSessionId = !taskSessionCredentialCompatible ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
           // Compatibility for native retry rows created before same-run restart

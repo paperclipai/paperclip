@@ -310,3 +310,13 @@ boundaries, and concurrent runs of one subscription for both providers. The opt-
 [`tests/hiring-ai-connections/README.md`](../../tests/hiring-ai-connections/README.md)
 describes real browser hiring, subtask, connection, and automatic-resume checks on
 local and Daytona environments, plus the production component Storybook checks.
+
+### Managed session compatibility
+
+Resume checks compare the selected account identity with the server-owned
+metadata in the saved task session. Read this metadata before decoding the
+adapter session: adapter codecs intentionally discard unknown fields. A missing
+identity, a different grant or responsible user, or a changed credential generation
+requires a fresh session. The metadata is removed before passing session params
+to an adapter. Temporary authentication-home paths do not change the configuration
+fingerprint. These checks do not relax current connection authorization.
