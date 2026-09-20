@@ -240,11 +240,12 @@ export function approvalRoutes(
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
-    // Agent-filed approvals must always be linked to at least one issue. Without an issue link,
-    // stall-recovery's pending-card gate is blind to the card (INUA-6002/7112) and can evict the
-    // task it is meant to protect. Users filing approvals (e.g. human-initiated flows) are
-    // exempt: they may not have a task context.
-    if (actor.actorType === "agent" && uniqueIssueIds.length === 0) {
+    // request_board_approval cards filed by agents must always link to at least one issue.
+    // Without a link, stall-recovery's pending-card gate is blind to the card and can evict
+    // the task it is meant to protect. Other approval types (approve_ceo_strategy, hire_agent,
+    // budget_override_required) have documented agent-facing call shapes that omit issueIds, so
+    // the guard is scoped to this type only.
+    if (approvalInput.type === "request_board_approval" && actor.actorType === "agent" && uniqueIssueIds.length === 0) {
       res.status(400).json({
         error:
           "Agent-filed approvals must include at least one issueId. " +
@@ -286,7 +287,7 @@ export function approvalRoutes(
     for (const issueId of uniqueIssueIds) {
       try {
         const existing = await issuesSvc.getById(issueId);
-        if (!existing || existing.status === "done" || existing.status === "cancelled") {
+        if (!existing || existing.status === "done" || existing.status === "cancelled" || existing.status === "blocked") {
           continue;
         }
         await issuesSvc.update(issueId, {

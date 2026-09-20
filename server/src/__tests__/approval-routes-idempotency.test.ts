@@ -589,6 +589,61 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.create).not.toHaveBeenCalled();
   });
 
+  it("allows agent-filed approve_ceo_strategy with no issueIds", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-ceo",
+      companyId: "company-1",
+      type: "approve_ceo_strategy",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { plan: "Bootstrap plan" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "approve_ceo_strategy",
+        payload: { plan: "Bootstrap plan" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalled();
+  });
+
+  it("allows agent-filed hire_agent with no issueIds", async () => {
+    mockSecretService.normalizeHireApprovalPayloadForPersistence.mockResolvedValue({ name: "New Agent" });
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-hire",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { name: "New Agent" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "hire_agent",
+        payload: { name: "New Agent" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalled();
+  });
+
   it("allows user-filed approval with issueIds null (human-exempt path)", async () => {
     mockApprovalService.create.mockResolvedValue({
       id: "approval-9",
