@@ -240,7 +240,8 @@ RUN set -eu; \
 # Native ACPX/OpenCode sessions stage a verified, build-owned provider pack
 # into the managed sandbox. Global CLI installs are not that artifact.
 FROM build AS cloud-runner-providers
-RUN PAPERCLIP_RUNNER_SOURCE_REVISION="$PAPERCLIP_BUILD_COMMIT" \
+RUN mkdir -p /opt/paperclip \
+  && PAPERCLIP_RUNNER_SOURCE_REVISION="$PAPERCLIP_BUILD_COMMIT" \
     node packages/paperclip-runner/scripts/build-provider-pack.mjs /opt/paperclip/runner-provider-pack \
   && test -f /opt/paperclip/runner-provider-pack/provider-pack.json
 
