@@ -73,6 +73,7 @@ import {
   BLOCKED_WITHOUT_WAKE_PATH_ACTION,
   resolveAutoBlockedUnblockDescriptor,
 } from "./blocked-wake-path.js";
+import { isNonSubstantiveModelWarningComment } from "./model-side-warning.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../routable-blocked.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
@@ -259,6 +260,19 @@ function recoveryNoticeMetadata(input: {
           label: "Latest run",
           runId: input.latestRun.id,
           title: input.latestRun.status,
+        }]
+      : []),
+    // Record the failed run's normalized error classification so a board or
+    // agent inspecting an automatic `blocked` disposition can see *why* the
+    // run failed without opening the run.
+    ...(input.latestRun?.errorCode
+      ? [{ type: "key_value" as const, label: "Run error code", value: input.latestRun.errorCode }]
+      : []),
+    ...(readRecoveryRunErrorFamily(input.latestRun)
+      ? [{
+          type: "key_value" as const,
+          label: "Run error family",
+          value: readRecoveryRunErrorFamily(input.latestRun) as string,
         }]
       : []),
   ];
@@ -1021,9 +1035,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     windowMs: number,
   ) {
     const since = new Date(Date.now() - windowMs);
-    const [comment, attachment] = await Promise.all([
+    const [comments, attachment] = await Promise.all([
       db
-        .select({ id: issueComments.id })
+        .select({ id: issueComments.id, body: issueComments.body })
         .from(issueComments)
         .where(
           and(
@@ -1033,8 +1047,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             gt(issueComments.createdAt, since),
           ),
         )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
+        .orderBy(desc(issueComments.createdAt))
+        .limit(20),
       db
         .select({ id: issueAttachments.id })
         .from(issueAttachments)
@@ -1048,7 +1062,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1)
         .then((rows) => rows[0] ?? null),
     ]);
-    return Boolean(comment || attachment);
+    // A boilerplate model-side/harness warning is not work-product evidence.
+    // Counting it as "visible progress" is what let a degraded provider turn
+    // suppress the repeated-productive-continuation circuit breaker forever
+    // (unbounded ~1/min recovery loop). Only a substantive comment or an
+    // attachment proves progress.
+    const substantiveComment = comments.some(
+      (comment) => !isNonSubstantiveModelWarningComment(comment.body),
+    );
+    return Boolean(substantiveComment || attachment);
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -4166,8 +4188,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               previousStatus: "in_progress",
               latestRun: successfulRun,
               comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+                "Paperclip automatically retried continuation for this assigned `in_progress` issue, but the retry " +
+                "produced no substantive disposition, so it still has no live execution path (a boilerplate " +
+                "model-side/harness warning comment is not counted as progress). " +
+                "Moving it to `blocked` so it is visible for intervention.",
             });
             if (updated) {
               result.escalated += 1;

@@ -9615,6 +9615,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("does not exempt stranded-recovery escalation for a boilerplate model-side warning comment", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
+    // A degraded provider turn can "succeed" at the process level while
+    // emitting nothing but a harness/CLI warning. Counting that as visible
+    // progress suppressed the repeated-productive circuit breaker on every
+    // cycle and produced an unbounded ~1/min recovery loop. It must
+    // not exempt escalation.
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "Warning: Skill descriptions were shortened to fit the skills context budget. " +
+          "Codex can still see every skill, but some descriptions are shorter. " +
+          "Disable unused skills or plugins to leave more room for the rest.",
+        "",
+        "We're currently experiencing high demand, which may cause temporary errors.",
+      ].join("\n"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.recentProgressExempted).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    // The auto-block must still carry a first-class wake path.
+    expect(issue?.unblockDescriptor).not.toBeNull();
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+  });
+
   it("still escalates stranded-recovery work when the recent comment is older than the exemption window (GGU-809)", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

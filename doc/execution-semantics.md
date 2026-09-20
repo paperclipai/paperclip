@@ -319,6 +319,8 @@ Recovery from an invalid external wait is bounded and idempotent:
 3. If that continuation also exits without creating a durable path, do not queue another equivalent continuation. Move the issue to `blocked` only when a real external dependency can be named; otherwise open or update an explicit recovery action with a named owner and concrete repair/escalation action.
 4. New durable source activity may produce a new recovery fingerprint, but unchanged killed/local-watcher evidence must not create an infinite wake/recovery loop.
 
+The repeated-productive-continuation circuit breaker's recent-comment progress exemption must require *substantive* evidence. A degraded provider turn can succeed at the process level while emitting only a harness/CLI warning (for example the codex skills-context-budget warning plus a high-demand notice) as its output; Paperclip persists that warning as an agent-authored comment, but it carries no work product. Counting it as visible progress suppresses the escalation on every cycle, so recovery re-queues an equivalent continuation wake roughly once a minute and never reaches the bounded escalation. A comment whose non-empty lines are all recognized model-side/harness warnings therefore does not count as progress; only a substantive comment or an attachment does.
+
 This rule is intentionally conservative: local watcher evidence can help the recovery owner decide what happened, but only persisted control-plane state can prove that the work will move again.
 
 ### Comment and document activity wake sources
