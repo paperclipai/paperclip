@@ -244,6 +244,9 @@ export function AgentActionButtons({
   const canonicalAgentRef = agentRouteRef(agent);
   const isPaused = agent.status === "paused";
   const isError = agent.status === "error";
+  // The service also clears an idle agent that still carries a residual
+  // errorReason, so the clear control must be reachable in that state too.
+  const canClearResidualError = !isError && agent.status === "idle" && agent.errorReason != null;
 
   const reportError = useCallback(
     (message: string) => {
@@ -433,7 +436,7 @@ export function AgentActionButtons({
           <span className="hidden sm:inline">Run with provider trace</span>
         </Button>
       )}
-      {isError ? (
+      {(isError || canClearResidualError) && (
         <ClearErrorButton
           onClick={() => {
             if (orgChainInvalid) {
@@ -454,7 +457,8 @@ export function AgentActionButtons({
               : undefined
           }
         />
-      ) : (
+      )}
+      {!isError && (
         <PauseResumeButton
           isPaused={isPaused}
           onPause={() => (pauseConfirm ? setPauseConfirmOpen(true) : agentAction.mutate("pause"))}

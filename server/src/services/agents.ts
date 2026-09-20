@@ -929,40 +929,48 @@ export function agentService(db: Db) {
         );
       }
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "idle",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(agents.id, id),
-            or(eq(agents.status, "error"), isNotNull(agents.errorReason)),
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      // Clear the agent status and reset its runtime state in one transaction.
+      // If these were separate statements, a failure between them would leave
+      // the agent invokable while it still carries the failed session state, and
+      // a concurrent run could write a fresh session only to have it erased.
+      const updated = await db.transaction(async (tx) => {
+        const row = await tx
+          .update(agents)
+          .set({
+            status: "idle",
+            pauseReason: null,
+            pausedAt: null,
+            errorReason: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(agents.id, id),
+              or(eq(agents.status, "error"), isNotNull(agents.errorReason)),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+
+        // Start the runtime from a clean slate: forget the failed session and the
+        // failure diagnostics that referenced it, while run history stays intact.
+        await tx
+          .update(agentRuntimeState)
+          .set({
+            sessionId: null,
+            lastError: null,
+            lastRunStatus: null,
+            stateJson: {},
+            updatedAt: new Date(),
+          })
+          .where(eq(agentRuntimeState.agentId, id));
+        return row;
+      });
 
       if (!updated) {
         throw conflict("Agent error is no longer clearable; refresh and retry");
       }
-
-      // Start the runtime from a clean slate: forget the failed session and the
-      // failure diagnostics that referenced it, while run history stays intact.
-      await db
-        .update(agentRuntimeState)
-        .set({
-          sessionId: null,
-          lastError: null,
-          lastRunStatus: null,
-          stateJson: {},
-          updatedAt: new Date(),
-        })
-        .where(eq(agentRuntimeState.agentId, id));
 
       return getById(updated.id);
     },

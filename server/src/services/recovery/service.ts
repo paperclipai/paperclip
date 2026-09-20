@@ -74,7 +74,7 @@ import {
   resolveAutoBlockedUnblockDescriptor,
 } from "./blocked-wake-path.js";
 import { isNonSubstantiveModelWarningComment } from "./model-side-warning.js";
-import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../routable-blocked.js";
+import { ROUTABLE_BLOCKED_ROLLOUT_AT, deliverAgentUnblockNotification } from "../routable-blocked.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
@@ -3247,6 +3247,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
+    // An agent-owned descriptor is a wake path only if the named owner is
+    // actually woken. The PATCH route performs this delivery; this automatic
+    // transition must do the same, or the recovery owner never receives the
+    // `issue_unblock_requested` wake and `blockedOwnerNotifiedAt` stays null.
+    await deliverAgentUnblockNotification({
+      issue: updated,
+      wakeup: deps.enqueueWakeup,
+      markNotified: async (blockedOwnerNotifiedAt) => {
+        await db
+          .update(issues)
+          .set({ blockedOwnerNotifiedAt })
+          .where(and(
+            eq(issues.id, updated.id),
+            eq(issues.companyId, updated.companyId),
+          ));
+      },
+    });
     const sourceAssigneePreserved =
       updated.assigneeAgentId === input.issue.assigneeAgentId &&
       updated.assigneeUserId === input.issue.assigneeUserId;

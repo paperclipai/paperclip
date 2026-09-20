@@ -5828,6 +5828,76 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(takeoverWakes).toHaveLength(0);
   });
 
+  it("wakes an agent-owned unblock owner when automatic recovery blocks the issue", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const legacyOwnerId = randomUUID();
+    await db.insert(agents).values({
+      id: legacyOwnerId,
+      companyId,
+      name: "Agent recovery owner",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // The source assignee is not invokable, so the sweep escalates to `blocked`.
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId,
+        sourceIssueId: issueId,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: legacyOwnerId,
+        previousOwnerAgentId: agentId,
+        returnOwnerAgentId: agentId,
+        cause: "process_lost",
+        fingerprint: `agent-owner:${issueId}`,
+        evidence: { latestRunId: null },
+        nextAction: "Inspect the failed run and restore a live execution path.",
+        wakePolicy: {
+          type: "bounded_recovery_owner",
+          ownerAgentId: legacyOwnerId,
+          attempt: 1,
+          maxAttempts: 5,
+        },
+        attemptCount: 1,
+        maxAttempts: 5,
+      });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    // An agent-owned descriptor is a wake path only when the named owner is
+    // actually woken and the notification is recorded.
+    expect(issue?.unblockDescriptor).toMatchObject({ owner: { agentId: legacyOwnerId } });
+    expect(issue?.blockedOwnerNotifiedAt).not.toBeNull();
+
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, legacyOwnerId),
+        ),
+      );
+    expect(wakes.some((wake) => wake.reason === "issue_unblock_requested")).toBe(true);
+  });
+
   it("does not consume a disposition-repair attempt when on-demand wakes are disabled", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

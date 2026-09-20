@@ -177,6 +177,24 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).not.toContain("Clear error");
   });
 
+  it("shows Clear error for an idle agent that still carries a residual errorReason", async () => {
+    render(makeAgent({ status: "idle", errorReason: "provider turn failed" }));
+    await flushReact();
+
+    // The service clears this state too, so the control must be reachable while
+    // the normal pause action stays available.
+    expect(container.textContent).toContain("Clear error");
+    expect(container.textContent).toContain("Pause");
+  });
+
+  it("keeps the normal pause action for an idle agent without a residual error", async () => {
+    render(makeAgent({ status: "idle", errorReason: null }));
+    await flushReact();
+
+    expect(container.textContent).toContain("Pause");
+    expect(container.textContent).not.toContain("Clear error");
+  });
+
   it("starts an administrator-selected run with raw provider tracing", async () => {
     render(makeAgent(), { canRunWithProviderTrace: true });
     await flushReact();
