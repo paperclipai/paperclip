@@ -1454,6 +1454,19 @@ connector proposal or PR. No separate private validation issue is required.
 | Revoke and reconnect | Revocation blocks subsequent execution; supported reconnect reuses the intended identity/history. | Removal or denial evidence followed by reconnect result. |
 | Activity and secret handling | Activity explains what occurred and why; stored responses, logs, and artifacts contain no credential values. | Actor, run/issue context, resource, decision, reason code, outcome, plus redaction-check result. |
 
+Chat task links must use the server-resolved public board origin, including the
+current claimed Cloud origin. Supply the exact task URL in fresh and resumed
+agent context. Keep webhook ingress and internal API addresses separate from
+human-facing task links. If no safe public URL is configured, say so instead of
+constructing a link. Keep the external-publication URL filter in place.
+
+When checking chat response speed, measure queue time, runner preparation,
+provider turn time, checkpoint/finalization, and provider publication separately.
+Check session-reset reasons before attributing slow follow-ups to the model.
+Temporary managed-credential homes must not change the session fingerprint;
+account, credential, model, permission, and user-configured environment changes
+must retain their existing invalidation behavior.
+
 For chat/email, also verify the applicable UX states in
 [Chat connector UX](./CHAT-CONNECTOR-UX.md#apply-and-verify): new connections deny
 unlinked people by default; linking requires ownership confirmation; nonmembers
