@@ -10018,13 +10018,18 @@ describe("runnerd provider runtime wiring", () => {
       if (command.args?.[0] === "--version") return {
         exitCode: 0, timedOut: false, stdout: "codex-cli 0.153.4", stderr: "",
       };
+      if (command.args?.[2] === "paperclip-runner-launch") {
+        throw new Error("fixture_stop_after_launch_staging");
+      }
       if (command.args?.[1]?.includes("base64")) return {
         exitCode: 1, timedOut: false, stdout: "", stderr: "",
       };
       return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
     });
+    const runtimeContext = nativeRuntimeContextFixture();
+    const executionWithContext = { ...execution, runtimeContext };
     const backend = await createRunnerdBackend({
-      db: leaseDb(execution), execution, runnerInstanceId: "runner-new-in-retained-workspace",
+      db: leaseDb(execution), execution: executionWithContext, runnerInstanceId: "runner-new-in-retained-workspace",
       runnerIngressAuthorized: true,
       runnerExecutionTarget: {
         kind: "remote", transport: "sandbox", remoteCwd, environmentId: "environment",
@@ -10038,6 +10043,7 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
     const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
       prepareExternalRunnerState: () => Promise<void>;
+      runnerProcessLauncher: ReturnType<typeof createRemoteRunnerProcessLauncher>;
     };
     await mkdir(join(options.stateDirectory!, "control-plane"), { recursive: true });
     await writeFile(join(options.stateDirectory!, "control-plane", "control-plane-state.json"), JSON.stringify({
@@ -10052,25 +10058,37 @@ describe("runnerd provider runtime wiring", () => {
     }
     if (scenario === "fresh") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
-      expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(true);
+      expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
+      expect(syncIn).not.toHaveBeenCalled();
       const claimCommand = remoteExecute.mock.calls.find(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")![0];
       expect((await lstat(sessionRoot)).mode & 0o777).toBe(0o700);
       // The exact same claim cannot silently reopen an existing partial root.
       expect(() => execFileSync("sh", claimCommand.args!, { stdio: "pipe" })).toThrow();
       // Authority rotation prepares history before Codex's resume path writes
-      // the current invocation's launch files. A second preparation must stage
+      // the current invocation's launch files. The actual launch must stage
       // those files without trying to claim/restore the session a second time.
       const home = join(options.stateDirectory!, "codex-home");
       await mkdir(home, { recursive: true });
       await writeFile(join(home, "auth.json"), "fixture-current-credential");
       await writeFile(join(home, "config.toml"), "fixture-current-config");
+      await writeFile(join(options.stateDirectory!, "runtime-context.json"), JSON.stringify(runtimeContext));
       syncIn.mockClear();
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+      expect(syncIn).not.toHaveBeenCalled();
+      const launched = options.runnerProcessLauncher({
+        command: "/controller/paperclip-runnerd", args: [], cwd: "/controller", environment: {},
+      });
+      await expect(launched.completion).rejects.toThrow("fixture_stop_after_launch_staging");
       for (const name of ["auth.json", "config.toml"]) {
         expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
           files: [expect.objectContaining({ sourcePath: join(home, name), kind: "file", mode: 0o600 })],
         })]);
       }
+      expect(syncIn.mock.calls.flat(2).flatMap((entry: { files: Array<{ sourcePath: string }> }) => entry.files)
+        .filter((file: { sourcePath: string }) => file.sourcePath === runtimeContext.instructions.bundle.rootPath)).toHaveLength(1);
+      expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
+        files: [expect.objectContaining({ sourcePath: join(options.stateDirectory!, "runtime-context.json"), kind: "file" })],
+      })]);
       expect(remoteExecute.mock.calls.filter(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")).toHaveLength(1);
     } else {
       await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch");
