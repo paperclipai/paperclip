@@ -8,6 +8,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   );
   return {
     ...actual,
+    ensureCommandResolvable: vi.fn(async () => {}),
     runChildProcess: vi.fn(async (input: { command: string; args?: string[] }) => {
       return {
         exitCode: 0,
@@ -18,6 +19,18 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
         stderr: "",
       };
     }),
+  };
+});
+
+vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+    "@paperclipai/adapter-utils/execution-target",
+  );
+  return {
+    ...actual,
+    ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => {}),
+    ensureAdapterExecutionTargetRuntimeCommandInstalled: vi.fn(async () => {}),
+    resolveAdapterExecutionTargetCommandForLogs: vi.fn(async (cmd: string) => cmd),
   };
 });
 
