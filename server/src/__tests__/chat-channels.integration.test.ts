@@ -2601,6 +2601,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       );
       expect(retried).toMatchObject({ status: "processed", score: 2 });
       expect(mutations).toHaveLength(publishedCount);
+      const boundThreads = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpoint.id));
+      const findingThread = boundThreads.find((row) => row.externalThreadId.includes(":rc:"))!;
+      expect(findingThread).toMatchObject({
+        issueId: conversation.issueId,
+        resourceId: conversation.resourceId,
+        externalConversationId: conversation.externalConversationId,
+      });
+      const taskCount = (await db.select().from(issues).where(eq(issues.companyId, f.companyId))).length;
+      await deliverMessage({
+        callbacks: f.callbacks,
+        endpointId: f.endpoint.id,
+        provider: "github",
+        thread: makeThread({ channelId: findingThread.externalConversationId, id: findingThread.externalThreadId, name: "Finding discussion" }).thread,
+        trigger: "mention",
+        message: makeMessage({ id: "inline-finding-followup", text: "Please explain this finding", userId: "42", userName: "octocat", mentioned: true }),
+      });
+      const [replyLink] = await db.select().from(chatMessageLinks).where(and(
+        eq(chatMessageLinks.endpointId, f.endpoint.id),
+        eq(chatMessageLinks.providerMessageId, "inline-finding-followup"),
+      ));
+      expect(replyLink.conversationId).toBe(findingThread.id);
+      expect((await db.select().from(issues).where(eq(issues.companyId, f.companyId))).length).toBe(taskCount);
       await expect(
         service.execute(session, "submit_review", { ...assessment, score: 5 }),
       ).rejects.toThrow("already submitted its assessment");

@@ -1180,6 +1180,25 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
                     },
                   },
                 ));
+              // Replies to a finding continue the task that published it. The
+              // provider gives inline threads their own root comment ID, so
+              // bind that native thread before returning the publication.
+              // Retries recover the same provider comment and preserve any
+              // established ownership instead of moving existing follow-ups.
+              await tx.insert(chatConversations).values({
+                companyId: source.endpoint.companyId,
+                endpointId: source.endpoint.id,
+                resourceId: source.resource.id,
+                issueId: source.issue.id,
+                externalConversationId: source.conversation.externalConversationId,
+                externalThreadId: `github:${source.repository}:${source.number}:rc:${posted.id}`,
+                sessionGeneration: 1,
+                externalLabel: source.conversation.externalLabel,
+                providerUrl: posted.html_url,
+                isDirectMessage: false,
+                state: "active",
+                lastActivityAt: new Date(),
+              }).onConflictDoNothing();
               receipts[key] = {
                 id: String(posted.id),
                 url: posted.html_url,
