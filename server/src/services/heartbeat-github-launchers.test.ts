@@ -24,6 +24,31 @@ describe("heartbeat GitHub launcher lifetime", () => {
     expect(second.cleanupLocation).toBeNull();
     expect(first.env).toMatchObject({ GH_TOKEN: "", PAPERCLIP_GITHUB_BROKER_TOKEN: "", PAPERCLIP_GITHUB_BROKER_URL: "" });
   });
+  it.each([false, true])("cleans partial run-scoped staging and preserves its error (cleanup fails: %s)", async (cleanupFails) => {
+    const stagingError = new Error("remote launcher staging failed");
+    const prepareLaunchers = vi.fn(async () => { throw stagingError; });
+    const cleanupLaunchers = vi.fn(async () => {
+      if (cleanupFails) throw new Error("cleanup unavailable");
+    });
+    await expect(prepareHeartbeatGitHubLaunchers({
+      native: true, githubConfigured: true, agentId: "agent-a", target,
+      runId: "failed-run", cwd: "/workspace", env: {}, brokerUrl: "https://paperclip.test",
+      createBrokerToken: () => "current-run-secret",
+    }, prepareLaunchers, cleanupLaunchers)).rejects.toBe(stagingError);
+    expect(cleanupLaunchers).toHaveBeenCalledExactlyOnceWith({ runId: "failed-run", target });
+  });
+
+  it("does not remove shared anonymous wrappers when staging a later run fails", async () => {
+    const stagingError = new Error("remote launcher staging failed");
+    const cleanupLaunchers = vi.fn(async () => undefined);
+    await expect(prepareHeartbeatGitHubLaunchers({
+      native: true, githubConfigured: false, agentId: "agent-a", target,
+      runId: "failed-run", cwd: "/workspace", env: {}, brokerUrl: "https://paperclip.test",
+      createBrokerToken: () => { throw new Error("must not mint a capability"); },
+    }, async () => { throw stagingError; }, cleanupLaunchers)).rejects.toBe(stagingError);
+    expect(cleanupLaunchers).not.toHaveBeenCalled();
+  });
+
   it.each([
     { native: true, githubConfigured: true, target },
     { native: false, githubConfigured: false, target },

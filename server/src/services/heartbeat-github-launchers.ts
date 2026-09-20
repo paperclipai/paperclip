@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
-import { prepareGitHubOperationLaunchers } from "@paperclipai/adapter-utils/execution-target";
+import { cleanupGitHubOperationLaunchers, prepareGitHubOperationLaunchers } from "@paperclipai/adapter-utils/execution-target";
 
 type LauncherInput = Parameters<typeof prepareGitHubOperationLaunchers>[0];
 
@@ -13,6 +13,7 @@ export async function prepareHeartbeatGitHubLaunchers(
     createBrokerToken: () => string;
   },
   prepareLaunchers = prepareGitHubOperationLaunchers,
+  cleanupLaunchers = cleanupGitHubOperationLaunchers,
 ) {
   // An unconfigured sandbox has no managed GitHub identity to broker. Its
   // token-free wrappers still isolate image credentials, but may live as long
@@ -30,5 +31,16 @@ export async function prepareHeartbeatGitHubLaunchers(
     url: anonymous ? "" : input.brokerUrl,
     token: anonymous ? "" : input.createBrokerToken(),
   });
-  return { env: await prepareLaunchers({ ...location, cwd: input.cwd, env }), cleanupLocation: anonymous ? null : location };
+  try {
+    return {
+      env: await prepareLaunchers({ ...location, cwd: input.cwd, env }),
+      cleanupLocation: anonymous ? null : location,
+    };
+  } catch (error) {
+    // The caller cannot retain a cleanup location until staging returns. Clean
+    // partial run-specific files here, preserving the original staging failure.
+    // Anonymous files may still belong to a live warm provider; never delete them.
+    if (!anonymous) await cleanupLaunchers(location).catch(() => undefined);
+    throw error;
+  }
 }
