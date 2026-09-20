@@ -218,7 +218,7 @@ function isClaudeCredentialDocument(value: string): boolean {
  * wins and a stale write-back never replaces a newer credential. It returns the
  * decision codes the other predicates use: only 10 writes back.
  */
-function decideClaudeAuthMerge(refreshed: string, current: string): number {
+export function decideClaudeAuthMerge(refreshed: string, current: string): number {
   const next = claudeOauthBlock(refreshed);
   if (typeof next?.accessToken !== "string" || !next.accessToken.length) return 20;
   const nextExpiry = typeof next.expiresAt === "number" ? next.expiresAt : null;
