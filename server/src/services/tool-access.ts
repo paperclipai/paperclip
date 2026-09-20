@@ -2866,11 +2866,11 @@ function sanitizeHttpFailure(error: unknown): {
   code: string;
 } {
   if (error instanceof TypesafeApiError) {
-    const rejected = error.status === 401 || error.status === 403;
+    const rejected = error.code === "typesafe_api_key_rejected";
     return {
       status: "error",
       message: rejected ? "TypeSafe rejected the API key." : error.message,
-      code: rejected ? "typesafe_api_key_rejected" : "typesafe_request_failed",
+      code: rejected ? error.code : "typesafe_request_failed",
     };
   }
   if (error instanceof HttpError) {

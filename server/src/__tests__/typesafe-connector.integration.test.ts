@@ -290,7 +290,7 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     [429, 429, "typesafe_rate_limited", true],
     [529, 503, "typesafe_overloaded", true],
     [422, 422, "typesafe_invalid_request", false],
-    [401, 502, "typesafe_unauthorized", false],
+    [401, 502, "typesafe_api_key_rejected", false],
   ])("surfaces provider %i as %i without retrying", async (providerStatus, status, code, retryable) => {
     const { companyId, first } = await fixture("all_agents");
     const fetcher = provider(providerStatus);
@@ -298,6 +298,24 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
       executeTypesafeAsk(db, binding(companyId, first.id), ask(), fetcher as unknown as typeof fetch),
     ).rejects.toMatchObject({ status, details: { code, retryable } });
     expect(evaluateCalls(fetcher)).toHaveLength(1);
+  });
+
+  it("reports an unreadable provider answer as a gateway failure, not a bad request", async () => {
+    const { companyId, first } = await fixture("all_agents");
+    const fetcher = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      json({ model: "jev-1.13.0", answers: { urgent: { type: "essay", text: STATE } }, usage: {} }),
+    );
+    const error = await executeTypesafeAsk(
+      db,
+      binding(companyId, first.id),
+      ask(),
+      fetcher as unknown as typeof fetch,
+    ).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      status: 502,
+      details: { code: "typesafe_invalid_response", retryable: false },
+    });
+    expect(JSON.stringify([(error as Error).message, (error as { details?: unknown }).details])).not.toContain(STATE);
   });
 
   it("logs usage without state, instructions, answers or the key", async () => {

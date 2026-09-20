@@ -75,9 +75,13 @@ full contract is in `skills/typesafe/SKILL.md`.
 | 422 | 422 | `typesafe_invalid_request` |
 | 429 | 429 | `typesafe_rate_limited`, `retryable: true` |
 | 529 | 503 | `typesafe_overloaded`, `retryable: true` |
-| 401 and others | 502 | `typesafe_unauthorized` / `typesafe_request_failed` |
+| 401 or 403 | 502 | `typesafe_api_key_rejected` |
+| A body Paperclip cannot read | 502 | `typesafe_invalid_response` |
+| Any other failure | 502 | `typesafe_request_failed` |
 
-Paperclip does not retry and does not substitute another model. The caller
+One table in `server/src/services/typesafe-api.ts` holds these mappings. A
+rejected key is 502 here, not 422, because the agent's request was valid; the
+connection needs attention. Paperclip does not retry and does not substitute another model. The caller
 decides whether to retry.
 
 ## Data handling

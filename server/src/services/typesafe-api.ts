@@ -14,24 +14,53 @@ export function isTypesafeConnection(connection: {
     connection.config.sourceTemplateKey === TYPESAFE_GALLERY_KEY
   );
 }
-const CODES = {
-  401: "typesafe_unauthorized",
-  422: "typesafe_invalid_request",
-  429: "typesafe_rate_limited",
-  529: "typesafe_overloaded",
-} as const;
-export type TypesafeApiErrorCode =
-  | (typeof CODES)[keyof typeof CODES]
-  | "typesafe_request_failed";
+interface TypesafeFailure {
+  code: string;
+  /** Status Paperclip returns to its own caller. */
+  httpStatus: number;
+  retryable: boolean;
+}
+const KEY_REJECTED: TypesafeFailure = {
+  code: "typesafe_api_key_rejected",
+  httpStatus: 502,
+  retryable: false,
+};
+const REQUEST_FAILED: TypesafeFailure = {
+  code: "typesafe_request_failed",
+  httpStatus: 502,
+  retryable: false,
+};
+const INVALID_RESPONSE: TypesafeFailure = {
+  code: "typesafe_invalid_response",
+  httpStatus: 502,
+  retryable: false,
+};
+// 529 is not a registered status; 503 carries the same meaning to HTTP clients.
+const FAILURES: Record<number, TypesafeFailure> = {
+  401: KEY_REJECTED,
+  403: KEY_REJECTED,
+  422: { code: "typesafe_invalid_request", httpStatus: 422, retryable: false },
+  429: { code: "typesafe_rate_limited", httpStatus: 429, retryable: true },
+  529: { code: "typesafe_overloaded", httpStatus: 503, retryable: true },
+};
 
 export class TypesafeApiError extends Error {
-  readonly code: TypesafeApiErrorCode;
+  readonly code: string;
+  readonly httpStatus: number;
   readonly retryable: boolean;
-  constructor(readonly status: number) {
+  constructor(
+    readonly status: number,
+    failure: TypesafeFailure = FAILURES[status] ?? REQUEST_FAILED,
+  ) {
     // Provider bodies may echo submitted state. Never log them.
-    super(`TypeSafe request failed (${status})`);
-    this.code = CODES[status as keyof typeof CODES] ?? "typesafe_request_failed";
-    this.retryable = status === 429 || status === 529;
+    super(
+      failure === INVALID_RESPONSE
+        ? "TypeSafe returned a response Paperclip could not read"
+        : `TypeSafe request failed (${status})`,
+    );
+    this.code = failure.code;
+    this.httpStatus = failure.httpStatus;
+    this.retryable = failure.retryable;
   }
 }
 
@@ -84,14 +113,20 @@ export function typesafeApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!response.ok) throw new TypesafeApiError(response.status);
-    return response.json();
+    return response.json().catch(() => undefined);
+  }
+  // Zod issues can echo provider values, so a mismatch never leaves as a ZodError.
+  function read<T>(schema: z.ZodType<T>, body: unknown): T {
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) throw new TypesafeApiError(502, INVALID_RESPONSE);
+    return parsed.data;
   }
   return {
     listModels: async () =>
-      modelsSchema
-        .parse(await request("/models"))
-        .models.map((model) => model.name),
+      read(modelsSchema, await request("/models")).models.map(
+        (model) => model.name,
+      ),
     evaluate: async (body: TypesafeEvaluateRequest): Promise<TypesafeAskResult> =>
-      resultSchema.parse(await request("/systemone", body)),
+      read(resultSchema, await request("/systemone", body)),
   };
 }
