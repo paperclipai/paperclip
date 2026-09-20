@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createIssueThreadInteractionSchema } from "../../packages/shared/src/validators/issue.js";
 import {
   connectionReviewSuite,
   runnerEnvironments,
@@ -25,6 +26,30 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("gives native warm turns a real review card before reporting needs_review", () => {
+    const prompts = [daytonaWarmContinuityTask.buildPrompt("nonce"), ...daytonaWarmContinuityTask.buildFollowupMessages!("nonce")];
+    for (const [index, prompt] of prompts.entries()) {
+      const match = prompt.match(/call request_human_input with (\{.*\})\. Reuse/);
+      if (index === 2) {
+        expect(match).toBeNull();
+        continue;
+      }
+      expect(match, `turn ${index + 1} must create its review interaction`).not.toBeNull();
+      const request = JSON.parse(match![1]);
+      const interaction = createIssueThreadInteractionSchema.parse({
+        kind: "request_confirmation", idempotencyKey: request.idempotencyKey,
+        title: request.title, summary: request.prompt, continuationPolicy: request.continuationPolicy,
+        payload: { ...request.payload, prompt: request.prompt },
+      });
+      expect(interaction).toMatchObject({
+        kind: "request_confirmation", continuationPolicy: "wake_assignee",
+        payload: { target: { type: "custom", revisionId: `nonce-T${index + 1}` }, rejectRequiresReason: true },
+      });
+      expect(request.interactionKind).toBe("confirmation");
+      expect(prompt.indexOf("call request_human_input with")).toBeLessThan(prompt.indexOf("then call paperclip_finish"));
+    }
+  });
+
   it("defines sixteen local connection-review journeys without expanding the default matrix", () => {
     expect(connectionReviewSuite.expectedMatrixSize).toBe(16);
     expect(new Set(connectionReviewSuite.profiles.map(profile => profile.id))).toEqual(new Set(["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"]));

@@ -100,7 +100,7 @@ canonical Plan revision, capture its pending UI, approve in the browser, and
 prove exactly two successful runs. `warm_three_turn` provides exactly two
 browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
-ten-minute turn deadlines.
+ten-minute turn deadlines. Native warm turns 1 and 2 create a real confirmation card with `request_human_input` before reporting `needs_review`; the pending card supplies the required review gate. A disposition string alone does not create that gate. Turn 3 reports Done without another card.
 
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared
