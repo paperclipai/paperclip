@@ -335,3 +335,30 @@ has been claimed as successful. The local AWS staging profile is unavailable;
 the existing pre-merge staging deployment workflow is the next deployment path
 to qualify after the local GitHub workflow succeeds. No production rollout or
 merge has occurred.
+
+
+### Embedded-browser continuation (2026-09-20)
+
+The embedded browser is signed in to GitHub and can read the private fixture.
+The manifest form originally targeted a new window, which did not open in the
+embedded browser. Revision `ac5f1f502` submits in the same tab, retaining the
+saved setup and returning through the normal callback. The real UI now reaches
+GitHub's **Confirm access** screen. User verification is pending there; no App
+registration or agent review is yet counted as complete.
+
+The overnight general server run reported 12,720 passing tests, eight failed
+tests, and 92 skipped tests (664 passing files, four failed files, three skipped
+files). Follow-up fixes document all 11 GitHub management API operations with
+board-only security and update native runtime test mocks for task-bound bot
+connections. The focused contract/policy/runtime run passed 27 tests. The added
+native task-binding case also passed. The earlier inline-patch failure did not reproduce in the current policy
+suite; the original test process overlapped the addition of that function.
+
+The bounded remaining workspace group passed 2,617 tests (20 skipped), and all
+63 CLI worktree tests passed on the isolated rerun. The environment custom-image
+suite still fails starting an additional embedded PostgreSQL database near the
+host's shared-memory segment limit; do not count its skipped cases as passes.
+All 27 serialized suites after the OpenAPI suite passed. Together with the
+120 passing suites before it and the corrected OpenAPI suite, all 148 serialized
+suites have passing results across the original and resumed runs. The updated
+application build, Storybook build, server/UI typechecks, and token gates passed.
