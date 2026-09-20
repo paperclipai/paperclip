@@ -19226,6 +19226,79 @@ export function heartbeatService(
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  // Sweep for orphaned wakeup requests: rows with status "queued" and run_id
+  // NULL. These are created when enqueueWakeup inserts the wakeup request but
+  // the subsequent heartbeat-run insert or the transaction's .catch() path
+  // returns "deferred" without stamping the run. The sweep cancels these orphans
+  // so they don't linger forever, and logs them for observability.
+  async function sweepOrphanedWakeupRequests(opts?: { staleThresholdMs?: number }) {
+    const staleThresholdMs = opts?.staleThresholdMs ?? 2 * 60 * 1000; // default: 2 minutes
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - staleThresholdMs);
+
+    // Find orphaned wakeups: status "queued", no linked run, older than cutoff
+    const orphaned = await db
+      .select({
+        id: agentWakeupRequests.id,
+        agentId: agentWakeupRequests.agentId,
+        companyId: agentWakeupRequests.companyId,
+        source: agentWakeupRequests.source,
+        reason: agentWakeupRequests.reason,
+        requestedAt: agentWakeupRequests.requestedAt,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "queued"),
+          isNull(agentWakeupRequests.runId),
+          lte(agentWakeupRequests.requestedAt, cutoff),
+        ),
+      )
+      .limit(100);
+
+    if (orphaned.length === 0) return { cancelled: 0 };
+
+    // Cancel each orphaned wakeup with a logged reason
+    for (const wake of orphaned) {
+      try {
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "skipped",
+            reason: "orphaned_wakeup_no_run",
+            payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({
+              orphanedRecovery: {
+                reason: "wakeup_request_had_no_linked_heartbeat_run",
+                originalReason: wake.reason,
+                originalSource: wake.source,
+                recoveredAt: now.toISOString(),
+              },
+            })}::jsonb`,
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, wake.id));
+      } catch (err) {
+        logger.warn(
+          { err, wakeupId: wake.id, agentId: wake.agentId },
+          "sweepOrphanedWakeupRequests: failed to cancel orphaned wakeup",
+        );
+      }
+    }
+
+    logger.warn(
+      {
+        cancelled: orphaned.length,
+        wakeupIds: orphaned.map((w) => w.id),
+        agentIds: [...new Set(orphaned.map((w) => w.agentId))],
+      },
+      "cancelled orphaned wakeup requests (status=queued, run_id=null)",
+    );
+
+    return { cancelled: orphaned.length };
+  }
+
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments();
@@ -19858,7 +19931,17 @@ export function heartbeatService(
     const promise = enqueueWakeup(agentId, opts);
     activeWakeupPromises.add(promise);
     void promise
-      .catch(() => {})
+      .catch((error) => {
+        logger.error(
+          {
+            err: error,
+            agentId,
+            source: opts.source ?? "on_demand",
+            reason: opts.reason ?? null,
+          },
+          "trackWakeup: enqueueWakeup failed; the wakeup promise will be caught by the caller but the error is logged here for scheduler observability",
+        );
+      })
       .finally(() => {
         activeWakeupPromises.delete(promise);
       });
@@ -29284,6 +29367,7 @@ export function heartbeatService(
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     sweepPendingCleanupLeases,
+    sweepOrphanedWakeupRequests,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
