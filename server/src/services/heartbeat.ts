@@ -23374,10 +23374,17 @@ export function heartbeatService(
                     previousTurn: (() => {
                       if (!previousNativeRun || nativeReviewRequest) return null;
                       try {
-                        return {
-                          runId: previousNativeRun.id,
-                          task: parseNativeExecutionInput(parseObject(previousNativeRun.runnerProfileJson).nativeExecutionInput).task,
-                        };
+                        const previousTask = parseNativeExecutionInput(parseObject(previousNativeRun.runnerProfileJson).nativeExecutionInput).task;
+                        if (paperclipWakePayload?.externalChatProvider) {
+                          // External native inputs use a neutral task title. Compare
+                          // the saved canonical brief so old provider text is not
+                          // repeated as a change, while genuine edits still arrive.
+                          const savedIssue = parseObject(parseObject(previousNativeRun.contextSnapshot).paperclipIssue);
+                          if (savedIssue.id !== issueRef.id || typeof savedIssue.title !== "string" ||
+                            (savedIssue.description !== null && typeof savedIssue.description !== "string")) return null;
+                          return { runId: previousNativeRun.id, task: { title: savedIssue.title, description: savedIssue.description } };
+                        }
+                        return { runId: previousNativeRun.id, task: previousTask };
                       } catch {
                         // An invalid prior snapshot must use the fresh bootstrap.
                         return null;

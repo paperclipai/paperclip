@@ -151,6 +151,17 @@ identity before reusing the session; changing identity retires the previous owne
 Other managed harnesses retain per-turn cleanup. A suspended native execution
 whose credential identity changed must restart as a new execution.
 
+After a verified provider resume, plain-text Slack follow-ups send the new
+authorized message delta instead of repeating the full task framing. The saved
+run and current message identities and bodies must match. Actual brief edits
+still arrive; historical Slack task titles are not repeated as new directions.
+Attachments, omitted input, questions, approvals, and recovery retain their full
+framing. A fresh provider session always receives the complete bootstrap.
+Retained sandbox runner binaries are reused only after an exact SHA-256 match
+with the controller artifact and the normal capability checks. Run-scoped
+credential changes still require provider process rotation.
+
+
 Warm sandbox execution requires both `reuseLease: true` and
 `runnerLifecycleMode: "warm"` on the environment. `runnerIdleTimeoutMs` bounds
 idle process retention. Chat tasks without a project reuse a sandbox only within

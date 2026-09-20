@@ -1,4 +1,4 @@
-import { normalizePaperclipWakePayload } from "@paperclipai/adapter-utils/server-utils";
+import { isPaperclipExternalChatContractTurn, normalizePaperclipWakePayload } from "@paperclipai/adapter-utils/server-utils";
 
 /** Only new, authorized events belong in an already retained provider conversation.
  * Full bootstrap input is kept separately for an actual provider resume failure.
@@ -8,16 +8,44 @@ export function buildNativeContinuationPrompt(input: {
   previousRunId: string;
   issue: { title: string; description: string | null };
   previousIssue: { title: string; description: string | null };
+  /** The constructor opts plain-text chat into the existing resume protocol. */
+  allowExternalChat?: boolean;
 }): string | null {
   const wake = normalizePaperclipWakePayload(input.wakePayload);
   const continuation = wake?.executionContinuation;
   const delta = continuation?.resumeDelta;
   if (!wake || !delta || delta.baseRunId !== input.previousRunId) return null;
-  // These paths have specialized delivery/recovery contracts. Preserve their
-  // existing framing until they have an event-specific continuation projection.
-  if (!['issue_commented', 'issue_children_completed'].includes(wake.reason ?? '') ||
+  const rawWake = input.wakePayload && typeof input.wakePayload === "object"
+    ? input.wakePayload as Record<string, unknown> : {};
+  // Attachment descriptors are intentionally omitted by the generic normalizer.
+  // Retain the complete bootstrap framing whenever current input needs them or
+  // an omission notice. The compact path never guesses an unavailable file.
+  const hasAttachmentContext =
+    (rawWake.attachmentOmissions != null &&
+      (!Array.isArray(rawWake.attachmentOmissions) || rawWake.attachmentOmissions.length > 0)) ||
+    (Array.isArray(rawWake.comments) && rawWake.comments.some((comment) =>
+      comment && typeof comment === "object" &&
+      (comment as Record<string, unknown>).attachments != null &&
+      (!Array.isArray((comment as Record<string, unknown>).attachments) ||
+        ((comment as Record<string, unknown>).attachments as unknown[]).length > 0)));
+  const externalChat = input.allowExternalChat === true &&
+    wake.externalChatProvider === "slack" &&
+    isPaperclipExternalChatContractTurn(input.wakePayload) &&
+    !hasAttachmentContext && wake.commentIds.length > 0 &&
+    wake.latestCommentId === wake.commentIds.at(-1) &&
+    wake.commentIds.every((id) => {
+      const comment = wake.comments.find((entry) => entry.id === id);
+      return comment && delta.messages.some((message) =>
+        message.id === id && message.body === comment.body &&
+        message.authorType === comment.authorType && message.authorId === comment.authorId);
+    });
+  // Other provider, attachment, question, approval, and recovery paths keep
+  // their specialized framing. A matching prior run still gates every delta.
+  if ((wake.externalChatProvider && !externalChat) ||
+    (!['issue_commented', 'issue_children_completed'].includes(wake.reason ?? '') &&
+      !(externalChat && wake.reason === "External chat message received")) ||
     wake.fallbackFetchNeeded || wake.truncated || wake.recovery || continuation?.interruptedRunId ||
-    wake.externalChatExecutionBound || wake.externalChatQuestionResponse ||
+    (wake.externalChatExecutionBound && !externalChat) || wake.externalChatQuestionResponse ||
     wake.taskWatchdog || wake.livenessContinuation || wake.activeTreeHold ||
     wake.skillTest || wake.executionStage || wake.agentMessage ||
     wake.documentReviewContext || wake.planReviewContext || wake.annotationDeltas.length > 0

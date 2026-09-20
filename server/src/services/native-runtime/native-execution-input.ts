@@ -175,6 +175,7 @@ export function buildNativeExecutionInput(input: {
         wakePayload: input.wakePayload,
         previousRunId: input.previousTurn.runId,
         previousIssue: input.previousTurn.task,
+        allowExternalChat: true,
         issue: input.issue,
       }),
     } : {}),
