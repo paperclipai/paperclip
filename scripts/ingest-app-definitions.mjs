@@ -187,6 +187,17 @@ const apps = [
     guidanceMd: "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.",
     consoleLinks: { keys: "https://console.agentmail.to", docs: "https://docs.agentmail.to/inboxes" }, riskTier: "S3", requiredResourceFilters: ["inbox"]
   }],
+  ["typesafe", "TypeSafe", "Ask the Jev model yes/no, multiple-choice and scoring questions and get calibrated answers.", "ai", "typesafe.ai", ["https://docs.typesafe.ai/*"], {
+    key: "api-key", label: "Connect with an API key", transport: "rest_api", auth: "api_key", ownershipModes: ["customer"],
+    whenToUse: "Use a TypeSafe API key so agents can ask Jev typed questions.",
+    credentialFields: [{ key: "apiKey", label: "TypeSafe API key", type: "password", placeholder: "Paste your TypeSafe API key", required: true, secret: true }],
+    keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    extensionFields: [{ key: "model", label: "Model", type: "text", placeholder: "jev-latest", defaultValue: "jev-latest", advanced: true }],
+    guidanceMd: "Create an API key in your TypeSafe account and paste it here. Agents you select can then ask Jev questions about text or data from their tasks.",
+    consoleLinks: { docs: "https://docs.typesafe.ai/introduction/quickstart" },
+    warnings: ["Content an agent submits for evaluation is sent to TypeSafe. Grant access only to agents whose task content may leave this instance."],
+    riskTier: "S2",
+  }],
   [
     "zapier",
     "Zapier",

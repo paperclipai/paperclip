@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "slug": "typesafe",
+  "name": "TypeSafe",
+  "description": "Ask the Jev model yes/no, multiple-choice and scoring questions and get calibrated answers.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/typesafe.png"
+  },
+  "urlPatterns": [
+    "https://docs.typesafe.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "api-key",
+      "label": "Connect with an API key",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a TypeSafe API key so agents can ask Jev typed questions.",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "TypeSafe API key",
+          "type": "password",
+          "placeholder": "Paste your TypeSafe API key",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "extensionFields": [
+        {
+          "key": "model",
+          "label": "Model",
+          "type": "text",
+          "placeholder": "jev-latest",
+          "defaultValue": "jev-latest",
+          "advanced": true
+        }
+      ],
+      "guidanceMd": "Create an API key in your TypeSafe account and paste it here. Agents you select can then ask Jev questions about text or data from their tasks.",
+      "consoleLinks": {
+        "docs": "https://docs.typesafe.ai/introduction/quickstart"
+      },
+      "warnings": [
+        "Content an agent submits for evaluation is sent to TypeSafe. Grant access only to agents whose task content may leave this instance."
+      ],
+      "riskTier": "S2"
+    }
+  ]
+}

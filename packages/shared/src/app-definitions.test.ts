@@ -7,6 +7,7 @@ import {
   APP_STORE_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
   CONNECTABLE_APP_DEFINITIONS,
+  CONNECTABLE_APP_SLUGS,
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
   getAppDefinitionForUrl,
@@ -719,7 +720,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(56);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(57);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1017,5 +1018,28 @@ describe("Railway provider", () => {
     expect(app.methods).toHaveLength(1);
     expect(app.methods[0]).toMatchObject({ key: "mcp-oauth", auth: "oauth", transport: "mcp_remote", ownershipModes: ["dcr", "customer"], riskTier: "S4", defaults: { serverUrl: "https://mcp.railway.com", scopesHint: ["openid", "offline_access", "workspace:member"], oauthAuthorizationParams: { prompt: "consent" } } });
     expect(JSON.stringify(app.methods)).toContain("Live Railway qualification is pending");
+  });
+});
+
+describe("typesafe", () => {
+  const app = APP_DEFINITIONS.find((entry) => entry.slug === "typesafe");
+  it("is a connectable, store-visible API-key tool app", () => {
+    expect(app).toBeTruthy();
+    expect(CONNECTABLE_APP_SLUGS).toContain("typesafe");
+    expect(APP_STORE_DEFINITIONS.some((entry) => entry.slug === "typesafe")).toBe(true);
+    expect(app!.methods).toHaveLength(1);
+    const [method] = app!.methods;
+    expect(method).toMatchObject({
+      key: "api-key",
+      transport: "rest_api",
+      auth: "api_key",
+      riskTier: "S2",
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(method.provider).toBeUndefined();
+    expect(method.credentialFields?.map((field) => field.key)).toEqual(["apiKey"]);
+    expect(method.extensionFields).toEqual([
+      expect.objectContaining({ key: "model", defaultValue: "jev-latest", advanced: true }),
+    ]);
   });
 });
