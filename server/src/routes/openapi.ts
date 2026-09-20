@@ -2137,7 +2137,7 @@ registry.registerPath({
   tags: ["TypeSafe"],
   summary: "Ask TypeSafe typed questions about a state",
   description:
-    "Agent only. The agent needs an active TypeSafe connection installed for the company or for that agent. The state and questions are sent to TypeSafe. Paperclip does not retry 429 or 503.",
+    "Agent only. The X-Paperclip-Run-Id header must name a running run of the calling agent. The agent needs an active, healthy TypeSafe connection installed for the company or for that agent, and tool policy must allow typesafe.ask. The state and questions are sent to TypeSafe. Paperclip does not retry 429 or 503.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),
     body: jsonBody(typesafeAskSchema),

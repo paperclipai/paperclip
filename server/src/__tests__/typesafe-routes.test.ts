@@ -113,9 +113,44 @@ describeEmbeddedPostgres("TypeSafe routes", () => {
     ...(runId ? { runId } : {}),
   });
 
+  const startRun = (companyId: string, agentId: string, status = "running") =>
+    db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId, invocationSource: "assignment", status, contextSnapshot: {} })
+      .returning()
+      .then((rows) => rows[0]!.id);
+
+  it("refuses an agent key that carries no run", async () => {
+    const { companyId, agentId } = await fixture(true);
+    const { app, fetcher } = appFor(agentActor(companyId, agentId));
+    const res = await request(app).post(`/api/companies/${companyId}/typesafe/ask`).send(BODY);
+    expect(res.status).toBe(403);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["succeeded", "failed", "cancelled"])("refuses a %s run", async (status) => {
+    const { companyId, agentId } = await fixture(true);
+    const { app, fetcher } = appFor(agentActor(companyId, agentId, await startRun(companyId, agentId, status)));
+    const res = await request(app).post(`/api/companies/${companyId}/typesafe/ask`).send(BODY);
+    expect(res.status).toBe(403);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("refuses a run that belongs to another agent", async () => {
+    const { companyId, agentId } = await fixture(true);
+    const [other] = await db
+      .insert(agents)
+      .values({ companyId, name: `Other ${randomUUID()}`, role: "engineer", status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {} })
+      .returning();
+    const { app, fetcher } = appFor(agentActor(companyId, agentId, await startRun(companyId, other!.id)));
+    const res = await request(app).post(`/api/companies/${companyId}/typesafe/ask`).send(BODY);
+    expect(res.status).toBe(403);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("answers an agent that has the connection", async () => {
     const { companyId, agentId } = await fixture(true);
-    const { app } = appFor(agentActor(companyId, agentId));
+    const { app } = appFor(agentActor(companyId, agentId, await startRun(companyId, agentId)));
     const res = await request(app).post(`/api/companies/${companyId}/typesafe/ask`).send(BODY);
     expect(res.status).toBe(200);
     expect(res.body).toEqual(ANSWER);
@@ -141,7 +176,7 @@ describeEmbeddedPostgres("TypeSafe routes", () => {
 
   it("refuses an agent without the connection", async () => {
     const { companyId, agentId } = await fixture(false);
-    const { app, fetcher } = appFor(agentActor(companyId, agentId));
+    const { app, fetcher } = appFor(agentActor(companyId, agentId, await startRun(companyId, agentId)));
     const res = await request(app).post(`/api/companies/${companyId}/typesafe/ask`).send(BODY);
     expect(res.status).toBe(403);
     expect(fetcher).not.toHaveBeenCalled();
@@ -166,7 +201,7 @@ describeEmbeddedPostgres("TypeSafe routes", () => {
 
   it("rejects a malformed body", async () => {
     const { companyId, agentId } = await fixture(true);
-    const { app, fetcher } = appFor(agentActor(companyId, agentId));
+    const { app, fetcher } = appFor(agentActor(companyId, agentId, await startRun(companyId, agentId)));
     const res = await request(app)
       .post(`/api/companies/${companyId}/typesafe/ask`)
       .send({ state: "s", questions: { q: { type: "score", instructions: "?", criteria: ["only"] } } });

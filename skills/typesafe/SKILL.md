@@ -114,7 +114,7 @@ in total, and 32k for the state plus the longest question.
 | Status | Meaning | What to do |
 | --- | --- | --- |
 | 400 | The request shape is wrong. | Fix the request. The response names the field. |
-| 403 | No TypeSafe connection is assigned to you. | Stop. Report it; access is managed on the connection in Paperclip. |
+| 403 | No TypeSafe connection is assigned to you, a policy blocks the call, or the request carries no active run of yours. | Send `X-Paperclip-Run-Id` from your run environment. Otherwise stop and report it; access is managed on the connection in Paperclip. |
 | 422 | TypeSafe rejected the request or the model name, or you must pick a `connectionId`. | Fix the request. |
 | 429, 503 | TypeSafe is rate limiting or overloaded. | Wait, then retry once. |
 | 502 | TypeSafe rejected the stored key or failed. | Stop. Report that the connection needs attention. |

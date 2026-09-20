@@ -13636,6 +13636,14 @@ export function toolAccessService(
         applicationId: connection.applicationId,
       }),
     );
+    // No catalog actions exist to include, so the profile grants the connection itself.
+    if (isTypesafeConnection(connection))
+      entries.push({
+        selectorType: "connection",
+        effect: "include",
+        connectionId: connection.id,
+        applicationId: connection.applicationId,
+      });
     const profileKey = `app:${connection.id}`;
     const bindingInputs: CreateToolProfileBindingForProfile[] =
       input.access === "all_agents"
@@ -13703,8 +13711,12 @@ export function toolAccessService(
             if (
               !entries.some(
                 (entry) =>
-                  entry.catalogEntryId &&
-                  entry.catalogEntryId === prior.catalogEntryId,
+                  (entry.catalogEntryId &&
+                    entry.catalogEntryId === prior.catalogEntryId) ||
+                  (!prior.catalogEntryId &&
+                    entry.selectorType === prior.selectorType &&
+                    entry.connectionId === prior.connectionId &&
+                    (entry.toolName ?? null) === prior.toolName),
               )
             )
               entries.push({

@@ -1,10 +1,11 @@
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { typesafeAskSchema, type TypesafeAskResult } from "@paperclipai/shared";
 import { HttpError, badRequest, forbidden, unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
 import { secretService } from "../secrets.js";
+import { toolAccessPolicyService } from "../tool-access-policy.js";
 import {
   TypesafeApiError,
   isTypesafeConnection,
@@ -88,6 +89,8 @@ export async function assignedTypesafeConnections(
         eq(toolConnections.transport, "rest_api"),
         eq(toolConnections.status, "active"),
         eq(toolConnections.enabled, true),
+        // Same health gate as the tool gateway's catalog.
+        inArray(toolConnections.healthStatus, ["ok", "healthy"]),
         or(
           and(
             eq(toolConnectionInstalls.targetType, "company"),
@@ -131,13 +134,6 @@ export async function executeTypesafeAsk(
   if (!connection)
     throw forbidden("That TypeSafe connection is not assigned to this agent");
 
-  const ref = connection.credentialSecretRefs.find(
-    (candidate) => candidate.configPath === API_KEY_PATH,
-  );
-  if (!ref)
-    throw unprocessable("Reconnect TypeSafe to restore its API key", {
-      code: "missing_secret",
-    });
   const methodConfig = connection.config.methodConfig;
   const configured =
     methodConfig && typeof methodConfig === "object" && !Array.isArray(methodConfig)
@@ -148,7 +144,42 @@ export async function executeTypesafeAsk(
     throw unprocessable("This TypeSafe connection has no model", {
       code: "typesafe_model_missing",
     });
+  const questionCount = Object.keys(input.questions).length;
 
+  const policy = toolAccessPolicyService(db);
+  const policyRequest = {
+    companyId: binding.companyId,
+    actor: {
+      actorType: "agent" as const,
+      actorId: binding.agentId,
+      agentId: binding.agentId,
+    },
+    runContext: {
+      issueId: binding.issueId ?? undefined,
+      heartbeatRunId: binding.runId ?? undefined,
+    },
+    request: {
+      connectionId: connection.id,
+      toolName: "typesafe.ask",
+      providerType: "typesafe",
+      riskLevel: "read" as const,
+      // Shape only: the audit row must not hold the state or the questions.
+      arguments: { model, questionCount },
+      sideEffecting: false,
+    },
+    consumeRateLimit: true,
+  };
+  const decision = await policy.decide(policyRequest);
+  await policy.writeAudit(policyRequest, decision);
+  if (!decision.allowed) throw forbidden(decision.explanation);
+
+  const ref = connection.credentialSecretRefs.find(
+    (candidate) => candidate.configPath === API_KEY_PATH,
+  );
+  if (!ref)
+    throw unprocessable("Reconnect TypeSafe to restore its API key", {
+      code: "missing_secret",
+    });
   const key = await secretService(db).resolveSecretValue(
     connection.companyId,
     ref.secretId,
@@ -191,7 +222,7 @@ export async function executeTypesafeAsk(
     details: {
       // The requested name: resolved versions such as jev-1.13.0 trip the JWT-shape redactor.
       model,
-      questionCount: Object.keys(input.questions).length,
+      questionCount,
       inputTokens: result.usage.input_tokens,
       outputTokens: result.usage.output_tokens,
     },
