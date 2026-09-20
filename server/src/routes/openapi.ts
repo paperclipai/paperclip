@@ -2148,6 +2148,9 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     422: r.unprocessable,
+    429: { description: "TypeSafe rate limit reached; retry later" },
+    502: { description: "TypeSafe rejected the stored key or failed; inspect connection health" },
+    503: { description: "TypeSafe is overloaded; retry later" },
   },
 });
 
