@@ -1,3 +1,7 @@
+import {
+  GitHubPublicationLeaseLost,
+  withGitHubPublicationLease,
+} from "./chat-github-publication-lease.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
@@ -299,13 +303,16 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       ),
     };
   }
-  async function client(source: Awaited<ReturnType<typeof scope>>) {
+  async function client(
+    source: Awaited<ReturnType<typeof scope>>,
+    requestFetch = fetchImpl,
+  ) {
     const token = await githubBotRepositoryToken(
       db,
       source.endpoint.companyId,
       source.endpoint.id,
       source.repositoryId,
-      fetchImpl,
+      requestFetch,
     );
     const prefix = `/repos/${source.repository.split("/").map(encodeURIComponent).join("/")}`;
     return {
@@ -313,7 +320,8 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       request: <T>(
         path: string,
         options?: Parameters<typeof githubBotRequest>[3],
-      ) => githubBotRequest<T>(fetchImpl, token, `${prefix}${path}`, options),
+      ) =>
+        githubBotRequest<T>(requestFetch, token, `${prefix}${path}`, options),
     };
   }
   async function reviewForHead(
@@ -547,9 +555,9 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     if (name === "read_pull_request") {
       const parsed = readSchema.parse(input);
       if (parsed.section === "metadata") {
-        const configuration = (source.delivery.normalizedEvent.githubManual ?? source.delivery.normalizedEvent.githubAutomatic) as
-          | { policy: GitHubReviewPolicy; revision: number }
-          | undefined;
+        const configuration = (source.delivery.normalizedEvent.githubManual ??
+          source.delivery.normalizedEvent.githubAutomatic) as
+          { policy: GitHubReviewPolicy; revision: number } | undefined;
         const previous = await githubPreviousAssessment(
           db,
           source.endpoint,
@@ -560,7 +568,8 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
           untrusted: true,
           pull,
           reviewPolicy: configuration?.policy ?? source.policy,
-          configurationRevision: configuration?.revision ?? source.config.revision,
+          configurationRevision:
+            configuration?.revision ?? source.config.revision,
           previousAssessment: previous
             ? {
                 reviewedCommit: previous.headSha,
@@ -669,12 +678,22 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       };
     }
     if (name === "begin_review") {
-      const parsed = z.object({ reviewedCommit: githubCommitSchema }).strict().safeParse(input);
-      if (!parsed.success) throw new HttpError(400, "Provide the reviewedCommit from PR metadata");
+      const parsed = z
+        .object({ reviewedCommit: githubCommitSchema })
+        .strict()
+        .safeParse(input);
+      if (!parsed.success)
+        throw new HttpError(400, "Provide the reviewedCommit from PR metadata");
       if (parsed.data.reviewedCommit !== pull.head.sha)
-        throw conflict("The PR head changed. Read current metadata before starting a review.");
+        throw conflict(
+          "The PR head changed. Read current metadata before starting a review.",
+        );
       const review = await reviewForHead(source, pull);
-      return { reviewId: review.id, reviewedCommit: review.headSha, state: review.state };
+      return {
+        reviewId: review.id,
+        reviewedCommit: review.headSha,
+        state: review.state,
+      };
     }
     if (name === "submit_review") {
       const review = await reviewForHead(source, pull);
@@ -920,398 +939,453 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   }
   async function processPublication(actionId: string) {
     // Existing chat outbox maintenance retries this action after a restart.
-    // The row lock serializes dispatch; provider markers recover unknown writes.
-    await db.transaction(async (tx) => {
-      const [action] = await tx
-        .select()
-        .from(chatActions)
-        .where(
-          and(
-            eq(chatActions.id, actionId),
-            eq(chatActions.kind, "github_review_publication"),
-          ),
-        )
-        .for("update", { skipLocked: true });
-      if (
-        !action ||
-        action.status === "processed" ||
-        action.status === "cancelled"
+    // A durable per-PR lease serializes dispatch; markers recover unknown writes.
+    const [action] = await db
+      .select()
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.id, actionId),
+          eq(chatActions.kind, "github_review_publication"),
+        ),
       )
-        return;
-      const session = action.payload.session as Session;
-      if (!session || session.companyId !== action.companyId)
-        throw forbidden("Invalid GitHub publication binding");
-      try {
-        const source = await scope(session, true);
-        if (
-          source.endpoint.id !== action.endpointId ||
-          source.conversation.id !== action.conversationId ||
-          source.delivery.id !== action.deliveryId
-        )
-          throw forbidden("GitHub publication context changed");
-        await tx.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`github-publish:${source.endpoint.id}:${source.repositoryId}:${source.number}`}, 0))`,
-        );
-        await assertPublicationAuthority(source, action);
-        const api = await client(source);
-        const publicationMarker = marker(
-          "publication",
-          action.providerActionId,
-        );
-        const findByMarker = async (route: string, bodyMarker: string) => {
-          for (let page = 1; page <= 100; page++) {
-            const rows = await api.request<
-              Array<{
-                id: number;
-                body?: string;
-                html_url: string;
-                user?: { login?: string };
-              }>
-            >(`${route}?per_page=100&page=${page}`);
-            const found = rows.find(
-              (row) =>
-                row.body?.includes(bodyMarker) &&
-                row.user?.login === source.endpoint.botUsername,
-            );
-            if (found) return found;
-            if (rows.length < 100) return null;
-          }
-          throw conflict(
-            "GitHub history is too large to safely resolve a publication retry",
+      .limit(1);
+    if (
+      !action ||
+      action.status === "processed" ||
+      action.status === "cancelled"
+    )
+      return;
+    const [binding] = await db
+      .select({
+        thread: chatConversations.externalThreadId,
+        repository: chatEndpointResources.metadata,
+      })
+      .from(chatConversations)
+      .innerJoin(
+        chatEndpointResources,
+        eq(chatEndpointResources.id, chatConversations.resourceId),
+      )
+      .where(
+        and(
+          eq(chatConversations.id, action.conversationId!),
+          eq(chatConversations.companyId, action.companyId),
+          eq(chatConversations.endpointId, action.endpointId),
+        ),
+      );
+    const number = binding?.thread.match(
+      /^github:[^:]+:(?:issue:)?([1-9][0-9]*)(?::rc:[1-9][0-9]*)?$/,
+    )?.[1];
+    if (!number || !binding?.repository.providerRepositoryId) return;
+    await withGitHubPublicationLease(
+      db,
+      {
+        companyId: action.companyId,
+        endpointId: action.endpointId,
+        repositoryId: String(binding.repository.providerRepositoryId),
+        number: Number(number),
+      },
+      fetchImpl,
+      async (lease) => {
+        const [fresh] = await db
+          .select()
+          .from(chatActions)
+          .where(eq(chatActions.id, actionId));
+        if (!fresh || ["processed", "cancelled"].includes(fresh.status)) return;
+        const session = action.payload.session as Session;
+        if (!session || session.companyId !== action.companyId)
+          throw forbidden("Invalid GitHub publication binding");
+        try {
+          const source = await scope(session, true);
+          if (
+            source.endpoint.id !== action.endpointId ||
+            source.conversation.id !== action.conversationId ||
+            source.delivery.id !== action.deliveryId
+          )
+            throw forbidden("GitHub publication context changed");
+          await assertPublicationAuthority(source, action);
+          const api = await client(source, lease.fetch);
+          const publicationMarker = marker(
+            "publication",
+            action.providerActionId,
           );
-        };
-        const currentHead = async (expected: string) => {
-          const currentSource = await scope(session, true);
-          await assertPublicationAuthority(currentSource, action);
-          if (action.payload.operation === "formal_review")
-            assertFormalPermission(
-              currentSource.policy,
-              action.payload.event as "APPROVE" | "REQUEST_CHANGES",
+          const findByMarker = async (route: string, bodyMarker: string) => {
+            for (let page = 1; page <= 100; page++) {
+              const rows = await api.request<
+                Array<{
+                  id: number;
+                  body?: string;
+                  html_url: string;
+                  user?: { login?: string };
+                }>
+              >(`${route}?per_page=100&page=${page}`);
+              const found = rows.find(
+                (row) =>
+                  row.body?.includes(bodyMarker) &&
+                  row.user?.login === source.endpoint.botUsername,
+              );
+              if (found) return found;
+              if (rows.length < 100) return null;
+            }
+            throw conflict(
+              "GitHub history is too large to safely resolve a publication retry",
             );
-          const [newer] = await tx
-            .select({ id: chatGitHubReviews.id })
-            .from(chatGitHubReviews)
-            .where(
-              and(
-                eq(chatGitHubReviews.endpointId, source.endpoint.id),
-                eq(chatGitHubReviews.repositoryId, source.repositoryId),
-                eq(chatGitHubReviews.pullNumber, source.number),
-                gt(chatGitHubReviews.createdAt, source.run.createdAt),
-                sql`${chatGitHubReviews.runId} is distinct from ${source.run.id}`,
-                sql`${chatGitHubReviews.assessment} is not null`,
-              ),
-            )
-            .limit(1);
-          if (newer) throw conflict("github_review_superseded");
-          const current = await api.request<Pull>(`/pulls/${source.number}`);
-          if (current.head.sha !== expected)
-            throw conflict("github_review_superseded");
-          return currentSource;
-        };
-        const operation = action.payload.operation;
-        let receipt: Record<string, unknown>;
-        if (operation === "comment") {
-          const body = `${projectSafeChatPublicationText(String(action.payload.body))}\n\n${publicationMarker}`;
-          const route = source.replyId
-            ? `/pulls/${source.number}/comments`
-            : `/issues/${source.number}/comments`;
-          const prior = await findByMarker(route, publicationMarker);
-          await assertPublicationAuthority(await scope(session, true), action);
-          const posted =
-            prior ??
-            (await api.request<{ id: number; html_url: string }>(
-              source.replyId
-                ? `/pulls/${source.number}/comments/${source.replyId}/replies`
-                : route,
-              { method: "POST", body: { body } },
-            ));
-          receipt = { id: String(posted.id), url: posted.html_url };
-        } else if (operation === "formal_review") {
-          const parsed = formalSchema.parse({
-            body: action.payload.body,
-            event: action.payload.event,
-            reviewedCommit: action.payload.reviewedCommit,
-            idempotencyKey: action.payload.idempotencyKey,
-          });
-          assertFormalPermission(source.policy, parsed.event);
-          await currentHead(parsed.reviewedCommit);
-          const prior = await findByMarker(
-            `/pulls/${source.number}/reviews`,
-            publicationMarker,
-          );
-          const posted =
-            prior ??
-            (await api.request<{ id: number; html_url: string }>(
+          };
+          const currentHead = async (expected: string) => {
+            const currentSource = await scope(session, true);
+            await assertPublicationAuthority(currentSource, action);
+            if (action.payload.operation === "formal_review")
+              assertFormalPermission(
+                currentSource.policy,
+                action.payload.event as "APPROVE" | "REQUEST_CHANGES",
+              );
+            const [newer] = await db
+              .select({ id: chatGitHubReviews.id })
+              .from(chatGitHubReviews)
+              .where(
+                and(
+                  eq(chatGitHubReviews.endpointId, source.endpoint.id),
+                  eq(chatGitHubReviews.repositoryId, source.repositoryId),
+                  eq(chatGitHubReviews.pullNumber, source.number),
+                  gt(chatGitHubReviews.createdAt, source.run.createdAt),
+                  sql`${chatGitHubReviews.runId} is distinct from ${source.run.id}`,
+                  sql`${chatGitHubReviews.assessment} is not null`,
+                ),
+              )
+              .limit(1);
+            if (newer) throw conflict("github_review_superseded");
+            const current = await api.request<Pull>(`/pulls/${source.number}`);
+            if (current.head.sha !== expected)
+              throw conflict("github_review_superseded");
+            return currentSource;
+          };
+          const operation = action.payload.operation;
+          let receipt: Record<string, unknown>;
+          if (operation === "comment") {
+            const body = `${projectSafeChatPublicationText(String(action.payload.body))}\n\n${publicationMarker}`;
+            const route = source.replyId
+              ? `/pulls/${source.number}/comments`
+              : `/issues/${source.number}/comments`;
+            const prior = await findByMarker(route, publicationMarker);
+            await assertPublicationAuthority(
+              await scope(session, true),
+              action,
+            );
+            const posted =
+              prior ??
+              (await api.request<{ id: number; html_url: string }>(
+                source.replyId
+                  ? `/pulls/${source.number}/comments/${source.replyId}/replies`
+                  : route,
+                { method: "POST", body: { body } },
+              ));
+            receipt = { id: String(posted.id), url: posted.html_url };
+          } else if (operation === "formal_review") {
+            const parsed = formalSchema.parse({
+              body: action.payload.body,
+              event: action.payload.event,
+              reviewedCommit: action.payload.reviewedCommit,
+              idempotencyKey: action.payload.idempotencyKey,
+            });
+            assertFormalPermission(source.policy, parsed.event);
+            await currentHead(parsed.reviewedCommit);
+            const prior = await findByMarker(
               `/pulls/${source.number}/reviews`,
+              publicationMarker,
+            );
+            const posted =
+              prior ??
+              (await api.request<{ id: number; html_url: string }>(
+                `/pulls/${source.number}/reviews`,
+                {
+                  method: "POST",
+                  body: {
+                    commit_id: parsed.reviewedCommit,
+                    event: parsed.event,
+                    body: `${projectSafeChatPublicationText(parsed.body)}\n\n${publicationMarker}`,
+                  },
+                },
+              ));
+            receipt = { id: String(posted.id), url: posted.html_url };
+          } else if (operation === "assessment") {
+            const [review] = await db
+              .select()
+              .from(chatGitHubReviews)
+              .where(
+                and(
+                  eq(chatGitHubReviews.id, String(action.payload.reviewId)),
+                  eq(chatGitHubReviews.companyId, action.companyId),
+                  eq(chatGitHubReviews.endpointId, action.endpointId),
+                  eq(chatGitHubReviews.runId, session.runId!),
+                ),
+              )
+              .limit(1);
+            if (!review?.assessment)
+              throw conflict("Review assessment is unavailable");
+            await currentHead(review.headSha);
+            const assessment = validateGitHubReviewAssessment(
+              review.assessment,
+              review.headSha,
               {
-                method: "POST",
-                body: {
-                  commit_id: parsed.reviewedCommit,
-                  event: parsed.event,
-                  body: `${projectSafeChatPublicationText(parsed.body)}\n\n${publicationMarker}`,
+                ...review.policySnapshot,
+                ignoredPaths: [
+                  ...review.policySnapshot.ignoredPaths,
+                  ...source.policy.ignoredPaths,
+                ],
+              },
+            );
+            const conclusion = githubReviewConclusion(
+              assessment,
+              review.policySnapshot.ratingThreshold,
+            );
+            const origin = runtimePublicOrigin();
+            const [company] = await db
+              .select({ prefix: companies.issuePrefix })
+              .from(companies)
+              .where(eq(companies.id, source.endpoint.companyId));
+            const board =
+              origin && company
+                ? `${origin}/${encodeURIComponent(company.prefix)}`
+                : null;
+            const taskLink = board
+              ? `[${source.issue.identifier}](${board}/issues/${source.issue.id})`
+              : source.issue.identifier;
+            const runLink = board
+              ? `[Run](${board}/agents/${source.agent.id}/runs/${source.run.id})`
+              : `Run: ${source.run.id}`;
+            const historyLink = board
+              ? ` · [Review history](${board}/apps/chat/${source.endpoint.id}/reviews)`
+              : "";
+            const summary = projectSafeChatPublicationText(
+              `## Paperclip Review — ${assessment.complete ? `${assessment.score}/5` : "Incomplete"}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
+            );
+            const summaryMarker = marker(
+              "review",
+              `${source.endpoint.id}:${source.repositoryId}:${source.number}`,
+            );
+            let summaryReceipt: { id: number; html_url: string } | null = null;
+            if (source.policy.publishSummary) {
+              const previous = await findByMarker(
+                `/issues/${source.number}/comments`,
+                summaryMarker,
+              );
+              const currentSummarySource = await currentHead(review.headSha);
+              if (!currentSummarySource.policy.publishSummary)
+                throw forbidden("Summary publication is disabled");
+              summaryReceipt = await api.request(
+                previous
+                  ? `/issues/comments/${previous.id}`
+                  : `/issues/${source.number}/comments`,
+                {
+                  method: previous ? "PATCH" : "POST",
+                  body: { body: `${summary}\n\n${summaryMarker}` },
+                },
+              );
+            }
+            const severity = { info: 0, warning: 1, error: 2 };
+            const receipts = { ...review.publicationReceipts };
+            if (source.policy.publishInline)
+              for (const finding of assessment.findings) {
+                if (
+                  severity[finding.severity] <
+                  severity[source.policy.minimumCommentSeverity]
+                )
+                  continue;
+                const key = hash({
+                  key: finding.key,
+                  path: finding.path,
+                  line: finding.line,
+                  side: finding.side,
+                });
+                const findingMarker = marker(
+                  "finding",
+                  `${source.endpoint.id}:${source.repositoryId}:${source.number}:${key}`,
+                );
+                const prior = await findByMarker(
+                  `/pulls/${source.number}/comments`,
+                  findingMarker,
+                );
+                const currentFindingSource = await currentHead(review.headSha);
+                if (
+                  !currentFindingSource.policy.publishInline ||
+                  severity[finding.severity] <
+                    severity[currentFindingSource.policy.minimumCommentSeverity]
+                )
+                  continue;
+                if (
+                  githubReviewPathIsExcluded(
+                    finding.path,
+                    currentFindingSource.policy,
+                  )
+                )
+                  throw forbidden("Finding path is now excluded");
+                const posted =
+                  prior ??
+                  (await api.request<{ id: number; html_url: string }>(
+                    `/pulls/${source.number}/comments`,
+                    {
+                      method: "POST",
+                      body: {
+                        body: `**${finding.severity} · ${finding.category}**\n\n${projectSafeChatPublicationText(finding.body)}\n\n${findingMarker}`,
+                        commit_id: review.headSha,
+                        path: finding.path,
+                        line: finding.line,
+                        side: finding.side,
+                      },
+                    },
+                  ));
+                // Replies to a finding continue the task that published it. The
+                // provider gives inline threads their own root comment ID, so
+                // bind that native thread before returning the publication.
+                // Retries recover the same provider comment and preserve any
+                // established ownership instead of moving existing follow-ups.
+                await lease.commit(async (tx) => {
+                  await tx
+                    .insert(chatConversations)
+                    .values({
+                      companyId: source.endpoint.companyId,
+                      endpointId: source.endpoint.id,
+                      resourceId: source.resource.id,
+                      issueId: source.issue.id,
+                      externalConversationId:
+                        source.conversation.externalConversationId,
+                      externalThreadId: `github:${source.repository}:${source.number}:rc:${posted.id}`,
+                      sessionGeneration: 1,
+                      externalLabel: source.conversation.externalLabel,
+                      providerUrl: posted.html_url,
+                      isDirectMessage: false,
+                      state: "active",
+                      lastActivityAt: new Date(),
+                    })
+                    .onConflictDoNothing();
+                });
+                receipts[key] = {
+                  id: String(posted.id),
+                  url: posted.html_url,
+                  digest: hash(finding),
+                };
+              }
+            await currentHead(review.headSha);
+            const checks = await api.request<{
+              check_runs: Array<{
+                id: number;
+                external_id?: string;
+                app?: { id?: number };
+              }>;
+            }>(
+              `/commits/${review.headSha}/check-runs?check_name=Paperclip%20Review&per_page=100`,
+            );
+            const check = checks.check_runs.find(
+              (item) =>
+                item.external_id ===
+                  `${source.endpoint.id}:${source.number}:${review.headSha}` &&
+                String(item.app?.id) === source.endpoint.botExternalId,
+            );
+            await currentHead(review.headSha);
+            const postedCheck = await api.request<{
+              id: number;
+              html_url: string;
+            }>(check ? `/check-runs/${check.id}` : "/check-runs", {
+              method: check ? "PATCH" : "POST",
+              body: {
+                name: "Paperclip Review",
+                head_sha: review.headSha,
+                external_id: `${source.endpoint.id}:${source.number}:${review.headSha}`,
+                status: "completed",
+                conclusion,
+                output: {
+                  title: assessment.complete
+                    ? `${assessment.score}/5`
+                    : "Incomplete review",
+                  summary,
                 },
               },
-            ));
-          receipt = { id: String(posted.id), url: posted.html_url };
-        } else if (operation === "assessment") {
-          const [review] = await tx
-            .select()
-            .from(chatGitHubReviews)
-            .where(
-              and(
-                eq(chatGitHubReviews.id, String(action.payload.reviewId)),
-                eq(chatGitHubReviews.companyId, action.companyId),
-                eq(chatGitHubReviews.endpointId, action.endpointId),
-                eq(chatGitHubReviews.runId, session.runId!),
-              ),
-            )
-            .for("update");
-          if (!review?.assessment)
-            throw conflict("Review assessment is unavailable");
-          await currentHead(review.headSha);
-          const assessment = validateGitHubReviewAssessment(
-            review.assessment,
-            review.headSha,
-            {
-              ...review.policySnapshot,
-              ignoredPaths: [
-                ...review.policySnapshot.ignoredPaths,
-                ...source.policy.ignoredPaths,
-              ],
-            },
-          );
-          const conclusion = githubReviewConclusion(
-            assessment,
-            review.policySnapshot.ratingThreshold,
-          );
-          const origin = runtimePublicOrigin();
-          const [company] = await tx
-            .select({ prefix: companies.issuePrefix })
-            .from(companies)
-            .where(eq(companies.id, source.endpoint.companyId));
-          const board =
-            origin && company
-              ? `${origin}/${encodeURIComponent(company.prefix)}`
-              : null;
-          const taskLink = board
-            ? `[${source.issue.identifier}](${board}/issues/${source.issue.id})`
-            : source.issue.identifier;
-          const runLink = board
-            ? `[Run](${board}/agents/${source.agent.id}/runs/${source.run.id})`
-            : `Run: ${source.run.id}`;
-          const historyLink = board
-            ? ` · [Review history](${board}/apps/chat/${source.endpoint.id}/reviews)`
-            : "";
-          const summary = projectSafeChatPublicationText(
-            `## Paperclip Review — ${assessment.complete ? `${assessment.score}/5` : "Incomplete"}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
-          );
-          const summaryMarker = marker(
-            "review",
-            `${source.endpoint.id}:${source.repositoryId}:${source.number}`,
-          );
-          let summaryReceipt: { id: number; html_url: string } | null = null;
-          if (source.policy.publishSummary) {
-            const previous = await findByMarker(
-              `/issues/${source.number}/comments`,
-              summaryMarker,
-            );
-            const currentSummarySource = await currentHead(review.headSha);
-            if (!currentSummarySource.policy.publishSummary)
-              throw forbidden("Summary publication is disabled");
-            summaryReceipt = await api.request(
-              previous
-                ? `/issues/comments/${previous.id}`
-                : `/issues/${source.number}/comments`,
-              {
-                method: previous ? "PATCH" : "POST",
-                body: { body: `${summary}\n\n${summaryMarker}` },
-              },
-            );
-          }
-          const severity = { info: 0, warning: 1, error: 2 };
-          const receipts = { ...review.publicationReceipts };
-          if (source.policy.publishInline)
-            for (const finding of assessment.findings) {
-              if (
-                severity[finding.severity] <
-                severity[source.policy.minimumCommentSeverity]
-              )
-                continue;
-              const key = hash({
-                key: finding.key,
-                path: finding.path,
-                line: finding.line,
-                side: finding.side,
-              });
-              const findingMarker = marker(
-                "finding",
-                `${source.endpoint.id}:${source.repositoryId}:${source.number}:${key}`,
-              );
-              const prior = await findByMarker(
-                `/pulls/${source.number}/comments`,
-                findingMarker,
-              );
-              const currentFindingSource = await currentHead(review.headSha);
-              if (
-                !currentFindingSource.policy.publishInline ||
-                severity[finding.severity] <
-                  severity[currentFindingSource.policy.minimumCommentSeverity]
-              )
-                continue;
-              if (
-                githubReviewPathIsExcluded(
-                  finding.path,
-                  currentFindingSource.policy,
-                )
-              )
-                throw forbidden("Finding path is now excluded");
-              const posted =
-                prior ??
-                (await api.request<{ id: number; html_url: string }>(
-                  `/pulls/${source.number}/comments`,
-                  {
-                    method: "POST",
-                    body: {
-                      body: `**${finding.severity} · ${finding.category}**\n\n${projectSafeChatPublicationText(finding.body)}\n\n${findingMarker}`,
-                      commit_id: review.headSha,
-                      path: finding.path,
-                      line: finding.line,
-                      side: finding.side,
-                    },
-                  },
-                ));
-              // Replies to a finding continue the task that published it. The
-              // provider gives inline threads their own root comment ID, so
-              // bind that native thread before returning the publication.
-              // Retries recover the same provider comment and preserve any
-              // established ownership instead of moving existing follow-ups.
-              await tx.insert(chatConversations).values({
-                companyId: source.endpoint.companyId,
-                endpointId: source.endpoint.id,
-                resourceId: source.resource.id,
-                issueId: source.issue.id,
-                externalConversationId: source.conversation.externalConversationId,
-                externalThreadId: `github:${source.repository}:${source.number}:rc:${posted.id}`,
-                sessionGeneration: 1,
-                externalLabel: source.conversation.externalLabel,
-                providerUrl: posted.html_url,
-                isDirectMessage: false,
-                state: "active",
-                lastActivityAt: new Date(),
-              }).onConflictDoNothing();
-              receipts[key] = {
-                id: String(posted.id),
-                url: posted.html_url,
-                digest: hash(finding),
-              };
-            }
-          await currentHead(review.headSha);
-          const checks = await api.request<{
-            check_runs: Array<{
-              id: number;
-              external_id?: string;
-              app?: { id?: number };
-            }>;
-          }>(
-            `/commits/${review.headSha}/check-runs?check_name=Paperclip%20Review&per_page=100`,
-          );
-          const check = checks.check_runs.find(
-            (item) =>
-              item.external_id ===
-                `${source.endpoint.id}:${source.number}:${review.headSha}` &&
-              String(item.app?.id) === source.endpoint.botExternalId,
-          );
-          await currentHead(review.headSha);
-          const postedCheck = await api.request<{
-            id: number;
-            html_url: string;
-          }>(check ? `/check-runs/${check.id}` : "/check-runs", {
-            method: check ? "PATCH" : "POST",
-            body: {
-              name: "Paperclip Review",
-              head_sha: review.headSha,
-              external_id: `${source.endpoint.id}:${source.number}:${review.headSha}`,
-              status: "completed",
-              conclusion,
-              output: {
-                title: assessment.complete
-                  ? `${assessment.score}/5`
-                  : "Incomplete review",
-                summary,
-              },
-            },
-          });
-          await tx
-            .update(chatGitHubReviews)
-            .set({
-              conclusion,
-              checkId: String(postedCheck.id),
+            });
+            await lease.commit(async (tx) => {
+              await tx
+                .update(chatGitHubReviews)
+                .set({
+                  conclusion,
+                  checkId: String(postedCheck.id),
+                  checkUrl: postedCheck.html_url,
+                  summaryId: summaryReceipt
+                    ? String(summaryReceipt.id)
+                    : review.summaryId,
+                  summaryUrl: summaryReceipt?.html_url ?? review.summaryUrl,
+                  publicationReceipts: receipts,
+                  updatedAt: new Date(),
+                })
+                .where(eq(chatGitHubReviews.id, review.id));
+            });
+            receipt = {
+              reviewId: review.id,
               checkUrl: postedCheck.html_url,
-              summaryId: summaryReceipt
-                ? String(summaryReceipt.id)
-                : review.summaryId,
-              summaryUrl: summaryReceipt?.html_url ?? review.summaryUrl,
-              publicationReceipts: receipts,
-              updatedAt: new Date(),
-            })
-            .where(eq(chatGitHubReviews.id, review.id));
-          receipt = {
-            reviewId: review.id,
-            checkUrl: postedCheck.html_url,
-            summaryUrl: summaryReceipt?.html_url ?? null,
-          };
-        } else throw forbidden("Unknown GitHub publication");
-        await tx
-          .update(chatActions)
-          .set({ status: "processed", result: receipt, updatedAt: new Date() })
-          .where(eq(chatActions.id, action.id));
-        await logActivity(tx as unknown as Db, {
-          companyId: action.companyId,
-          actorType: "agent",
-          actorId: source.agent.id,
-          action: "chat_github.published",
-          entityType: "issue",
-          entityId: source.issue.id,
-          runId: source.run.id,
-          details: { actionId: action.id, operation, ...receipt },
-        });
-      } catch (error) {
-        const attempts = Number(action.result?.attempts ?? 0) + 1;
-        const denied = error instanceof HttpError && error.status === 403;
-        const superseded =
-          error instanceof Error &&
-          error.message === "github_review_superseded";
-        if (superseded && typeof action.payload.reviewId === "string")
-          await tx
-            .update(chatGitHubReviews)
-            .set({ state: "superseded", updatedAt: new Date() })
-            .where(
-              and(
-                eq(chatGitHubReviews.id, action.payload.reviewId),
-                eq(chatGitHubReviews.companyId, action.companyId),
-              ),
-            );
-        await tx
-          .update(chatActions)
-          .set({
-            status: superseded || denied ? "cancelled" : "failed",
-            result: {
-              attempts,
-              retryable: !superseded && !denied && attempts < 8,
-              retryAt: new Date(
-                Date.now() + Math.min(300000, 1000 * 2 ** attempts),
-              ).toISOString(),
-              code: superseded
-                ? "stale_head"
-                : denied
-                  ? "authorization_changed"
-                  : "publication_failed",
-            },
-            updatedAt: new Date(),
-          })
-          .where(eq(chatActions.id, action.id));
-      }
-    });
+              summaryUrl: summaryReceipt?.html_url ?? null,
+            };
+          } else throw forbidden("Unknown GitHub publication");
+          await lease.commit(async (tx) => {
+            await tx
+              .update(chatActions)
+              .set({
+                status: "processed",
+                result: receipt,
+                updatedAt: new Date(),
+              })
+              .where(eq(chatActions.id, action.id));
+            await logActivity(tx as unknown as Db, {
+              companyId: action.companyId,
+              actorType: "agent",
+              actorId: source.agent.id,
+              action: "chat_github.published",
+              entityType: "issue",
+              entityId: source.issue.id,
+              runId: source.run.id,
+              details: { actionId: action.id, operation, ...receipt },
+            });
+          });
+        } catch (error) {
+          if (error instanceof GitHubPublicationLeaseLost) return;
+          const attempts = Number(fresh.result?.attempts ?? 0) + 1;
+          const denied = error instanceof HttpError && error.status === 403;
+          const superseded =
+            error instanceof Error &&
+            error.message === "github_review_superseded";
+          if (superseded && typeof action.payload.reviewId === "string")
+            await lease.commit(async (tx) => {
+              await tx
+                .update(chatGitHubReviews)
+                .set({ state: "superseded", updatedAt: new Date() })
+                .where(
+                  and(
+                    eq(chatGitHubReviews.id, String(action.payload.reviewId)),
+                    eq(chatGitHubReviews.companyId, action.companyId),
+                  ),
+                );
+            });
+          await lease.commit(async (tx) => {
+            await tx
+              .update(chatActions)
+              .set({
+                status: superseded || denied ? "cancelled" : "failed",
+                result: {
+                  attempts,
+                  retryable: !superseded && !denied && attempts < 8,
+                  retryAt: new Date(
+                    Date.now() + Math.min(300000, 1000 * 2 ** attempts),
+                  ).toISOString(),
+                  code: superseded
+                    ? "stale_head"
+                    : denied
+                      ? "authorization_changed"
+                      : "publication_failed",
+                },
+                updatedAt: new Date(),
+              })
+              .where(eq(chatActions.id, action.id));
+          });
+        }
+      },
+    );
   }
   async function processPending(limit = 10) {
     const rows = await db

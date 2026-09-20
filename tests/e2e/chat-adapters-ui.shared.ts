@@ -1,3 +1,4 @@
+import { defaultGitHubReviewPolicy } from "../../packages/shared/src/types/chat-github";
 import {
   expect,
   test,
@@ -313,6 +314,8 @@ export type ChatMock = {
   githubPrivateKeyMatchedFile: boolean | null;
   githubPrivateKeyMatchedPaste: boolean | null;
   githubSetupSecretRequests: number;
+  githubRepositoryRefreshes: number;
+  githubIdentityConfirmed: boolean;
   setupAttempts: number;
   updatedResource: boolean;
   resourceUpdates: Array<Array<{ id: string; enabled: boolean }>>;
@@ -342,6 +345,10 @@ export async function installChatControlPlaneMock(
 ): Promise<ChatMock> {
   const endpoint = endpointFixture(provider, seed);
   let slackIdentityLinked = false;
+  let githubAppConnected = false;
+  let githubConfiguration = { revision: 0, configuration: {
+    version: 1, toolsEnabled: false, responsibleUserId: "local-board", memberAccess: "all_linked", people: [], defaults: defaultGitHubReviewPolicy(), repositories: {},
+  }};
   const state: ChatMock & {
     created: boolean;
     failNextGitHubEndpointRead: boolean;
@@ -354,6 +361,8 @@ export async function installChatControlPlaneMock(
     githubPrivateKeyMatchedFile: null,
     githubPrivateKeyMatchedPaste: null,
     githubSetupSecretRequests: 0,
+    githubRepositoryRefreshes: 0,
+    githubIdentityConfirmed: false,
     setupAttempts: 0,
     updatedResource: false,
     resourceUpdates: [],
@@ -412,6 +421,40 @@ export async function installChatControlPlaneMock(
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     const method = request.method();
+
+    if (provider.provider === "github" && pathname.startsWith(`/api/chat-endpoints/${endpoint.id}/github/`)) {
+      const operation = pathname.split("/github/")[1];
+      const body = method === "GET" ? {} : bodyOf(route);
+      if (operation === "configuration") {
+        if (method === "PUT") { expect(body.expectedRevision).toBe(githubConfiguration.revision); githubConfiguration = { revision: githubConfiguration.revision + 1, configuration: body.configuration as typeof githubConfiguration.configuration }; }
+        await fulfill(route, githubConfiguration); return;
+      }
+      if (operation === "progress") {
+        Object.assign(endpoint.setup, { github: { appSlug: githubAppConnected ? "maya-paperclip" : undefined, stage: body.stage, managementUrl: "https://github.com/settings/installations/2468" } });
+        await fulfill(route, endpoint); return;
+      }
+      if (operation === "app") {
+        state.setupAttempts++;
+        state.configuredCredentialKeys = Object.keys(body).sort();
+        if (state.setupAttempts === 1) { await fulfill(route, { error: "GitHub rejected the supplied App credentials." }, 422); return; }
+        githubAppConnected = true;
+        Object.assign(endpoint, { status: "attention", botUsername: "maya-paperclip[bot]" });
+        Object.assign(endpoint.setup, { github: { stage: "install", appSlug: "maya-paperclip", installationUrl: "https://github.com/apps/maya-paperclip/installations/new", managementUrl: "https://github.com/settings/installations/2468" } });
+        await fulfill(route, endpoint); return;
+      }
+      if (operation === "repositories/refresh") { state.githubRepositoryRefreshes++; await fulfill(route, resources); return; }
+      if (operation === "verify") {
+        const ready = githubConfiguration.configuration.toolsEnabled;
+        await fulfill(route, { ready, checks: [{ key: "tools", label: "Assigned agent’s effective GitHub tools", ok: ready, detail: ready ? "The bot tools are assigned." : "Assign this bot’s GitHub tools." }] }); return;
+      }
+      if (operation === "personal-connections") { await fulfill(route, [{ connectionId: "personal-github", name: "My GitHub", login: "octocat", enabled: true, status: "active" }]); return; }
+      if (operation === "identity") {
+        expect(body.connectionId).toBe("personal-github");
+        if (body.confirmedGithubUserId) { expect(body.confirmedGithubUserId).toBe("42"); state.githubIdentityConfirmed = true; }
+        await fulfill(route, { githubUserId: "42", login: "octocat", connectionId: "personal-github", avatarUrl: null }); return;
+      }
+      if (operation === "reviews") { await fulfill(route, []); return; }
+    }
 
     if (pathname === `/api/companies/${seed.companyId}/chat-endpoints`) {
       if (method === "GET") {
@@ -509,10 +552,8 @@ export async function installChatControlPlaneMock(
       expect(["configure", "verify"]).toContain(action);
       if (body.action === "configure") {
         state.setupAttempts += 1;
-        state.configuredCredentialKeys = Object.keys(
-          (body.credentials ?? {}) as Record<string, string>,
-        ).sort();
-        if (provider.provider === "github") {
+        if (body.credentials) state.configuredCredentialKeys = Object.keys(body.credentials as Record<string, string>).sort();
+        if (provider.provider === "github" && !githubAppConnected) {
           const privateKey = (
             (body.credentials ?? {}) as Record<string, string>
           ).privateKey;

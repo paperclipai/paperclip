@@ -1,7 +1,7 @@
 import { githubBotCredentials } from "./chat-github-client.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { agents, toolCatalogEntries } from "@paperclipai/db";
-import { syncGitHubBotTools } from "./chat-github-tools.js";
+import { GITHUB_BOT_TOOLS, syncGitHubBotTools } from "./chat-github-tools.js";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   chatEndpoints,
@@ -368,9 +368,10 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         key: "app",
         label: "GitHub App identity",
         ok: String(app.id) === bot.botExternalId,
-        detail: String(app.id) === bot.botExternalId
-          ? "The vaulted credentials identify this bot's App."
-          : "The vaulted credentials identify a different GitHub App.",
+        detail:
+          String(app.id) === bot.botExternalId
+            ? "The vaulted credentials identify this bot's App."
+            : "The vaulted credentials identify a different GitHub App.",
       });
       const installation = credentials.credentials.installationId
         ? await githubBotRequest<{
@@ -386,7 +387,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
       const permissionsOk =
         !!installation &&
         !installation.suspended_at &&
-        ["read", "write"].includes(permissions.contents ?? "") &&
+        permissions.contents === "read" &&
         permissions.pull_requests === "write" &&
         permissions.checks === "write" &&
         app.events?.includes("pull_request") === true;
@@ -396,7 +397,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         ok: permissionsOk,
         detail: permissionsOk
           ? "Contents read, Pull requests write, Checks write, and PR events are enabled."
-          : "Add Contents read and Checks write to the App, subscribe to pull_request, and approve the permission upgrade on GitHub.",
+          : "Set Contents to read-only and Checks to write, subscribe to pull_request, and approve the permission upgrade on GitHub.",
       });
       const resources = await db
         .select()
@@ -532,8 +533,20 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
             eq(toolCatalogEntries.status, "active"),
           ),
         );
-      let toolsOk = entries.length >= 5;
-      const denied: string[] = [];
+      const requiredTools = GITHUB_BOT_TOOLS.filter(
+        (tool) => tool.name !== "formal_review",
+      );
+      const denied: string[] = requiredTools
+        .filter(
+          (tool) =>
+            !entries.some(
+              (entry) =>
+                entry.toolName === tool.name &&
+                entry.name === `github_bot:${tool.name}`,
+            ),
+        )
+        .map((tool) => tool.title);
+      let toolsOk = denied.length === 0;
       for (const entry of entries) {
         const decision = await toolAccessPolicyService(db).decide({
           companyId: bot.companyId,

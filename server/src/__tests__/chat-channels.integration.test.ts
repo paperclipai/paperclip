@@ -1,3 +1,4 @@
+import { GitHubPublicationLeaseLost, withGitHubPublicationLease } from "../services/chat-github-publication-lease.js";
 import { githubChatManagementService } from "../services/chat-github-management.js";
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { githubReviewCheckService } from "../services/chat-github-checks.js";
@@ -5,7 +6,7 @@ import { githubAutomaticReviewEvent } from "../services/chat-github-events.js";
 import { githubBotToolsForSession } from "../services/chat-github-tools.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
-import { chatGitHubRegistrations, chatGitHubReviews } from "@paperclipai/db";
+import { chatGitHubRegistrations, chatGitHubReviews, toolCatalogEntries } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
 import {
@@ -2147,6 +2148,175 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ok: false,
         detail: expect.stringContaining("Restore installation access"),
       });
+    });
+    it("requires every essential GitHub tool and rejects Contents write during verification", async () => {
+      const f = await reviewBotFixture();
+      let contents = "read";
+      const permissions = {
+        contents: "read",
+        issues: "write",
+        metadata: "read",
+        pull_requests: "write",
+        checks: "write",
+      };
+      f.setAppAccess({
+        permissions,
+        events: [
+          "issue_comment",
+          "pull_request_review_comment",
+          "pull_request",
+        ],
+      });
+      f.setSupplementalProviderFetch(async (input) =>
+        String(input).endsWith("/app/installations/2468")
+          ? Response.json({
+              permissions: { ...permissions, contents },
+              suspended_at: null,
+            })
+          : undefined,
+      );
+      const tools = () =>
+        f.management
+          .verification(f.endpoint.id)
+          .then((result) =>
+            result.checks.find((check) => check.key === "tools"),
+          );
+      expect(await tools()).toMatchObject({ ok: true });
+      for (const toolName of [
+        "read_pull_request",
+        "read_file",
+        "comment",
+        "begin_review",
+        "submit_review",
+      ]) {
+        await db
+          .update(toolCatalogEntries)
+          .set({ status: "quarantined" })
+          .where(
+            and(
+              eq(toolCatalogEntries.connectionId, f.endpoint.connectionId),
+              eq(toolCatalogEntries.toolName, toolName),
+            ),
+          );
+        expect(await tools()).toMatchObject({
+          ok: false,
+          detail: expect.stringContaining("Repair tool policy"),
+        });
+        await db
+          .update(toolCatalogEntries)
+          .set({ status: "active" })
+          .where(
+            and(
+              eq(toolCatalogEntries.connectionId, f.endpoint.connectionId),
+              eq(toolCatalogEntries.toolName, toolName),
+            ),
+          );
+      }
+      contents = "write";
+      expect(
+        (await f.management.verification(f.endpoint.id)).checks.find(
+          (check) => check.key === "permissions",
+        ),
+      ).toMatchObject({ ok: false });
+    });
+    it("keeps GitHub publication I/O outside transactions and fences an expired owner's receipt", async () => {
+      const f = await reviewBotFixture();
+      const scope = {
+        companyId: f.companyId,
+        endpointId: f.endpoint.id,
+        repositoryId: "97531",
+        number: 9876,
+      };
+      let releaseFirst!: () => void;
+      let firstEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        firstEntered = resolve;
+      });
+      const transport = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const fetcher = vi.fn(async () => {
+        firstEntered();
+        await transport;
+        return Response.json({ ok: true });
+      }) as unknown as typeof fetch;
+      const staleCommit = vi.fn();
+      const first = withGitHubPublicationLease(
+        db,
+        scope,
+        fetcher,
+        async (lease) => {
+          await lease.fetch("https://api.github.com/test");
+          await lease.commit(async () => {
+            staleCommit();
+          });
+        },
+      ).catch((error) => error);
+      await entered;
+      // Another connection can lock this row while provider I/O is pending.
+      await db.transaction(async (tx) => {
+        await tx
+          .select()
+          .from(chatEndpointLeases)
+          .where(eq(chatEndpointLeases.endpointId, f.endpoint.id))
+          .for("update", { noWait: true });
+      });
+      const blocked = vi.fn();
+      await withGitHubPublicationLease(db, scope, fetcher, async () => {
+        blocked();
+      });
+      expect(blocked).not.toHaveBeenCalled();
+      await db
+        .update(chatEndpointLeases)
+        .set({ expiresAt: new Date(0) })
+        .where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
+      let releaseSecond!: () => void;
+      let secondEntered!: () => void;
+      const secondReady = new Promise<void>((resolve) => {
+        secondEntered = resolve;
+      });
+      const secondHold = new Promise<void>((resolve) => {
+        releaseSecond = resolve;
+      });
+      const second = withGitHubPublicationLease(
+        db,
+        scope,
+        fetcher,
+        async (lease) => {
+          secondEntered();
+          await secondHold;
+          await lease.commit(async (tx) => {
+            await tx
+              .select()
+              .from(chatEndpoints)
+              .where(eq(chatEndpoints.id, f.endpoint.id));
+          });
+        },
+      );
+      await secondReady;
+      const [newOwner] = await db
+        .select()
+        .from(chatEndpointLeases)
+        .where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
+      releaseFirst();
+      expect(await first).toBeInstanceOf(GitHubPublicationLeaseLost);
+      expect(staleCommit).not.toHaveBeenCalled();
+      expect(
+        (
+          await db
+            .select()
+            .from(chatEndpointLeases)
+            .where(eq(chatEndpointLeases.id, newOwner.id))
+        )[0]?.token,
+      ).toBe(newOwner.token);
+      releaseSecond();
+      await second;
+      expect(
+        await db
+          .select()
+          .from(chatEndpointLeases)
+          .where(eq(chatEndpointLeases.endpointId, f.endpoint.id)),
+      ).toHaveLength(0);
     });
     it("scopes guest tasks and rechecks their sponsor before every bot tool", async () => {
       const f = await reviewBotFixture();
