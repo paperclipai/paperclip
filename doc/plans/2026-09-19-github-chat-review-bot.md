@@ -362,3 +362,36 @@ All 27 serialized suites after the OpenAPI suite passed. Together with the
 120 passing suites before it and the corrected OpenAPI suite, all 148 serialized
 suites have passing results across the original and resumed runs. The updated
 application build, Storybook build, server/UI typechecks, and token gates passed.
+
+### Live App registration and installation (2026-09-20)
+
+After the user completed GitHub's access confirmation, a fresh manifest submitted
+through the embedded browser successfully registered
+[Paperclip Review QA260920](https://github.com/apps/paperclip-review-qa260920).
+The App was installed as installation `163220189`, selecting only the disposable
+private repository `cryppadotta/paperclip-github-review-qa-20260919` (ID
+`1377781534`). No other repositories were selected. The manifest callback vaulted
+the App credentials and resumed the saved Paperclip bot.
+
+Live signed delivery was observed at `2026-09-20T11:28:48.689Z`. Setup retrieved
+the installation repository list, saved the enabled repository, and verified
+App identity, repository permissions, runtime support, and effective agent tools.
+The bot's tools were assigned to the QA agent through the normal UI. These are
+live provider/setup results, not yet agent execution results.
+
+The personal-account linking step exposed a regression: the GitHub catalog entry
+skipped the established chat/tool purpose choice and always opened bot setup.
+The fix restores the shared choice, preserves direct/resumed bot routes, and links
+account setup directly to the regular personal GitHub connection flow. All 43
+focused UI tests pass, including five new routing cases; UI typecheck, build,
+and token gates pass. Verification copy now describes the observed App identity
+and avoids referring to an assignment button as being below the checks.
+
+The corrected choice and regular GitHub connection form render in the embedded
+browser. Browser control subsequently stopped changing page controls, including
+ordinary connection radios; keyboard actions had the same symptom. The public
+HTTPS endpoint and QA server remain healthy. A fresh embedded tab recovered
+navigation but not form interactions; a user refresh was requested. Personal
+identity linking, real task/run reviews, live publication, and staging remain
+unverified. No outcome has been seeded in the database or manually published as
+an agent result.

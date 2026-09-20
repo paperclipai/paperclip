@@ -766,8 +766,8 @@ export function GitHubChatSetup() {
             <Button variant="ghost" onClick={() => void accounts.refetch()}>
               Refresh connections
             </Button>
-            <Link className="self-center text-sm underline" to="/apps">
-              Connect or reconnect GitHub
+            <Link className="self-center text-sm underline" to="/apps/connect?source=github">
+              Connect GitHub
             </Link>
           </div>
           {accounts.error && (

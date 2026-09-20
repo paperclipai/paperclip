@@ -368,7 +368,9 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         key: "app",
         label: "GitHub App identity",
         ok: String(app.id) === bot.botExternalId,
-        detail: "The vaulted credentials must identify this bot's App.",
+        detail: String(app.id) === bot.botExternalId
+          ? "The vaulted credentials identify this bot's App."
+          : "The vaulted credentials identify a different GitHub App.",
       });
       const installation = credentials.credentials.installationId
         ? await githubBotRequest<{
@@ -571,7 +573,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
           ? "The bot App's task-scoped tools are assigned. Each run and publication rechecks access."
           : denied.length
             ? `Repair tool policy for: ${denied.join(", ")}.`
-            : "Assign the bot's GitHub tools to this agent below.",
+            : "Assign the bot's GitHub tools to this agent, then verify again.",
       });
       return { checks, ready: checks.every((check) => check.ok) };
     },
