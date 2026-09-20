@@ -50,11 +50,24 @@ An agent can ask TypeSafe when all of these are true. Every call checks them
 again, so removing access stops a run that is already in progress.
 
 - The connection belongs to the agent's company.
-- The connection is `active` and enabled.
+- The connection is `active` and enabled, and its health is "ok". This is the
+  same health gate the tool gateway applies to its catalog.
 - A `tool_connection_installs` row targets the company or that agent.
+- Tool governance allows the call. `typesafe_ask` asks
+  `toolAccessPolicyService` for a decision as tool `typesafe.ask`, risk level
+  `read`, before it resolves the key. Block policies, ask-first policies,
+  approval rules and rate limits all apply, and each decision is audited. The
+  audit row holds the model and the question count, never the state or the
+  questions.
+- On the HTTP route, the `X-Paperclip-Run-Id` header names a run that is
+  `running` and belongs to the calling agent. An agent key alone is refused.
+  The native runner supplies its own bound run.
 
 The setup finish step writes those installs from the access choice ("all
 agents" or selected agents). The generic API-key path creates none by itself.
+The same step adds one `connection` entry to the connection's access profile,
+because this connection has no catalog actions to include. Without that entry
+governance denies every call by default.
 `PUT /api/tool-connections/{connectionId}/installs` changes them later.
 
 ## Asking

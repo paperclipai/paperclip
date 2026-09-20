@@ -7,6 +7,7 @@ import {
   createDb,
   toolConnectionInstalls,
   toolConnections,
+  toolProfileEntries,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
@@ -172,6 +173,34 @@ describeEmbeddedPostgres("TypeSafe connection", () => {
       .where(eq(toolConnectionInstalls.connectionId, connectionId));
     expect(installs.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual([
       { targetType: "company", targetId: company.id },
+    ]);
+  });
+
+  it("finish grants the connection through its access profile, once", async () => {
+    const company = await createCompany();
+    const agent = await createAgent(company.id);
+    const service = serviceWith(provider());
+    const { connectionId } = await connect(service, company.id);
+    const finish = (preserveExistingAccess: boolean) =>
+      service.finishGalleryAppConnection(
+        company.id,
+        connectionId,
+        {
+          preserveExistingAccess,
+          enabledCatalogEntryIds: [],
+          askFirstCatalogEntryIds: [],
+          access: { agentIds: [agent.id] },
+        },
+        actor,
+      );
+    await finish(false);
+    await finish(true);
+    const entries = await db
+      .select()
+      .from(toolProfileEntries)
+      .where(eq(toolProfileEntries.connectionId, connectionId));
+    expect(entries.map(({ selectorType, effect }) => ({ selectorType, effect }))).toEqual([
+      { selectorType: "connection", effect: "include" },
     ]);
   });
 

@@ -7,6 +7,8 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRuns,
+  toolAccessAuditEvents,
   toolConnectionInstalls,
   toolConnections,
 } from "@paperclipai/db";
@@ -16,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import {
   assignedTypesafeConnections,
   executeTypesafeAsk,
@@ -195,6 +198,76 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     const { companyId, first, connectionId } = await fixture("all_agents");
     await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, connectionId));
     expect(await assignedTypesafeConnections(db, { companyId, agentId: first.id })).toEqual([]);
+  });
+
+  it.each(["error", "missing_secret", "failed"] as const)(
+    "drops a connection whose health is %s",
+    async (healthStatus) => {
+      const { companyId, first, connectionId } = await fixture("all_agents");
+      await db.update(toolConnections).set({ healthStatus }).where(eq(toolConnections.id, connectionId));
+      expect(await assignedTypesafeConnections(db, { companyId, agentId: first.id })).toEqual([]);
+    },
+  );
+
+  it("obeys a block policy and records the decision without task content", async () => {
+    const { companyId, first, connectionId } = await fixture("all_agents");
+    await toolAccessPolicyService(db).createPolicy(
+      companyId,
+      {
+        name: "No TypeSafe",
+        description: null,
+        policyType: "block",
+        priority: 10,
+        enabled: true,
+        selectors: { toolNames: ["typesafe.ask"] },
+        conditions: null,
+        config: null,
+      },
+      { userId: "board" },
+    );
+    const fetcher = provider();
+    await expect(
+      executeTypesafeAsk(db, binding(companyId, first.id), ask(), fetcher as unknown as typeof fetch),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetcher).not.toHaveBeenCalled();
+    const audit = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(and(eq(toolAccessAuditEvents.companyId, companyId), eq(toolAccessAuditEvents.connectionId, connectionId)));
+    const decisions = audit.filter((row) => row.action.includes("policy") || row.outcome === "denied");
+    expect(decisions.length).toBeGreaterThan(0);
+    const rendered = JSON.stringify(audit);
+    for (const secret of [KEY, STATE, "private-instruction"]) expect(rendered).not.toContain(secret);
+  });
+
+  it("records an allowed decision without task content", async () => {
+    const { companyId, first, connectionId } = await fixture("all_agents");
+    await executeTypesafeAsk(db, binding(companyId, first.id), ask(), provider() as unknown as typeof fetch);
+    const audit = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(and(eq(toolAccessAuditEvents.companyId, companyId), eq(toolAccessAuditEvents.connectionId, connectionId)));
+    const rendered = JSON.stringify(audit);
+    expect(rendered).toContain("typesafe.ask");
+    for (const secret of [KEY, STATE, "private-instruction"]) expect(rendered).not.toContain(secret);
+  });
+
+  it("refuses a run that belongs to another agent", async () => {
+    const { companyId, first, second } = await fixture("all_agents");
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId: second.id, invocationSource: "assignment", status: "running", contextSnapshot: {} })
+      .returning();
+    const fetcher = provider();
+    await expect(
+      executeTypesafeAsk(
+        db,
+        { companyId, agentId: first.id, runId: run!.id, issueId: null },
+        ask(),
+        fetcher as unknown as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("refuses a call after access is revoked mid-run", async () => {
