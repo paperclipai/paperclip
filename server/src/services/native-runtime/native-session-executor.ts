@@ -10613,9 +10613,47 @@ async function createRunnerdBackendWithinSessionClaim(
       remotePrepared = true;
       return;
     }
-    let usedPreinstalledRunner = false;
+    // A resumed sandbox may already contain the exact controller-owned binary.
+    // Do not upload it every turn, but never treat compatible metadata alone as
+    // proof of artifact identity (especially for an explicit operator override).
+    let runnerArtifactPrepared = false;
+    if (
+      sandboxLeaseAcquisition?.outcome === "resumed" &&
+      existsSync(controllerRunnerBinary)
+    ) {
+      runnerArtifactPrepared = await measureNativeRunnerSpan(
+        input.trace,
+        "runner.artifact.verify_retained",
+        async () => {
+          const expected = createHash("sha256")
+            .update(readFileSync(controllerRunnerBinary))
+            .digest("hex");
+          try {
+            const probe = await remoteCommandRunner.execute({
+              command: "sh",
+              args: [
+                "-c",
+                'test -x "$1" || exit 1; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi',
+                "paperclip-runner-artifact",
+                remoteBinary,
+              ],
+              cwd: remoteTarget.remoteCwd,
+              bypassSession: true,
+              timeoutMs: 10_000,
+            });
+            return probe.exitCode === 0 && !probe.timedOut &&
+              /^[a-f0-9]{64}\s/.test(probe.stdout) &&
+              probe.stdout.trim().split(/\s+/)[0] === expected;
+          } catch {
+            // Missing binaries, checksum tools, or a failed probe use the
+            // ordinary verified staging path; none authorizes cached execution.
+            return false;
+          }
+        },
+      );
+    }
     const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
-    if (mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
+    if (!runnerArtifactPrepared && mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
       const preinstalledRunner = await measureNativeRunnerSpan(
         input.trace,
         "runner.artifact.discover",
@@ -10633,17 +10671,17 @@ async function createRunnerdBackendWithinSessionClaim(
             "runner.artifact.link",
             () => linkPreinstalledExecutable(preinstalledRunner, remoteBinary),
           );
-          usedPreinstalledRunner = true;
+          runnerArtifactPrepared = true;
           await input.onLog?.(
             "stderr",
             "[paperclip-runner] using preinstalled runnerd from the sandbox image\n",
           );
         } catch {
-          usedPreinstalledRunner = false;
+          runnerArtifactPrepared = false;
         }
       }
     }
-    if (!usedPreinstalledRunner) {
+    if (!runnerArtifactPrepared) {
       // Upload the same artifact used for the controller identity. The server
       // vendors the runner under vendor/paperclip-runner/bin, so the package
       // development fallback cannot locate it in a deployed server.
