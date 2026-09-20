@@ -7356,7 +7356,7 @@ describe("runnerd provider runtime wiring", () => {
     }
 
     expect(detach).toHaveBeenCalledOnce();
-    expect(close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledTimes(timing === "during-close" ? 1 : 0);
     expect(state.copyBackCodexAuth).not.toHaveBeenCalled();
     await expect(readFile(authPath, "utf8")).resolves.toBe(auth);
   });

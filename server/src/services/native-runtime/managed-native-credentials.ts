@@ -6,6 +6,7 @@ type CredentialTurn = {
   /** Remove launch credentials after the provider owner has stopped. */
   remove: () => Promise<void>;
   detached: boolean;
+  closing?: boolean;
   completed: boolean;
   completion?: Promise<void>;
   removed?: boolean;
@@ -19,7 +20,12 @@ export function bindManagedNativeCredentialTurn(
   callbacks: Pick<CredentialTurn, "copyBack" | "remove">,
 ): NativeSession {
   const previous = credentialTurns.get(session);
-  if (previous && !previous.completed && !previous.detached) {
+  // A successor controller must attach a new handle. Reusing a detached or
+  // closing handle would let old references close the successor's provider.
+  if (previous?.detached || previous?.closing) {
+    throw new Error("managed_native_credential_session_retired");
+  }
+  if (previous && !previous.completed) {
     throw new Error("managed_native_credential_turn_still_owned");
   }
   const turn: CredentialTurn = { ...callbacks, detached: false, completed: false };
@@ -39,6 +45,8 @@ export function bindManagedNativeCredentialTurn(
   }
   session.close = async (input) => {
     const owner = credentialTurns.get(session);
+    if (owner?.detached) return;
+    if (owner) owner.closing = true;
     await close(input);
     if (!owner || owner.detached || credentialTurns.get(session) !== owner) return;
     try {
