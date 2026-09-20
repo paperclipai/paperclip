@@ -217,6 +217,7 @@ import {
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
 import { agentmailApi } from "./agentmail-api.js";
+import { TypesafeApiError, typesafeApi } from "./typesafe-api.js";
 import type { ConfigureRailwaySsh, RailwaySshSetup } from "@paperclipai/shared";
 import { generateRailwaySshKey, RAILWAY_SSH_SECRET_PATH, validateRailwayKnownHosts } from "./railway-ssh.js";
 import { createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_TOOLS, RAILWAY_TOOL_PREFIX, railwayRisk, RailwayError } from "./railway.js";
@@ -654,6 +655,8 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /** Test seam for TypeSafe without live vendor traffic. */
+  typesafeFetch?: typeof fetch;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -921,6 +924,18 @@ const APPROVED_STDIO_TEMPLATES: Record<
 };
 
 const GOOGLE_SHEETS_GALLERY_KEY = "google-sheets";
+export const TYPESAFE_GALLERY_KEY = "typesafe";
+const TYPESAFE_HEALTH_MESSAGE = "TypeSafe API key is connected.";
+
+export function isTypesafeConnection(connection: {
+  transport: string;
+  config: Record<string, unknown>;
+}) {
+  return (
+    connection.transport === "rest_api" &&
+    connection.config.sourceTemplateKey === TYPESAFE_GALLERY_KEY
+  );
+}
 const GOOGLE_SHEETS_TEMPLATE_ID = "paperclip.google-sheets";
 const GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV =
   "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS";
@@ -2837,6 +2852,7 @@ function healthFailureHttpStatus(failure: {
   if (failure.code === "slack_mcp_access_disabled") return 422;
   if (failure.code === "user_authorization_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
+  if (failure.code === "typesafe_api_key_rejected") return 422;
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
@@ -2855,6 +2871,14 @@ function sanitizeHttpFailure(error: unknown): {
   message: string;
   code: string;
 } {
+  if (error instanceof TypesafeApiError) {
+    const rejected = error.status === 401 || error.status === 403;
+    return {
+      status: "error",
+      message: rejected ? "TypeSafe rejected the API key." : error.message,
+      code: rejected ? "typesafe_api_key_rejected" : "typesafe_request_failed",
+    };
+  }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
     if (code === "cognee_access_unverified" || code === "memory_api_key_rejected") {
@@ -7088,6 +7112,34 @@ export function toolAccessService(
     await agentmailApi(key).whoami();
   }
 
+  async function validateTypesafeConnection(
+    connection: typeof toolConnections.$inferSelect,
+  ) {
+    const configPath = "credentials.apiKey";
+    const ref = connection.credentialSecretRefs.find(
+      (candidate) => candidate.configPath === configPath,
+    );
+    if (!ref) {
+      throw unprocessable("Reconnect TypeSafe to restore its API key", {
+        code: "missing_secret",
+      });
+    }
+    const key = await secrets.resolveSecretValue(
+      connection.companyId,
+      ref.secretId,
+      ref.versionSelector ?? "latest",
+      {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath,
+        actorType: "system",
+        actorId: null,
+      },
+    );
+    // The list holds aliases only, so it proves the key, not the configured model.
+    await typesafeApi(key, options.typesafeFetch).listModels();
+  }
+
   function assertSupportedConnection(connection: typeof toolConnections.$inferSelect) {
     if (isRetiredComposioConnection(connection)) {
       throw unprocessable(RETIRED_COMPOSIO_MESSAGE, { code: "composio_broker_retired" });
@@ -7103,6 +7155,10 @@ export function toolAccessService(
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections provide runtime authentication, not tool actions");
     if (isAgentMailConnection(connection)) {
       await validateAgentMailConnection(connection);
+      return [];
+    }
+    if (isTypesafeConnection(connection)) {
+      await validateTypesafeConnection(connection);
       return [];
     }
     if (connection.transport === "mcp_remote")
@@ -7253,6 +7309,8 @@ export function toolAccessService(
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
+      } else if (isTypesafeConnection(connection)) {
+        await validateTypesafeConnection(connection);
       } else if (connection.transport === "mcp_remote") {
         const canProbeWithoutAuthorization =
           options.allowUnauthenticatedProbe === true &&
@@ -7285,9 +7343,11 @@ export function toolAccessService(
           ? "GitHub account, installation, and repository access are available."
           : isAgentMailConnection(connection)
             ? "AgentMail API key is connected."
-            : connection.transport === "local_stdio"
-              ? "Approved stdio template is ready."
-              : "Remote MCP server responded to tools/list.",
+            : isTypesafeConnection(connection)
+              ? TYPESAFE_HEALTH_MESSAGE
+              : connection.transport === "local_stdio"
+                ? "Approved stdio template is ready."
+                : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
@@ -7550,7 +7610,9 @@ export function toolAccessService(
         healthStatus: "ok",
         healthMessage: isAgentMailConnection(connection)
           ? "AgentMail API key is connected."
-          : "Tool catalog refreshed.",
+          : isTypesafeConnection(connection)
+            ? TYPESAFE_HEALTH_MESSAGE
+            : "Tool catalog refreshed.",
         healthCheckedAt: refreshedAt,
         lastHealthAt: refreshedAt,
         lastCatalogRefreshAt: refreshedAt,
@@ -13115,6 +13177,23 @@ export function toolAccessService(
         // later fails: another retry may already be using the committed grant.
         personalPublicSetupEstablished = true;
       }
+      if (galleryEntry?.slug === TYPESAFE_GALLERY_KEY) {
+        const [application] = await db
+          .select()
+          .from(toolApplications)
+          .where(eq(toolApplications.id, applicationRow.id));
+        return {
+          connectionId: health.connection.id,
+          application: toApplication(application),
+          connection: health.connection,
+          catalog: [],
+          actions: { readOnly: [], canMakeChanges: [] },
+          suggestedDefaults: recommendedDefaultsForApp(
+            galleryEntry,
+            method?.key,
+          ),
+        };
+      }
       const restoreDraftDefaults = Boolean(revivedConnectionPrevious);
       const refreshOptions = {
         enableAllByDefault: restoreDraftDefaults && !remoteMcpConnector,
@@ -13837,6 +13916,38 @@ export function toolAccessService(
         .update(toolApplications)
         .set({ status: "active", updatedAt: new Date() })
         .where(eq(toolApplications.id, connection.applicationId));
+      if (isTypesafeConnection(connection)) {
+        // Connector tools resolve access from installs; only OAuth setup creates them.
+        if (!input.preserveExistingAccess)
+          await tx
+            .delete(toolConnectionInstalls)
+            .where(
+              and(
+                eq(toolConnectionInstalls.companyId, companyId),
+                eq(toolConnectionInstalls.connectionId, connection.id),
+              ),
+            );
+        await tx
+          .insert(toolConnectionInstalls)
+          .values(
+            (input.access === "all_agents"
+              ? [{ targetType: "company" as const, targetId: companyId }]
+              : [...new Set(input.access.agentIds)].map((agentId) => ({
+                  targetType: "agent" as const,
+                  targetId: agentId,
+                }))
+            ).map((target) => ({
+              ...target,
+              companyId,
+              connectionId: connection.id,
+              createdByAgentId:
+                actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+              createdByUserId:
+                actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+            })),
+          )
+          .onConflictDoNothing();
+      }
 
       return { profileId, profileBindings, policies, updatedConnection };
     });
