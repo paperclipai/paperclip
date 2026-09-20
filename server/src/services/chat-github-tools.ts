@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
+import { githubReviewAssessmentSchema } from "@paperclipai/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import {
   chatDeliveries,
@@ -78,50 +80,14 @@ export const GITHUB_BOT_TOOLS = [
     name: "submit_review",
     title: "Submit a review assessment",
     description:
-      "Submit a structured assessment for this task's exact PR head. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Incomplete analysis cannot pass. This never formally approves a PR.",
+      "Submit a structured assessment for this task's exact PR head. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Coverage reviewedPaths and omittedPaths name only allowed changed files from read_pull_request(files); describe additional context in the rationale. Follow the schema length limits. Incomplete analysis cannot pass. This never formally approves a PR.",
     risk: "write",
-    schema: objectSchema(
-      {
-        reviewedCommit: { type: "string", pattern: "^[a-fA-F0-9]{40}$" },
-        score: { type: "integer", minimum: 0, maximum: 5 },
-        complete: { type: "boolean" },
-        summary: text,
-        rationale: text,
-        coverage: objectSchema(
-          {
-            reviewedPaths: { type: "array", items: path },
-            omittedPaths: { type: "array", items: path },
-            limitations: { type: "array", items: text },
-          },
-          ["reviewedPaths", "omittedPaths", "limitations"],
-        ),
-        findings: {
-          type: "array",
-          maxItems: 300,
-          items: objectSchema(
-            {
-              key: text,
-              path,
-              line: { type: "integer", minimum: 1 },
-              side: { enum: ["LEFT", "RIGHT"] },
-              severity: { enum: ["info", "warning", "error"] },
-              category: text,
-              body: text,
-            },
-            ["key", "path", "line", "side", "severity", "category", "body"],
-          ),
-        },
-      },
-      [
-        "reviewedCommit",
-        "score",
-        "complete",
-        "summary",
-        "rationale",
-        "coverage",
-        "findings",
-      ],
-    ),
+    // Share the input contract with server validation so discovery includes every
+    // length/array bound; hidden limits caused real agents to abandon publication.
+    schema: z.toJSONSchema(githubReviewAssessmentSchema, {
+      target: "draft-7",
+      io: "input",
+    }),
   },
   {
     name: "formal_review",

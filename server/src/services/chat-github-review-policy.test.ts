@@ -198,6 +198,12 @@ describe("GitHub score validation", () => {
       ),
     ).toThrow();
   });
+  it("returns actionable input errors rather than server failures for invalid assessment fields", () => {
+    const invalid = assessment();
+    invalid.coverage.limitations = ["x".repeat(257)];
+    expect(() => validateGitHubReviewAssessment(invalid, context.headSha, defaultGitHubReviewPolicy()))
+      .toThrow(expect.objectContaining({ status: 400, message: expect.stringContaining("coverage.limitations.0") }));
+  });
   it("incomplete reviews never pass even at 5/5 or report-only", () => {
     expect(
       githubReviewConclusion({ ...assessment(), complete: false }, 5),
