@@ -33,11 +33,14 @@ export function buildNativeContinuationPrompt(input: {
     isPaperclipExternalChatContractTurn(input.wakePayload) &&
     !hasAttachmentContext && wake.commentIds.length > 0 &&
     wake.latestCommentId === wake.commentIds.at(-1) &&
+    new Set(wake.commentIds).size === wake.commentIds.length &&
     wake.commentIds.every((id) => {
-      const comment = wake.comments.find((entry) => entry.id === id);
-      return comment && delta.messages.some((message) =>
-        message.id === id && message.body === comment.body &&
-        message.authorType === comment.authorType && message.authorId === comment.authorId);
+      const comments = wake.comments.filter((entry) => entry.id === id);
+      const messages = delta.messages.filter((entry) => entry.id === id);
+      return comments.length === 1 && messages.length === 1 &&
+        messages[0]!.body === comments[0]!.body &&
+        messages[0]!.authorType === comments[0]!.authorType &&
+        messages[0]!.authorId === comments[0]!.authorId;
     });
   // Other provider, attachment, question, approval, and recovery paths keep
   // their specialized framing. A matching prior run still gates every delta.
@@ -59,7 +62,12 @@ export function buildNativeContinuationPrompt(input: {
   // Do not substitute an unverified interaction outcome for an authorized answer.
   if (wake.interactionId && humanResponses.length === 0) return null;
   const events = {
-    messages: delta.messages,
+    // Only the current authenticated Slack delivery belongs to this turn.
+    // The generic delta can also include edited historical comments or an old
+    // agent response; neither becomes a new Slack instruction.
+    messages: externalChat
+      ? wake.commentIds.map((id) => delta.messages.find((message) => message.id === id)!)
+      : delta.messages,
     ...(humanResponses.length ? { humanResponses } : {}),
     ...(Object.keys(taskChanges).length ? { taskChanges } : {}),
     ...(wake.childIssueSummaries.length ? { childResults: wake.childIssueSummaries } : {}),

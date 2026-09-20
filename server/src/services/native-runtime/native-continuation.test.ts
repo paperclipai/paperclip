@@ -71,6 +71,19 @@ describe("plain-text Slack continuation projection", () => {
     expect(text).not.toContain("OLD_HISTORY");
     expect(text.length).toBeLessThan(600);
   });
+  it("excludes edited history and prior agent output outside the current Slack delivery", () => {
+    const text = buildChat({ ...slackWake, executionContinuation: {
+      ...wake.executionContinuation,
+      resumeDelta: { baseRunId: "prior", messages: [
+        { ...message, id: "old-edited", body: "STALE_DIRECTION" },
+        { ...message, id: "old-reply", authorType: "agent", body: "OLD_AGENT_REPLY" },
+        message,
+      ] },
+    } });
+    expect(JSON.parse(text!).messages).toEqual([message]);
+    expect(text).not.toContain("STALE_DIRECTION");
+    expect(text).not.toContain("OLD_AGENT_REPLY");
+  });
   it("preserves an actual task brief edit beside the current message", () => {
     const text = buildNativeContinuationPrompt({
       wakePayload: slackWake, previousRunId: "prior", allowExternalChat: true,
@@ -97,6 +110,8 @@ describe("plain-text Slack continuation projection", () => {
     { executionContinuation: { ...wake.executionContinuation, resumeDelta: { baseRunId: "wrong", messages: [message] } } },
     { executionContinuation: { ...wake.executionContinuation, resumeDelta: { baseRunId: "prior", messages: [] } } },
     { commentIds: [message.id, "missing"], latestCommentId: "missing" },
+    { commentIds: [message.id, message.id], latestCommentId: message.id },
+    { executionContinuation: { ...wake.executionContinuation, resumeDelta: { baseRunId: "prior", messages: [message, message] } } },
   ])("keeps specialized or incomplete input on the full path: %j", (extra) => {
     expect(buildChat({ ...slackWake, ...extra })).toBeNull();
   });
