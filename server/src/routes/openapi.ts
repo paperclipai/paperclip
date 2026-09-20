@@ -264,6 +264,9 @@ import {
   claudeOAuthTokenStatusResponseSchema,
   startAdapterAuthSessionRequestSchema,
   // Chat channels
+  githubChatConfigurationSchema,
+  githubReviewAssessmentSchema,
+  updateGitHubChatConfigurationSchema,
   chatDeliveryStateSchema,
   chatEndpointStatusSchema,
   chatIdentityLinkStatusSchema,
@@ -1483,6 +1486,17 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/chat-endpoints",
   "POST /api/companies/{companyId}/chat-endpoints",
   "GET /api/chat-endpoints/{endpointId}",
+  "GET /api/chat-endpoints/{endpointId}/github/configuration",
+  "PUT /api/chat-endpoints/{endpointId}/github/configuration",
+  "POST /api/chat-endpoints/{endpointId}/github/verify",
+  "PUT /api/chat-endpoints/{endpointId}/github/progress",
+  "GET /api/chat-endpoints/{endpointId}/github/reviews",
+  "GET /api/chat-endpoints/{endpointId}/github/personal-connections",
+  "POST /api/chat-endpoints/{endpointId}/github/identity",
+  "POST /api/chat-endpoints/{endpointId}/github/people/lookup",
+  "POST /api/chat-endpoints/{endpointId}/github/registration",
+  "POST /api/chat-endpoints/{endpointId}/github/app",
+  "POST /api/chat-endpoints/{endpointId}/github/repositories/refresh",
   "PATCH /api/chat-endpoints/{endpointId}",
   "POST /api/chat-endpoints/{endpointId}/setup",
   "POST /api/chat-endpoints/{endpointId}/setup-secret",
@@ -2141,6 +2155,111 @@ registry.registerPath({
   },
 });
 
+const githubConfigurationResponseSchema = z.object({
+  companyId: z.string().uuid(),
+  endpointId: z.string().uuid(),
+  revision: z.number().int().nonnegative(),
+  configuration: githubChatConfigurationSchema,
+  updatedByUserId: z.string().optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+});
+const githubPersonResponseSchema = z.object({ githubUserId: z.string(), login: z.string() });
+const githubBotOperations: Array<{
+  method: string;
+  suffix: string;
+  summary: string;
+  description: string;
+  body?: z.ZodTypeAny;
+  response: z.ZodTypeAny;
+}> = [
+  {
+    method: "get", suffix: "configuration", summary: "Read GitHub bot review configuration",
+    description: "Returns saved company-scoped configuration and its revision, or disabled defaults for an existing chat connection. Requires connection-management access.",
+    response: githubConfigurationResponseSchema,
+  },
+  {
+    method: "put", suffix: "configuration", summary: "Save GitHub bot review configuration",
+    description: "Compares the configuration revision and rechecks members, sponsors, repositories, and agent tool governance. Does not change the bot's assigned agent or enable formal reviews implicitly.",
+    body: updateGitHubChatConfigurationSchema, response: githubConfigurationResponseSchema,
+  },
+  {
+    method: "post", suffix: "verify", summary: "Verify GitHub bot and assigned-agent capabilities",
+    description: "Separately checks signed delivery, App identity, current repository permissions, effective tool access, and runtime support. Requires connection-management access.",
+    response: z.object({ ready: z.boolean(), checks: z.array(z.object({ key: z.string(), label: z.string(), ok: z.boolean(), detail: z.string() })) }),
+  },
+  {
+    method: "put", suffix: "progress", summary: "Save GitHub setup progress",
+    description: "Saves the resumable wizard stage without granting access or bypassing verification.",
+    body: z.object({ stage: z.enum(["connect", "install", "repositories", "verify", "identity", "behavior", "test"]) }).strict(),
+    response: chatEndpointResponseSchema,
+  },
+  {
+    method: "get", suffix: "reviews", summary: "List review evidence attached to Paperclip tasks",
+    description: "Returns up to 100 newest review records for this endpoint. Each review references ordinary Paperclip tasks and runs; it is not an independent scheduler.",
+    response: z.array(z.object({
+      id: z.string().uuid(), companyId: z.string().uuid(), endpointId: z.string().uuid(),
+      issueId: z.string().uuid(), runId: z.string().uuid().nullable(), repositoryId: z.string(),
+      repository: z.string(), pullNumber: z.number().int(), headSha: z.string(),
+      configurationRevision: z.number().int(), state: z.enum(["queued", "running", "completed", "incomplete", "error", "superseded", "manual_required"]),
+      assessment: githubReviewAssessmentSchema.nullable(),
+      conclusion: z.enum(["success", "failure", "neutral", "action_required"]).nullable(),
+      checkUrl: z.string().nullable(), summaryUrl: z.string().nullable(),
+      createdAt: z.string(), updatedAt: z.string(),
+    }).passthrough()),
+  },
+  {
+    method: "get", suffix: "personal-connections", summary: "List the current user's GitHub identity connections",
+    description: "Lists only the signed-in user's GitHub grants in this company. Shared and agent credentials cannot prove a person's identity.",
+    response: z.array(z.object({ connectionId: z.string().uuid(), name: z.string(), status: z.string(), login: z.string().nullable(), enabled: z.boolean() })),
+  },
+  {
+    method: "post", suffix: "identity", summary: "Verify or confirm your own GitHub identity",
+    description: "Resolves the current user's personal connection and verifies GET /user with GitHub. Omitting confirmedGithubUserId previews the identity; supplying its exact ID explicitly confirms ownership after revalidation.",
+    body: z.object({ connectionId: z.string().uuid(), confirmedGithubUserId: z.string().regex(/^[1-9][0-9]*$/).optional() }).strict(),
+    response: githubPersonResponseSchema.extend({ avatarUrl: z.string().nullable(), connectionId: z.string().uuid(), grantId: z.string().uuid() }),
+  },
+  {
+    method: "post", suffix: "people/lookup", summary: "Resolve a GitHub username to its stable identity",
+    description: "Verifies the account with GitHub. Lookup does not grant bot access, link a teammate, or confer the sponsor's credentials.",
+    body: z.object({ login: z.string().min(1).max(44) }).strict(), response: githubPersonResponseSchema,
+  },
+  {
+    method: "post", suffix: "registration", summary: "Prepare GitHub App manifest registration",
+    description: "Creates expiring single-use state bound to the current user, company, endpoint, and trusted HTTPS origin. Return data contains the manifest and registration URL, never private App credentials. Response is not cached.",
+    body: z.object({ name: z.string().trim().min(1).max(34) }).strict(),
+    response: z.object({ expiresAt: z.string(), registrationUrl: z.string().url(), manifest: z.record(z.string(), z.unknown()) }),
+  },
+  {
+    method: "post", suffix: "app", summary: "Connect an existing GitHub App",
+    description: "Validates App identity with GitHub and vaults write-only credentials server-side. Installation and signed webhook delivery must still be verified.",
+    body: z.object({ appId: z.string().regex(/^[1-9][0-9]*$/), privateKey: z.string().min(1).max(32000), webhookSecret: z.string().min(16).max(1024) }).strict(),
+    response: chatEndpointResponseSchema,
+  },
+  {
+    method: "post", suffix: "repositories/refresh", summary: "Refresh repositories available to the bot installation",
+    description: "Fetches current installation access from GitHub and reconciles resources while preserving Paperclip repository enablement. Return parameters alone never prove installation access.",
+    response: z.array(chatEndpointResourceResponseSchema),
+  },
+];
+for (const operation of githubBotOperations) {
+  registry.registerPath({
+    method: operation.method,
+    path: `/api/chat-endpoints/{endpointId}/github/${operation.suffix}`,
+    tags: ["chat-channels"], summary: operation.summary, description: operation.description,
+    request: {
+      params: z.object({ endpointId: z.string().uuid() }),
+      ...(operation.body ? { body: jsonBody(operation.body) } : {}),
+    },
+    responses: {
+      200: r.ok(operation.response), 400: r.badRequest, 401: r.unauthorized,
+      403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable,
+      502: { description: "GitHub returned an invalid response or unavailable capability" },
+      503: { description: "GitHub is temporarily unavailable" },
+    },
+  });
+}
+
 registry.registerPath({
   method: "patch",
   path: "/api/chat-endpoints/{endpointId}",
@@ -2241,8 +2360,8 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post", path: "/api/chat-endpoints/{endpointId}/finish", tags: ["chat-channels"],
-  summary: "Finish Slack onboarding with an optional conversation test",
-  description: "Requires a verified Slack webhook and an authorized identity linked to the current user. Records that a full conversation test was not required.",
+  summary: "Finish Slack or GitHub onboarding with an optional conversation test",
+  description: "Requires verified provider delivery and an authorized identity linked to the current user. GitHub also checks the assigned agent’s current bot capabilities. Records that a full conversation test was not required.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: { 200: r.ok(chatEndpointResponseSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });

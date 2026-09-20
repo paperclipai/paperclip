@@ -416,14 +416,13 @@ export function GitHubChatSetup() {
                 }}
               />
               <p className="text-xs text-muted-foreground">
-                GitHub requires a unique name. App registration opens on GitHub;
-                return here to continue.
+                GitHub requires a unique name. Continue on GitHub, then return
+                automatically to finish setup.
               </p>
               {registration && (
                 <form
                   action={registration.registrationUrl}
                   method="POST"
-                  target="_blank"
                 >
                   <input
                     type="hidden"
