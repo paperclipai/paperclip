@@ -168,6 +168,18 @@ describeEmbeddedPostgres("TypeSafe connector", () => {
     expect(await assignedTypesafeConnections(db, { companyId, agentId: second.id })).toEqual([]);
   });
 
+  it("lists a connection once when both the company and the agent have an install", async () => {
+    const { companyId, first, connectionId } = await fixture("all_agents");
+    await db
+      .insert(toolConnectionInstalls)
+      .values({ companyId, connectionId, targetType: "agent", targetId: first.id });
+    const assigned = await assignedTypesafeConnections(db, { companyId, agentId: first.id });
+    expect(assigned.map((connection) => connection.id)).toEqual([connectionId]);
+    await expect(
+      executeTypesafeAsk(db, binding(companyId, first.id), ask(), provider() as unknown as typeof fetch),
+    ).resolves.toEqual(ANSWER);
+  });
+
   it("never crosses a company boundary", async () => {
     const owner = await fixture("all_agents");
     const other = await fixture("none");
