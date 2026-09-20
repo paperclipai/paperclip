@@ -15,6 +15,7 @@ import {
   chatGitHubConfigurations,
   chatGitHubReviews,
   chatMessageLinks,
+  companies,
   heartbeatRuns,
   issues,
   projects,
@@ -354,6 +355,13 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
           event: "mention" | "comment";
         }
       | undefined;
+    const automatic = source.delivery.normalizedEvent.githubAutomatic as
+      | {
+          context: GitHubReviewEventContext;
+          policy: GitHubReviewPolicy;
+          revision: number;
+        }
+      | undefined;
     const context: GitHubReviewEventContext = {
       event: manual?.event ?? "mention",
       deliveryId: source.delivery.id,
@@ -382,6 +390,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         ),
       },
       labels: pull.labels.map((l) => l.name),
+      ...(automatic ? automatic.context : {}),
     };
     const [review] = await db
       .insert(chatGitHubReviews)
@@ -395,8 +404,9 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         pullNumber: source.number,
         headSha: pull.head.sha,
         deliveryId: `run:${source.run.id}:${pull.head.sha}`,
-        configurationRevision: manual?.revision ?? source.config.revision,
-        policySnapshot: manual?.policy ?? source.policy,
+        configurationRevision:
+          manual?.revision ?? automatic?.revision ?? source.config.revision,
+        policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
         event: context,
         state: "running",
       })
@@ -528,6 +538,12 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         "This task is bound to a GitHub issue. Pull request review tools require a PR conversation.",
       );
     const pull = await api.request<Pull>(`/pulls/${source.number}`);
+    const automatic = source.delivery.normalizedEvent.githubAutomatic as
+      { context: GitHubReviewEventContext } | undefined;
+    if (automatic && automatic.context.headSha !== pull.head.sha)
+      throw conflict(
+        "This automatic review was requested for an older pull request head. Continue with the newest authorized PR event or an authorized manual request.",
+      );
     if (name === "read_pull_request") {
       const parsed = readSchema.parse(input);
       if (parsed.section === "metadata") {
@@ -1060,14 +1076,25 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
             review.policySnapshot.ratingThreshold,
           );
           const origin = runtimePublicOrigin();
-          const taskLink = origin
-            ? `[${source.issue.identifier}](${origin}/issues/${source.issue.id})`
+          const [company] = await tx
+            .select({ prefix: companies.issuePrefix })
+            .from(companies)
+            .where(eq(companies.id, source.endpoint.companyId));
+          const board =
+            origin && company
+              ? `${origin}/${encodeURIComponent(company.prefix)}`
+              : null;
+          const taskLink = board
+            ? `[${source.issue.identifier}](${board}/issues/${source.issue.id})`
             : source.issue.identifier;
-          const historyLink = origin
-            ? ` · [Review history](${origin}/apps/chat/${source.endpoint.id}/reviews)`
+          const runLink = board
+            ? `[Run](${board}/agents/${source.agent.id}/runs/${source.run.id})`
+            : `Run: ${source.run.id}`;
+          const historyLink = board
+            ? ` · [Review history](${board}/apps/chat/${source.endpoint.id}/reviews)`
             : "";
           const summary = projectSafeChatPublicationText(
-            `## Paperclip Review — ${assessment.complete ? `${assessment.score}/5` : "Incomplete"}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · Run: ${source.run.id}${historyLink}`,
+            `## Paperclip Review — ${assessment.complete ? `${assessment.score}/5` : "Incomplete"}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
           );
           const summaryMarker = marker(
             "review",

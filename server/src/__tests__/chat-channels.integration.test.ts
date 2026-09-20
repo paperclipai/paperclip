@@ -2325,6 +2325,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(issueComments.issueId, task.id));
       expect(comments[0].body).toContain("untrusted provider data");
       expect(comments[0].authorUserId).toBe("owner-user");
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: f.companyId,
+        agentId: f.assignedAgentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: { issueId: task.id, wakeCommentId: comments[0].id },
+      }).returning();
+      f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
+        ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } })
+        : undefined);
+      await expect(githubChatReviewService(db, f.providerFetch).execute({
+        companyId: f.companyId,
+        agentId: f.assignedAgentId,
+        issueId: task.id,
+        runId: run.id,
+      }, "read_pull_request", { section: "metadata" })).rejects.toThrow("older pull request head");
     });
     it("uses task-bound bot tools and deterministic checks, then denies revoked people", async () => {
       const f = await reviewBotFixture();
