@@ -217,7 +217,12 @@ import {
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
 import { agentmailApi } from "./agentmail-api.js";
-import { TypesafeApiError, typesafeApi } from "./typesafe-api.js";
+import {
+  TYPESAFE_GALLERY_KEY,
+  TypesafeApiError,
+  isTypesafeConnection,
+  typesafeApi,
+} from "./typesafe-api.js";
 import type { ConfigureRailwaySsh, RailwaySshSetup } from "@paperclipai/shared";
 import { generateRailwaySshKey, RAILWAY_SSH_SECRET_PATH, validateRailwayKnownHosts } from "./railway-ssh.js";
 import { createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_TOOLS, RAILWAY_TOOL_PREFIX, railwayRisk, RailwayError } from "./railway.js";
@@ -924,18 +929,7 @@ const APPROVED_STDIO_TEMPLATES: Record<
 };
 
 const GOOGLE_SHEETS_GALLERY_KEY = "google-sheets";
-export const TYPESAFE_GALLERY_KEY = "typesafe";
 const TYPESAFE_HEALTH_MESSAGE = "TypeSafe API key is connected.";
-
-export function isTypesafeConnection(connection: {
-  transport: string;
-  config: Record<string, unknown>;
-}) {
-  return (
-    connection.transport === "rest_api" &&
-    connection.config.sourceTemplateKey === TYPESAFE_GALLERY_KEY
-  );
-}
 const GOOGLE_SHEETS_TEMPLATE_ID = "paperclip.google-sheets";
 const GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV =
   "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS";

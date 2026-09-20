@@ -2,6 +2,18 @@ import { z } from "zod";
 import type { TypesafeAskResult } from "@paperclipai/shared";
 
 const BASE_URL = "https://api.typesafe.ai/v1";
+export const TYPESAFE_GALLERY_KEY = "typesafe";
+
+// The generic connect flow stores the catalog slug, never a provider name.
+export function isTypesafeConnection(connection: {
+  transport: string;
+  config: Record<string, unknown>;
+}) {
+  return (
+    connection.transport === "rest_api" &&
+    connection.config.sourceTemplateKey === TYPESAFE_GALLERY_KEY
+  );
+}
 const CODES = {
   401: "typesafe_unauthorized",
   422: "typesafe_invalid_request",
