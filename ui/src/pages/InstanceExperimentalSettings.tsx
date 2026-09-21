@@ -164,6 +164,7 @@ export function InstanceExperimentalSettings() {
         queryClient.invalidateQueries({ queryKey: queryKeys.adapters.all }),
         queryClient.invalidateQueries({ queryKey: ["built-in-agents"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
+        queryClient.invalidateQueries({ queryKey: ["apps"] }),
       ]);
     },
     onError: (error, _patch, context) => {
@@ -335,6 +336,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableChatConnectors"
           managed={managedKeys.enableChatConnectors}
           ariaLabel="Toggle chat connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="MCP aggregators"
+          description="Connect Zapier, Arcade, Composio Connect, and Executor through their MCP servers."
+          footnote="Turning this off hides setup for these connectors. Existing connections keep running, and legacy Composio connections are unchanged."
+          checked={experimentalQuery.data?.enableMcpAggregators === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableMcpAggregators: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableMcpAggregators"
+          managed={managedKeys.enableMcpAggregators}
+          ariaLabel="Toggle MCP aggregators experimental setting"
         />
 
         {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (

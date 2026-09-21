@@ -116,6 +116,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableMcpAggregators: {
+    title: "MCP aggregators",
+    description:
+      "Show experimental Zapier, Arcade, Composio Connect, and Executor setup. Existing connections keep running when hidden; legacy Composio connections are unchanged.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enablePipelines: {
     title: "Pipelines",
     description: "Enable pipeline definitions and pipeline-driven case production surfaces.",

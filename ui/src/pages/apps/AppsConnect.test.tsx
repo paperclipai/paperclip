@@ -319,6 +319,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     return root;
   }
 
+  it.each(["zapier", "arcade", "composio", "executor"])("blocks direct %s setup while MCP aggregators are off", async (provider) => {
+    mockSearch.value = `source=${provider}`;
+    await render();
+    expect(container.textContent).toContain("Enable MCP aggregators");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it("shows only MCP URL setup on the BYO page", async () => {
     await render(undefined, true);
 

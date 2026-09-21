@@ -4,6 +4,12 @@ Worktree: `codex/unified-mcp-connectors`, based on `b19307758`. Local instance: 
 
 **Overall acceptance remains incomplete: Zapier needs the generated credential pasted into its open local setup form.** Three providers have real browser and real agent proof. Simulations are recorded separately below.
 
+## Experimental rollout
+
+Setup is behind **Settings → Experimental → MCP aggregators** (`enableMcpAggregators`). It defaults off on self-hosted and managed instances. When off, all four fresh catalog entries are hidden and direct setup, reconnect setup, and OAuth-start requests are rejected server-side. Existing connections keep running and remain available for management. Legacy Composio API-key/child connections are unchanged. An in-progress OAuth callback may complete; the flag does not revoke already issued credentials or grants.
+
+Focused regression tests cover flag defaults, persistence, managed metadata, cached catalog visibility, all four direct setup routes, and server-side rejection before network/credential writes.
+
 ## Live results
 
 | Provider | Functional correctness | UX readiness | Observed account, catalog, and actual results |

@@ -2,8 +2,16 @@ import { describe, expect, it } from "vitest";
 import { getConnectableAppDefinition } from "./app-definitions.js";
 import { isRemoteMcpConnectorMethod, REMOTE_MCP_CONNECTOR_METHODS } from "./remote-mcp-connectors.js";
 import { connectToolAppSchema, finishToolAppSchema } from "./validators/tool-access.js";
+import { instanceExperimentalSettingsSchema, patchInstanceExperimentalSettingsSchema } from "./validators/instance.js";
+import { INSTANCE_FEATURE_CATALOG } from "./feature-catalog.js";
 
 describe("independent remote MCP connectors", () => {
+  it("requires an explicit MCP aggregators opt-in for self-hosted and managed instances", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableMcpAggregators).toBe(false);
+    expect(patchInstanceExperimentalSettingsSchema.parse({ enableMcpAggregators: true })).toEqual({ enableMcpAggregators: true });
+    expect(patchInstanceExperimentalSettingsSchema.parse({})).not.toHaveProperty("enableMcpAggregators");
+    expect(INSTANCE_FEATURE_CATALOG.enableMcpAggregators).toMatchObject({ tier: "managed", cloudDefault: false, selfHostedDefault: false });
+  });
   for (const [provider, methodKey] of Object.entries(REMOTE_MCP_CONNECTOR_METHODS)) {
     it(`${provider} has its own catalog and accepts URL plus explicit credentials`, () => {
       const definition = getConnectableAppDefinition(provider)!;

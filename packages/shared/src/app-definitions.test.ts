@@ -692,7 +692,6 @@ describe("AppDefinition catalog", () => {
       "brex",
       "candid",
       "coda",
-      "composio",
       "context7",
       "egnyte",
       "embat",
@@ -709,7 +708,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(48);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(51);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

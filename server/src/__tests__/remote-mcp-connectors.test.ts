@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { instanceSettingsService, normalizeExperimentalSettings } from "../services/instance-settings.js";
 const actor = { actorType: "user" as const, actorId: "mcp-test-user", actorSource: "local_implicit" as const };
 const tool = (name: string) => ({ name, description: name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } });
 describe("remote connector lifecycle", () => {
@@ -19,6 +20,7 @@ describe("remote connector lifecycle", () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(keyDir, "key"));
     fixture = await startEmbeddedPostgresTestDatabase("mcp-connectors-test-");
     db = createDb(fixture.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
   });
   afterAll(async () => { await fixture?.cleanup(); vi.unstubAllEnvs(); if (keyDir) await rm(keyDir, { recursive: true, force: true }); });
   async function company() {
@@ -46,6 +48,23 @@ describe("remote connector lifecycle", () => {
     });
     return { service, requests, add: () => { added = true; }, remove: () => { removed = true; }, restore: () => { removed = false; } };
   }
+  it("defaults MCP aggregators off and rejects direct setup without provider requests or credential writes", async () => {
+    expect(normalizeExperimentalSettings({}).enableMcpAggregators).toBe(false);
+    const org = await company(); const remote = remoteFixture();
+    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: false });
+    try {
+      for (const [galleryKey, connectionMethodKey] of [["zapier", "generated-url"], ["arcade", "mcp"], ["composio", "mcp"], ["executor", "mcp"]]) {
+        await expect(remote.service.connectGalleryApp(org.id, { galleryKey, connectionMethodKey, saveDraft: true }, actor))
+          .rejects.toMatchObject({ status: 403, details: { code: "mcp_aggregators_disabled" } });
+      }
+      await expect(remote.service.preflightGalleryAppMetadata("composio", "mcp"))
+        .rejects.toMatchObject({ status: 403 });
+      expect(remote.requests).toHaveLength(0);
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, org.id))).toHaveLength(0);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
+    }
+  });
   it("vaults generated URLs, paginates discovery, preserves Off/Ask during refresh and reconnect, and isolates companies", async () => {
     const org = await company(); const other = await company(); const remote = remoteFixture();
     const input = { galleryKey: "zapier", connectionMethodKey: "generated-url", link: "https://mcp.zapier.com/api/v1/connect?token=fixture-secret", authMode: "none" as const };
