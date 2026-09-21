@@ -16860,6 +16860,26 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  // Admission has to know *what* the running runs are working on, not only how
+  // many there are: every run of an agent resolves the same workspace
+  // directory, so a run with no issue context can duplicate and overwrite the
+  // work of a live issue-bound run. Same predicate as countRunningRunsForAgent,
+  // widened to the two columns the admission check reads.
+  async function listRunningRunsForAgent(agentId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+  }
+
   async function withChatControlRecoveryGate(
     run: typeof heartbeatRuns.$inferSelect,
     stage: "claim" | "dispatch",
@@ -19702,12 +19722,24 @@ export function heartbeatService(
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
+      const runningRuns = await listRunningRunsForAgent(agentId);
+      const runningCount = runningRuns.length;
       const availableSlots = Math.max(
         0,
         policy.maxConcurrentRuns - runningCount,
       );
       if (availableSlots <= 0) return [];
+      // Every run of an agent resolves the same workspace directory, so a
+      // taskless run admitted alongside an issue-bound run is a second process
+      // writing one tree — and it holds no issue checkout, so it cannot even
+      // report what it did there. While an issue-bound run is live, leave
+      // taskless runs queued: the run-drain path re-enters admission when the
+      // bound run finishes, so they are deferred, not dropped.
+      const hasIssueBoundRunningRun = runningRuns.some((run) =>
+        Boolean(
+          readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+        ),
+      );
 
       const queuedRuns = await db
         .select()
@@ -19798,6 +19830,12 @@ export function heartbeatService(
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        if (
+          hasIssueBoundRunningRun &&
+          !readNonEmptyString(parseObject(queuedRun.contextSnapshot).issueId)
+        ) {
+          continue;
+        }
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
