@@ -41,13 +41,6 @@ Future issue, comment, and document writes sync references automatically without
 
 This mode is ideal for local development and one-command installs.
 
-Chat communication guidance uses two additive columns: endpoint
-`communication_instructions` defaults to empty, and conversation
-`communication_guidance` holds the immutable initial task snapshot. Existing
-conversations retain a null snapshot; there is no backfill that changes an
-ongoing conversation. New Slack tasks receive built-in guidance even when the
-endpoint has no additional instructions.
-
 Docker note: the Docker quickstart image also uses embedded PostgreSQL by default. Persist `/paperclip` to keep DB state across container restarts (see `doc/DOCKER.md`).
 
 ## 2. Local PostgreSQL (Docker)
@@ -299,6 +292,15 @@ successor can take the lease immediately only when coordinated handoff or PID
 and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
+
+## Chat communication snapshots
+
+Chat communication guidance uses two additive columns: endpoint
+`communication_instructions` defaults to empty, and conversation
+`communication_guidance` holds the immutable initial task snapshot. Existing
+conversations retain a null snapshot; there is no backfill that changes an
+ongoing conversation. New Slack tasks receive built-in guidance even when the
+endpoint has no additional instructions.
 
 ## Telegram private draft identities
 
