@@ -49,15 +49,18 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
  * `snapshot` is the wake payload. `checkout` is the issue this run holds the
  * checkout/execution lock on — a timer wake writes no `issueId`, so the lock is
  * the only durable record that the run became issue-scoped after it started.
- * `assignee` is the last resort: the run has no source issue at all, but the
- * target is the acting agent's own assigned work.
+ * `assignee` means the run has no source issue but the target is the acting
+ * agent's own assigned work. `none` means the run is acting from no issue at
+ * all — a timer heartbeat reaching across the board. All four are permitted;
+ * the origin exists to label the audit trail, not to decide the write.
  */
 type RunSourceIssue =
   | { issueId: string; origin: "snapshot" | "checkout" }
   | { issueId: null; origin: "assignee" | "none" };
 
 /**
- * Resolves the issue a run is acting from.
+ * Resolves the issue a run is acting from, for attribution and the own-issue
+ * exemption. A null `issueId` is a normal outcome, not a failure.
  *
  * A timer/board wake persists `{source:"scheduler", wakeSource:"timer"}` and no
  * issue id, so reading the snapshot alone made the guard fail closed on every
@@ -178,14 +181,17 @@ export async function observeCrossIssueInfluence(
       return null;
     }
 
-    // No source issue and the target is not the agent's own work: nothing
-    // attributes this write, so it still fails closed.
-    if (source.origin === "none") throw crossIssueInfluenceRunContextError();
-
-    // `origin === "assignee"` falls through deliberately. An agent disposing of
-    // its own assigned issue from a timer heartbeat is allowed, but it is still
-    // metered: the cap is what bounds a runaway sweep across the dozens of
-    // issues one agent can own. Permission is restored; the rate backstop is not.
+    // `origin === "assignee"` and `origin === "none"` both fall through
+    // deliberately. §9.3.1 fails a write closed for *run* context — "missing,
+    // invalid, or mismatched" — and that was already decided above, where the run
+    // was loaded and matched on company + agent. A valid run that merely cannot
+    // name a source issue is none of the three, so rejecting it here turned this
+    // counter into the permission decision for writes §9.3.1 grants by default.
+    //
+    // The run id is the only attribution the counter needs; the source issue
+    // serves the own-issue exemption above and the audit trail, both of which
+    // tolerate null. Unattributed writes are metered, not refused, and
+    // `sourceOrigin` below records which of the four origins applied.
 
     const priorCount = await tx
       .select({ count: count() })

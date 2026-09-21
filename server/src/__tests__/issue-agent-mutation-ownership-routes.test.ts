@@ -1695,6 +1695,44 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  // TES-2179. An unassigned issue is deletable by any agent that can see it, and
+  // deletion used to be the one issue write outside the per-run counter — so a
+  // loop could clear every unassigned issue while a priority edit was capped.
+  it("charges an agent's issue delete to the per-run cross-issue cap", async () => {
+    const unassigned = makeIssue({ assigneeAgentId: null, status: "todo" });
+    mockIssueService.getById.mockResolvedValue(unassigned);
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.remove.mockResolvedValue(unassigned);
+
+    const res = await request(await createApp(peerActor())).delete(`/api/issues/${issueId}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ targetIssueId: issueId, kind: "update" }),
+    );
+  });
+
+  it("refuses the delete once the run has spent its cross-issue budget", async () => {
+    const unassigned = makeIssue({ assigneeAgentId: null, status: "todo" });
+    mockIssueService.getById.mockResolvedValue(unassigned);
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.remove.mockResolvedValue(unassigned);
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: false,
+      mode: "enforce",
+      count: 21,
+      cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const res = await request(await createApp(peerActor())).delete(`/api/issues/${issueId}`);
+
+    expect(res.status).toBe(429);
+    // The cap has to stop the deletion itself, not just report it afterwards.
+    expect(mockIssueService.remove).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["board", "board"],
     ["a company user", { userId: "board-user" }],

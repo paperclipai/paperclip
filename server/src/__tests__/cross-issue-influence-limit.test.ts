@@ -211,7 +211,11 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  // TES-2179. §9.3.1 fails a write closed for missing, invalid, or mismatched
+  // *run* context — the three cases above. A persisted run that matches company
+  // and agent is none of them, so a source issue it cannot name is not a fourth:
+  // the write is authorized and metered, and the audit row says `none`.
+  it("meters a persisted run that has no source issue instead of refusing it", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -220,11 +224,12 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
-    });
-    expect(fake.inserted).toEqual([]);
+    })).resolves.toMatchObject({ allowed: true, count: 1 });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        details: expect.objectContaining({ sourceOrigin: "none", sourceIssueId: null }),
+      }),
+    ]);
   });
 });
 
@@ -233,6 +238,12 @@ describe("cross-issue influence limit rollout", () => {
  * alone made the guard throw before it could reach the own-issue passthrough —
  * every agent lost the ability to dispose of its own work from a heartbeat, and
  * 54 issues force-blocked with `unblockDescriptor: null` over 32 days.
+ *
+ * TES-2179 finished it. The first fix restored own-issue writes but still refused
+ * the cross-issue case, because the resolver's last fallback is the *target's*
+ * assignee — which, for an agent routing work, is by definition someone else. So
+ * the exact write the fix was for stayed broken. These cases pin both halves:
+ * permission comes from §9.3.1's default-open rule, containment from the cap.
  */
 describe("timer-wake runs without a snapshot source issue", () => {
   const base = {
@@ -301,16 +312,42 @@ describe("timer-wake runs without a snapshot source issue", () => {
     ]);
   });
 
-  it("still fails closed on an issue that is neither checked out nor the agent's own", async () => {
+  // TES-2179. This is the write a Product Lead needs and the one that was refused:
+  // assigning or unblocking another agent's issue from a timer heartbeat. Both of
+  // a PM's primary jobs are this shape, so failing it closed write-locked the role
+  // to issues it already owned while 7 teammates sat idle.
+  it("meters a write to another agent's issue rather than refusing it", async () => {
     const fake = counterDb(0, TIMER_WAKE_SNAPSHOT, {
       targetAssigneeAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     });
 
     await expect(observeCrossIssueInfluence(fake.db as never, { ...base, kind: "update" }))
-      .rejects.toMatchObject({
-        status: 403,
-        details: { code: "cross_issue_influence_run_context_required" },
-      });
-    expect(fake.inserted).toEqual([]);
+      .resolves.toMatchObject({ allowed: true, count: 1 });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        details: expect.objectContaining({ sourceOrigin: "none", sourceIssueId: null }),
+      }),
+    ]);
+  });
+
+  it("still caps an unattributed sweep across other agents' issues", async () => {
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, TIMER_WAKE_SNAPSHOT, {
+      targetAssigneeAgentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+
+    // The cap is now the only thing bounding a board-wide sweep from a timer
+    // wake, so it has to hold for `sourceOrigin: "none"` too.
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      ...base,
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({
+      allowed: false,
+      mode: "enforce",
+      count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+    });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
+    ]);
   });
 });

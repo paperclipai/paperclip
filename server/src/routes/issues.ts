@@ -14971,7 +14971,16 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!existing) return;
+    // Deliberately stricter than PATCH: no `allowVisibleIssueWrite`, so deleting
+    // an issue assigned to another agent stays refused. Deletion is the one issue
+    // write no later write can walk back.
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    // An *unassigned* issue is deletable by any agent that can see it, which left
+    // the most destructive verb as the only unmetered one — a loop could clear
+    // every unassigned issue in the company while a priority edit was capped at
+    // 20. Charge deletion to the same per-run budget as a PATCH (§9.3.1).
+    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update")))
+      return;
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);

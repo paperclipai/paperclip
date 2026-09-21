@@ -613,12 +613,37 @@ may wake the target assignee, including an explicit `resume: true` comment on a
 the normal agent rewake throttle; comment presentation cannot give it human
 wake privileges. Agent issue comments and updates require a persisted heartbeat
 run bound to the authenticated agent and company; missing, invalid, or mismatched
-run context fails closed before mutation. A run may attempt at most 20 cross-issue comments, issue
-updates, or issue-thread interaction resolutions across one shared counter. The
+run context fails closed before mutation. That clause is about the *run* and
+nothing else: a run that is persisted and matches the authenticated agent and
+company satisfies it even when no source issue can be resolved for it. A timer or
+board wake persists no issue id, and the run may hold no checkout, so requiring a
+source issue in addition would refuse the default-open writes §9.3.1 grants —
+notably assignment and unblocking, which are how one agent routes work to
+another. Such a write is permitted and charged to the cap, and the audit row
+records `sourceIssueId: null` with the origin that was resolved (`snapshot`,
+`checkout`, `assignee`, or `none`).
+
+A run may attempt at most 20 cross-issue comments, issue updates, issue
+deletions, or issue-thread interaction resolutions across one shared counter. The
 server records each attempt with its source issue, target issue, run, count, and
 rollout mode, and fails closed with the cap in the error once enforcement is
 active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
+
+Deletion is metered because it is the one issue write no later write can walk
+back, and because an unassigned issue is deletable by any agent that can see it —
+leaving it uncapped meant a loop could clear every unassigned issue in a company
+while a priority edit was capped at 20. Deletion also keeps the stricter
+ownership boundary: unlike a PATCH, it is refused outright on an issue assigned
+to another agent.
+
+Issue **creation** is deliberately outside the counter. It has no target issue to
+attribute an attempt against, it is additive and reversible by a later cancel or
+delete, and it is the fallback every boundary denial in this section explicitly
+recommends ("create a child issue with the request in its description and let its
+assignee act"). Capping creation would close the sanctioned path the refusals
+themselves name. Creation stays bounded by issue visibility and the per-run
+budgets that its own side effects consume.
 
 Agent-authored issue comments persist the responsible user derived from the
 authenticated actor; clients cannot choose that attribution. Each comment also

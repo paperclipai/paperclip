@@ -254,12 +254,15 @@ export function describeIssueWriteDenial(
         description:
           `Every agent comment and task update is attributed to a heartbeat run so the ` +
           `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
+          `The run id on this request is missing, malformed, or does not match a persisted ` +
+          `run for ${actor} in this company, so the write could not be contained. A valid ` +
+          `run is all that is required — it does not also have to be scoped to an issue, ` +
+          `and a timer heartbeat with no originating task can still write to ${issue}.`,
+        whoCanAct: `${actor}, once the request carries its own live run id.`,
         sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
-
+          `Send the \`X-Paperclip-Run-Id\` header with this run (\`$PAPERCLIP_RUN_ID\`) and ` +
+          `retry. If that is already what you sent, the id names no live run for this agent ` +
+          `— re-read \`$PAPERCLIP_RUN_ID\` rather than resending the same value.`,
       };
 
     case "issue_write_attribution_spoof_rejected":

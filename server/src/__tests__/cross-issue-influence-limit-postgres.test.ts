@@ -173,11 +173,17 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     // With no lock at all, the agent can still dispose of its own assigned work.
     await expect(observeCrossIssueInfluence(db, { ...base, runId: looseRunId, targetIssueId: ownedIssueId }))
       .resolves.toMatchObject({ allowed: true, count: 1 });
-    // But an unassigned, un-checked-out issue is still unattributable.
+    // TES-2179: and it can reach an issue that is neither locked nor its own. The
+    // run is persisted and matches company + agent, so §9.3.1's fail-closed clause
+    // does not apply; the write is metered, not refused.
     await expect(observeCrossIssueInfluence(db, { ...base, runId: looseRunId, targetIssueId: strangerIssueId }))
-      .rejects.toMatchObject({
-        status: 403,
-        details: { code: "cross_issue_influence_run_context_required" },
-      });
+      .resolves.toMatchObject({ allowed: true, count: 2 });
+
+    const unattributed = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, strangerIssueId)))
+      .then((rows) => rows[0]?.details as { sourceOrigin?: string; sourceIssueId?: string | null });
+    expect(unattributed).toMatchObject({ sourceOrigin: "none", sourceIssueId: null });
   });
 });
