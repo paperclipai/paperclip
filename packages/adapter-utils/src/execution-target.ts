@@ -2533,7 +2533,18 @@ let buffer = "";
 let exiting = false;
 
 function send(message) {
+  if (exiting) return;
   socket.write(JSON.stringify({ token, ...message }) + "\\n");
+}
+
+function finish(code) {
+  if (exiting) return;
+  exiting = true;
+  process.exitCode = code;
+  // ACP keeps stdin open while waiting for a reply. Release that handle when
+  // the remote process stops, but let pending stdout/stderr writes drain.
+  process.stdin.destroy();
+  socket.end();
 }
 
 socket.on("connect", () => send({ type: "hello" }));
@@ -2554,13 +2565,9 @@ socket.on("data", (chunk) => {
       (message.stream === "stderr" ? process.stderr : process.stdout).write(out);
     } else if (message.type === "error") {
       process.stderr.write(String(message.message || "Process session bridge failed.") + "\\n");
-      exiting = true;
-      process.exitCode = 1;
-      socket.end();
+      finish(1);
     } else if (message.type === "exit") {
-      exiting = true;
-      process.exitCode = typeof message.code === "number" ? message.code : 1;
-      socket.end();
+      finish(typeof message.code === "number" ? message.code : 1);
     }
   }
 });
