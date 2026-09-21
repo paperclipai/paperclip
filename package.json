@@ -122,7 +122,8 @@
       "react": "^19.2.8",
       "react-dom": "^19.2.8",
       "@codemirror/state": "^6.7.2",
-      "@codemirror/view": "^6.43.11"
+      "@codemirror/view": "^6.43.11",
+      "@lezer/common": "^1.5.2"
     }
   }
 }
