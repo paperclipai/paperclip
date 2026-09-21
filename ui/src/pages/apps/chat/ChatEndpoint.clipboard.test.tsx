@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   getAgent: vi.fn(),
   listAgents: vi.fn(),
-  listResources: vi.fn(),
   tab: "access",
   listActivityPage: vi.fn(),
   create: vi.fn(),
