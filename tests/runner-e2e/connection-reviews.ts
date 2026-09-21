@@ -47,7 +47,7 @@ export async function setupConnectionReview(input: {
       );
       connection = { id: connected.connectionId };
     } else {
-      await page.goto(`/${input.prefix}/apps`);
+      await page.goto(`/${input.prefix}/apps`, { waitUntil: "domcontentloaded" });
       const connector = page
         .getByRole("list", { name: "Connector list" })
         .getByRole("listitem")
@@ -81,10 +81,14 @@ export async function setupConnectionReview(input: {
       },
     );
     expect(installed.ok()).toBe(true);
-    await page.goto(`/${input.prefix}/apps/${connection.id}/permissions`);
-    await page
-      .getByRole("radio", { name: "List fixture pages: Ask first" })
-      .click();
+    await page.goto(`/${input.prefix}/apps/${connection.id}/permissions`, {
+      waitUntil: "domcontentloaded",
+    });
+    const askFirst = page.getByRole("radio", {
+      name: "List fixture pages: Ask first",
+    });
+    await expect(askFirst).toBeVisible({ timeout: 30_000 });
+    await askFirst.click();
     return {
       ...provider,
       connectionId: connection.id,

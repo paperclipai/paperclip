@@ -232,8 +232,14 @@ export async function runEverydayFlow(input: Input) {
   }
   const taskUrl = (issue: StoryIssue) =>
     `/${prefix}/issues/${issue.identifier ?? issue.id}`;
+  async function openTask(issue: StoryIssue) {
+    await page.goto(taskUrl(issue), { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("issue-detail-header")).toBeVisible({
+      timeout: 30_000,
+    });
+  }
   async function openParent() {
-    await page.goto(taskUrl(parent!), { waitUntil: "domcontentloaded" });
+    await openTask(parent!);
   }
   function observableAgentIds(state: EverydayEvidence) {
     return [
@@ -433,7 +439,7 @@ export async function runEverydayFlow(input: Input) {
       : zips[zips.length - 1];
     if (!attachment) throw new Error("Selected delivery is no longer available");
     const issue = ev.issues.find((i) => i.id === issueId)!;
-    await page.goto(taskUrl(issue), { waitUntil: "domcontentloaded" });
+    await openTask(issue);
     const links = page.locator(
       `a[href*="/api/attachments/${attachment.id}/content"]`,
     );
@@ -806,7 +812,7 @@ export async function runEverydayFlow(input: Input) {
         childId: child.id,
         activeRunIds: ev.runs.filter(isActiveStoryRun).map((r) => r.id),
       });
-      await page.goto(taskUrl(child), { waitUntil: "domcontentloaded" });
+      await openTask(child);
       await reply(LATE_REQUIREMENT, child);
       note("late-feedback-delivered-to-child", { childId: child.id });
       await openParent();
